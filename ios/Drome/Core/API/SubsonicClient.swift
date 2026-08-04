@@ -11,10 +11,19 @@ final class SubsonicClient {
     let account: Account
     let session: URLSession
     private let password: String
+    /// Stable salt/token for media URLs (cover art, stream, download) so SwiftUI
+    /// image views and AVPlayer items keep a constant URL across redraws.
+    private let mediaSalt: String
+    private let mediaToken: String
 
     init(account: Account, password: String) {
         self.account = account
         self.password = password
+        let salt = Self.randomSalt()
+        self.mediaSalt = salt
+        self.mediaToken = Insecure.MD5.hash(data: Data((password + salt).utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
 
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
@@ -28,9 +37,24 @@ final class SubsonicClient {
 
     // MARK: - Auth
 
-    /// Fresh salt + md5 token per call, per the Subsonic auth spec.
+    /// Fresh salt + md5 token per API call, per the Subsonic auth spec.
     func authQueryItems() -> [URLQueryItem] {
-        let salt = Self.randomSalt()
+        authQueryItems(salt: Self.randomSalt())
+    }
+
+    /// Session-stable credentials for long-lived media URLs.
+    private func mediaAuthQueryItems() -> [URLQueryItem] {
+        [
+            URLQueryItem(name: "u", value: account.username),
+            URLQueryItem(name: "t", value: mediaToken),
+            URLQueryItem(name: "s", value: mediaSalt),
+            URLQueryItem(name: "v", value: Self.apiVersion),
+            URLQueryItem(name: "c", value: Self.clientName),
+            URLQueryItem(name: "f", value: "json"),
+        ]
+    }
+
+    private func authQueryItems(salt: String) -> [URLQueryItem] {
         let token = Insecure.MD5.hash(data: Data((password + salt).utf8))
             .map { String(format: "%02x", $0) }
             .joined()
@@ -51,14 +75,16 @@ final class SubsonicClient {
 
     // MARK: - Request plumbing
 
-    func endpointURL(_ endpoint: String, parameters: [URLQueryItem] = []) -> URL? {
+    func endpointURL(_ endpoint: String, parameters: [URLQueryItem] = [],
+                     stableMediaAuth: Bool = false) -> URL? {
         guard var components = URLComponents(url: account.serverURL, resolvingAgainstBaseURL: false) else {
             return nil
         }
         var path = components.path
         if path.hasSuffix("/") { path.removeLast() }
         components.path = path + "/rest/" + endpoint
-        components.queryItems = authQueryItems() + parameters
+        let auth = stableMediaAuth ? mediaAuthQueryItems() : authQueryItems()
+        components.queryItems = auth + parameters
         return components.url
     }
 
@@ -212,7 +238,11 @@ final class SubsonicClient {
                               parameters: [URLQueryItem(name: "id", value: id)])
     }
 
-    // MARK: - Ratings & scrobbling
+    // MARK: - Ratings, stars & scrobbling
+
+    func starred() async throws -> Starred2Payload.Starred2 {
+        try await request(Starred2Payload.self, endpoint: "getStarred2").starred2
+    }
 
     /// rating: 1...5, or 0 to clear.
     func setRating(id: String, rating: Int) async throws {
@@ -220,6 +250,16 @@ final class SubsonicClient {
             URLQueryItem(name: "id", value: id),
             URLQueryItem(name: "rating", value: String(rating)),
         ])
+    }
+
+    func star(id: String) async throws {
+        _ = try await request(EmptyPayload.self, endpoint: "star",
+                              parameters: [URLQueryItem(name: "id", value: id)])
+    }
+
+    func unstar(id: String) async throws {
+        _ = try await request(EmptyPayload.self, endpoint: "unstar",
+                              parameters: [URLQueryItem(name: "id", value: id)])
     }
 
     func scrobble(id: String, submission: Bool) async throws {
@@ -240,17 +280,20 @@ final class SubsonicClient {
     // MARK: - Media URLs
 
     /// Streaming URL. `format=raw` asks Navidrome for the original (lossless)
-    /// bytes with no transcoding.
+    /// bytes with no transcoding. Uses session-stable auth so AVPlayer isn't
+    /// handed a new URL on every SwiftUI redraw.
     func streamURL(songId: String) -> URL? {
         endpointURL("stream", parameters: [
             URLQueryItem(name: "id", value: songId),
             URLQueryItem(name: "format", value: "raw"),
-        ])
+        ], stableMediaAuth: true)
     }
 
     /// Original-file download URL (no transcoding ever happens on this one).
     func downloadURL(songId: String) -> URL? {
-        endpointURL("download", parameters: [URLQueryItem(name: "id", value: songId)])
+        endpointURL("download", parameters: [
+            URLQueryItem(name: "id", value: songId),
+        ], stableMediaAuth: true)
     }
 
     func coverArtURL(id: String?, size: Int = 600) -> URL? {
@@ -258,6 +301,6 @@ final class SubsonicClient {
         return endpointURL("getCoverArt", parameters: [
             URLQueryItem(name: "id", value: id),
             URLQueryItem(name: "size", value: String(size)),
-        ])
+        ], stableMediaAuth: true)
     }
 }

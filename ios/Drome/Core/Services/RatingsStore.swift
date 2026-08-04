@@ -1,8 +1,6 @@
 import Foundation
 
-/// Client-side overlay of track ratings. Server objects carry `userRating`,
-/// but after the user rates something we need every view (and the shuffle
-/// weighting) to see the new value immediately without refetching.
+/// Client-side overlay of track ratings (Subsonic `setRating`).
 @MainActor
 final class RatingsStore: ObservableObject {
     @Published private(set) var ratings: [String: Int] = [:]
@@ -14,8 +12,6 @@ final class RatingsStore: ObservableObject {
         self.client = client
     }
 
-    /// Seed the overlay from freshly fetched songs (server values win only
-    /// when we have no local overlay yet).
     func ingest(_ songs: [Song]) {
         for song in songs {
             if let serverRating = song.userRating, ratings[song.id] == nil {
@@ -32,8 +28,6 @@ final class RatingsStore: ObservableObject {
         ratings[id] ?? 0
     }
 
-    /// Sets the rating (0 clears), syncs to the server, and triggers the
-    /// automatic Out of Rotation logic.
     func setRating(_ rating: Int, for song: Song) async {
         let previous = self.rating(for: song)
         ratings[song.id] = rating

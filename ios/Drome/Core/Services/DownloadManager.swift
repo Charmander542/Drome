@@ -206,7 +206,7 @@ private final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegat
             try FileManager.default.moveItem(at: location, to: destination)
             let size = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int64) ?? 0
             Task { @MainActor [weak manager] in
-                manager?.handleFinished(songId: songId, relPath: relPath, fileSize: size ?? 0)
+                manager?.handleFinished(songId: songId, relPath: relPath, fileSize: size)
             }
         } catch {
             Task { @MainActor [weak manager] in manager?.handleFailed(songId: songId) }

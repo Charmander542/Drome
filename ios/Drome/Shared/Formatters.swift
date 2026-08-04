@@ -12,7 +12,8 @@ enum Formatters {
     }
 
     static func playbackTime(_ time: TimeInterval) -> String {
-        duration(seconds: max(0, Int(time.rounded())))
+        guard time.isFinite, !time.isNaN else { return "0:00" }
+        return duration(seconds: max(0, Int(time.rounded(.down))))
     }
 
     static func longDuration(seconds: Int) -> String {

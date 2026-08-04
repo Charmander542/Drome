@@ -39,6 +39,7 @@ struct RemoteImage: View {
     var placeholderSymbol: String = "music.note"
 
     @State private var image: UIImage?
+    @State private var loadedURL: URL?
 
     var body: some View {
         ZStack {
@@ -48,7 +49,6 @@ struct RemoteImage: View {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .transition(.opacity)
             } else {
                 Image(systemName: placeholderSymbol)
                     .font(.title2)
@@ -57,9 +57,21 @@ struct RemoteImage: View {
         }
         .clipped()
         .task(id: url) {
-            image = nil
-            guard let url else { return }
-            image = await ImageLoader.shared.image(for: url)
+            guard let url else {
+                image = nil
+                loadedURL = nil
+                return
+            }
+            // Keep the previous image on screen while a new URL loads so the
+            // layout never flashes empty on every redraw.
+            if loadedURL == url, image != nil { return }
+            if let cached = await ImageLoader.shared.image(for: url) {
+                image = cached
+                loadedURL = url
+            } else if loadedURL != url {
+                image = nil
+                loadedURL = nil
+            }
         }
     }
 }

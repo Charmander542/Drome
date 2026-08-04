@@ -68,14 +68,28 @@ final class RotationManager: ObservableObject {
     }
 
     func add(_ song: Song, manual: Bool) async {
+        await addAll([song], manual: manual)
+    }
+
+    /// Bulk-add tracks to Out of Rotation (e.g. whole playlist).
+    func addAll(_ songs: [Song], manual: Bool) async {
+        let unique = songs.filter { !songIDs.contains($0.id) }
+        guard !unique.isEmpty else { return }
         do {
             let playlistID = try await ensurePlaylistID()
-            if !songIDs.contains(song.id) {
-                try await client.updatePlaylist(id: playlistID, addSongIds: [song.id])
-                songIDs.insert(song.id)
+            var index = 0
+            while index < unique.count {
+                let end = min(index + 40, unique.count)
+                let chunk = Array(unique[index..<end])
+                try await client.updatePlaylist(id: playlistID, addSongIds: chunk.map(\.id))
+                for song in chunk {
+                    songIDs.insert(song.id)
+                    try? database.setRotationOverride(
+                        userKey: userKey, songId: song.id,
+                        kind: manual ? "manual_add" : "auto")
+                }
+                index = end
             }
-            try? database.setRotationOverride(userKey: userKey, songId: song.id,
-                                              kind: manual ? "manual_add" : "auto")
         } catch {}
     }
 

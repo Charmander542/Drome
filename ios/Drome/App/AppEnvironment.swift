@@ -27,6 +27,7 @@ final class AppEnvironment: ObservableObject {
         session?.teardown()
         session = AppSession(account: account, password: password, database: database)
         accounts.setActive(account)
+        NotificationCenter.default.post(name: .dromeSessionChanged, object: nil)
     }
 
     func signIn(account: Account, password: String) {
@@ -38,6 +39,7 @@ final class AppEnvironment: ObservableObject {
         session?.teardown()
         session = nil
         accounts.setActive(nil)
+        NotificationCenter.default.post(name: .dromeSessionChanged, object: nil)
     }
 
     func remove(_ account: Account) {
@@ -48,6 +50,8 @@ final class AppEnvironment: ObservableObject {
         accounts.remove(account)
         if let next = accounts.activeAccount {
             activate(next)
+        } else {
+            NotificationCenter.default.post(name: .dromeSessionChanged, object: nil)
         }
     }
 }

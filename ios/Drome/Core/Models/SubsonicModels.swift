@@ -59,6 +59,8 @@ struct Song: Codable, Identifiable, Hashable {
     var path: String?
     var playCount: Int?
     var userRating: Int?
+    /// Present (usually an ISO date) when the current user has starred the track.
+    var starred: String?
     var created: String?
 
     var durationText: String {
@@ -245,6 +247,18 @@ struct SongsByGenrePayload: Decodable { var songsByGenre: SongList }
 struct RandomSongsPayload: Decodable { var randomSongs: SongList }
 struct SimilarSongs2Payload: Decodable { var similarSongs2: SongList }
 struct TopSongsPayload: Decodable { var topSongs: SongList }
+struct Starred2Payload: Decodable {
+    struct Starred2: Decodable {
+        var artist: [Artist]?
+        var album: [Album]?
+        var song: [Song]?
+
+        var artists: [Artist] { artist ?? [] }
+        var albums: [Album] { album ?? [] }
+        var songs: [Song] { song ?? [] }
+    }
+    var starred2: Starred2
+}
 struct Search3Payload: Decodable { var searchResult3: SearchResult3 }
 struct PlaylistsPayload: Decodable {
     struct List: Decodable { var playlist: [Playlist]? }

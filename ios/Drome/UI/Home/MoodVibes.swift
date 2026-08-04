@@ -1,0 +1,235 @@
+import SwiftUI
+
+/// "I'm Feeling Lucky" style mood capsules for the home screen.
+enum MoodVibe: String, CaseIterable, Identifiable {
+    case chill
+    case hype
+    case lateNight
+    case feelGood
+    case focus
+    case heartbreak
+    case lucky
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .chill: return "Chill"
+        case .hype: return "Hype"
+        case .lateNight: return "Late Night"
+        case .feelGood: return "Feel-Good"
+        case .focus: return "Focus"
+        case .heartbreak: return "Heartbreak"
+        case .lucky: return "I'm Feeling Lucky"
+        }
+    }
+
+    var blurb: String {
+        switch self {
+        case .chill: return "Soft edges, low lights"
+        case .hype: return "Go full send"
+        case .lateNight: return "Headphones at 1am"
+        case .feelGood: return "Windows-down energy"
+        case .focus: return "Get in the zone"
+        case .heartbreak: return "Feel it fully"
+        case .lucky: return "Surprise me"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .chill: return "leaf.fill"
+        case .hype: return "bolt.fill"
+        case .lateNight: return "moon.stars.fill"
+        case .feelGood: return "sun.max.fill"
+        case .focus: return "brain.head.profile"
+        case .heartbreak: return "heart.fill"
+        case .lucky: return "dice.fill"
+        }
+    }
+
+    /// Gradient pair for the card.
+    var colors: [Color] {
+        switch self {
+        case .chill: return [Color(red: 0.20, green: 0.55, blue: 0.62), Color(red: 0.10, green: 0.28, blue: 0.40)]
+        case .hype: return [Color(red: 0.95, green: 0.35, blue: 0.20), Color(red: 0.55, green: 0.10, blue: 0.35)]
+        case .lateNight: return [Color(red: 0.25, green: 0.20, blue: 0.65), Color(red: 0.05, green: 0.05, blue: 0.18)]
+        case .feelGood: return [Color(red: 0.98, green: 0.72, blue: 0.20), Color(red: 0.90, green: 0.35, blue: 0.25)]
+        case .focus: return [Color(red: 0.25, green: 0.45, blue: 0.85), Color(red: 0.12, green: 0.18, blue: 0.40)]
+        case .heartbreak: return [Color(red: 0.75, green: 0.18, blue: 0.35), Color(red: 0.25, green: 0.05, blue: 0.15)]
+        case .lucky: return [Color(red: 0.35, green: 0.70, blue: 0.45), Color(red: 0.15, green: 0.35, blue: 0.55)]
+        }
+    }
+
+    /// Genre strings to try against Navidrome (best-effort; libraries vary).
+    var genreHints: [String] {
+        switch self {
+        case .chill: return ["Ambient", "Chillout", "Downtempo", "Lo-Fi", "LoFi", "Dream Pop", "Soft Rock"]
+        case .hype: return ["Electronic", "Dance", "EDM", "Hip-Hop", "Hip Hop", "Rock", "Metal", "Punk"]
+        case .lateNight: return ["Jazz", "Soul", "R&B", "RnB", "Trip-Hop", "Neo-Soul", "Blues"]
+        case .feelGood: return ["Pop", "Indie", "Funk", "Disco", "Reggae", "Ska"]
+        case .focus: return ["Classical", "Instrumental", "Ambient", "Soundtrack", "Post-Rock", "Minimal"]
+        case .heartbreak: return ["Indie", "Folk", "Singer/Songwriter", "Alternative", "Ballad", "Sadcore"]
+        case .lucky: return []
+        }
+    }
+
+    /// Prefer highly rated tracks for most vibes; lucky is pure chaos.
+    var minimumRatingBias: Bool {
+        self != .lucky && self != .hype
+    }
+}
+
+@MainActor
+enum MoodPlayer {
+    static func play(_ vibe: MoodVibe, session: AppSession) async {
+        let client = session.client
+        let ratings = session.ratings
+        let rotation = session.rotation
+        let excluded = rotation.excludedIDs
+
+        var pool: [Song] = []
+
+        for genre in vibe.genreHints {
+            let batch = (try? await client.songsByGenre(genre, count: 50)) ?? []
+            pool.append(contentsOf: batch)
+            if pool.count >= 60 { break }
+        }
+
+        if pool.count < 25 || vibe == .lucky {
+            pool.append(contentsOf: (try? await client.randomSongs(size: vibe == .lucky ? 100 : 60)) ?? [])
+        }
+
+        pool = pool
+            .filter { !excluded.contains($0.id) }
+            .uniquedByID()
+
+        ratings.ingest(pool)
+
+        if vibe.minimumRatingBias {
+            // Soft preference: keep everything, but shuffle with rating weight.
+            let ordered = ShuffleEngine.weightedShuffle(pool) { ratings.rating(for: $0) }
+            guard !ordered.isEmpty else { return }
+            session.player.shuffleMode = .smart
+            session.player.playShuffled(ordered, context: PlaybackContext(label: vibe.title, kind: .mix))
+        } else if vibe == .hype {
+            // Prefer frequently played / higher energy proxies (play count).
+            let ordered = pool.sorted { ($0.playCount ?? 0) > ($1.playCount ?? 0) }
+            let top = Array(ordered.prefix(max(40, ordered.count / 2))).shuffled()
+            let use = top.isEmpty ? pool.shuffled() : top
+            guard !use.isEmpty else { return }
+            session.player.shuffleMode = .random
+            session.player.playShuffled(use, context: PlaybackContext(label: vibe.title, kind: .mix))
+        } else {
+            // Lucky — true random.
+            let use = pool.shuffled()
+            guard !use.isEmpty else { return }
+            session.player.shuffleMode = .random
+            session.player.playShuffled(use, context: PlaybackContext(label: vibe.title, kind: .mix))
+        }
+    }
+}
+
+struct MoodVibeRail: View {
+    @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var player: PlayerEngine
+
+    @State private var spinning: MoodVibe?
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("What's the vibe?")
+                        .font(DromeTheme.headlineFont)
+                    Text("Pick a mood — we'll roll the dice on your library.")
+                        .font(.caption)
+                        .foregroundStyle(DromeTheme.muted)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(MoodVibe.allCases) { vibe in
+                        Button {
+                            Task { await start(vibe) }
+                        } label: {
+                            MoodVibeCard(vibe: vibe, isSpinning: spinning == vibe)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(spinning != nil)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+
+            if let error {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 16)
+            }
+        }
+    }
+
+    private func start(_ vibe: MoodVibe) async {
+        error = nil
+        spinning = vibe
+        defer { spinning = nil }
+        await MoodPlayer.play(vibe, session: session)
+        if player.current == nil {
+            error = "Couldn't find tracks for that vibe — try another, or add more music."
+        }
+    }
+}
+
+private struct MoodVibeCard: View {
+    let vibe: MoodVibe
+    let isSpinning: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: vibe.symbol)
+                    .font(.title3.weight(.bold))
+                Spacer()
+                if isSpinning {
+                    ProgressView()
+                        .tint(.white)
+                } else if vibe == .lucky {
+                    Image(systemName: "sparkles")
+                        .font(.caption.weight(.bold))
+                        .opacity(0.85)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Text(vibe.title)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
+            Text(vibe.blurb)
+                .font(.caption)
+                .foregroundStyle(Color.white.opacity(0.8))
+                .lineLimit(2)
+        }
+        .padding(14)
+        .frame(width: vibe == .lucky ? 168 : 148, height: 128, alignment: .leading)
+        .background(
+            LinearGradient(colors: vibe.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        }
+        .shadow(color: vibe.colors.first?.opacity(0.35) ?? .clear, radius: 12, y: 6)
+        .scaleEffect(isSpinning ? 0.97 : 1)
+        .animation(.easeInOut(duration: 0.15), value: isSpinning)
+    }
+}

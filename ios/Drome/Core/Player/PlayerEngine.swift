@@ -52,6 +52,8 @@ final class PlayerEngine: ObservableObject {
     /// The full source collection, used for repeat-all wraparound.
     private var fullContextSongs: [Song] = []
     private var isRebuilding = false
+    private var seekEpoch = 0
+    private var appliedSeekEpoch = 0
     private var autoplayTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
     private var timeObserver: Any?
@@ -149,11 +151,23 @@ final class PlayerEngine: ObservableObject {
     }
 
     func next() {
-        guard let upNext = peekUpcoming(limit: 1).first else {
+        guard peekUpcoming(limit: 1).first != nil else {
             // Queue exhausted: jump to the end of the current track.
             player.seek(to: CMTime(seconds: duration, preferredTimescale: 600))
             return
         }
+        // Prefer advancing the preloaded AVQueuePlayer window so bookkeeping
+        // stays in `handleCurrentItemChange` (one code path for skip + gapless).
+        if window.count > 1 {
+            player.advanceToNextItem()
+            // KVO usually handles this; sync immediately if the publisher hasn't.
+            if let item = player.currentItem {
+                handleCurrentItemChange(item)
+            }
+            maybeExtendWithAutoplay()
+            return
+        }
+        guard let upNext = peekUpcoming(limit: 1).first else { return }
         if let current {
             history.append(current)
             scrobbleSubmission(current.song)
@@ -163,12 +177,17 @@ final class PlayerEngine: ObservableObject {
         maybeExtendWithAutoplay()
     }
 
-    func previous() {
-        if elapsed > 3 || history.isEmpty {
+    func previous(preferPreviousTrack: Bool = false) {
+        // Hardware / lock-screen previous: restart if we're >3s into the track.
+        if !preferPreviousTrack && elapsed > 3 {
             seek(to: 0)
             return
         }
-        guard let prev = history.popLast() else { return }
+        // Art-swipe / explicit "go back": always the last played song — never restart.
+        guard let prev = history.popLast() else {
+            if !preferPreviousTrack { seek(to: 0) }
+            return
+        }
         if let current {
             contextQueue.insert(current, at: 0)
         }
@@ -176,10 +195,68 @@ final class PlayerEngine: ObservableObject {
     }
 
     func seek(to time: TimeInterval) {
-        let target = CMTime(seconds: min(max(0, time), duration), preferredTimescale: 600)
-        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
-        elapsed = time
+        guard let item = player.currentItem else {
+            elapsed = max(0, time)
+            pushNowPlayingInfo()
+            return
+        }
+
+        let itemDuration: TimeInterval = {
+            let live = item.duration.seconds
+            if live.isFinite, live > 0 { return live }
+            if duration.isFinite, duration > 0 { return duration }
+            return max(time, 0)
+        }()
+
+        // Seeking exactly to duration often stalls the item without advancing.
+        let maxSeekable = max(0, itemDuration - 0.35)
+        var seconds = min(max(0, time), maxSeekable)
+
+        if let range = item.seekableTimeRanges.last?.timeRangeValue {
+            let start = range.start.seconds
+            let end = CMTimeRangeGetEnd(range).seconds
+            if start.isFinite, end.isFinite, end > start {
+                seconds = min(max(seconds, start), max(start, end - 0.35))
+            }
+        }
+
+        let target = CMTime(seconds: seconds, preferredTimescale: 600)
+        seekEpoch += 1
+        let epoch = seekEpoch
+        let shouldResume = player.timeControlStatus == .playing
+            || player.rate > 0
+            || isPlaying
+
+        // Zero-tolerance seeks frequently no-op on Navidrome HTTP streams.
+        let slack = CMTime(seconds: 1.0, preferredTimescale: 600)
+        player.seek(to: target, toleranceBefore: slack, toleranceAfter: slack) { [weak self] finished in
+            Task { @MainActor [weak self] in
+                guard let self, self.seekEpoch == epoch else { return }
+                self.appliedSeekEpoch = epoch
+                let actual = self.player.currentTime().seconds
+                self.elapsed = (actual.isFinite && actual >= 0) ? actual : seconds
+                if let itemDuration = self.player.currentItem?.duration.seconds,
+                   itemDuration.isFinite, itemDuration > 0 {
+                    self.duration = itemDuration
+                }
+                self.pushNowPlayingInfo()
+                if finished, shouldResume {
+                    self.activateAudioSession()
+                    self.player.play()
+                }
+            }
+        }
+
+        elapsed = seconds
         pushNowPlayingInfo()
+    }
+
+    /// High-resolution playhead for karaoke / scrubber UIs. Prefer this over
+    /// the throttled `elapsed` publish when you need frame-smooth updates.
+    func accurateElapsed() -> TimeInterval {
+        let seconds = player.currentTime().seconds
+        guard seconds.isFinite, seconds >= 0 else { return elapsed }
+        return seconds
     }
 
     func cycleShuffleMode() {
@@ -255,6 +332,18 @@ final class PlayerEngine: ObservableObject {
     func removeContextQueueItems(at offsets: IndexSet) {
         contextQueue.remove(atOffsets: offsets)
         resyncUpcomingWindow()
+    }
+
+    func removeFromQueue(_ item: QueueItem) {
+        if let idx = userQueue.firstIndex(where: { $0.id == item.id }) {
+            userQueue.remove(at: idx)
+            resyncUpcomingWindow()
+            return
+        }
+        if let idx = contextQueue.firstIndex(where: { $0.id == item.id }) {
+            contextQueue.remove(at: idx)
+            resyncUpcomingWindow()
+        }
     }
 
     func clearQueue() {
@@ -364,12 +453,17 @@ final class PlayerEngine: ObservableObject {
             .store(in: &cancellables)
 
         timeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
+            forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
             queue: .main
         ) { [weak self] time in
-            MainActor.assumeIsolated {
+            Task { @MainActor [weak self] in
                 guard let self, !self.isRebuilding else { return }
-                self.elapsed = max(0, time.seconds)
+                // While a seek is in flight, keep the optimistic playhead until
+                // the completion handler settles on the real position.
+                guard self.seekEpoch == self.appliedSeekEpoch else { return }
+                let seconds = time.seconds
+                guard seconds.isFinite, seconds >= 0 else { return }
+                self.elapsed = seconds
                 if let itemDuration = self.player.currentItem?.duration.seconds,
                    itemDuration.isFinite, itemDuration > 0 {
                     self.duration = itemDuration
@@ -408,12 +502,19 @@ final class PlayerEngine: ObservableObject {
     private func handleCurrentItemChange(_ item: AVPlayerItem?) {
         guard !isRebuilding else { return }
         guard let item else {
-            handleQueueExhausted()
+            // Gapless handoffs often emit a transient `nil` currentItem while
+            // the next buffer is already playing. Treating that as "exhausted"
+            // cleared our window and left the UI stuck on the previous track.
+            if player.items().isEmpty {
+                handleQueueExhausted()
+            }
             return
         }
-        guard let index = window.firstIndex(where: { $0.playerItem === item }), index > 0 else {
+        guard let index = window.firstIndex(where: { $0.playerItem === item }) else {
             return
         }
+        guard index > 0 else { return }
+
         for finished in window[..<index] {
             history.append(finished.queueItem)
             scrobbleSubmission(finished.queueItem.song)
@@ -421,9 +522,12 @@ final class PlayerEngine: ObservableObject {
         let newCurrent = window[index].queueItem
         window.removeFirst(index)
         consumeFromQueues(newCurrent)
+        // Assign a fresh value so SwiftUI always observes the change even if
+        // song metadata happens to compare equal.
         current = newCurrent
         elapsed = 0
         duration = TimeInterval(newCurrent.song.duration ?? 0)
+        isPlaying = player.timeControlStatus == .playing
         topUpWindow()
         pushNowPlayingInfo()
         scrobbleNowPlaying(newCurrent.song)
