@@ -1,0 +1,24 @@
+# macOS
+.DS_Store
+
+# Xcode
+ios/.dd/
+ios/build/
+*.xcuserdatad/
+xcuserdata/
+DerivedData/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Go
+.gopath/
+server/bin/
+server/drome-server
+server/*.db
+server/*.db-*
+server/data/
+
+# Local env / secrets
+.env

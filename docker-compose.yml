@@ -1,0 +1,36 @@
+# Example deployment: Navidrome + the Drome companion (wishlist) server.
+# Adjust volumes/paths for your host. The companion server verifies every
+# request against Navidrome, so they must be able to reach each other.
+services:
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    restart: unless-stopped
+    ports:
+      - "4533:4533"
+    environment:
+      ND_SCANSCHEDULE: 1h
+      ND_ENABLESHARING: "true"
+    volumes:
+      - ./data/navidrome:/data
+      - /path/to/your/music:/music:ro
+
+  drome-server:
+    build: ./server
+    container_name: drome-server
+    restart: unless-stopped
+    ports:
+      - "4534:4534"
+    environment:
+      # Where the companion server can reach Navidrome (container-to-container).
+      DROME_NAVIDROME_URL: http://navidrome:4533
+      # Spotify client-credentials app (create one at developer.spotify.com).
+      # These never leave the server; the iOS app only pastes links.
+      DROME_SPOTIFY_CLIENT_ID: ${DROME_SPOTIFY_CLIENT_ID}
+      DROME_SPOTIFY_CLIENT_SECRET: ${DROME_SPOTIFY_CLIENT_SECRET}
+      DROME_DB_PATH: /data/drome.db
+      DROME_LISTEN_ADDR: :4534
+    volumes:
+      - ./data/drome-server:/data
+    depends_on:
+      - navidrome
