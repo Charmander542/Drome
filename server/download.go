@@ -162,14 +162,16 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 		return
 	}
 
-	if err := w.store.setAcquired(e.ID, true); err != nil {
-		logf("mark acquired id=%d: %v", e.ID, err)
-	}
-	_ = w.store.setStatus(e.ID, statusDone, "")
-	logf("download done id=%d", e.ID)
-
+	logf("download done id=%d — removing from wishlist", e.ID)
 	if err := w.triggerScan(parent); err != nil {
 		logf("navidrome scan trigger: %v (library will pick up on next scheduled scan)", err)
+	}
+	// Leave the wishlist once the file is in the music library; Home’s
+	// “New in your library” rail is driven by Navidrome’s newest albums.
+	if err := w.store.delete(e.ID); err != nil {
+		logf("delete completed wishlist entry id=%d: %v", e.ID, err)
+		_ = w.store.setAcquired(e.ID, true)
+		_ = w.store.setStatus(e.ID, statusDone, "")
 	}
 }
 

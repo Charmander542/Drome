@@ -9,6 +9,8 @@ struct ArtistDetailView: View {
 
     @State private var artist: ArtistWithAlbums?
     @State private var topSongs: [Song] = []
+    /// Broader set of library tracks for this artist (for Spotify missing filter).
+    @State private var ownedSongs: [Song] = []
     @State private var error: String?
     @State private var isLoading = true
 
@@ -65,7 +67,11 @@ struct ArtistDetailView: View {
                 }
             }
 
-            SpotifyRecommendSection(query: "artist:\(artist.name)")
+            SpotifyMissingTracksSection(
+                buttonTitle: "Find popular songs you don’t have",
+                query: "artist:\"\(artist.name)\"",
+                ownedSongs: ownedSongs
+            )
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -93,6 +99,23 @@ struct ArtistDetailView: View {
             artist = loaded
             topSongs = (try? await session.client.topSongs(artistName: loaded.name, count: 10)) ?? []
             session.ratings.ingest(topSongs)
+
+            // Pull a wider artist song sample so “missing on Spotify” filtering
+            // doesn’t only know about the top-5 popular list.
+            let search = try? await session.client.search(
+                loaded.name, artistCount: 0, albumCount: 0, songCount: 50)
+            var byID: [String: Song] = [:]
+            for song in topSongs { byID[song.id] = song }
+            for song in search?.songs ?? [] {
+                let artistMatch = song.displayArtist
+                    .localizedCaseInsensitiveContains(loaded.name)
+                    || (song.artist?.localizedCaseInsensitiveContains(loaded.name) ?? false)
+                if artistMatch {
+                    byID[song.id] = song
+                }
+            }
+            ownedSongs = Array(byID.values)
+            session.ratings.ingest(ownedSongs)
         } catch {
             self.error = error.localizedDescription
         }

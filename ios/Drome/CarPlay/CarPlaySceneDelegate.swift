@@ -11,9 +11,10 @@ import UIKit
 /// - Now Playing (system template) with shuffle / repeat / autoplay buttons
 /// - Lock-screen / CarPlay transport via `MPNowPlayingInfoCenter`
 ///
-/// Real cars require the `com.apple.developer.carplay-audio` entitlement
-/// (provisioned by Apple for App Store / special CarPlay audio approval).
-/// The iOS Simulator CarPlay window works for UI bring-up without that.
+/// Real cars require Apple-approved `com.apple.developer.carplay-audio`
+/// entitlement (request via developer.apple.com). It is intentionally omitted
+/// from Drome.entitlements so normal development signing works; the Simulator
+/// CarPlay window still brings up this UI without that entitlement.
 @MainActor
 final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
     private var interfaceController: CPInterfaceController?

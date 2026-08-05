@@ -157,8 +157,8 @@ func (s *server) handleDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // PATCH /wishlist/{id}  body: {"acquired": true}
-// Extension point: more mutable fields can be added here later (v2 will use
-// this to auto-flag entries that have appeared in the Navidrome library).
+// Marking acquired removes the entry from the wishlist (file should already
+// be — or will soon be — in the Navidrome library / “New in your library”).
 func (s *server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	e := s.ownedEntry(w, r)
 	if e == nil {
@@ -171,11 +171,19 @@ func (s *server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "body must be JSON with an \"acquired\" boolean")
 		return
 	}
-	if err := s.store.setAcquired(e.ID, *body.Acquired); err != nil {
+	if *body.Acquired {
+		if err := s.store.delete(e.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err := s.store.setAcquired(e.ID, false); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	e.Acquired = *body.Acquired
+	e.Acquired = false
 	writeJSON(w, http.StatusOK, e)
 }
 
@@ -190,7 +198,7 @@ func (s *server) handleRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if e.Acquired {
-		writeError(w, http.StatusConflict, "entry is already marked acquired")
+		writeError(w, http.StatusConflict, "entry was already downloaded and removed from the wishlist")
 		return
 	}
 	if err := s.store.setStatus(e.ID, statusQueued, ""); err != nil {

@@ -139,7 +139,9 @@ func (s *wishlistStore) listFor(user string) ([]entry, error) {
 		FROM entries e
 		LEFT JOIN entry_shares es ON es.entry_id = e.id
 		LEFT JOIN list_shares ls ON ls.owner = e.owner
-		WHERE e.owner = ? OR es.username = ? OR ls.username = ?
+		WHERE (e.owner = ? OR es.username = ? OR ls.username = ?)
+		  AND e.acquired = 0
+		  AND e.status NOT IN ('done')
 		ORDER BY e.created_at DESC, e.id DESC`,
 		user, user, user)
 	if err != nil {
@@ -215,12 +217,22 @@ func (s *wishlistStore) delete(id int64) error {
 }
 
 func (s *wishlistStore) setAcquired(id int64, acquired bool) error {
-	v := 0
 	if acquired {
-		v = 1
+		// “Got it” / downloaded — drop from the active wishlist.
+		return s.delete(id)
 	}
-	_, err := s.db.Exec(`UPDATE entries SET acquired = ? WHERE id = ?`, v, id)
+	_, err := s.db.Exec(`UPDATE entries SET acquired = 0 WHERE id = ?`, id)
 	return err
+}
+
+// purgeCompleted removes historically acquired / done rows so they no longer
+// clutter the wishlist UI after the “leave on download” behavior shipped.
+func (s *wishlistStore) purgeCompleted() (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM entries WHERE acquired = 1 OR status = 'done'`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (s *wishlistStore) setStatus(id int64, status, msg string) error {

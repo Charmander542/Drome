@@ -186,7 +186,6 @@ struct WishlistView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.title)
                     .font(DromeTheme.rowTitle)
-                    .strikethrough(entry.acquired)
                 Text([entry.artist, entry.album].filter { !$0.isEmpty }.joined(separator: " · "))
                     .font(.caption)
                     .foregroundStyle(DromeTheme.muted)
@@ -208,7 +207,7 @@ struct WishlistView: View {
                     .foregroundStyle(DromeTheme.muted)
             }
         }
-        .opacity(entry.acquired ? 0.55 : 1)
+        .opacity(1)
         .listRowBackground(DromeTheme.background)
         .swipeActions(edge: .trailing) {
             if entry.owner == session.account.username {
@@ -224,8 +223,7 @@ struct WishlistView: View {
                 Button {
                     Task { await toggleAcquired(entry) }
                 } label: {
-                    Label(entry.acquired ? "Uncheck" : "Got it",
-                          systemImage: entry.acquired ? "arrow.uturn.backward" : "checkmark")
+                    Label("Got it", systemImage: "checkmark")
                 }
                 .tint(DromeTheme.accent)
                 Button {
@@ -346,11 +344,9 @@ struct WishlistView: View {
 
     private func toggleAcquired(_ entry: WishlistEntry) async {
         guard let client = session.wishlist else { return }
-        let next = !entry.acquired
-        try? await client.setAcquired(id: entry.id, acquired: next)
-        if let idx = entries.firstIndex(where: { $0.id == entry.id }) {
-            entries[idx].acquired = next
-        }
+        // “Got it” removes the row — downloads already do this automatically.
+        try? await client.setAcquired(id: entry.id, acquired: true)
+        entries.removeAll { $0.id == entry.id }
     }
 
     private func share(_ entry: WishlistEntry, with user: String) async {

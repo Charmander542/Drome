@@ -35,6 +35,9 @@ struct SearchView: View {
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .focused($searchFocused)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                searchControls
+            }
             .onChange(of: query) { _, newValue in
                 scheduleSearch(newValue)
             }
@@ -45,31 +48,38 @@ struct SearchView: View {
                 scheduleSearch(query)
             }
             .onAppear { recentItems = RecentSearchesStore.load() }
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Picker("Source", selection: $source) {
-                        ForEach(Source.allCases, id: \.self) { s in
-                            Text(s.rawValue).tag(s)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 220)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    if source == .library {
-                        Button {
-                            includeLyrics.toggle()
-                            scheduleSearch(query)
-                        } label: {
-                            Image(systemName: includeLyrics ? "text.quote" : "text.quote")
-                                .symbolVariant(includeLyrics ? .fill : .none)
-                                .foregroundStyle(includeLyrics ? DromeTheme.accent : Color.white.opacity(0.7))
-                        }
-                        .accessibilityLabel(includeLyrics ? "Lyrics search on" : "Lyrics search off")
-                    }
+            .scrollDismissesKeyboard(.interactively)
+    }
+
+    /// Stays visible while the search field is focused (unlike nav toolbar items).
+    private var searchControls: some View {
+        HStack(spacing: 12) {
+            Picker("Source", selection: $source) {
+                ForEach(Source.allCases, id: \.self) { s in
+                    Text(s.rawValue).tag(s)
                 }
             }
-            .scrollDismissesKeyboard(.interactively)
+            .pickerStyle(.segmented)
+
+            if source == .library {
+                Button {
+                    includeLyrics.toggle()
+                    scheduleSearch(query)
+                } label: {
+                    Image(systemName: "text.quote")
+                        .symbolVariant(includeLyrics ? .fill : .none)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(includeLyrics ? DromeTheme.accent : Color.white.opacity(0.7))
+                        .frame(width: 36, height: 36)
+                        .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .accessibilityLabel(includeLyrics ? "Lyrics search on" : "Lyrics search off")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(DromeTheme.background.opacity(0.94))
     }
 
     @ViewBuilder

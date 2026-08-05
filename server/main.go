@@ -61,6 +61,12 @@ func main() {
 	}
 	defer store.Close()
 
+	if n, err := store.purgeCompleted(); err != nil {
+		log.Printf("purge completed wishlist rows: %v", err)
+	} else if n > 0 {
+		log.Printf("purged %d completed wishlist entries (now live in the library)", n)
+	}
+
 	spotify := newSpotifyClient(cfg.SpotifyClientID, cfg.SpotifyClientSecret, cfg.SpotifyMarket)
 	if spotify.hasAPICreds() {
 		log.Printf("spotify metadata: Web API (client credentials)")

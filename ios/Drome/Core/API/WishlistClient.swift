@@ -129,7 +129,8 @@ struct DromeWishlistClient {
 
     func setAcquired(id: Int64, acquired: Bool) async throws {
         struct Body: Encodable { var acquired: Bool }
-        _ = try await send(WishlistEntry.self, path: "/wishlist/\(id)", method: "PATCH",
+        // Acquired=true deletes the row (204). Treat empty / no-content as success.
+        _ = try await send(EmptyWishlistResponse.self, path: "/wishlist/\(id)", method: "PATCH",
                            body: Body(acquired: acquired))
     }
 

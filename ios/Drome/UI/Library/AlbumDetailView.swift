@@ -57,7 +57,11 @@ struct AlbumDetailView: View {
                 }
             }
 
-            SpotifyRecommendSection(query: "\(album.artist ?? "") \(album.name)")
+            SpotifyMissingTracksSection(
+                buttonTitle: "Find songs on this album you’re missing",
+                query: spotifyAlbumQuery(album),
+                ownedSongs: album.songs
+            )
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -207,5 +211,14 @@ struct AlbumDetailView: View {
             album = current
             self.error = error.localizedDescription
         }
+    }
+
+    private func spotifyAlbumQuery(_ album: AlbumWithSongs) -> String {
+        let name = album.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let artist = (album.artist ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if artist.isEmpty {
+            return "album:\"\(name)\""
+        }
+        return "album:\"\(name)\" artist:\"\(artist)\""
     }
 }
