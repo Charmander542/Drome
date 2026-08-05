@@ -22,6 +22,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	// Single authenticated Spotify search — returns {"results":[...]} for iOS.
 	mux.HandleFunc("GET /spotify/search", s.requireAuth(s.handleSearch))
 	mux.HandleFunc("POST /wishlist", s.requireAuth(s.handleCreate))
 	mux.HandleFunc("GET /wishlist", s.requireAuth(s.handleList))
@@ -30,7 +31,6 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /wishlist/{id}/retry", s.requireAuth(s.handleRetry))
 	mux.HandleFunc("POST /wishlist/{id}/share", s.requireAuth(s.handleShareEntry))
 	mux.HandleFunc("POST /wishlist/share", s.requireAuth(s.handleShareList))
-	mux.HandleFunc("GET /spotify/search", s.requireAuth(s.handleSpotifySearch))
 	return logRequests(mux)
 }
 
@@ -252,33 +252,6 @@ func (s *server) handleShareList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// GET /spotify/search?q=...&limit=20
-func (s *server) handleSpotifySearch(w http.ResponseWriter, r *http.Request) {
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	if q == "" {
-		writeError(w, http.StatusBadRequest, "q query parameter is required")
-		return
-	}
-	limit := 20
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 {
-			writeError(w, http.StatusBadRequest, "limit must be a positive integer")
-			return
-		}
-		limit = n
-	}
-	results, err := s.spotify.searchTracks(r.Context(), q, limit)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "spotify search failed: "+err.Error())
-		return
-	}
-	if results == nil {
-		results = []spotifySearchResult{}
-	}
-	writeJSON(w, http.StatusOK, results)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
