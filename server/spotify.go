@@ -20,6 +20,7 @@ import (
 type spotifyClient struct {
 	clientID     string
 	clientSecret string
+	market       string
 	http         *http.Client
 
 	mu          sync.Mutex
@@ -27,10 +28,14 @@ type spotifyClient struct {
 	tokenExpiry time.Time
 }
 
-func newSpotifyClient(id, secret string) *spotifyClient {
+func newSpotifyClient(id, secret, market string) *spotifyClient {
+	if market == "" {
+		market = "US"
+	}
 	return &spotifyClient{
 		clientID:     id,
 		clientSecret: secret,
+		market:       market,
 		http:         &http.Client{Timeout: 15 * time.Second},
 	}
 }
@@ -136,7 +141,12 @@ func (c *spotifyClient) apiGET(ctx context.Context, path string, out any) error 
 		return fmt.Errorf("spotify resource not found")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("spotify API error: %s", resp.Status)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		detail := strings.TrimSpace(string(body))
+		if detail == "" {
+			return fmt.Errorf("spotify API error: %s", resp.Status)
+		}
+		return fmt.Errorf("spotify API error: %s — %s", resp.Status, detail)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
@@ -339,6 +349,9 @@ type searchHit struct {
 }
 
 // search queries the Spotify Web API. Requires client credentials.
+//
+// Spotify’s Feb 2026 Search changes cap `limit` at 10 and expect a `market`
+// when using client-credentials tokens (no user country on the token).
 func (c *spotifyClient) search(ctx context.Context, query, types string, limit int) ([]searchHit, error) {
 	if !c.hasAPICreds() {
 		return nil, fmt.Errorf("spotify search requires DROME_SPOTIFY_CLIENT_ID and DROME_SPOTIFY_CLIENT_SECRET")
@@ -347,20 +360,22 @@ func (c *spotifyClient) search(ctx context.Context, query, types string, limit i
 	if query == "" {
 		return nil, fmt.Errorf("query is empty")
 	}
-	if types == "" {
-		types = "track,album"
-	}
+	types = normalizeSearchTypes(types)
 	if limit <= 0 {
-		limit = 20
+		limit = 10
 	}
-	if limit > 50 {
-		limit = 50
+	if limit > 10 {
+		limit = 10
+	}
+	if len(query) > 250 {
+		query = query[:250]
 	}
 
 	q := url.Values{}
 	q.Set("q", query)
 	q.Set("type", types)
 	q.Set("limit", fmt.Sprintf("%d", limit))
+	q.Set("market", c.market)
 
 	var body struct {
 		Tracks *struct {
@@ -435,6 +450,43 @@ func (c *spotifyClient) search(ctx context.Context, query, types string, limit i
 		}
 	}
 	return hits, nil
+}
+
+func normalizeSearchTypes(types string) string {
+	types = strings.TrimSpace(strings.ToLower(types))
+	if types == "" {
+		return "track,album"
+	}
+	allowed := map[string]bool{
+		"album": true, "artist": true, "playlist": true,
+		"track": true, "show": true, "episode": true, "audiobook": true,
+	}
+	parts := strings.Split(types, ",")
+	out := make([]string, 0, len(parts))
+	seen := map[string]bool{}
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		// Common mistake: plural forms.
+		switch p {
+		case "tracks":
+			p = "track"
+		case "albums":
+			p = "album"
+		case "artists":
+			p = "artist"
+		case "playlists":
+			p = "playlist"
+		}
+		if !allowed[p] || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return "track,album"
+	}
+	return strings.Join(out, ",")
 }
 
 func firstSubmatch(re *regexp.Regexp, s string) string {

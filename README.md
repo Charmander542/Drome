@@ -29,7 +29,8 @@ Health check: `curl http://127.0.0.1:4534/health`
 | Variable | Purpose |
 |---|---|
 | `DROME_NAVIDROME_URL` | Where this container reaches Navidrome (default `http://navidrome:4533`) |
-| `DROME_SPOTIFY_CLIENT_ID` / `SECRET` | Optional; richer Web API metadata if set |
+| `DROME_SPOTIFY_CLIENT_ID` / `SECRET` | Required for in-app Spotify search; also improves link metadata |
+| `DROME_SPOTIFY_MARKET` | ISO country for Search (default `US`; needed with client-credentials) |
 | `DROME_MUSIC_DIR` | Shared library mount (default `/music`) |
 | `DROME_AUTO_DOWNLOAD` | Queue SpotiFLAC on every wishlist add (`true`/`false`) |
 | `DROME_SPOTIFLAC_SERVICES` | Provider priority, comma-separated |

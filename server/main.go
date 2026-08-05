@@ -27,6 +27,7 @@ type config struct {
 	NavidromeURL        string
 	SpotifyClientID     string
 	SpotifyClientSecret string
+	SpotifyMarket       string
 	DBPath              string
 	Download            downloadConfig
 }
@@ -37,6 +38,7 @@ func configFromEnv() config {
 		NavidromeURL:        envOr("DROME_NAVIDROME_URL", "http://navidrome:4533"),
 		SpotifyClientID:     os.Getenv("DROME_SPOTIFY_CLIENT_ID"),
 		SpotifyClientSecret: os.Getenv("DROME_SPOTIFY_CLIENT_SECRET"),
+		SpotifyMarket:       envOr("DROME_SPOTIFY_MARKET", "US"),
 		DBPath:              envOr("DROME_DB_PATH", "drome.db"),
 		Download:            downloadConfigFromEnv(),
 	}
@@ -59,7 +61,7 @@ func main() {
 	}
 	defer store.Close()
 
-	spotify := newSpotifyClient(cfg.SpotifyClientID, cfg.SpotifyClientSecret)
+	spotify := newSpotifyClient(cfg.SpotifyClientID, cfg.SpotifyClientSecret, cfg.SpotifyMarket)
 	if spotify.hasAPICreds() {
 		log.Printf("spotify metadata: Web API (client credentials)")
 	} else {

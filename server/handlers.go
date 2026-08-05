@@ -43,7 +43,7 @@ func logRequests(next http.Handler) http.Handler {
 	})
 }
 
-// GET /spotify/search?q=...&type=track,album&limit=20
+// GET /spotify/search?q=...&type=track,album&limit=10
 func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if q == "" {
@@ -51,7 +51,7 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	types := r.URL.Query().Get("type")
-	limit := 20
+	limit := 10
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil {
 			limit = n

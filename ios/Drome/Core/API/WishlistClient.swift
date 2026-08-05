@@ -98,7 +98,7 @@ struct DromeWishlistClient {
         return try await send(ListResponse.self, path: "/wishlist", method: "GET").entries
     }
 
-    func search(query: String, types: String = "track,album", limit: Int = 20) async throws -> [SpotifySearchHit] {
+	func search(query: String, types: String = "track,album", limit: Int = 10) async throws -> [SpotifySearchHit] {
         struct SearchResponse: Decodable { var results: [SpotifySearchHit] }
         return try await send(
             SearchResponse.self,
@@ -107,13 +107,13 @@ struct DromeWishlistClient {
             extraQuery: [
                 URLQueryItem(name: "q", value: query),
                 URLQueryItem(name: "type", value: types),
-                URLQueryItem(name: "limit", value: String(limit)),
+                URLQueryItem(name: "limit", value: String(min(max(limit, 1), 10))),
             ]
         ).results
     }
 
     /// Track-only Spotify search used by Search / recommend UIs.
-    func searchSpotify(query: String, limit: Int = 20) async throws -> [SpotifySearchHit] {
+    func searchSpotify(query: String, limit: Int = 10) async throws -> [SpotifySearchHit] {
         try await search(query: query, types: "track", limit: limit)
     }
 
