@@ -23,6 +23,9 @@ type entry struct {
 	Status     string    `json:"status,omitempty"` // queued|downloading|done|failed|skipped
 	StatusMsg  string    `json:"statusMessage,omitempty"`
 	CreatedAt  time.Time `json:"createdAt"`
+	// SourcePlaylistID/Name tag tracks imported from a Spotify playlist.
+	SourcePlaylistID   string `json:"sourcePlaylistId,omitempty"`
+	SourcePlaylistName string `json:"sourcePlaylistName,omitempty"`
 	// SharedWith lists usernames this entry is explicitly shared with
 	// (populated for entries the requester owns).
 	SharedWith []string `json:"sharedWith,omitempty"`
@@ -76,10 +79,12 @@ CREATE INDEX IF NOT EXISTS entries_status_idx ON entries(status, id);`
 		db.Close()
 		return nil, err
 	}
-	// Migrate DBs created before status columns existed.
+	// Migrate DBs created before status / source-playlist columns existed.
 	for _, stmt := range []string{
 		`ALTER TABLE entries ADD COLUMN status TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE entries ADD COLUMN status_msg TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE entries ADD COLUMN source_playlist_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE entries ADD COLUMN source_playlist_name TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -96,11 +101,19 @@ func (s *wishlistStore) insert(e *entry) error {
 		e.Status = statusQueued
 	}
 	res, err := s.db.Exec(`
-		INSERT INTO entries (owner, kind, spotify_id, spotify_url, title, artist, album, cover_url, status, status_msg, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO entries (owner, kind, spotify_id, spotify_url, title, artist, album, cover_url, status, status_msg, source_playlist_id, source_playlist_name, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (owner, kind, spotify_id) DO UPDATE SET
 			title = excluded.title, artist = excluded.artist,
 			album = excluded.album, cover_url = excluded.cover_url,
+			source_playlist_id = CASE
+				WHEN excluded.source_playlist_id != '' THEN excluded.source_playlist_id
+				ELSE entries.source_playlist_id
+			END,
+			source_playlist_name = CASE
+				WHEN excluded.source_playlist_name != '' THEN excluded.source_playlist_name
+				ELSE entries.source_playlist_name
+			END,
 			status = CASE
 				WHEN entries.acquired = 1 OR entries.status IN ('done', 'downloading') THEN entries.status
 				ELSE excluded.status
@@ -110,7 +123,7 @@ func (s *wishlistStore) insert(e *entry) error {
 				ELSE excluded.status_msg
 			END`,
 		e.Owner, e.Kind, e.SpotifyID, e.SpotifyURL, e.Title, e.Artist, e.Album, e.CoverURL,
-		e.Status, e.StatusMsg, e.CreatedAt.UTC().Format(time.RFC3339))
+		e.Status, e.StatusMsg, e.SourcePlaylistID, e.SourcePlaylistName, e.CreatedAt.UTC().Format(time.RFC3339))
 	if err != nil {
 		return err
 	}
@@ -120,8 +133,8 @@ func (s *wishlistStore) insert(e *entry) error {
 	// On upsert LastInsertId can be unreliable; fetch the definitive row id.
 	var acquired int
 	err = s.db.QueryRow(
-		`SELECT id, acquired, status, status_msg FROM entries WHERE owner = ? AND kind = ? AND spotify_id = ?`,
-		e.Owner, e.Kind, e.SpotifyID).Scan(&e.ID, &acquired, &e.Status, &e.StatusMsg)
+		`SELECT id, acquired, status, status_msg, source_playlist_id, source_playlist_name FROM entries WHERE owner = ? AND kind = ? AND spotify_id = ?`,
+		e.Owner, e.Kind, e.SpotifyID).Scan(&e.ID, &acquired, &e.Status, &e.StatusMsg, &e.SourcePlaylistID, &e.SourcePlaylistName)
 	if err != nil {
 		return err
 	}
@@ -135,7 +148,8 @@ func (s *wishlistStore) insert(e *entry) error {
 func (s *wishlistStore) listFor(user string) ([]entry, error) {
 	rows, err := s.db.Query(`
 		SELECT DISTINCT e.id, e.owner, e.kind, e.spotify_id, e.spotify_url,
-		       e.title, e.artist, e.album, e.cover_url, e.acquired, e.status, e.status_msg, e.created_at
+		       e.title, e.artist, e.album, e.cover_url, e.acquired, e.status, e.status_msg,
+		       e.source_playlist_id, e.source_playlist_name, e.created_at
 		FROM entries e
 		LEFT JOIN entry_shares es ON es.entry_id = e.id
 		LEFT JOIN list_shares ls ON ls.owner = e.owner
@@ -155,7 +169,8 @@ func (s *wishlistStore) listFor(user string) ([]entry, error) {
 		var acquired int
 		var createdAt string
 		if err := rows.Scan(&e.ID, &e.Owner, &e.Kind, &e.SpotifyID, &e.SpotifyURL,
-			&e.Title, &e.Artist, &e.Album, &e.CoverURL, &acquired, &e.Status, &e.StatusMsg, &createdAt); err != nil {
+			&e.Title, &e.Artist, &e.Album, &e.CoverURL, &acquired, &e.Status, &e.StatusMsg,
+			&e.SourcePlaylistID, &e.SourcePlaylistName, &createdAt); err != nil {
 			return nil, err
 		}
 		e.Acquired = acquired != 0
@@ -199,10 +214,12 @@ func (s *wishlistStore) get(id int64) (*entry, error) {
 	var acquired int
 	var createdAt string
 	err := s.db.QueryRow(`
-		SELECT id, owner, kind, spotify_id, spotify_url, title, artist, album, cover_url, acquired, status, status_msg, created_at
+		SELECT id, owner, kind, spotify_id, spotify_url, title, artist, album, cover_url, acquired, status, status_msg,
+		       source_playlist_id, source_playlist_name, created_at
 		FROM entries WHERE id = ?`, id).
 		Scan(&e.ID, &e.Owner, &e.Kind, &e.SpotifyID, &e.SpotifyURL,
-			&e.Title, &e.Artist, &e.Album, &e.CoverURL, &acquired, &e.Status, &e.StatusMsg, &createdAt)
+			&e.Title, &e.Artist, &e.Album, &e.CoverURL, &acquired, &e.Status, &e.StatusMsg,
+			&e.SourcePlaylistID, &e.SourcePlaylistName, &createdAt)
 	if err != nil {
 		return nil, err
 	}
@@ -214,6 +231,16 @@ func (s *wishlistStore) get(id int64) (*entry, error) {
 func (s *wishlistStore) delete(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM entries WHERE id = ?`, id)
 	return err
+}
+
+func (s *wishlistStore) deleteBySourcePlaylist(owner, playlistID string) (int64, error) {
+	res, err := s.db.Exec(
+		`DELETE FROM entries WHERE owner = ? AND source_playlist_id = ? AND acquired = 0`,
+		owner, playlistID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (s *wishlistStore) setAcquired(id int64, acquired bool) error {

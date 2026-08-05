@@ -3,65 +3,69 @@ import SwiftUI
 struct QueueView: View {
     @EnvironmentObject private var player: PlayerEngine
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var songNavigator = SongNavigator()
 
     var body: some View {
         NavigationStack {
-            List {
-                if let current = player.current {
-                    Section("Now playing") {
-                        SongRow(song: current.song, showAlbum: true, enablesSwipeActions: false)
-                            .listRowBackground(DromeTheme.elevated)
-                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                    }
-                }
-
-                if !player.userQueue.isEmpty {
-                    Section("Next in queue") {
-                        ForEach(player.userQueue) { item in
-                            queueRow(item)
-                        }
-                        .onMove(perform: player.moveUserQueueItems)
-                        .onDelete { offsets in
-                            removeUserItems(at: offsets)
+            Group {
+                List {
+                    if let current = player.current {
+                        Section("Now playing") {
+                            SongRow(song: current.song, showAlbum: true, enablesSwipeActions: false)
+                                .listRowBackground(DromeTheme.elevated)
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                         }
                     }
-                }
 
-                if !player.contextQueue.isEmpty {
-                    Section {
-                        ForEach(player.contextQueue) { item in
-                            queueRow(item, showsAutoplay: true)
+                    if !player.userQueue.isEmpty {
+                        Section("Next in queue") {
+                            ForEach(player.userQueue) { item in
+                                queueRow(item)
+                            }
+                            .onMove(perform: player.moveUserQueueItems)
+                            .onDelete { offsets in
+                                removeUserItems(at: offsets)
+                            }
                         }
-                        .onMove(perform: player.moveContextQueueItems)
-                        .onDelete { offsets in
-                            removeContextItems(at: offsets)
+                    }
+
+                    if !player.contextQueue.isEmpty {
+                        Section {
+                            ForEach(player.contextQueue) { item in
+                                queueRow(item, showsAutoplay: true)
+                            }
+                            .onMove(perform: player.moveContextQueueItems)
+                            .onDelete { offsets in
+                                removeContextItems(at: offsets)
+                            }
+                        } header: {
+                            Text(contextHeader)
                         }
-                    } header: {
-                        Text(contextHeader)
+                    }
+
+                    if player.userQueue.isEmpty && player.contextQueue.isEmpty {
+                        EmptyStateView(title: "Queue is empty",
+                                       message: "Add songs with Play Next or Add to Queue.")
+                            .listRowBackground(Color.clear)
                     }
                 }
-
-                if player.userQueue.isEmpty && player.contextQueue.isEmpty {
-                    EmptyStateView(title: "Queue is empty",
-                                   message: "Add songs with Play Next or Add to Queue.")
-                        .listRowBackground(Color.clear)
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(DromeTheme.background)
+                .environment(\.editMode, .constant(.active))
+                .navigationTitle("Queue")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") { dismiss() }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Clear", role: .destructive) { player.clearQueue() }
+                            .disabled(player.userQueue.isEmpty && player.contextQueue.isEmpty)
+                    }
                 }
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .background(DromeTheme.background)
-            .environment(\.editMode, .constant(.active))
-            .navigationTitle("Queue")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Clear", role: .destructive) { player.clearQueue() }
-                        .disabled(player.userQueue.isEmpty && player.contextQueue.isEmpty)
-                }
-            }
+            .songNavigationDestinations(navigator: songNavigator)
         }
         .preferredColorScheme(.dark)
     }

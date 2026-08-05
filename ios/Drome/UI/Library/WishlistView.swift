@@ -15,6 +15,7 @@ struct WishlistView: View {
     @State private var shareTarget: WishlistEntry?
     @State private var shareUsername = ""
     @State private var searchTask: Task<Void, Never>?
+    @State private var groupByPlaylist = false
 
     var body: some View {
         Group {
@@ -72,7 +73,7 @@ struct WishlistView: View {
                 }
                 .listRowBackground(DromeTheme.elevated)
             } footer: {
-                Text("Search Spotify, then tap + to wishlist. Files download via SpotiFLAC into your Navidrome library.")
+                Text("Search Spotify tracks, albums, or playlists — or paste a Spotify link. Playlist imports skip tracks you already own.")
             }
 
             if !searchResults.isEmpty {
@@ -111,20 +112,70 @@ struct WishlistView: View {
                 .listRowBackground(Color.clear)
             }
 
-            Section("Wishlist") {
-                if entries.isEmpty {
-                    Text("Nothing here yet. Search Spotify or paste a link above.")
-                        .foregroundStyle(DromeTheme.muted)
-                        .listRowBackground(Color.clear)
-                }
-                ForEach(entries) { entry in
-                    entryRow(entry)
+            Section {
+                Toggle("Group by Spotify playlist", isOn: $groupByPlaylist)
+                    .listRowBackground(DromeTheme.elevated)
+            }
+
+            if groupByPlaylist {
+                groupedWishlistSections
+            } else {
+                Section("Wishlist") {
+                    if entries.isEmpty {
+                        Text("Nothing here yet. Search Spotify or paste a link above.")
+                            .foregroundStyle(DromeTheme.muted)
+                            .listRowBackground(Color.clear)
+                    }
+                    ForEach(entries) { entry in
+                        entryRow(entry)
+                    }
                 }
             }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
+    }
+
+    @ViewBuilder
+    private var groupedWishlistSections: some View {
+        let groups = Dictionary(grouping: entries) { entry -> String in
+            let id = entry.sourcePlaylistId ?? ""
+            return id.isEmpty ? "__ungrouped__" : id
+        }
+        let keys = groups.keys.sorted { a, b in
+            if a == "__ungrouped__" { return false }
+            if b == "__ungrouped__" { return true }
+            let an = groups[a]?.first?.sourcePlaylistName ?? a
+            let bn = groups[b]?.first?.sourcePlaylistName ?? b
+            return an.localizedCaseInsensitiveCompare(bn) == .orderedAscending
+        }
+        if entries.isEmpty {
+            Section("Wishlist") {
+                Text("Nothing here yet. Search Spotify or paste a link above.")
+                    .foregroundStyle(DromeTheme.muted)
+                    .listRowBackground(Color.clear)
+            }
+        }
+        ForEach(keys, id: \.self) { key in
+            let items = groups[key] ?? []
+            Section {
+                ForEach(items) { entry in
+                    entryRow(entry)
+                }
+            } header: {
+                Text(key == "__ungrouped__"
+                      ? "Individual items"
+                      : (items.first?.sourcePlaylistName ?? "Playlist"))
+            } footer: {
+                if key != "__ungrouped__", items.first?.owner == session.account.username {
+                    Button("Remove entire playlist import", role: .destructive) {
+                        Task { await deleteSourcePlaylist(key) }
+                    }
+                    .font(.caption)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -151,6 +202,10 @@ struct WishlistView: View {
             Spacer()
             if hit.kind == "album" {
                 Text("ALBUM")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(DromeTheme.muted)
+            } else if hit.kind == "playlist" {
+                Text("PLAYLIST")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(DromeTheme.muted)
             }
@@ -198,6 +253,11 @@ struct WishlistView: View {
                     Text("Shared by \(sharedBy)")
                         .font(.caption2)
                         .foregroundStyle(DromeTheme.accent)
+                }
+                if let playlist = entry.sourcePlaylistName, !playlist.isEmpty, !groupByPlaylist {
+                    Text("From \(playlist)")
+                        .font(.caption2)
+                        .foregroundStyle(DromeTheme.muted)
                 }
             }
             Spacer()
@@ -305,12 +365,7 @@ struct WishlistView: View {
         defer { addingIDs.remove(hit.id) }
         error = nil
         do {
-            let entry = try await client.add(spotifyLink: hit.spotifyUrl)
-            if let idx = entries.firstIndex(where: { $0.id == entry.id }) {
-                entries[idx] = entry
-            } else {
-                entries.insert(entry, at: 0)
-            }
+            try await applyAddResult(client.add(spotifyLink: hit.spotifyUrl))
         } catch {
             self.error = error.localizedDescription
         }
@@ -324,15 +379,35 @@ struct WishlistView: View {
         error = nil
         defer { isAddingPaste = false }
         do {
-            let entry = try await client.add(spotifyLink: url)
+            try await applyAddResult(client.add(spotifyLink: url))
+            pasteURL = ""
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func applyAddResult(_ result: WishlistAddResult) async {
+        switch result {
+        case .entry(let entry):
             if let idx = entries.firstIndex(where: { $0.id == entry.id }) {
                 entries[idx] = entry
             } else {
                 entries.insert(entry, at: 0)
             }
-            pasteURL = ""
-        } catch {
-            self.error = error.localizedDescription
+        case .playlist(let imported):
+            for entry in imported.entries.reversed() {
+                if let idx = entries.firstIndex(where: { $0.id == entry.id }) {
+                    entries[idx] = entry
+                } else {
+                    entries.insert(entry, at: 0)
+                }
+            }
+            if imported.added == 0 && imported.skippedOwned > 0 {
+                error = "All \(imported.skippedOwned) tracks already look like they’re in your library."
+            } else if imported.skippedOwned > 0 {
+                error = "Added \(imported.added); skipped \(imported.skippedOwned) already owned."
+            }
+            groupByPlaylist = true
         }
     }
 
@@ -340,6 +415,12 @@ struct WishlistView: View {
         guard let client = session.wishlist else { return }
         try? await client.delete(id: entry.id)
         entries.removeAll { $0.id == entry.id }
+    }
+
+    private func deleteSourcePlaylist(_ playlistId: String) async {
+        guard let client = session.wishlist else { return }
+        try? await client.deleteSourcePlaylist(id: playlistId)
+        entries.removeAll { $0.sourcePlaylistId == playlistId }
     }
 
     private func toggleAcquired(_ entry: WishlistEntry) async {

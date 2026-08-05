@@ -24,8 +24,10 @@ func (s *server) routes() http.Handler {
 	})
 	// Single authenticated Spotify search — returns {"results":[...]} for iOS.
 	mux.HandleFunc("GET /spotify/search", s.requireAuth(s.handleSearch))
+	mux.HandleFunc("GET /spotify/artist-image", s.requireAuth(s.handleArtistImage))
 	mux.HandleFunc("POST /wishlist", s.requireAuth(s.handleCreate))
 	mux.HandleFunc("GET /wishlist", s.requireAuth(s.handleList))
+	mux.HandleFunc("DELETE /wishlist/source/{playlistId}", s.requireAuth(s.handleDeleteSourcePlaylist))
 	mux.HandleFunc("DELETE /wishlist/{id}", s.requireAuth(s.handleDelete))
 	mux.HandleFunc("PATCH /wishlist/{id}", s.requireAuth(s.handleUpdate))
 	mux.HandleFunc("POST /wishlist/{id}/retry", s.requireAuth(s.handleRetry))
@@ -84,6 +86,11 @@ func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if kind == "playlist" {
+		s.handlePlaylistImport(w, r, id)
+		return
+	}
+
 	entry, err := s.spotify.resolve(r.Context(), kind, id)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "could not resolve link: "+err.Error())
@@ -105,6 +112,92 @@ func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		s.downloads.kick()
 	}
 	writeJSON(w, http.StatusCreated, entry)
+}
+
+func (s *server) handlePlaylistImport(w http.ResponseWriter, r *http.Request, playlistID string) {
+	name, tracks, err := s.spotify.playlistTracks(r.Context(), playlistID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "could not load playlist: "+err.Error())
+		return
+	}
+	owner := requestUser(r)
+	user, token, salt := requestCreds(r)
+	status := statusSkipped
+	if s.downloads != nil && s.downloads.cfg.Enabled {
+		status = statusQueued
+	}
+
+	var added []entry
+	skippedOwned := 0
+	now := time.Now()
+	for _, t := range tracks {
+		if s.navidrome.libraryOwns(r.Context(), user, token, salt, t.Title, t.Artist) {
+			skippedOwned++
+			continue
+		}
+		e := entry{
+			Owner:              owner,
+			Kind:               "track",
+			SpotifyID:          t.SpotifyID,
+			SpotifyURL:         t.SpotifyURL,
+			Title:              t.Title,
+			Artist:             t.Artist,
+			Album:              t.Album,
+			CoverURL:           t.CoverURL,
+			Status:             status,
+			SourcePlaylistID:   playlistID,
+			SourcePlaylistName: name,
+			CreatedAt:          now,
+		}
+		if err := s.store.insert(&e); err != nil {
+			continue
+		}
+		added = append(added, e)
+	}
+	if status == statusQueued && s.downloads != nil && len(added) > 0 {
+		s.downloads.kick()
+	}
+	if added == nil {
+		added = []entry{}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"kind":                 "playlistImport",
+		"playlistId":           playlistID,
+		"playlistName":         name,
+		"added":                len(added),
+		"skippedOwned":         skippedOwned,
+		"entries":              added,
+		"sourcePlaylistId":     playlistID,
+		"sourcePlaylistName":   name,
+	})
+}
+
+func (s *server) handleArtistImage(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "query parameter \"name\" is required")
+		return
+	}
+	url, err := s.spotify.artistImageURL(r.Context(), name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"imageUrl": url, "name": name})
+}
+
+func (s *server) handleDeleteSourcePlaylist(w http.ResponseWriter, r *http.Request) {
+	playlistID := r.PathValue("playlistId")
+	if playlistID == "" {
+		writeError(w, http.StatusBadRequest, "missing playlist id")
+		return
+	}
+	n, err := s.store.deleteBySourcePlaylist(requestUser(r), playlistID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": n})
 }
 
 // GET /wishlist

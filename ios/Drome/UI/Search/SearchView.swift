@@ -10,6 +10,7 @@ struct SearchView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject private var ratings: RatingsStore
+    @EnvironmentObject private var songNavigator: SongNavigator
 
     @State private var source: Source = .library
     @State private var query = ""
@@ -23,6 +24,8 @@ struct SearchView: View {
     @State private var debounceTask: Task<Void, Never>?
     @FocusState private var searchFocused: Bool
     @State private var recentItems: [RecentSearchItem] = RecentSearchesStore.load()
+    @State private var matchedSongs: [String: Song] = [:]
+    @State private var matchedAlbums: [String: Album] = [:]
 
     var body: some View {
         results
@@ -31,7 +34,7 @@ struct SearchView: View {
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
                         prompt: source == .library
                             ? "Artists, songs, albums…"
-                            : "Search Spotify tracks…")
+                            : "Search Spotify tracks, albums…")
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .focused($searchFocused)
@@ -319,14 +322,14 @@ struct SearchView: View {
                 }
             }
             .frame(width: 44, height: 44)
-            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .clipShape(RoundedRectangle(cornerRadius: hit.kind == "artist" ? 22 : 4))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(hit.title)
                     .font(DromeTheme.rowTitle)
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                Text([hit.artist, hit.album].filter { !$0.isEmpty }.joined(separator: " · "))
+                Text(spotifySubtitle(hit))
                     .font(.caption)
                     .foregroundStyle(DromeTheme.muted)
                     .lineLimit(1)
@@ -334,24 +337,89 @@ struct SearchView: View {
 
             Spacer(minLength: 0)
 
+            spotifyTrailing(hit)
+        }
+    }
+
+    private func spotifySubtitle(_ hit: SpotifySearchHit) -> String {
+        switch hit.kind {
+        case "album":
+            return [hit.artist, "Album"].filter { !$0.isEmpty }.joined(separator: " · ")
+        case "playlist":
+            let count = hit.trackCount.map { "\($0) tracks" }
+            return [hit.artist, count].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+        case "artist":
+            return "Artist"
+        default:
+            return [hit.artist, hit.album].filter { !$0.isEmpty }.joined(separator: " · ")
+        }
+    }
+
+    @ViewBuilder
+    private func spotifyTrailing(_ hit: SpotifySearchHit) -> some View {
+        switch hit.kind {
+        case "playlist":
             Button {
-                Task { await addToWishlist(hit) }
-            } label: {
-                if addingSpotifyIDs.contains(hit.spotifyId) {
-                    ProgressView()
-                } else if addedSpotifyIDs.contains(hit.spotifyId) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(DromeTheme.accent)
-                } else {
-                    Text("Add to Wishlist")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(DromeTheme.accent)
+                if let url = URL(string: hit.spotifyUrl) {
+                    UIApplication.shared.open(url)
                 }
+            } label: {
+                Text("Open")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(DromeTheme.accent)
             }
             .buttonStyle(.plain)
-            .disabled(addingSpotifyIDs.contains(hit.spotifyId)
-                      || addedSpotifyIDs.contains(hit.spotifyId))
+        case "album":
+            if let album = matchedAlbums[hit.spotifyId] {
+                NavigationLink {
+                    AlbumDetailView(albumID: album.id, placeholder: album)
+                } label: {
+                    Image(systemName: "play.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(DromeTheme.accent)
+                }
+                .buttonStyle(.plain)
+            } else {
+                wishlistAddButton(hit)
+            }
+        case "artist":
+            EmptyView()
+        default:
+            if let song = matchedSongs[hit.spotifyId] {
+                Button {
+                    player.play([song], startAt: 0,
+                                context: PlaybackContext(label: "Library", kind: .search))
+                } label: {
+                    Image(systemName: "play.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(DromeTheme.accent)
+                }
+                .buttonStyle(.plain)
+            } else {
+                wishlistAddButton(hit)
+            }
         }
+    }
+
+    private func wishlistAddButton(_ hit: SpotifySearchHit) -> some View {
+        Button {
+            Task { await addToWishlist(hit) }
+        } label: {
+            if addingSpotifyIDs.contains(hit.spotifyId) {
+                ProgressView()
+            } else if addedSpotifyIDs.contains(hit.spotifyId) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(DromeTheme.accent)
+            } else {
+                Image(systemName: "plus.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(DromeTheme.accent)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(addingSpotifyIDs.contains(hit.spotifyId)
+                  || addedSpotifyIDs.contains(hit.spotifyId))
+        .accessibilityLabel("Add to Wishlist")
     }
 
     @ViewBuilder
@@ -398,6 +466,16 @@ struct SearchView: View {
                     }
                     Button { player.addToQueue(song) } label: {
                         Label("Add to Queue", systemImage: "text.append")
+                    }
+                    if SongNavigation.albumRoute(for: song) != nil {
+                        Button { songNavigator.viewAlbum(for: song) } label: {
+                            Label("View Album", systemImage: "square.stack")
+                        }
+                    }
+                    if SongNavigation.artistRoute(for: song) != nil {
+                        Button { songNavigator.viewArtist(for: song) } label: {
+                            Label("View Artist", systemImage: "person.wave.2")
+                        }
                     }
                     Button {
                         SongShare.present(song: song)
@@ -544,10 +622,40 @@ struct SearchView: View {
         error = nil
         defer { isSearching = false }
         do {
-            spotifyHits = try await wishlist.searchSpotify(query: q)
+            let hits = try await wishlist.search(query: q, types: "track,album,playlist", limit: 10)
+            spotifyHits = hits
+            await resolveLibraryMatches(hits)
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    private func resolveLibraryMatches(_ hits: [SpotifySearchHit]) async {
+        let client = session.client
+        var songs: [String: Song] = [:]
+        var albums: [String: Album] = [:]
+        await withTaskGroup(of: (String, Song?, Album?).self) { group in
+            for hit in hits {
+                group.addTask {
+                    switch hit.kind {
+                    case "album":
+                        let album = await LibraryMatcher.matchedAlbum(for: hit, client: client)
+                        return (hit.spotifyId, nil, album)
+                    case "track", "":
+                        let song = await LibraryMatcher.matchedSong(for: hit, client: client)
+                        return (hit.spotifyId, song, nil)
+                    default:
+                        return (hit.spotifyId, nil, nil)
+                    }
+                }
+            }
+            for await (id, song, album) in group {
+                if let song { songs[id] = song }
+                if let album { albums[id] = album }
+            }
+        }
+        matchedSongs = songs
+        matchedAlbums = albums
     }
 
     private func addToWishlist(_ hit: SpotifySearchHit) async {

@@ -61,7 +61,8 @@ struct NowPlayingView: View {
             .transaction { txn in
                 if dismissDrag > 0 { txn.animation = nil }
             }
-            .simultaneousGesture(dismissGesture)
+            // Song pane only — lyrics scrolling must not pull the sheet closed.
+            .modifier(ConditionalDismissGesture(enabled: tab == .song, gesture: dismissGesture))
         }
         .ignoresSafeArea(edges: .bottom)
         .toolbar(.hidden, for: .navigationBar)
@@ -127,6 +128,8 @@ struct NowPlayingView: View {
         .padding(.bottom, 4)
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
+        // Always allow dismiss from the grabber, including on the Lyrics pane.
+        .simultaneousGesture(dismissGesture)
     }
 
     private var panePicker: some View {
@@ -178,6 +181,18 @@ struct NowPlayingView: View {
                     withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.9)) {
                         dismissDrag = 0
                     }
+                }
+            }
+    }
+
+    private var swipeUpToLyricsGesture: some Gesture {
+        DragGesture(minimumDistance: 24, coordinateSpace: .local)
+            .onEnded { value in
+                guard value.translation.height < -70,
+                      abs(value.translation.height) > abs(value.translation.width) * 1.2
+                else { return }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    tab = .lyrics
                 }
             }
     }
@@ -237,6 +252,7 @@ struct NowPlayingView: View {
             .offset(x: artDragX)
             .opacity(1 - min(abs(artDragX) / (containerWidth * 0.9), 0.35))
             .gesture(artSwipeGesture(containerWidth: containerWidth))
+            .simultaneousGesture(swipeUpToLyricsGesture)
             .animation(artSwipeAnimating ? nil : .interactiveSpring(response: 0.28, dampingFraction: 0.86),
                        value: artDragX)
             .id(player.current?.song.id ?? "none")
@@ -365,9 +381,16 @@ struct NowPlayingView: View {
                         .foregroundStyle(Color.white.opacity(0.7))
                         .lineLimit(1)
                 }
+
+                if let badge = song?.qualityBadge {
+                    Text(badge)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(DromeTheme.accent.opacity(0.95))
+                        .lineLimit(1)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 48, alignment: .leading)
+            .frame(minHeight: 48, alignment: .leading)
 
             if song != nil {
                 Button {
@@ -481,8 +504,6 @@ struct NowPlayingView: View {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.title2.weight(.bold))
                         .foregroundStyle(.black)
-                        // Optical center: nudge play triangle slightly left.
-                        .offset(x: player.isPlaying ? 0 : -2)
                         .frame(width: 62, height: 62)
                 }
             }
@@ -577,6 +598,19 @@ struct NowPlayingView: View {
     }
 }
 
+private struct ConditionalDismissGesture<G: Gesture>: ViewModifier {
+    let enabled: Bool
+    let gesture: G
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.simultaneousGesture(gesture)
+        } else {
+            content
+        }
+    }
+}
+
 private struct ScaleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -616,7 +650,7 @@ struct NowPlayingMoreSheet: View {
                                 )
                             )
                         } label: {
-                            Label("Open Album", systemImage: "square.stack")
+                            Label("View Album", systemImage: "square.stack")
                         }
                         .listRowBackground(DromeTheme.elevated)
                     }
@@ -626,7 +660,7 @@ struct NowPlayingMoreSheet: View {
                             ArtistDetailView(artistID: artistId,
                                              placeholderName: song.artist ?? "Artist")
                         } label: {
-                            Label("Open Artist", systemImage: "person.wave.2")
+                            Label("View Artist", systemImage: "person.wave.2")
                         }
                         .listRowBackground(DromeTheme.elevated)
                     }

@@ -4,6 +4,9 @@ struct PlaylistDetailView: View {
     let playlistID: String
     var placeholder: Playlist?
     var onDeleted: (() -> Void)? = nil
+    /// When embedded as a Library tab (e.g. Out of Rotation), match the
+    /// library's inline title chrome instead of a large playlist title.
+    var prefersInlineTitle: Bool = false
 
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
@@ -45,8 +48,10 @@ struct PlaylistDetailView: View {
                 content(playlist)
             }
         }
-        .navigationTitle(playlist?.name ?? placeholder?.name ?? "Playlist")
-        .navigationBarTitleDisplayMode(.large)
+        .navigationTitle(prefersInlineTitle
+                         ? "Your Library"
+                         : (playlist?.name ?? placeholder?.name ?? "Playlist"))
+        .navigationBarTitleDisplayMode(prefersInlineTitle ? .inline : .large)
         .task { await load() }
         .toolbar { toolbarContent }
         .alert("Rename Playlist", isPresented: $showRename) {

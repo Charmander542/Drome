@@ -107,6 +107,18 @@ final class SubsonicClient {
         _ = try await request(PingPayload.self, endpoint: "ping.view")
     }
 
+    /// Kick off a Navidrome / Subsonic library rescan.
+    func startScan(full: Bool = true) async throws {
+        _ = try await request(EmptyPayload.self, endpoint: "startScan", parameters: [
+            URLQueryItem(name: "fullScan", value: full ? "true" : "false"),
+        ])
+    }
+
+    /// Poll scan progress. `scanning` is true while the server is still working.
+    func scanStatus() async throws -> ScanStatus {
+        try await request(ScanStatusPayload.self, endpoint: "getScanStatus").scanStatus
+    }
+
     // MARK: - Library browsing
 
     func artists() async throws -> [ArtistIndex] {

@@ -2,24 +2,23 @@ import SwiftUI
 
 enum LibraryFilter: String, CaseIterable, Identifiable {
     case playlists = "Playlists"
-    case rated = "Rated"
-    case albums = "Albums"
     case artists = "Artists"
-    case genres = "Genres"
-    case downloads = "Downloads"
-    case wishlist = "Wishlist"
+    case albums = "Albums"
+    case songs = "Songs"
+    case downloads = "Downloaded"
+    case outOfRotation = "Out of Rotation"
 
     var id: String { rawValue }
 
-    var systemImage: String {
+    /// Short label for the compact segmented bar.
+    var shortTitle: String {
         switch self {
-        case .playlists: return "music.note.list"
-        case .rated: return "star.fill"
-        case .albums: return "square.stack"
-        case .artists: return "music.mic"
-        case .genres: return "guitars"
-        case .downloads: return "arrow.down.circle"
-        case .wishlist: return "heart"
+        case .playlists: return "Playlists"
+        case .artists: return "Artists"
+        case .albums: return "Albums"
+        case .songs: return "Songs"
+        case .downloads: return "Downloaded"
+        case .outOfRotation: return "Rotation"
         }
     }
 }
@@ -28,12 +27,13 @@ struct LibraryView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var rotation: RotationManager
     @EnvironmentObject private var downloads: DownloadManager
+    @EnvironmentObject private var player: PlayerEngine
 
     @State private var filter: LibraryFilter = .playlists
     @State private var playlists: [Playlist] = []
     @State private var albums: [Album] = []
     @State private var artistIndexes: [ArtistIndex] = []
-    @State private var genreGroups: [NormalizedGenre] = []
+    @State private var songs: [Song] = []
     @State private var isLoading = false
     @State private var error: String?
     @State private var showCreatePlaylist = false
@@ -41,15 +41,32 @@ struct LibraryView: View {
     @State private var playlistToRename: Playlist?
     @State private var renameText = ""
     @State private var playlistToDelete: Playlist?
+    @State private var scanStatusText: String?
 
     var body: some View {
         VStack(spacing: 0) {
             filterBar
+            if let scanStatusText {
+                Text(scanStatusText)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(DromeTheme.accent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 6)
+            }
             content
         }
         .navigationTitle("Your Library")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                NavigationLink {
+                    WishlistView()
+                } label: {
+                    Image(systemName: "heart")
+                }
+                .accessibilityLabel("Wishlist")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 if filter == .playlists {
                     Button {
@@ -62,7 +79,9 @@ struct LibraryView: View {
             }
         }
         .task(id: filter) { await load() }
-        .refreshable { await load() }
+        .refreshable {
+            await refreshLibrary(triggerScan: true)
+        }
         .alert("New Playlist", isPresented: $showCreatePlaylist) {
             TextField("Playlist name", text: $newPlaylistName)
             Button("Create") { Task { await createPlaylist() } }
@@ -98,30 +117,31 @@ struct LibraryView: View {
     }
 
     private var filterBar: some View {
-        HorizontalLockScroll {
-            HStack(spacing: 8) {
-                ForEach(LibraryFilter.allCases) { item in
-                    Button {
-                        filter = item
-                    } label: {
-                        Text(item.rawValue)
-                            .font(.subheadline.weight(.semibold))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(filter == item ? DromeTheme.accent : DromeTheme.elevated)
-                            .foregroundStyle(filter == item ? Color.white : Color.white.opacity(0.85))
-                            .clipShape(Capsule())
-                            .contentShape(Capsule())
+        HStack(spacing: 0) {
+            ForEach(LibraryFilter.allCases) { item in
+                Button {
+                    filter = item
+                } label: {
+                    VStack(spacing: 6) {
+                        Text(item.shortTitle)
+                            .font(.caption.weight(filter == item ? .bold : .semibold))
+                            .foregroundStyle(filter == item ? Color.white : Color.white.opacity(0.55))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        Capsule()
+                            .fill(filter == item ? DromeTheme.accent : Color.clear)
+                            .frame(height: 2)
                     }
-                    .buttonStyle(.plain)
-                    .hoverEffectDisabled()
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 10)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
         }
-        .frame(height: 48)
-        .clipped()
+        .padding(.horizontal, 4)
+        .frame(height: 44)
+        .background(DromeTheme.background)
     }
 
     @ViewBuilder
@@ -133,14 +153,13 @@ struct LibraryView: View {
         } else {
             switch filter {
             case .playlists: playlistsList
-            case .rated: RatedLibraryView()
             case .albums: albumsList
             case .artists: artistsList
-            case .genres: genresList
+            case .songs: songsList
             case .downloads:
                 DownloadsView()
-            case .wishlist:
-                WishlistView()
+            case .outOfRotation:
+                outOfRotationContent
             }
         }
     }
@@ -148,12 +167,24 @@ struct LibraryView: View {
     private var isEmpty: Bool {
         switch filter {
         case .playlists: return playlists.isEmpty
-        case .rated: return false
         case .albums: return albums.isEmpty
         case .artists: return artistIndexes.isEmpty
-        case .genres: return genreGroups.isEmpty
-        case .downloads, .wishlist: return false
+        case .songs: return songs.isEmpty
+        case .downloads, .outOfRotation: return false
+        }
     }
+
+    @ViewBuilder
+    private var outOfRotationContent: some View {
+        if let playlist = rotation.playlist {
+            PlaylistDetailView(playlistID: playlist.id, placeholder: playlist, prefersInlineTitle: true)
+        } else {
+            EmptyStateView(
+                title: "Out of Rotation",
+                systemImage: "lock.fill",
+                message: "Tracks rated 2 stars or lower land here automatically. Add songs manually from any track menu.")
+            .task { await rotation.refresh() }
+        }
     }
 
     private var playlistsList: some View {
@@ -166,6 +197,30 @@ struct LibraryView: View {
                     Label("Create playlist", systemImage: "plus.circle.fill")
                         .font(.body.weight(.semibold))
                         .foregroundStyle(DromeTheme.accent)
+                }
+                .listRowBackground(DromeTheme.elevated)
+
+                NavigationLink {
+                    WishlistView()
+                } label: {
+                    Label("Wishlist", systemImage: "heart.fill")
+                        .font(.body.weight(.semibold))
+                }
+                .listRowBackground(DromeTheme.elevated)
+
+                NavigationLink {
+                    RatedLibraryView()
+                } label: {
+                    Label("Top Rated", systemImage: "star.fill")
+                        .font(.body.weight(.semibold))
+                }
+                .listRowBackground(DromeTheme.elevated)
+
+                NavigationLink {
+                    GenreBrowserView()
+                } label: {
+                    Label("Genres", systemImage: "guitars")
+                        .font(.body.weight(.semibold))
                 }
                 .listRowBackground(DromeTheme.elevated)
             }
@@ -257,8 +312,8 @@ struct LibraryView: View {
         ScrollViewReader { proxy in
             List {
                 ForEach(albumSections, id: \.letter) { section in
-                    Section(section.letter) {
-                        ForEach(Array(section.albums.enumerated()), id: \.element.id) { index, album in
+                    Section {
+                        ForEach(section.albums) { album in
                             NavigationLink {
                                 AlbumDetailView(albumID: album.id, placeholder: album)
                             } label: {
@@ -275,8 +330,12 @@ struct LibraryView: View {
                                 }
                             }
                             .listRowBackground(DromeTheme.background)
-                            .id(index == 0 ? section.letter : "\(section.letter)-\(album.id)")
                         }
+                    } header: {
+                        Text(section.letter)
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(DromeTheme.muted)
+                            .id(section.letter)
                     }
                 }
             }
@@ -285,25 +344,23 @@ struct LibraryView: View {
             .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
             .overlay(alignment: .trailing) {
                 AlphabetScrubber(letters: albumSections.map(\.letter)) { letter in
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        proxy.scrollTo(letter, anchor: .top)
-                    }
+                    proxy.scrollTo(letter, anchor: .top)
                 }
-                .frame(maxHeight: .infinity, alignment: .center)
+                .padding(.vertical, 8)
                 .padding(.trailing, 1)
             }
         }
     }
 
-    /// Albums grouped A–Z / # for the section index scrubber.
     private var albumSections: [(letter: String, albums: [Album])] {
         let grouped = Dictionary(grouping: albums) { album -> String in
-            Self.sectionLetter(for: album.name)
+            LibrarySortLetter.sectionLetter(for: album.name)
         }
-        return grouped.keys.sorted(by: Self.sectionLetterSort).compactMap { letter in
+        return grouped.keys.sorted(by: LibrarySortLetter.sectionLetterSort).compactMap { letter in
             guard let items = grouped[letter], !items.isEmpty else { return nil }
             let sorted = items.sorted {
-                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                LibrarySortLetter.sortableName($0.name)
+                    .localizedCaseInsensitiveCompare(LibrarySortLetter.sortableName($1.name)) == .orderedAscending
             }
             return (letter: letter, albums: sorted)
         }
@@ -313,16 +370,14 @@ struct LibraryView: View {
         ScrollViewReader { proxy in
             List {
                 ForEach(artistSections, id: \.letter) { section in
-                    Section(section.letter) {
-                        ForEach(Array(section.artists.enumerated()), id: \.element.id) { index, artist in
+                    Section {
+                        ForEach(section.artists) { artist in
                             NavigationLink {
                                 ArtistDetailView(artistID: artist.id, placeholderName: artist.name)
                             } label: {
                                 HStack(spacing: 12) {
-                                    RemoteImage(url: session.client.coverArtURL(id: artist.coverArt ?? artist.id, size: 120),
-                                                placeholderSymbol: "person.crop.circle")
-                                        .frame(width: 48, height: 48)
-                                        .clipShape(Circle())
+                                    ArtistAvatar(artistId: artist.id, name: artist.name,
+                                                 navidromeCoverArt: artist.coverArt)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(artist.name).font(DromeTheme.rowTitle)
                                         if let count = artist.albumCount {
@@ -334,8 +389,12 @@ struct LibraryView: View {
                                 }
                             }
                             .listRowBackground(DromeTheme.background)
-                            .id(index == 0 ? section.letter : "\(section.letter)-\(artist.id)")
                         }
+                    } header: {
+                        Text(section.letter)
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(DromeTheme.muted)
+                            .id(section.letter)
                     }
                 }
             }
@@ -344,75 +403,84 @@ struct LibraryView: View {
             .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
             .overlay(alignment: .trailing) {
                 AlphabetScrubber(letters: artistSections.map(\.letter)) { letter in
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        proxy.scrollTo(letter, anchor: .top)
-                    }
+                    proxy.scrollTo(letter, anchor: .top)
                 }
-                .frame(maxHeight: .infinity, alignment: .center)
+                .padding(.vertical, 8)
                 .padding(.trailing, 1)
             }
         }
     }
 
-    /// Collapse Navidrome index buckets onto single-letter headers so iOS shows the A–Z scrubber.
     private var artistSections: [(letter: String, artists: [Artist])] {
         var buckets: [String: [Artist]] = [:]
         for index in artistIndexes {
-            let letter = Self.sectionLetter(for: index.name, preferWholeIfSingle: true)
+            let letter = LibrarySortLetter.sectionLetter(for: index.name, preferWholeIfSingle: true)
             buckets[letter, default: []].append(contentsOf: index.artists)
         }
-        return buckets.keys.sorted(by: Self.sectionLetterSort).compactMap { letter in
+        return buckets.keys.sorted(by: LibrarySortLetter.sectionLetterSort).compactMap { letter in
             guard var artists = buckets[letter], !artists.isEmpty else { return nil }
-            // Dedupe if the same artist somehow appears under multiple raw indexes.
             var seen = Set<String>()
             artists = artists.filter { seen.insert($0.id).inserted }
-            artists.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            artists.sort {
+                LibrarySortLetter.sortableName($0.name)
+                    .localizedCaseInsensitiveCompare(LibrarySortLetter.sortableName($1.name)) == .orderedAscending
+            }
             return (letter: letter, artists: artists)
         }
     }
 
-    private var genresList: some View {
-        List(genreGroups) { genre in
-            NavigationLink {
-                GenreDetailView(genre: genre)
-            } label: {
-                HStack {
-                    Text(genre.displayName).font(DromeTheme.rowTitle)
-                    Spacer()
-                    if genre.songCount > 0 {
-                        Text("\(genre.songCount)")
+    private var songsList: some View {
+        ScrollViewReader { proxy in
+            List {
+                ForEach(songSections, id: \.letter) { section in
+                    Section {
+                        ForEach(Array(section.songs.enumerated()), id: \.element.id) { index, song in
+                            SongRow(song: song, showAlbum: true)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    let flat = songSections.flatMap(\.songs)
+                                    let start = flat.firstIndex(where: { $0.id == song.id }) ?? 0
+                                    playerPlay(flat, startAt: start)
+                                }
+                                .listRowBackground(DromeTheme.background)
+                        }
+                    } header: {
+                        Text(section.letter)
+                            .font(.subheadline.weight(.bold))
                             .foregroundStyle(DromeTheme.muted)
-                    } else if genre.albumCount > 0 {
-                        Text("\(genre.albumCount)")
-                            .foregroundStyle(DromeTheme.muted)
+                            .id(section.letter)
                     }
                 }
             }
-            .listRowBackground(DromeTheme.background)
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
+            .overlay(alignment: .trailing) {
+                AlphabetScrubber(letters: songSections.map(\.letter)) { letter in
+                    proxy.scrollTo(letter, anchor: .top)
+                }
+                .padding(.vertical, 8)
+                .padding(.trailing, 1)
+            }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
     }
 
-    /// First letter A–Z, or `#` for digits / symbols. When `preferWholeIfSingle`, a one-character
-    /// index name from the server (already "A", "#", …) is kept as-is (uppercased).
-    private static func sectionLetter(for name: String, preferWholeIfSingle: Bool = false) -> String {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let first = trimmed.first else { return "#" }
-        if preferWholeIfSingle, trimmed.count == 1 {
-            if first.isLetter { return String(first).uppercased() }
-            return "#"
+    private var songSections: [(letter: String, songs: [Song])] {
+        let grouped = Dictionary(grouping: songs) { song -> String in
+            LibrarySortLetter.sectionLetter(for: song.title)
         }
-        let upper = String(first).uppercased()
-        if upper.first?.isLetter == true { return upper }
-        return "#"
+        return grouped.keys.sorted(by: LibrarySortLetter.sectionLetterSort).compactMap { letter in
+            guard let items = grouped[letter], !items.isEmpty else { return nil }
+            let sorted = items.sorted {
+                LibrarySortLetter.sortableName($0.title)
+                    .localizedCaseInsensitiveCompare(LibrarySortLetter.sortableName($1.title)) == .orderedAscending
+            }
+            return (letter: letter, songs: sorted)
+        }
     }
 
-    private static func sectionLetterSort(_ lhs: String, _ rhs: String) -> Bool {
-        if lhs == "#" { return false }
-        if rhs == "#" { return true }
-        return lhs.localizedStandardCompare(rhs) == .orderedAscending
+    private func playerPlay(_ songs: [Song], startAt: Int) {
+        player.play(songs, startAt: startAt, context: PlaybackContext(label: "Songs", kind: .mix))
     }
 
     private func playlistSubtitle(_ playlist: Playlist) -> String {
@@ -424,8 +492,11 @@ struct LibraryView: View {
     }
 
     private func load() async {
-        // Downloads / wishlist / rated manage their own loading.
-        guard filter != .downloads && filter != .wishlist && filter != .rated else { return }
+        guard filter != .downloads else { return }
+        if filter == .outOfRotation {
+            await rotation.refresh()
+            return
+        }
         isLoading = true
         error = nil
         defer { isLoading = false }
@@ -438,14 +509,72 @@ struct LibraryView: View {
                 albums = try await session.client.albumList(type: .alphabeticalByName, size: 500)
             case .artists:
                 artistIndexes = try await session.client.artists()
-            case .genres:
-                let raw = try await session.client.genres()
-                genreGroups = GenreNormalizer.shared.groupedGenres(raw)
-            case .downloads, .wishlist, .rated:
+            case .songs:
+                songs = try await loadSongCatalog()
+            case .downloads, .outOfRotation:
                 break
             }
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+
+    /// Best-effort flat song catalog for the Songs tab.
+    private func loadSongCatalog() async throws -> [Song] {
+        var result = try await session.client.search(
+            "", artistCount: 0, albumCount: 0, songCount: 500
+        ).song ?? []
+        if result.isEmpty {
+            result = try await session.client.search(
+                "*", artistCount: 0, albumCount: 0, songCount: 500
+            ).song ?? []
+        }
+        if result.isEmpty {
+            result = try await session.client.randomSongs(size: 200)
+        }
+        var seen = Set<String>()
+        return result.filter { seen.insert($0.id).inserted }
+    }
+
+    private func refreshLibrary(triggerScan: Bool) async {
+        if triggerScan {
+            await runLibraryScan(showBanner: true)
+        }
+        await load()
+    }
+
+    @discardableResult
+    private func runLibraryScan(showBanner: Bool) async -> Bool {
+        do {
+            try await session.client.startScan()
+            if showBanner { scanStatusText = "Library scan started…" }
+            // Poll briefly so pull-to-refresh feels alive.
+            for _ in 0..<20 {
+                try await Task.sleep(nanoseconds: 500_000_000)
+                let status = try await session.client.scanStatus()
+                if status.scanning != true {
+                    if showBanner {
+                        let count = status.count.map(String.init) ?? "…"
+                        scanStatusText = "Scan complete (\(count) items)"
+                        Task {
+                            try? await Task.sleep(nanoseconds: 2_500_000_000)
+                            if scanStatusText?.hasPrefix("Scan complete") == true {
+                                scanStatusText = nil
+                            }
+                        }
+                    }
+                    return true
+                }
+                if showBanner {
+                    let count = status.count.map(String.init) ?? "…"
+                    scanStatusText = "Scanning… \(count)"
+                }
+            }
+            if showBanner { scanStatusText = "Scan still running…" }
+            return true
+        } catch {
+            if showBanner { scanStatusText = "Scan failed: \(error.localizedDescription)" }
+            return false
         }
     }
 
@@ -457,7 +586,6 @@ struct LibraryView: View {
             let created = try await session.client.createPlaylist(name: name)
             filter = .playlists
             await load()
-            // Keep the brand-new playlist visible at the top if the server order differs.
             if !playlists.contains(where: { $0.id == created.id }) {
                 playlists.insert(created.asPlaylist, at: 0)
             }
@@ -491,50 +619,55 @@ struct LibraryView: View {
     }
 }
 
-/// Horizontal-only chip scroller. SwiftUI `ScrollView(.horizontal)` still allows
-/// freeform / vertical rubber-banding on recent iOS; UIKit directional lock
-/// keeps movement side-to-side only.
-private struct HorizontalLockScroll<Content: View>: UIViewRepresentable {
-    @ViewBuilder var content: () -> Content
+/// Lightweight genres browser (moved off the top tab bar).
+struct GenreBrowserView: View {
+    @EnvironmentObject private var session: AppSession
+    @State private var genreGroups: [NormalizedGenre] = []
+    @State private var error: String?
+    @State private var isLoading = true
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeUIView(context: Context) -> UIScrollView {
-        let scroll = UIScrollView()
-        scroll.showsHorizontalScrollIndicator = false
-        scroll.showsVerticalScrollIndicator = false
-        scroll.alwaysBounceVertical = false
-        scroll.alwaysBounceHorizontal = true
-        scroll.bounces = true
-        scroll.isDirectionalLockEnabled = true
-        scroll.clipsToBounds = true
-        scroll.contentInsetAdjustmentBehavior = .never
-        scroll.delaysContentTouches = false
-        scroll.canCancelContentTouches = true
-
-        let host = UIHostingController(rootView: content())
-        host.view.backgroundColor = .clear
-        host.view.translatesAutoresizingMaskIntoConstraints = false
-        scroll.addSubview(host.view)
-        context.coordinator.host = host
-
-        NSLayoutConstraint.activate([
-            host.view.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-            host.view.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            host.view.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-            host.view.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            host.view.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
-        ])
-        return scroll
+    var body: some View {
+        Group {
+            if isLoading && genreGroups.isEmpty {
+                LoadingStateView()
+            } else if let error, genreGroups.isEmpty {
+                ErrorStateView(message: error) { Task { await load() } }
+            } else {
+                List(genreGroups) { genre in
+                    NavigationLink {
+                        GenreDetailView(genre: genre)
+                    } label: {
+                        HStack {
+                            Text(genre.displayName).font(DromeTheme.rowTitle)
+                            Spacer()
+                            if genre.songCount > 0 {
+                                Text("\(genre.songCount)")
+                                    .foregroundStyle(DromeTheme.muted)
+                            } else if genre.albumCount > 0 {
+                                Text("\(genre.albumCount)")
+                                    .foregroundStyle(DromeTheme.muted)
+                            }
+                        }
+                    }
+                    .listRowBackground(DromeTheme.background)
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+            }
+        }
+        .navigationTitle("Genres")
+        .task { await load() }
     }
 
-    func updateUIView(_ scroll: UIScrollView, context: Context) {
-        context.coordinator.host?.rootView = content()
-        scroll.alwaysBounceVertical = false
-        scroll.isDirectionalLockEnabled = true
-    }
-
-    final class Coordinator {
-        var host: UIHostingController<Content>?
+    private func load() async {
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let raw = try await session.client.genres()
+            genreGroups = GenreNormalizer.shared.groupedGenres(raw)
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 }

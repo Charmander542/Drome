@@ -14,6 +14,8 @@ struct WishlistEntry: Codable, Identifiable, Hashable {
     var status: String?
     var statusMessage: String?
     var createdAt: String?
+    var sourcePlaylistId: String?
+    var sourcePlaylistName: String?
     var sharedWith: [String]?
     var sharedBy: String?
 }
@@ -26,8 +28,25 @@ struct SpotifySearchHit: Codable, Identifiable, Hashable {
     var artist: String
     var album: String
     var coverUrl: String
+    var trackCount: Int?
 
     var id: String { "\(kind):\(spotifyId)" }
+}
+
+struct WishlistPlaylistImport: Codable {
+    var kind: String?
+    var playlistId: String?
+    var playlistName: String?
+    var added: Int
+    var skippedOwned: Int
+    var entries: [WishlistEntry]
+    var sourcePlaylistId: String?
+    var sourcePlaylistName: String?
+}
+
+enum WishlistAddResult {
+    case entry(WishlistEntry)
+    case playlist(WishlistPlaylistImport)
 }
 
 /// Client for the Drome companion server. Authentication reuses the same
@@ -72,9 +91,9 @@ struct DromeWishlistClient {
         return url
     }
 
-    private func send<T: Decodable>(_ type: T.Type, path: String, method: String,
-                                    extraQuery: [URLQueryItem] = [],
-                                    body: (some Encodable)? = Optional<Int>.none) async throws -> T {
+    private func sendRaw(path: String, method: String,
+                         extraQuery: [URLQueryItem] = [],
+                         body: (some Encodable)? = Optional<Int>.none) async throws -> (Data, Int) {
         var request = URLRequest(url: try url(path, extraQuery: extraQuery))
         request.httpMethod = method
         if let body {
@@ -87,6 +106,13 @@ struct DromeWishlistClient {
             let message = (try? JSONDecoder().decode(ServerError.self, from: data))?.error
             throw WishlistError.server(message ?? "Companion server error (HTTP \(status)).")
         }
+        return (data, status)
+    }
+
+    private func send<T: Decodable>(_ type: T.Type, path: String, method: String,
+                                    extraQuery: [URLQueryItem] = [],
+                                    body: (some Encodable)? = Optional<Int>.none) async throws -> T {
+        let (data, _) = try await sendRaw(path: path, method: method, extraQuery: extraQuery, body: body)
         if T.self == EmptyWishlistResponse.self {
             return EmptyWishlistResponse() as! T
         }
@@ -98,7 +124,7 @@ struct DromeWishlistClient {
         return try await send(ListResponse.self, path: "/wishlist", method: "GET").entries
     }
 
-	func search(query: String, types: String = "track,album", limit: Int = 10) async throws -> [SpotifySearchHit] {
+    func search(query: String, types: String = "track,album,playlist", limit: Int = 10) async throws -> [SpotifySearchHit] {
         struct SearchResponse: Decodable { var results: [SpotifySearchHit] }
         return try await send(
             SearchResponse.self,
@@ -112,24 +138,38 @@ struct DromeWishlistClient {
         ).results
     }
 
-    /// Track-only Spotify search used by Search / recommend UIs.
+    /// Track-focused search used by missing-track recommend UIs.
     func searchSpotify(query: String, limit: Int = 10) async throws -> [SpotifySearchHit] {
         try await search(query: query, types: "track", limit: limit)
     }
 
-    func add(spotifyLink: String) async throws -> WishlistEntry {
+    func artistImageURL(name: String) async throws -> String {
+        struct Response: Decodable { var imageUrl: String }
+        return try await send(Response.self, path: "/spotify/artist-image", method: "GET",
+                              extraQuery: [URLQueryItem(name: "name", value: name)]).imageUrl
+    }
+
+    func add(spotifyLink: String) async throws -> WishlistAddResult {
         struct Body: Encodable { var url: String }
-        return try await send(WishlistEntry.self, path: "/wishlist", method: "POST",
-                              body: Body(url: spotifyLink))
+        let (data, _) = try await sendRaw(path: "/wishlist", method: "POST", body: Body(url: spotifyLink))
+        if let importResult = try? JSONDecoder().decode(WishlistPlaylistImport.self, from: data),
+           importResult.kind == "playlistImport" {
+            return .playlist(importResult)
+        }
+        let entry = try JSONDecoder().decode(WishlistEntry.self, from: data)
+        return .entry(entry)
     }
 
     func delete(id: Int64) async throws {
         _ = try await send(EmptyWishlistResponse.self, path: "/wishlist/\(id)", method: "DELETE")
     }
 
+    func deleteSourcePlaylist(id: String) async throws {
+        _ = try await send(EmptyWishlistResponse.self, path: "/wishlist/source/\(id)", method: "DELETE")
+    }
+
     func setAcquired(id: Int64, acquired: Bool) async throws {
         struct Body: Encodable { var acquired: Bool }
-        // Acquired=true deletes the row (204). Treat empty / no-content as success.
         _ = try await send(EmptyWishlistResponse.self, path: "/wishlist/\(id)", method: "PATCH",
                            body: Body(acquired: acquired))
     }

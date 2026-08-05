@@ -52,8 +52,6 @@ struct MiniPlayerBar: View {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.body.weight(.bold))
                         .foregroundStyle(.white)
-                        // Optical center: nudge play triangle slightly left.
-                        .offset(x: player.isPlaying ? 0 : -1.5)
                         .frame(width: 40, height: 40)
                         .contentShape(Rectangle())
                 }

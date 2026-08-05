@@ -31,6 +31,17 @@ struct ArtistDetailView: View {
 
     private func content(_ artist: ArtistWithAlbums) -> some View {
         List {
+            Section {
+                HStack {
+                    Spacer(minLength: 0)
+                    ArtistAvatar(artistId: artist.id, name: artist.name,
+                                 size: 120, navidromeCoverArt: artist.coverArt)
+                    Spacer(minLength: 0)
+                }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            }
+
             if !topSongs.isEmpty {
                 Section("Popular") {
                     ForEach(Array(topSongs.prefix(5).enumerated()), id: \.element.id) { index, song in

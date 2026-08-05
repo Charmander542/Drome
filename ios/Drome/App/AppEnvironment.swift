@@ -67,6 +67,7 @@ final class AppSession: ObservableObject, Identifiable {
     let player: PlayerEngine
     let lyricsService: LyricsService
     let lyricsIndexer: LyricsIndexer
+    let artistImages: ArtistImageStore
 
     var id: UUID { account.id }
 
@@ -95,6 +96,7 @@ final class AppSession: ObservableObject, Identifiable {
         lyricsService = LyricsService(database: database, client: client, serverKey: account.serverKey)
         lyricsIndexer = LyricsIndexer(client: client, database: database,
                                       lyricsService: lyricsService, serverKey: account.serverKey)
+        artistImages = ArtistImageStore(database: database, serverKey: account.serverKey)
 
         ImageLoader.shared.session = client.session
         Task { await rotation.refresh() }

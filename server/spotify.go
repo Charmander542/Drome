@@ -48,13 +48,13 @@ var spotifyIDPattern = regexp.MustCompile(`^[0-9A-Za-z]{15,40}$`)
 
 // parseSpotifyLink accepts open.spotify.com URLs (including /intl-xx/ and
 // /embed/ variants) and spotify:track:... URIs, returning the resource kind
-// ("track" or "album") and its Spotify ID.
+// ("track", "album", or "playlist") and its Spotify ID.
 func parseSpotifyLink(raw string) (kind, id string, err error) {
 	raw = strings.TrimSpace(raw)
 
 	if strings.HasPrefix(raw, "spotify:") {
 		parts := strings.Split(raw, ":")
-		if len(parts) == 3 && (parts[1] == "track" || parts[1] == "album") && spotifyIDPattern.MatchString(parts[2]) {
+		if len(parts) == 3 && (parts[1] == "track" || parts[1] == "album" || parts[1] == "playlist") && spotifyIDPattern.MatchString(parts[2]) {
 			return parts[1], parts[2], nil
 		}
 		return "", "", fmt.Errorf("unsupported spotify URI %q", raw)
@@ -76,10 +76,10 @@ func parseSpotifyLink(raw string) (kind, id string, err error) {
 		}
 		segments = append(segments, s)
 	}
-	if len(segments) >= 2 && (segments[0] == "track" || segments[0] == "album") && spotifyIDPattern.MatchString(segments[1]) {
+	if len(segments) >= 2 && (segments[0] == "track" || segments[0] == "album" || segments[0] == "playlist") && spotifyIDPattern.MatchString(segments[1]) {
 		return segments[0], segments[1], nil
 	}
-	return "", "", fmt.Errorf("unsupported spotify link (only track and album links are supported)")
+	return "", "", fmt.Errorf("unsupported spotify link (only track, album, and playlist links are supported)")
 }
 
 func (c *spotifyClient) token(ctx context.Context) (string, error) {
@@ -228,6 +228,21 @@ func (c *spotifyClient) resolveAPI(ctx context.Context, e *entry) error {
 		e.Artist = joinArtists(a.Artists)
 		e.Album = a.Name
 		e.CoverURL = bestImage(a.Images)
+	case "playlist":
+		var p struct {
+			Name  string `json:"name"`
+			Owner struct {
+				DisplayName string `json:"display_name"`
+			} `json:"owner"`
+			Images []spotifyImage `json:"images"`
+		}
+		if err := c.apiGET(ctx, "/playlists/"+e.SpotifyID, &p); err != nil {
+			return err
+		}
+		e.Title = p.Name
+		e.Artist = p.Owner.DisplayName
+		e.Album = p.Name
+		e.CoverURL = bestImage(p.Images)
 	default:
 		return fmt.Errorf("unsupported kind %q", e.Kind)
 	}
@@ -337,7 +352,6 @@ func (c *spotifyClient) resolveOEmbed(ctx context.Context, e *entry) error {
 	return nil
 }
 
-// searchHit is a lightweight Spotify search result for the iOS wishlist UI.
 type searchHit struct {
 	Kind       string `json:"kind"`
 	SpotifyID  string `json:"spotifyId"`
@@ -346,6 +360,103 @@ type searchHit struct {
 	Artist     string `json:"artist"`
 	Album      string `json:"album"`
 	CoverURL   string `json:"coverUrl"`
+	TrackCount int    `json:"trackCount,omitempty"`
+}
+
+// playlistTrack is one track pulled from a Spotify playlist for wishlist import.
+type playlistTrack struct {
+	SpotifyID  string
+	SpotifyURL string
+	Title      string
+	Artist     string
+	Album      string
+	CoverURL   string
+}
+
+func (c *spotifyClient) playlistTracks(ctx context.Context, playlistID string) (name string, tracks []playlistTrack, err error) {
+	if !c.hasAPICreds() {
+		return "", nil, fmt.Errorf("spotify playlist import requires API credentials")
+	}
+	var meta struct {
+		Name string `json:"name"`
+	}
+	if err := c.apiGET(ctx, "/playlists/"+playlistID+"?fields=name", &meta); err != nil {
+		return "", nil, err
+	}
+	name = meta.Name
+
+	path := "/playlists/" + playlistID + "/tracks?limit=50&market=" + url.QueryEscape(c.market) +
+		"&fields=next,items(track(id,name,artists(name),album(name,images),external_urls))"
+	for path != "" {
+		var page struct {
+			Next  *string `json:"next"`
+			Items []struct {
+				Track *struct {
+					ID      string          `json:"id"`
+					Name    string          `json:"name"`
+					Artists []spotifyArtist `json:"artists"`
+					Album   struct {
+						Name   string         `json:"name"`
+						Images []spotifyImage `json:"images"`
+					} `json:"album"`
+					ExternalURLs struct {
+						Spotify string `json:"spotify"`
+					} `json:"external_urls"`
+				} `json:"track"`
+			} `json:"items"`
+		}
+		// apiGET expects path under /v1 — absolute next URLs need stripping.
+		apiPath := path
+		if strings.HasPrefix(apiPath, "https://api.spotify.com/v1") {
+			apiPath = strings.TrimPrefix(apiPath, "https://api.spotify.com/v1")
+		}
+		if err := c.apiGET(ctx, apiPath, &page); err != nil {
+			return name, tracks, err
+		}
+		for _, item := range page.Items {
+			if item.Track == nil || item.Track.ID == "" {
+				continue
+			}
+			t := item.Track
+			u := t.ExternalURLs.Spotify
+			if u == "" {
+				u = "https://open.spotify.com/track/" + t.ID
+			}
+			tracks = append(tracks, playlistTrack{
+				SpotifyID:  t.ID,
+				SpotifyURL: u,
+				Title:      t.Name,
+				Artist:     joinArtists(t.Artists),
+				Album:      t.Album.Name,
+				CoverURL:   bestImage(t.Album.Images),
+			})
+		}
+		if page.Next == nil || *page.Next == "" {
+			break
+		}
+		path = *page.Next
+	}
+	return name, tracks, nil
+}
+
+func (c *spotifyClient) artistImageURL(ctx context.Context, name string) (string, error) {
+	if !c.hasAPICreds() {
+		return "", fmt.Errorf("spotify artist images require API credentials")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("artist name is empty")
+	}
+	hits, err := c.search(ctx, name, "artist", 5)
+	if err != nil {
+		return "", err
+	}
+	for _, h := range hits {
+		if h.Kind == "artist" && h.CoverURL != "" {
+			return h.CoverURL, nil
+		}
+	}
+	return "", fmt.Errorf("no artist image found")
 }
 
 // search queries the Spotify Web API. Requires client credentials.
@@ -403,6 +514,32 @@ func (c *spotifyClient) search(ctx context.Context, query, types string, limit i
 				} `json:"external_urls"`
 			} `json:"items"`
 		} `json:"albums"`
+		Playlists *struct {
+			Items []struct {
+				ID     string         `json:"id"`
+				Name   string         `json:"name"`
+				Images []spotifyImage `json:"images"`
+				Owner  struct {
+					DisplayName string `json:"display_name"`
+				} `json:"owner"`
+				Tracks struct {
+					Total int `json:"total"`
+				} `json:"tracks"`
+				ExternalURLs struct {
+					Spotify string `json:"spotify"`
+				} `json:"external_urls"`
+			} `json:"items"`
+		} `json:"playlists"`
+		Artists *struct {
+			Items []struct {
+				ID     string         `json:"id"`
+				Name   string         `json:"name"`
+				Images []spotifyImage `json:"images"`
+				ExternalURLs struct {
+					Spotify string `json:"spotify"`
+				} `json:"external_urls"`
+			} `json:"items"`
+		} `json:"artists"`
 	}
 	if err := c.apiGET(ctx, "/search?"+q.Encode(), &body); err != nil {
 		return nil, err
@@ -445,6 +582,46 @@ func (c *spotifyClient) search(ctx context.Context, query, types string, limit i
 				Title:      a.Name,
 				Artist:     joinArtists(a.Artists),
 				Album:      a.Name,
+				CoverURL:   bestImage(a.Images),
+			})
+		}
+	}
+	if body.Playlists != nil {
+		for _, p := range body.Playlists.Items {
+			if p.ID == "" {
+				continue
+			}
+			u := p.ExternalURLs.Spotify
+			if u == "" {
+				u = "https://open.spotify.com/playlist/" + p.ID
+			}
+			hits = append(hits, searchHit{
+				Kind:       "playlist",
+				SpotifyID:  p.ID,
+				SpotifyURL: u,
+				Title:      p.Name,
+				Artist:     p.Owner.DisplayName,
+				Album:      p.Name,
+				CoverURL:   bestImage(p.Images),
+				TrackCount: p.Tracks.Total,
+			})
+		}
+	}
+	if body.Artists != nil {
+		for _, a := range body.Artists.Items {
+			if a.ID == "" {
+				continue
+			}
+			u := a.ExternalURLs.Spotify
+			if u == "" {
+				u = "https://open.spotify.com/artist/" + a.ID
+			}
+			hits = append(hits, searchHit{
+				Kind:       "artist",
+				SpotifyID:  a.ID,
+				SpotifyURL: u,
+				Title:      a.Name,
+				Artist:     a.Name,
 				CoverURL:   bestImage(a.Images),
 			})
 		}

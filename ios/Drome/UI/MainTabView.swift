@@ -10,19 +10,19 @@ struct MainTabView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             TabView(selection: $selectedTab) {
-                NavigationStack {
+                SongNavigationStack {
                     HomeView()
                 }
                 .tabItem { Label("Home", systemImage: "house.fill") }
                 .tag(0)
 
-                NavigationStack {
+                SongNavigationStack {
                     SearchView()
                 }
                 .tabItem { Label("Search", systemImage: "magnifyingglass") }
                 .tag(1)
 
-                NavigationStack {
+                SongNavigationStack {
                     LibraryView()
                 }
                 .tabItem { Label("Your Library", systemImage: "rectangle.stack.fill") }
@@ -42,7 +42,7 @@ struct MainTabView: View {
             }
         }
         .fullScreenCover(isPresented: $showNowPlaying) {
-            NavigationStack {
+            SongNavigationStack {
                 NowPlayingView()
             }
         }

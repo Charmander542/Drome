@@ -16,6 +16,8 @@ struct SongRow: View {
 
     @State private var showAddToPlaylist = false
 
+    @EnvironmentObject private var songNavigator: SongNavigator
+
     var body: some View {
         rowContent
             .contentShape(Rectangle())
@@ -103,6 +105,20 @@ struct SongRow: View {
             showAddToPlaylist = true
         } label: {
             Label("Add to Playlist", systemImage: "text.badge.plus")
+        }
+        if SongNavigation.albumRoute(for: song) != nil {
+            Button {
+                songNavigator.viewAlbum(for: song)
+            } label: {
+                Label("View Album", systemImage: "square.stack")
+            }
+        }
+        if SongNavigation.artistRoute(for: song) != nil {
+            Button {
+                songNavigator.viewArtist(for: song)
+            } label: {
+                Label("View Artist", systemImage: "person.wave.2")
+            }
         }
         Button {
             SongShare.present(song: song)

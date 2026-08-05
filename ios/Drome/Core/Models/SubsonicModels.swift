@@ -57,6 +57,10 @@ struct Song: Codable, Identifiable, Hashable {
     var suffix: String?
     var duration: Int?
     var bitRate: Int?
+    /// OpenSubsonic / Navidrome: Hz (e.g. 44100, 96000).
+    var samplingRate: Int?
+    /// OpenSubsonic / Navidrome: bits per sample (e.g. 16, 24).
+    var bitDepth: Int?
     var contentType: String?
     var path: String?
     var playCount: Int?
@@ -248,6 +252,15 @@ struct StructuredLyricsLine: Decodable {
 // MARK: - Payloads
 
 struct PingPayload: Decodable {}
+struct ScanStatus: Decodable {
+    var scanning: Bool?
+    var count: Int?
+    var folderCount: Int?
+    var lastScan: String?
+}
+struct ScanStatusPayload: Decodable {
+    var scanStatus: ScanStatus
+}
 struct ArtistsPayload: Decodable {
     struct Indexes: Decodable { var index: [ArtistIndex]? }
     var artists: Indexes

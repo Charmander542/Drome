@@ -1,0 +1,82 @@
+import SwiftUI
+
+/// Resolves and caches Spotify artist photos for list/detail UIs.
+@MainActor
+final class ArtistImageStore: ObservableObject {
+    private let database: AppDatabase
+    private let serverKey: String
+    private var memory: [String: URL] = [:]
+    private var inflight: [String: Task<URL?, Never>] = [:]
+
+    init(database: AppDatabase, serverKey: String) {
+        self.database = database
+        self.serverKey = serverKey
+    }
+
+    func cachedURL(artistId: String) -> URL? {
+        if let url = memory[artistId] { return url }
+        if let raw = try? database.artistImageURL(serverKey: serverKey, artistId: artistId),
+           let url = URL(string: raw) {
+            memory[artistId] = url
+            return url
+        }
+        return nil
+    }
+
+    func resolve(artistId: String, name: String, wishlist: DromeWishlistClient?) async -> URL? {
+        if let cached = cachedURL(artistId: artistId) { return cached }
+        guard let wishlist, !name.isEmpty else { return nil }
+
+        if let existing = inflight[artistId] {
+            return await existing.value
+        }
+        let task = Task<URL?, Never> { [weak self] in
+            guard let self else { return nil }
+            do {
+                let raw = try await wishlist.artistImageURL(name: name)
+                guard let url = URL(string: raw) else { return nil }
+                try? self.database.storeArtistImage(
+                    serverKey: self.serverKey, artistId: artistId, artistName: name, imageURL: raw)
+                self.memory[artistId] = url
+                return url
+            } catch {
+                return nil
+            }
+        }
+        inflight[artistId] = task
+        let url = await task.value
+        inflight[artistId] = nil
+        return url
+    }
+}
+
+struct ArtistAvatar: View {
+    let artistId: String
+    let name: String
+    var size: CGFloat = 48
+    var navidromeCoverArt: String?
+
+    @EnvironmentObject private var session: AppSession
+    @State private var spotifyURL: URL?
+
+    var body: some View {
+        Group {
+            if let spotifyURL {
+                RemoteImage(url: spotifyURL, placeholderSymbol: "person.crop.circle")
+            } else {
+                RemoteImage(
+                    url: session.client.coverArtURL(id: navidromeCoverArt ?? artistId, size: Int(size * 2)),
+                    placeholderSymbol: "person.crop.circle")
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .task(id: artistId) {
+            spotifyURL = session.artistImages.cachedURL(artistId: artistId)
+            if spotifyURL == nil {
+                spotifyURL = await session.artistImages.resolve(
+                    artistId: artistId, name: name, wishlist: session.wishlist)
+            }
+        }
+    }
+}

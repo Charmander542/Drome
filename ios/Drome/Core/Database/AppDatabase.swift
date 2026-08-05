@@ -140,7 +140,7 @@ final class AppDatabase {
                 ALTER TABLE play_history ADD COLUMN context_label TEXT;
                 """)
         }
-        migrator.registerMigration("v4_song_ratings") { db in
+		migrator.registerMigration("v4_song_ratings") { db in
             try db.execute(sql: """
                 CREATE TABLE song_ratings (
                     user_key   TEXT NOT NULL,
@@ -154,6 +154,22 @@ final class AppDatabase {
             try db.execute(sql: """
                 CREATE INDEX song_ratings_user_rating
                 ON song_ratings (user_key, rating DESC);
+                """)
+        }
+        migrator.registerMigration("v5_artist_images") { db in
+            try db.execute(sql: """
+                CREATE TABLE artist_images (
+                    server_key TEXT NOT NULL,
+                    artist_id  TEXT NOT NULL,
+                    artist_name TEXT NOT NULL DEFAULT '',
+                    image_url  TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (server_key, artist_id)
+                );
+                """)
+            try db.execute(sql: """
+                CREATE INDEX artist_images_name
+                ON artist_images (server_key, artist_name);
                 """)
         }
         return migrator
@@ -615,6 +631,32 @@ final class AppDatabase {
                 ON CONFLICT (server_key) DO UPDATE SET
                     album_offset = excluded.album_offset, updated_at = excluded.updated_at
                 """, arguments: [serverKey, offset, ISO8601DateFormatter().string(from: Date())])
+        }
+    }
+
+    // MARK: - Artist images (Spotify)
+
+    func artistImageURL(serverKey: String, artistId: String) throws -> String? {
+        try pool.read { db in
+            try String.fetchOne(db, sql: """
+                SELECT image_url FROM artist_images WHERE server_key = ? AND artist_id = ?
+                """, arguments: [serverKey, artistId])
+        }
+    }
+
+    func storeArtistImage(serverKey: String, artistId: String, artistName: String, imageURL: String) throws {
+        try pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO artist_images (server_key, artist_id, artist_name, image_url, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(server_key, artist_id) DO UPDATE SET
+                    artist_name = excluded.artist_name,
+                    image_url = excluded.image_url,
+                    updated_at = excluded.updated_at
+                """, arguments: [
+                serverKey, artistId, artistName, imageURL,
+                ISO8601DateFormatter().string(from: Date()),
+            ])
         }
     }
 }

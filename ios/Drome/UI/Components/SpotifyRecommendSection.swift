@@ -174,55 +174,14 @@ struct SpotifyMissingTracksSection: View {
     // MARK: - Ownership matching
 
     private static func ownedKeys(from songs: [Song]) -> Set<String> {
-        var keys = Set<String>()
-        for song in songs {
-            let title = normalize(song.title)
-            guard !title.isEmpty else { continue }
-            keys.insert(title)
-            let artist = normalize(song.displayArtist)
-            if !artist.isEmpty {
-                keys.insert("\(title)|\(artist)")
-            }
-        }
-        return keys
+        LibraryMatcher.ownedKeys(from: songs)
     }
 
     private static func looksOwned(_ hit: SpotifySearchHit, owned: Set<String>) -> Bool {
-        let title = normalize(hit.title)
-        guard !title.isEmpty else { return false }
-        if owned.contains(title) { return true }
-        let artist = normalize(hit.artist)
-        if !artist.isEmpty, owned.contains("\(title)|\(artist)") { return true }
-        // Soft match: owned title that shares a primary artist token.
-        if !artist.isEmpty {
-            let artistToken = artist.split(separator: " ").first.map(String.init) ?? artist
-            for key in owned where key.contains("|") {
-                let parts = key.split(separator: "|", maxSplits: 1).map(String.init)
-                guard parts.count == 2 else { continue }
-                if parts[0] == title, parts[1].contains(artistToken) || artist.contains(parts[1]) {
-                    return true
-                }
-            }
-        }
-        return false
-    }
-
-    private static func normalize(_ raw: String) -> String {
-        var s = raw.lowercased()
-        // Drop common featuring / remaster suffixes for matching.
-        for token in ["(feat.", "(ft.", "(with ", "- remaster", "(remaster", "[remaster"] {
-            if let range = s.range(of: token) {
-                s = String(s[..<range.lowerBound])
-            }
-        }
-        let allowed = CharacterSet.alphanumerics.union(.whitespaces)
-        s = String(s.unicodeScalars.map { allowed.contains($0) ? Character($0) : " " })
-        return s
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        LibraryMatcher.looksOwned(hit, owned: owned)
     }
 }
+
 
 /// Back-compat alias for older call sites.
 typealias SpotifyRecommendSection = SpotifyMissingTracksSection

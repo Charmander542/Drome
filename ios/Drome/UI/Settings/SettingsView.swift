@@ -10,6 +10,9 @@ struct SettingsView: View {
 
     @State private var wishlistURLText = ""
     @State private var savedMessage: String?
+    @State private var isScanning = false
+    @State private var scanMessage: String?
+    @State private var scanFailed = false
 
     var body: some View {
         List {
@@ -100,6 +103,31 @@ struct SettingsView: View {
             .listRowBackground(DromeTheme.elevated)
 
             Section {
+                Button {
+                    Task { await refreshLibrary() }
+                } label: {
+                    HStack {
+                        Label("Refresh Library", systemImage: "arrow.triangle.2.circlepath")
+                        Spacer()
+                        if isScanning {
+                            ProgressView()
+                        }
+                    }
+                }
+                .disabled(isScanning)
+                if let scanMessage {
+                    Text(scanMessage)
+                        .font(.caption)
+                        .foregroundStyle(scanFailed ? Color.red.opacity(0.9) : DromeTheme.accent)
+                }
+            } header: {
+                Text("Library")
+            } footer: {
+                Text("Triggers a Navidrome library rescan on the server, then reloads local lists.")
+            }
+            .listRowBackground(DromeTheme.elevated)
+
+            Section {
                 Button("Sign Out", role: .destructive) {
                     env.signOut()
                     dismiss()
@@ -139,5 +167,32 @@ struct SettingsView: View {
         env.accounts.update(account)
         env.activate(account)
         savedMessage = "Saved"
+    }
+
+    private func refreshLibrary() async {
+        isScanning = true
+        scanFailed = false
+        scanMessage = "Starting scan…"
+        defer { isScanning = false }
+        do {
+            try await session.client.startScan()
+            for _ in 0..<40 {
+                try await Task.sleep(nanoseconds: 500_000_000)
+                let status = try await session.client.scanStatus()
+                if status.scanning == true {
+                    let count = status.count.map(String.init) ?? "…"
+                    scanMessage = "Scanning… \(count) items"
+                } else {
+                    let count = status.count.map(String.init) ?? "…"
+                    scanMessage = "Scan complete (\(count) items)"
+                    scanFailed = false
+                    return
+                }
+            }
+            scanMessage = "Scan still running on the server"
+        } catch {
+            scanFailed = true
+            scanMessage = error.localizedDescription
+        }
     }
 }
