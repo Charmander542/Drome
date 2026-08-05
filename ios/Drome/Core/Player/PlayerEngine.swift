@@ -57,6 +57,9 @@ final class PlayerEngine: ObservableObject {
     private var seekEpoch = 0
     private var appliedSeekEpoch = 0
     private var autoplayTask: Task<Void, Never>?
+    /// Bumped whenever in-flight autoplay work is cancelled so stale
+    /// `nextBatch` results cannot rebuild the player window.
+    private var autoplayGeneration = 0
     private var cancellables = Set<AnyCancellable>()
     private var timeObserver: Any?
 
@@ -81,7 +84,9 @@ final class PlayerEngine: ObservableObject {
     }
 
     func shutdown() {
+        cancelAutoplayWork()
         player.pause()
+        player.rate = 0
         player.removeAllItems()
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
@@ -97,6 +102,7 @@ final class PlayerEngine: ObservableObject {
     /// remaining tracks are reordered by the active shuffle mode.
     func play(_ songs: [Song], startAt index: Int = 0, context: PlaybackContext) {
         guard songs.indices.contains(index) else { return }
+        cancelAutoplayWork()
         ratings.ingest(songs)
         self.context = context
         fullContextSongs = songs
@@ -120,6 +126,7 @@ final class PlayerEngine: ObservableObject {
     /// picks the opening track from the weighted pool too.
     func playShuffled(_ songs: [Song], context: PlaybackContext) {
         guard !songs.isEmpty else { return }
+        cancelAutoplayWork()
         ratings.ingest(songs)
         if shuffleMode == .off { shuffleMode = .smart }
         self.context = context
@@ -159,7 +166,7 @@ final class PlayerEngine: ObservableObject {
         drainLowRatedFromQueues()
         guard peekUpcoming(limit: 1).first != nil else {
             if autoplayEnabled, repeatMode == .off {
-                Task { await forceAutoplayContinuation(playImmediately: true) }
+                continueWithAutoplayIfNeeded(playImmediately: true)
                 return
             }
             player.seek(to: CMTime(seconds: duration, preferredTimescale: 600))
@@ -167,7 +174,7 @@ final class PlayerEngine: ObservableObject {
         }
         // Prefer advancing the preloaded AVQueuePlayer window so bookkeeping
         // stays in `handleCurrentItemChange` (one code path for skip + gapless).
-            if window.count > 1 {
+        if window.count > 1 {
             player.advanceToNextItem()
             if let item = player.currentItem {
                 handleCurrentItemChange(item)
@@ -388,6 +395,10 @@ final class PlayerEngine: ObservableObject {
 
     private func rebuildWindow(startPlaying: Bool) {
         isRebuilding = true
+        // Pause before tearing down HTTP streams so a replaced item cannot
+        // keep decoding while the next track starts (audible overlap).
+        player.pause()
+        player.rate = 0
         player.removeAllItems()
         window.removeAll()
         defer {
@@ -571,13 +582,23 @@ final class PlayerEngine: ObservableObject {
         }
         history.append(finished)
         window.removeAll()
+        // A refill may have won the race and already queued tracks — play those
+        // instead of kicking off a second force-autoplay fetch.
+        if let next = peekUpcoming(limit: 1).first {
+            consumeFromQueues(next)
+            setCurrent(next, startPlaying: true)
+            ensureAutoplayBuffer()
+            return
+        }
         // Infinite Shuffle must keep going — never silently stop at the end.
         if autoplayEnabled, repeatMode == .off {
             elapsed = duration
             pushNowPlayingInfo()
-            Task { await forceAutoplayContinuation(playImmediately: true) }
+            continueWithAutoplayIfNeeded(playImmediately: true)
             return
         }
+        player.pause()
+        player.rate = 0
         elapsed = duration
         isPlaying = false
         pushNowPlayingInfo()
@@ -588,8 +609,7 @@ final class PlayerEngine: ObservableObject {
         guard autoplayEnabled else { return }
         contextQueue.removeAll(where: \.isAutoplay)
         resyncUpcomingWindow()
-        autoplayTask?.cancel()
-        autoplayTask = nil
+        cancelAutoplayWork()
         maybeExtendWithAutoplay(force: true)
     }
 
@@ -637,6 +657,56 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
+    private func cancelAutoplayWork() {
+        autoplayTask?.cancel()
+        autoplayTask = nil
+        autoplayGeneration += 1
+    }
+
+    /// Single serialized entry for empty-queue Infinite Shuffle continuation.
+    /// Collapses concurrent `next()` + end-of-queue races into one fetch.
+    private func continueWithAutoplayIfNeeded(playImmediately: Bool) {
+        guard autoplayEnabled, repeatMode == .off else {
+            if playImmediately {
+                player.pause()
+                player.rate = 0
+                isPlaying = false
+                pushNowPlayingInfo()
+            }
+            return
+        }
+
+        if playImmediately, let next = peekUpcoming(limit: 1).first {
+            consumeFromQueues(next)
+            setCurrent(next, startPlaying: true)
+            ensureAutoplayBuffer()
+            return
+        }
+
+        guard autoplayProvider != nil else {
+            if playImmediately {
+                player.pause()
+                player.rate = 0
+                isPlaying = false
+                pushNowPlayingInfo()
+            }
+            return
+        }
+
+        // Replace any in-flight buffer refill so stale top-ups cannot rebuild
+        // the window while we start the next track.
+        cancelAutoplayWork()
+        let generation = autoplayGeneration
+        autoplayTask = Task { [weak self] in
+            guard let self else { return }
+            await self.forceAutoplayContinuation(playImmediately: playImmediately, generation: generation)
+            if self.autoplayGeneration == generation {
+                self.autoplayTask = nil
+                self.ensureAutoplayBuffer()
+            }
+        }
+    }
+
     private func maybeExtendWithAutoplay(force: Bool = false) {
         guard autoplayEnabled, repeatMode == .off, autoplayTask == nil,
               let provider = autoplayProvider, current != nil else { return }
@@ -650,9 +720,12 @@ final class PlayerEngine: ObservableObject {
         excluding.formUnion(contextQueue.map(\.song.id))
         if let currentID = current?.song.id { excluding.insert(currentID) }
 
+        autoplayGeneration += 1
+        let generation = autoplayGeneration
         autoplayTask = Task { [weak self] in
             let songs = await provider.nextBatch(seeds: seeds, excluding: excluding, count: 20)
             guard let self else { return }
+            guard !Task.isCancelled, self.autoplayGeneration == generation else { return }
             self.autoplayTask = nil
             guard !songs.isEmpty else { return }
             self.ratings.ingest(songs)
@@ -666,20 +739,38 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
-    private func forceAutoplayContinuation(playImmediately: Bool) async {
+    private func forceAutoplayContinuation(playImmediately: Bool, generation: Int) async {
         guard let provider = autoplayProvider else {
-            isPlaying = false
-            pushNowPlayingInfo()
+            if playImmediately {
+                player.pause()
+                player.rate = 0
+                isPlaying = false
+                pushNowPlayingInfo()
+            }
             return
         }
+
+        // Prefer anything queued while we were waiting to start this task.
+        if playImmediately, let next = peekUpcoming(limit: 1).first {
+            consumeFromQueues(next)
+            setCurrent(next, startPlaying: true)
+            ensureAutoplayBuffer()
+            return
+        }
+
         var excluding = Set(history.suffix(60).map(\.song.id))
         excluding.formUnion(userQueue.map(\.song.id))
         excluding.formUnion(contextQueue.map(\.song.id))
         let seeds = history.suffix(8).map(\.song)
         let songs = await provider.nextBatch(seeds: seeds, excluding: excluding, count: 20)
+        guard !Task.isCancelled, autoplayGeneration == generation else { return }
         guard !songs.isEmpty else {
-            isPlaying = false
-            pushNowPlayingInfo()
+            if playImmediately {
+                player.pause()
+                player.rate = 0
+                isPlaying = false
+                pushNowPlayingInfo()
+            }
             return
         }
         ratings.ingest(songs)
@@ -693,7 +784,6 @@ final class PlayerEngine: ObservableObject {
         } else {
             topUpWindow()
         }
-        maybeExtendWithAutoplay()
     }
 
     private func drainLowRatedFromQueues() {
