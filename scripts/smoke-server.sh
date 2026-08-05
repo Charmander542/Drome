@@ -28,6 +28,7 @@ rm -f smoke-test.db smoke-test.db-wal smoke-test.db-shm
 DROME_NAVIDROME_URL=http://127.0.0.1:19533 \
 DROME_DB_PATH=smoke-test.db \
 DROME_LISTEN_ADDR=127.0.0.1:19534 \
+DROME_AUTO_DOWNLOAD=false \
 ./bin/drome-server &
 SRV_PID=$!
 trap 'kill $FAKE_PID $SRV_PID 2>/dev/null || true' EXIT
@@ -47,15 +48,28 @@ echo "--- authenticated empty list"
 curl -sf "$BASE/wishlist?$AUTH"; echo
 
 echo "--- add non-spotify link (expect 422)"
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/wishlist?$AUTH" -d '{"url":"https://example.com/nope"}')
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/wishlist?$AUTH" \
+  -H 'Content-Type: application/json' -d '{"url":"https://example.com/nope"}')
 echo "$code"; test "$code" = "422"
 
-echo "--- add spotify link without server creds (expect 502)"
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/wishlist?$AUTH" -d '{"url":"https://open.spotify.com/track/11dFghVXANMlKmJXsNCbNl"}')
-echo "$code"; test "$code" = "502"
+echo "--- add spotify link without API creds (public metadata; expect 201)"
+# With DROME_AUTO_DOWNLOAD=false and no Spotify API key, public OG resolve should succeed.
+# This hit needs outbound network; skip gracefully if offline.
+code=$(curl -s -o /tmp/drome-smoke-add.json -w '%{http_code}' -X POST "$BASE/wishlist?$AUTH" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://open.spotify.com/track/11dFghVXANMlKmJXsNCbNl"}' || true)
+echo "$code"
+if [[ "$code" == "201" ]]; then
+  grep -q 'Cut To The Feeling' /tmp/drome-smoke-add.json
+elif [[ "$code" == "502" ]]; then
+  echo "(public metadata unreachable in this environment — acceptable)"
+else
+  echo "unexpected status $code"; cat /tmp/drome-smoke-add.json; exit 1
+fi
 
 echo "--- share whole list with bob (expect 204)"
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/wishlist/share?$AUTH" -d '{"user":"bob"}')
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/wishlist/share?$AUTH" \
+  -H 'Content-Type: application/json' -d '{"user":"bob"}')
 echo "$code"; test "$code" = "204"
 
 echo "--- bob sees an empty (but authorized) list"

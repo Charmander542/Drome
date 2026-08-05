@@ -22,3 +22,4 @@ server/data/
 
 # Local env / secrets
 .env
+data/

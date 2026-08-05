@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -12,8 +13,10 @@ import (
 	"time"
 )
 
-// spotifyClient resolves pasted Spotify links into track/album metadata using
-// the client-credentials flow. The client secret lives only on this server.
+// spotifyClient resolves pasted Spotify links into track/album metadata.
+// Prefer the official Web API when client credentials are configured; otherwise
+// use Spotify's public pages / oEmbed (no API key required). SpotiFLAC downloads
+// never need the official API.
 type spotifyClient struct {
 	clientID     string
 	clientSecret string
@@ -30,6 +33,10 @@ func newSpotifyClient(id, secret string) *spotifyClient {
 		clientSecret: secret,
 		http:         &http.Client{Timeout: 15 * time.Second},
 	}
+}
+
+func (c *spotifyClient) hasAPICreds() bool {
+	return c.clientID != "" && c.clientSecret != ""
 }
 
 var spotifyIDPattern = regexp.MustCompile(`^[0-9A-Za-z]{15,40}$`)
@@ -76,7 +83,7 @@ func (c *spotifyClient) token(ctx context.Context) (string, error) {
 	if c.accessToken != "" && time.Now().Before(c.tokenExpiry) {
 		return c.accessToken, nil
 	}
-	if c.clientID == "" || c.clientSecret == "" {
+	if !c.hasAPICreds() {
 		return "", fmt.Errorf("spotify credentials are not configured on the server")
 	}
 
@@ -163,10 +170,25 @@ func bestImage(images []spotifyImage) string {
 	return best
 }
 
-// resolve fills in an entry's metadata from the Spotify Web API.
+// resolve fills in an entry's metadata. Uses the Web API when credentials are
+// set; otherwise scrapes public Open Graph / oEmbed (no API key).
 func (c *spotifyClient) resolve(ctx context.Context, kind, id string) (*entry, error) {
 	e := &entry{Kind: kind, SpotifyID: id, SpotifyURL: "https://open.spotify.com/" + kind + "/" + id}
-	switch kind {
+	if c.hasAPICreds() {
+		if err := c.resolveAPI(ctx, e); err == nil {
+			return e, nil
+		} else {
+			logf("spotify API resolve failed, falling back to public metadata: %v", err)
+		}
+	}
+	if err := c.resolvePublic(ctx, e); err != nil {
+		return nil, err
+	}
+	return e, nil
+}
+
+func (c *spotifyClient) resolveAPI(ctx context.Context, e *entry) error {
+	switch e.Kind {
 	case "track":
 		var t struct {
 			Name    string          `json:"name"`
@@ -176,8 +198,8 @@ func (c *spotifyClient) resolve(ctx context.Context, kind, id string) (*entry, e
 				Images []spotifyImage `json:"images"`
 			} `json:"album"`
 		}
-		if err := c.apiGET(ctx, "/tracks/"+id, &t); err != nil {
-			return nil, err
+		if err := c.apiGET(ctx, "/tracks/"+e.SpotifyID, &t); err != nil {
+			return err
 		}
 		e.Title = t.Name
 		e.Artist = joinArtists(t.Artists)
@@ -189,15 +211,271 @@ func (c *spotifyClient) resolve(ctx context.Context, kind, id string) (*entry, e
 			Artists []spotifyArtist `json:"artists"`
 			Images  []spotifyImage  `json:"images"`
 		}
-		if err := c.apiGET(ctx, "/albums/"+id, &a); err != nil {
-			return nil, err
+		if err := c.apiGET(ctx, "/albums/"+e.SpotifyID, &a); err != nil {
+			return err
 		}
 		e.Title = a.Name
 		e.Artist = joinArtists(a.Artists)
 		e.Album = a.Name
 		e.CoverURL = bestImage(a.Images)
 	default:
-		return nil, fmt.Errorf("unsupported kind %q", kind)
+		return fmt.Errorf("unsupported kind %q", e.Kind)
 	}
-	return e, nil
+	return nil
+}
+
+var (
+	ogTitleRe = regexp.MustCompile(`(?i)(?:property|name)="og:title"\s+content="([^"]+)"`)
+	ogDescRe  = regexp.MustCompile(`(?i)(?:property|name)="og:description"\s+content="([^"]+)"`)
+	ogImageRe = regexp.MustCompile(`(?i)(?:property|name)="og:image"\s+content="([^"]+)"`)
+)
+
+func (c *spotifyClient) resolvePublic(ctx context.Context, e *entry) error {
+	if err := c.resolveOpenGraph(ctx, e); err == nil && e.Title != "" {
+		return nil
+	}
+	return c.resolveOEmbed(ctx, e)
+}
+
+func (c *spotifyClient) resolveOpenGraph(ctx context.Context, e *entry) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.SpotifyURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; drome-server/1.0)")
+	req.Header.Set("Accept-Language", "en")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("spotify page: %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return err
+	}
+	html := string(body)
+
+	title := htmlUnescape(firstSubmatch(ogTitleRe, html))
+	desc := htmlUnescape(firstSubmatch(ogDescRe, html))
+	image := htmlUnescape(firstSubmatch(ogImageRe, html))
+	if title == "" && desc == "" {
+		return fmt.Errorf("no open-graph metadata on spotify page")
+	}
+
+	e.CoverURL = image
+	switch e.Kind {
+	case "track":
+		// og:description ≈ "Artist · Title · Song · 2017"
+		parts := splitSpotifyDesc(desc)
+		e.Title = title
+		if e.Title == "" && len(parts) >= 2 {
+			e.Title = parts[1]
+		}
+		if len(parts) >= 1 {
+			e.Artist = parts[0]
+		}
+		// Album isn't reliably in OG for tracks; leave empty.
+	case "album":
+		// og:title ≈ "Album - Album by Artist | Spotify"
+		// og:description ≈ "Artist · album · 2012 · 18 songs"
+		parts := splitSpotifyDesc(desc)
+		e.Title = cleanAlbumTitle(title)
+		e.Album = e.Title
+		if len(parts) >= 1 {
+			e.Artist = parts[0]
+		}
+	}
+	if e.Title == "" {
+		return fmt.Errorf("could not parse title from public metadata")
+	}
+	return nil
+}
+
+func (c *spotifyClient) resolveOEmbed(ctx context.Context, e *entry) error {
+	u := "https://open.spotify.com/oembed?url=" + url.QueryEscape(e.SpotifyURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("spotify oembed: %s", resp.Status)
+	}
+	var body struct {
+		Title        string `json:"title"`
+		ThumbnailURL string `json:"thumbnail_url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return err
+	}
+	if body.Title == "" {
+		return fmt.Errorf("spotify oembed returned empty title")
+	}
+	e.Title = cleanAlbumTitle(body.Title)
+	if e.Kind == "album" {
+		e.Album = e.Title
+	}
+	e.CoverURL = body.ThumbnailURL
+	return nil
+}
+
+// searchHit is a lightweight Spotify search result for the iOS wishlist UI.
+type searchHit struct {
+	Kind       string `json:"kind"`
+	SpotifyID  string `json:"spotifyId"`
+	SpotifyURL string `json:"spotifyUrl"`
+	Title      string `json:"title"`
+	Artist     string `json:"artist"`
+	Album      string `json:"album"`
+	CoverURL   string `json:"coverUrl"`
+}
+
+// search queries the Spotify Web API. Requires client credentials.
+func (c *spotifyClient) search(ctx context.Context, query, types string, limit int) ([]searchHit, error) {
+	if !c.hasAPICreds() {
+		return nil, fmt.Errorf("spotify search requires DROME_SPOTIFY_CLIENT_ID and DROME_SPOTIFY_CLIENT_SECRET")
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, fmt.Errorf("query is empty")
+	}
+	if types == "" {
+		types = "track,album"
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	q := url.Values{}
+	q.Set("q", query)
+	q.Set("type", types)
+	q.Set("limit", fmt.Sprintf("%d", limit))
+
+	var body struct {
+		Tracks *struct {
+			Items []struct {
+				ID      string          `json:"id"`
+				Name    string          `json:"name"`
+				Artists []spotifyArtist `json:"artists"`
+				Album   struct {
+					Name   string         `json:"name"`
+					Images []spotifyImage `json:"images"`
+				} `json:"album"`
+				ExternalURLs struct {
+					Spotify string `json:"spotify"`
+				} `json:"external_urls"`
+			} `json:"items"`
+		} `json:"tracks"`
+		Albums *struct {
+			Items []struct {
+				ID      string          `json:"id"`
+				Name    string          `json:"name"`
+				Artists []spotifyArtist `json:"artists"`
+				Images  []spotifyImage  `json:"images"`
+				ExternalURLs struct {
+					Spotify string `json:"spotify"`
+				} `json:"external_urls"`
+			} `json:"items"`
+		} `json:"albums"`
+	}
+	if err := c.apiGET(ctx, "/search?"+q.Encode(), &body); err != nil {
+		return nil, err
+	}
+
+	var hits []searchHit
+	if body.Tracks != nil {
+		for _, t := range body.Tracks.Items {
+			if t.ID == "" {
+				continue
+			}
+			u := t.ExternalURLs.Spotify
+			if u == "" {
+				u = "https://open.spotify.com/track/" + t.ID
+			}
+			hits = append(hits, searchHit{
+				Kind:       "track",
+				SpotifyID:  t.ID,
+				SpotifyURL: u,
+				Title:      t.Name,
+				Artist:     joinArtists(t.Artists),
+				Album:      t.Album.Name,
+				CoverURL:   bestImage(t.Album.Images),
+			})
+		}
+	}
+	if body.Albums != nil {
+		for _, a := range body.Albums.Items {
+			if a.ID == "" {
+				continue
+			}
+			u := a.ExternalURLs.Spotify
+			if u == "" {
+				u = "https://open.spotify.com/album/" + a.ID
+			}
+			hits = append(hits, searchHit{
+				Kind:       "album",
+				SpotifyID:  a.ID,
+				SpotifyURL: u,
+				Title:      a.Name,
+				Artist:     joinArtists(a.Artists),
+				Album:      a.Name,
+				CoverURL:   bestImage(a.Images),
+			})
+		}
+	}
+	return hits, nil
+}
+
+func firstSubmatch(re *regexp.Regexp, s string) string {
+	m := re.FindStringSubmatch(s)
+	if len(m) < 2 {
+		return ""
+	}
+	return m[1]
+}
+
+func splitSpotifyDesc(desc string) []string {
+	parts := strings.Split(desc, "·")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func cleanAlbumTitle(title string) string {
+	title = strings.TrimSpace(title)
+	// "Global Warming - Album by Pitbull | Spotify"
+	if i := strings.Index(title, " - Album by "); i > 0 {
+		title = title[:i]
+	}
+	if i := strings.Index(title, " | Spotify"); i > 0 {
+		title = title[:i]
+	}
+	return strings.TrimSpace(title)
+}
+
+func htmlUnescape(s string) string {
+	replacer := strings.NewReplacer(
+		"&amp;", "&",
+		"&quot;", `"`,
+		"&#39;", "'",
+		"&lt;", "<",
+		"&gt;", ">",
+	)
+	return replacer.Replace(s)
 }

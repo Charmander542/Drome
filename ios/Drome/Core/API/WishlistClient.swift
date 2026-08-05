@@ -11,9 +11,23 @@ struct WishlistEntry: Codable, Identifiable, Hashable {
     var album: String
     var coverUrl: String
     var acquired: Bool
+    var status: String?
+    var statusMessage: String?
     var createdAt: String?
     var sharedWith: [String]?
     var sharedBy: String?
+}
+
+struct SpotifySearchHit: Codable, Identifiable, Hashable {
+    var kind: String
+    var spotifyId: String
+    var spotifyUrl: String
+    var title: String
+    var artist: String
+    var album: String
+    var coverUrl: String
+
+    var id: String { "\(kind):\(spotifyId)" }
 }
 
 /// Client for the Drome companion server. Authentication reuses the same
@@ -44,21 +58,24 @@ struct DromeWishlistClient {
     /// Provides fresh Subsonic auth query items (u/t/s and friends).
     let authItems: () -> [URLQueryItem]
 
-    private func url(_ path: String) throws -> URL {
+    private func url(_ path: String, extraQuery: [URLQueryItem] = []) throws -> URL {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw WishlistError.notConfigured
         }
         var base = components.path
         if base.hasSuffix("/") { base.removeLast() }
         components.path = base + path
-        components.queryItems = authItems().filter { ["u", "t", "s"].contains($0.name) }
+        var items = authItems().filter { ["u", "t", "s"].contains($0.name) }
+        items.append(contentsOf: extraQuery)
+        components.queryItems = items
         guard let url = components.url else { throw WishlistError.notConfigured }
         return url
     }
 
     private func send<T: Decodable>(_ type: T.Type, path: String, method: String,
+                                    extraQuery: [URLQueryItem] = [],
                                     body: (some Encodable)? = Optional<Int>.none) async throws -> T {
-        var request = URLRequest(url: try url(path))
+        var request = URLRequest(url: try url(path, extraQuery: extraQuery))
         request.httpMethod = method
         if let body {
             request.httpBody = try JSONEncoder().encode(body)
@@ -79,6 +96,20 @@ struct DromeWishlistClient {
     func list() async throws -> [WishlistEntry] {
         struct ListResponse: Decodable { var entries: [WishlistEntry] }
         return try await send(ListResponse.self, path: "/wishlist", method: "GET").entries
+    }
+
+    func search(query: String, types: String = "track,album", limit: Int = 20) async throws -> [SpotifySearchHit] {
+        struct SearchResponse: Decodable { var results: [SpotifySearchHit] }
+        return try await send(
+            SearchResponse.self,
+            path: "/spotify/search",
+            method: "GET",
+            extraQuery: [
+                URLQueryItem(name: "q", value: query),
+                URLQueryItem(name: "type", value: types),
+                URLQueryItem(name: "limit", value: String(limit)),
+            ]
+        ).results
     }
 
     func add(spotifyLink: String) async throws -> WishlistEntry {

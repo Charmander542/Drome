@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -19,6 +20,8 @@ type entry struct {
 	Album      string    `json:"album"`
 	CoverURL   string    `json:"coverUrl"`
 	Acquired   bool      `json:"acquired"`
+	Status     string    `json:"status,omitempty"` // queued|downloading|done|failed|skipped
+	StatusMsg  string    `json:"statusMessage,omitempty"`
 	CreatedAt  time.Time `json:"createdAt"`
 	// SharedWith lists usernames this entry is explicitly shared with
 	// (populated for entries the requester owns).
@@ -53,6 +56,8 @@ CREATE TABLE IF NOT EXISTS entries (
 	album       TEXT NOT NULL DEFAULT '',
 	cover_url   TEXT NOT NULL DEFAULT '',
 	acquired    INTEGER NOT NULL DEFAULT 0,
+	status      TEXT NOT NULL DEFAULT '',
+	status_msg  TEXT NOT NULL DEFAULT '',
 	created_at  TEXT NOT NULL,
 	UNIQUE (owner, kind, spotify_id)
 );
@@ -65,10 +70,21 @@ CREATE TABLE IF NOT EXISTS list_shares (
 	owner    TEXT NOT NULL,
 	username TEXT NOT NULL,
 	PRIMARY KEY (owner, username)
-);`
+);
+CREATE INDEX IF NOT EXISTS entries_status_idx ON entries(status, id);`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
+	}
+	// Migrate DBs created before status columns existed.
+	for _, stmt := range []string{
+		`ALTER TABLE entries ADD COLUMN status TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE entries ADD COLUMN status_msg TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, err
+		}
 	}
 	return &wishlistStore{db: db}, nil
 }
@@ -76,14 +92,25 @@ CREATE TABLE IF NOT EXISTS list_shares (
 func (s *wishlistStore) Close() error { return s.db.Close() }
 
 func (s *wishlistStore) insert(e *entry) error {
+	if e.Status == "" {
+		e.Status = statusQueued
+	}
 	res, err := s.db.Exec(`
-		INSERT INTO entries (owner, kind, spotify_id, spotify_url, title, artist, album, cover_url, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO entries (owner, kind, spotify_id, spotify_url, title, artist, album, cover_url, status, status_msg, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (owner, kind, spotify_id) DO UPDATE SET
 			title = excluded.title, artist = excluded.artist,
-			album = excluded.album, cover_url = excluded.cover_url`,
+			album = excluded.album, cover_url = excluded.cover_url,
+			status = CASE
+				WHEN entries.acquired = 1 OR entries.status IN ('done', 'downloading') THEN entries.status
+				ELSE excluded.status
+			END,
+			status_msg = CASE
+				WHEN entries.acquired = 1 OR entries.status IN ('done', 'downloading') THEN entries.status_msg
+				ELSE excluded.status_msg
+			END`,
 		e.Owner, e.Kind, e.SpotifyID, e.SpotifyURL, e.Title, e.Artist, e.Album, e.CoverURL,
-		e.CreatedAt.UTC().Format(time.RFC3339))
+		e.Status, e.StatusMsg, e.CreatedAt.UTC().Format(time.RFC3339))
 	if err != nil {
 		return err
 	}
@@ -91,9 +118,15 @@ func (s *wishlistStore) insert(e *entry) error {
 		e.ID = id
 	}
 	// On upsert LastInsertId can be unreliable; fetch the definitive row id.
-	return s.db.QueryRow(
-		`SELECT id, acquired FROM entries WHERE owner = ? AND kind = ? AND spotify_id = ?`,
-		e.Owner, e.Kind, e.SpotifyID).Scan(&e.ID, &e.Acquired)
+	var acquired int
+	err = s.db.QueryRow(
+		`SELECT id, acquired, status, status_msg FROM entries WHERE owner = ? AND kind = ? AND spotify_id = ?`,
+		e.Owner, e.Kind, e.SpotifyID).Scan(&e.ID, &acquired, &e.Status, &e.StatusMsg)
+	if err != nil {
+		return err
+	}
+	e.Acquired = acquired != 0
+	return nil
 }
 
 // listFor returns everything visible to user: their own entries, entries
@@ -102,7 +135,7 @@ func (s *wishlistStore) insert(e *entry) error {
 func (s *wishlistStore) listFor(user string) ([]entry, error) {
 	rows, err := s.db.Query(`
 		SELECT DISTINCT e.id, e.owner, e.kind, e.spotify_id, e.spotify_url,
-		       e.title, e.artist, e.album, e.cover_url, e.acquired, e.created_at
+		       e.title, e.artist, e.album, e.cover_url, e.acquired, e.status, e.status_msg, e.created_at
 		FROM entries e
 		LEFT JOIN entry_shares es ON es.entry_id = e.id
 		LEFT JOIN list_shares ls ON ls.owner = e.owner
@@ -120,7 +153,7 @@ func (s *wishlistStore) listFor(user string) ([]entry, error) {
 		var acquired int
 		var createdAt string
 		if err := rows.Scan(&e.ID, &e.Owner, &e.Kind, &e.SpotifyID, &e.SpotifyURL,
-			&e.Title, &e.Artist, &e.Album, &e.CoverURL, &acquired, &createdAt); err != nil {
+			&e.Title, &e.Artist, &e.Album, &e.CoverURL, &acquired, &e.Status, &e.StatusMsg, &createdAt); err != nil {
 			return nil, err
 		}
 		e.Acquired = acquired != 0
@@ -164,10 +197,10 @@ func (s *wishlistStore) get(id int64) (*entry, error) {
 	var acquired int
 	var createdAt string
 	err := s.db.QueryRow(`
-		SELECT id, owner, kind, spotify_id, spotify_url, title, artist, album, cover_url, acquired, created_at
+		SELECT id, owner, kind, spotify_id, spotify_url, title, artist, album, cover_url, acquired, status, status_msg, created_at
 		FROM entries WHERE id = ?`, id).
 		Scan(&e.ID, &e.Owner, &e.Kind, &e.SpotifyID, &e.SpotifyURL,
-			&e.Title, &e.Artist, &e.Album, &e.CoverURL, &acquired, &createdAt)
+			&e.Title, &e.Artist, &e.Album, &e.CoverURL, &acquired, &e.Status, &e.StatusMsg, &createdAt)
 	if err != nil {
 		return nil, err
 	}
@@ -188,6 +221,33 @@ func (s *wishlistStore) setAcquired(id int64, acquired bool) error {
 	}
 	_, err := s.db.Exec(`UPDATE entries SET acquired = ? WHERE id = ?`, v, id)
 	return err
+}
+
+func (s *wishlistStore) setStatus(id int64, status, msg string) error {
+	_, err := s.db.Exec(`UPDATE entries SET status = ?, status_msg = ? WHERE id = ?`, status, msg, id)
+	return err
+}
+
+// nextQueued returns the oldest queued entry, or nil if the queue is empty.
+func (s *wishlistStore) nextQueued() (*entry, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM entries WHERE status = ? ORDER BY id ASC LIMIT 1`, statusQueued).Scan(&id)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.get(id)
+}
+
+// requeueDownloading resets interrupted downloads back to queued after a restart.
+func (s *wishlistStore) requeueDownloading() (int64, error) {
+	res, err := s.db.Exec(`UPDATE entries SET status = ?, status_msg = '' WHERE status = ?`, statusQueued, statusDownloading)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (s *wishlistStore) shareEntry(id int64, username string) error {

@@ -42,7 +42,7 @@ struct SettingsView: View {
             } header: {
                 Text("Wishlist companion")
             } footer: {
-                Text("Optional Go service that stores “songs to go get.” Paste Spotify links in Your Library → Wishlist.")
+                Text("Optional Go service for Spotify search + wishlist downloads into your Navidrome library. Set URL to http://host:4534")
             }
             .listRowBackground(DromeTheme.elevated)
 

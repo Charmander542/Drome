@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,7 @@ type server struct {
 	store     *wishlistStore
 	navidrome *navidromeVerifier
 	spotify   *spotifyClient
+	downloads *downloadWorker
 }
 
 func (s *server) routes() http.Handler {
@@ -20,10 +22,12 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.HandleFunc("GET /spotify/search", s.requireAuth(s.handleSearch))
 	mux.HandleFunc("POST /wishlist", s.requireAuth(s.handleCreate))
 	mux.HandleFunc("GET /wishlist", s.requireAuth(s.handleList))
 	mux.HandleFunc("DELETE /wishlist/{id}", s.requireAuth(s.handleDelete))
 	mux.HandleFunc("PATCH /wishlist/{id}", s.requireAuth(s.handleUpdate))
+	mux.HandleFunc("POST /wishlist/{id}/retry", s.requireAuth(s.handleRetry))
 	mux.HandleFunc("POST /wishlist/{id}/share", s.requireAuth(s.handleShareEntry))
 	mux.HandleFunc("POST /wishlist/share", s.requireAuth(s.handleShareList))
 	return logRequests(mux)
@@ -36,6 +40,31 @@ func logRequests(next http.Handler) http.Handler {
 		// Never log query strings: they carry auth tokens.
 		logf("%s %s (%s)", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
 	})
+}
+
+// GET /spotify/search?q=...&type=track,album&limit=20
+func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeError(w, http.StatusBadRequest, "query parameter \"q\" is required")
+		return
+	}
+	types := r.URL.Query().Get("type")
+	limit := 20
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			limit = n
+		}
+	}
+	hits, err := s.spotify.search(r.Context(), q, types, limit)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "spotify search failed: "+err.Error())
+		return
+	}
+	if hits == nil {
+		hits = []searchHit{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": hits})
 }
 
 // POST /wishlist  body: {"url": "https://open.spotify.com/track/..."}
@@ -61,10 +90,18 @@ func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	entry.Owner = requestUser(r)
 	entry.CreatedAt = time.Now()
+	if s.downloads != nil && s.downloads.cfg.Enabled {
+		entry.Status = statusQueued
+	} else {
+		entry.Status = statusSkipped
+	}
 
 	if err := s.store.insert(entry); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not save entry: "+err.Error())
 		return
+	}
+	if entry.Status == statusQueued && s.downloads != nil {
+		s.downloads.kick()
 	}
 	writeJSON(w, http.StatusCreated, entry)
 }
@@ -138,6 +175,30 @@ func (s *server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e.Acquired = *body.Acquired
+	writeJSON(w, http.StatusOK, e)
+}
+
+// POST /wishlist/{id}/retry — re-queue a failed (or skipped) download.
+func (s *server) handleRetry(w http.ResponseWriter, r *http.Request) {
+	e := s.ownedEntry(w, r)
+	if e == nil {
+		return
+	}
+	if s.downloads == nil || !s.downloads.cfg.Enabled {
+		writeError(w, http.StatusServiceUnavailable, "auto-download is disabled on the server")
+		return
+	}
+	if e.Acquired {
+		writeError(w, http.StatusConflict, "entry is already marked acquired")
+		return
+	}
+	if err := s.store.setStatus(e.ID, statusQueued, ""); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	e.Status = statusQueued
+	e.StatusMsg = ""
+	s.downloads.kick()
 	writeJSON(w, http.StatusOK, e)
 }
 
