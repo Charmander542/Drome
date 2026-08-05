@@ -80,12 +80,18 @@ final class AppSession: ObservableObject, Identifiable {
     init(account: Account, password: String, database: AppDatabase) {
         self.account = account
         client = SubsonicClient(account: account, password: password)
-        ratings = RatingsStore(client: client)
+        ratings = RatingsStore(client: client, database: database, userKey: account.userKey)
         rotation = RotationManager(client: client, database: database, userKey: account.userKey)
         ratings.rotation = rotation
         downloads = DownloadManager(client: client, database: database, serverKey: account.serverKey)
         player = PlayerEngine(client: client, ratings: ratings, rotation: rotation, downloads: downloads)
-        player.autoplayProvider = AutoplayProvider(client: client, ratings: ratings, rotation: rotation)
+        let userKey = account.userKey
+        player.onTrackStarted = { [player] song in
+            try? database.recordPlay(userKey: userKey, song: song, context: player.context)
+        }
+        player.autoplayProvider = AutoplayProvider(
+            client: client, ratings: ratings, rotation: rotation,
+            database: database, userKey: userKey)
         lyricsService = LyricsService(database: database, client: client, serverKey: account.serverKey)
         lyricsIndexer = LyricsIndexer(client: client, database: database,
                                       lyricsService: lyricsService, serverKey: account.serverKey)

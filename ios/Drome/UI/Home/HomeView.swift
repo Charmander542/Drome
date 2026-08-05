@@ -4,7 +4,7 @@ struct HomeView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var env: AppEnvironment
 
-    @State private var recent: [Album] = []
+    @State private var recentEntries: [RecentPlayEntry] = []
     @State private var frequent: [Album] = []
     @State private var newest: [Album] = []
     @State private var isLoading = false
@@ -14,9 +14,9 @@ struct HomeView: View {
 
     var body: some View {
         Group {
-            if isLoading && recent.isEmpty && newest.isEmpty {
+            if isLoading && recentEntries.isEmpty && newest.isEmpty {
                 LoadingStateView()
-            } else if let error, recent.isEmpty {
+            } else if let error, recentEntries.isEmpty && frequent.isEmpty {
                 ErrorStateView(message: error) { Task { await load() } }
             } else {
                 ScrollView {
@@ -28,8 +28,8 @@ struct HomeView: View {
 
                         MoodVibeRail()
 
-                        if !recent.isEmpty {
-                            HorizontalAlbumRail(title: "Recently played", albums: recent)
+                        if !recentEntries.isEmpty {
+                            HorizontalRecentRail(title: "Recently played", entries: recentEntries)
                         }
                         if !frequent.isEmpty {
                             HorizontalAlbumRail(title: "Jump back in", albums: frequent)
@@ -37,7 +37,7 @@ struct HomeView: View {
                         if !newest.isEmpty {
                             HorizontalAlbumRail(title: "New in your library", albums: newest)
                         }
-                        if recent.isEmpty && frequent.isEmpty && newest.isEmpty {
+                        if recentEntries.isEmpty && frequent.isEmpty && newest.isEmpty {
                             EmptyStateView(title: "Your library is empty",
                                            message: "Add music to Navidrome and pull to refresh.")
                                 .frame(height: 280)
@@ -96,10 +96,11 @@ struct HomeView: View {
         error = nil
         defer { isLoading = false }
         do {
-            async let r = session.client.albumList(type: .recent, size: 20)
+            recentEntries = (try? AppEnvironment.shared.database.recentPlayEntries(
+                userKey: session.account.userKey, limit: 40)) ?? []
             async let f = session.client.albumList(type: .frequent, size: 20)
             async let n = session.client.albumList(type: .newest, size: 20)
-            (recent, frequent, newest) = try await (r, f, n)
+            (frequent, newest) = try await (f, n)
         } catch {
             self.error = error.localizedDescription
         }

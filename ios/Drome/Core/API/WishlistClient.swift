@@ -112,6 +112,11 @@ struct DromeWishlistClient {
         ).results
     }
 
+    /// Track-only Spotify search used by Search / recommend UIs.
+    func searchSpotify(query: String, limit: Int = 20) async throws -> [SpotifySearchHit] {
+        try await search(query: query, types: "track", limit: limit)
+    }
+
     func add(spotifyLink: String) async throws -> WishlistEntry {
         struct Body: Encodable { var url: String }
         return try await send(WishlistEntry.self, path: "/wishlist", method: "POST",

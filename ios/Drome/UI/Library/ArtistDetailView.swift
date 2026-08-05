@@ -64,6 +64,8 @@ struct ArtistDetailView: View {
                     .listRowBackground(DromeTheme.background)
                 }
             }
+
+            SpotifyRecommendSection(query: "artist:\(artist.name)")
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)

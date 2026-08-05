@@ -36,7 +36,7 @@ struct RatedLibraryView: View {
     var body: some View {
         List {
             Section {
-                Text("Auto playlists from your ratings and likes. They update as you rate.")
+                Text("Auto playlists from your ratings. They update as you rate tracks.")
                     .font(.subheadline)
                     .foregroundStyle(DromeTheme.muted)
                     .listRowBackground(DromeTheme.background)
@@ -88,13 +88,14 @@ struct RatedCollectionDetailView: View {
     @State private var albums: [Album] = []
     @State private var isLoading = true
     @State private var error: String?
+    @State private var isRefreshing = false
 
     var body: some View {
         Group {
             if isLoading && songs.isEmpty && albums.isEmpty {
                 LoadingStateView()
             } else if let error, songs.isEmpty && albums.isEmpty {
-                ErrorStateView(message: error) { Task { await load() } }
+                ErrorStateView(message: error) { Task { await load(forceDiscover: true) } }
             } else if collection == .topAlbums {
                 albumsContent
             } else {
@@ -115,8 +116,13 @@ struct RatedCollectionDetailView: View {
                 }
             }
         }
-        .task { await load() }
-        .refreshable { await load() }
+        .task {
+            await load(forceDiscover: false)
+        }
+        .onChange(of: ratings.revision) { _, _ in
+            applyLocalCache()
+        }
+        .refreshable { await load(forceDiscover: true) }
     }
 
     private var songsContent: some View {
@@ -143,6 +149,12 @@ struct RatedCollectionDetailView: View {
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
+                .overlay(alignment: .top) {
+                    if isRefreshing {
+                        ProgressView()
+                            .padding(8)
+                    }
+                }
             }
         }
     }
@@ -178,58 +190,58 @@ struct RatedCollectionDetailView: View {
         switch collection {
         case .fiveStars: return "Give tracks five stars on the Now Playing screen."
         case .fourPlus: return "Rate tracks 4 or 5 stars to fill this list."
-        case .topAlbums: return "Rate albums to see them ranked here."
+        case .topAlbums: return "Rate the album itself (not just its tracks) to see it here."
         }
     }
 
-    private func load() async {
-        isLoading = true
+    private func load(forceDiscover: Bool) async {
         error = nil
-        defer { isLoading = false }
-        do {
-            switch collection {
-            case .fiveStars:
-                songs = try await loadRatedSongs(minRating: 5)
-                albums = []
-            case .fourPlus:
-                songs = try await loadRatedSongs(minRating: 4)
-                albums = []
-            case .topAlbums:
-                albums = try await session.client.albumList(type: .highest, size: 80)
+
+        if collection == .topAlbums {
+            isLoading = albums.isEmpty
+            defer { isLoading = false }
+            do {
+                let remote = try await session.client.albumList(type: .highest, size: 100)
+                // Only albums that themselves have a star rating — not ones
+                // where only individual tracks were rated.
+                albums = remote
+                    .filter { ($0.userRating ?? 0) > 0 }
+                    .sorted {
+                        let r0 = $0.userRating ?? 0
+                        let r1 = $1.userRating ?? 0
+                        if r0 != r1 { return r0 > r1 }
+                        return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                    }
                 songs = []
+            } catch {
+                self.error = error.localizedDescription
             }
-        } catch {
-            self.error = error.localizedDescription
+            return
+        }
+
+        applyLocalCache()
+        isLoading = songs.isEmpty
+        defer { isLoading = false }
+
+        if forceDiscover || songs.isEmpty {
+            isRefreshing = true
+            defer { isRefreshing = false }
+            await ratings.discoverFromServer()
+            applyLocalCache()
         }
     }
 
-    /// Pulls highly rated tracks from top albums + random samples.
-    private func loadRatedSongs(minRating: Int) async throws -> [Song] {
-        var byID: [String: Song] = [:]
-
-        func consider(_ batch: [Song]) {
-            ratings.ingest(batch)
-            for song in batch where ratings.rating(for: song) >= minRating {
-                byID[song.id] = song
-            }
-        }
-
-        let topAlbums = try await session.client.albumList(type: .highest, size: 30)
-        for album in topAlbums.prefix(20) {
-            let detail = try await session.client.album(id: album.id)
-            consider(detail.songs)
-        }
-
-        for _ in 0..<2 {
-            let batch = try await session.client.randomSongs(size: 100)
-            consider(batch)
-        }
-
-        return byID.values.sorted {
-            let r0 = ratings.rating(for: $0)
-            let r1 = ratings.rating(for: $1)
-            if r0 != r1 { return r0 > r1 }
-            return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+    private func applyLocalCache() {
+        switch collection {
+        case .fiveStars:
+            songs = ratings.cachedSongs(minRating: 5)
+            albums = []
+        case .fourPlus:
+            songs = ratings.cachedSongs(minRating: 4)
+            albums = []
+        case .topAlbums:
+            albums = []
+            songs = []
         }
     }
 }

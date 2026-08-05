@@ -57,6 +57,7 @@ struct SongRow: View {
                         .foregroundStyle(isCurrent ? DromeTheme.accent : .white)
                         .lineLimit(1)
                     RatingBadge(rating: ratings.rating(for: song))
+                        .id("\(song.id)-\(ratings.revision)")
                     if rotation.contains(song.id) {
                         Image(systemName: "lock.fill")
                             .font(.caption2)
@@ -103,10 +104,26 @@ struct SongRow: View {
         } label: {
             Label("Add to Playlist", systemImage: "text.badge.plus")
         }
+        Button {
+            SongShare.present(song: song)
+        } label: {
+            Label("Share", systemImage: "square.and.arrow.up")
+        }
         Menu("Rate") {
             ForEach(0...5, id: \.self) { value in
-                Button(value == 0 ? "Clear rating" : String(repeating: "★", count: value)) {
-                    Task { await ratings.setRating(value, for: song) }
+                Button {
+                    ratings.setRating(value, for: song)
+                } label: {
+                    if value == 0 {
+                        Text("Clear rating")
+                    } else {
+                        Label {
+                            Text("\(value) star\(value == 1 ? "" : "s")")
+                        } icon: {
+                            Image(systemName: "star.fill")
+                                .foregroundStyle(RatingStyle.color(for: value))
+                        }
+                    }
                 }
             }
         }
@@ -150,7 +167,8 @@ struct SongRow: View {
 
     private var subtitle: String {
         var parts: [String] = []
-        if let artist = song.artist, !artist.isEmpty { parts.append(artist) }
+        let artist = song.displayArtist
+        if !artist.isEmpty { parts.append(artist) }
         if showAlbum, let album = song.album, !album.isEmpty { parts.append(album) }
         return parts.joined(separator: " · ")
     }

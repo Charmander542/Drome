@@ -41,6 +41,8 @@ final class PlayerEngine: ObservableObject {
     }
 
     var autoplayProvider: AutoplayProvider?
+    /// Fired when a track becomes current (explicit `setCurrent` or gapless advance).
+    var onTrackStarted: ((Song) -> Void)?
 
     // MARK: Private state
 
@@ -111,6 +113,7 @@ final class PlayerEngine: ObservableObject {
         userQueue.removeAll()
         history.removeAll()
         setCurrent(QueueItem(song: startSong), startPlaying: true)
+        ensureAutoplayBuffer()
     }
 
     /// Shuffle-button entry point: enables shuffle (smart by default) and
@@ -133,6 +136,7 @@ final class PlayerEngine: ObservableObject {
         userQueue.removeAll()
         history.removeAll()
         setCurrent(QueueItem(song: first), startPlaying: true)
+        ensureAutoplayBuffer()
     }
 
     // MARK: - Public API: transport
@@ -151,20 +155,24 @@ final class PlayerEngine: ObservableObject {
     }
 
     func next() {
+        // Drop leading low-rated tracks when the user opted into global skip.
+        drainLowRatedFromQueues()
         guard peekUpcoming(limit: 1).first != nil else {
-            // Queue exhausted: jump to the end of the current track.
+            if autoplayEnabled, repeatMode == .off {
+                Task { await forceAutoplayContinuation(playImmediately: true) }
+                return
+            }
             player.seek(to: CMTime(seconds: duration, preferredTimescale: 600))
             return
         }
         // Prefer advancing the preloaded AVQueuePlayer window so bookkeeping
         // stays in `handleCurrentItemChange` (one code path for skip + gapless).
-        if window.count > 1 {
+            if window.count > 1 {
             player.advanceToNextItem()
-            // KVO usually handles this; sync immediately if the publisher hasn't.
             if let item = player.currentItem {
                 handleCurrentItemChange(item)
             }
-            maybeExtendWithAutoplay()
+            ensureAutoplayBuffer()
             return
         }
         guard let upNext = peekUpcoming(limit: 1).first else { return }
@@ -174,7 +182,7 @@ final class PlayerEngine: ObservableObject {
         }
         consumeFromQueues(upNext)
         setCurrent(upNext, startPlaying: true)
-        maybeExtendWithAutoplay()
+        ensureAutoplayBuffer()
     }
 
     func previous(preferPreviousTrack: Bool = false) {
@@ -312,6 +320,7 @@ final class PlayerEngine: ObservableObject {
             contextQueue.removeSubrange(0...idx)
         }
         setCurrent(item, startPlaying: true)
+        ensureAutoplayBuffer()
     }
 
     func moveUserQueueItems(from source: IndexSet, to destination: Int) {
@@ -361,6 +370,13 @@ final class PlayerEngine: ObservableObject {
         rebuildWindow(startPlaying: startPlaying)
         scrobbleNowPlaying(item.song)
         loadArtwork(for: item.song)
+        onTrackStarted?(item.song)
+        if shouldSkipLowRated(item.song), peekUpcoming(limit: 1) != nil {
+            // Advance past globally-skipped low ratings without stalling.
+            DispatchQueue.main.async { [weak self] in self?.next() }
+        } else {
+            ensureAutoplayBuffer()
+        }
     }
 
     private func makePlayerItem(for song: Song) -> AVPlayerItem {
@@ -532,7 +548,8 @@ final class PlayerEngine: ObservableObject {
         pushNowPlayingInfo()
         scrobbleNowPlaying(newCurrent.song)
         loadArtwork(for: newCurrent.song)
-        maybeExtendWithAutoplay()
+        onTrackStarted?(newCurrent.song)
+        ensureAutoplayBuffer()
     }
 
     private func handleItemDidEnd(_ item: AVPlayerItem?) {
@@ -552,12 +569,28 @@ final class PlayerEngine: ObservableObject {
             play(fullContextSongs, startAt: 0, context: context)
             return
         }
-        // Leave the finished track visible, paused at the end (Spotify-like).
         history.append(finished)
         window.removeAll()
+        // Infinite Shuffle must keep going — never silently stop at the end.
+        if autoplayEnabled, repeatMode == .off {
+            elapsed = duration
+            pushNowPlayingInfo()
+            Task { await forceAutoplayContinuation(playImmediately: true) }
+            return
+        }
         elapsed = duration
         isPlaying = false
         pushNowPlayingInfo()
+    }
+
+    /// Regenerates the algorithmic (autoplay) tail without stopping playback.
+    func rerollAutoplayQueue() {
+        guard autoplayEnabled else { return }
+        contextQueue.removeAll(where: \.isAutoplay)
+        resyncUpcomingWindow()
+        autoplayTask?.cancel()
+        autoplayTask = nil
+        maybeExtendWithAutoplay(force: true)
     }
 
     // MARK: - Shuffle
@@ -592,10 +625,24 @@ final class PlayerEngine: ObservableObject {
 
     // MARK: - Autoplay (Infinite Shuffle)
 
-    private func maybeExtendWithAutoplay() {
+    /// Keeps a healthy upcoming buffer whenever Infinite Shuffle is on.
+    /// Call after jumps / play / advances so the last track never leaves an
+    /// empty Up Next list.
+    private func ensureAutoplayBuffer() {
+        guard autoplayEnabled, repeatMode == .off, current != nil else { return }
+        let upcoming = userQueue.count + contextQueue.count
+        // Refill early — never wait until the queue is already empty.
+        if upcoming < 8 {
+            maybeExtendWithAutoplay(force: upcoming < 3)
+        }
+    }
+
+    private func maybeExtendWithAutoplay(force: Bool = false) {
         guard autoplayEnabled, repeatMode == .off, autoplayTask == nil,
               let provider = autoplayProvider, current != nil else { return }
-        guard userQueue.count + contextQueue.count < 5 else { return }
+        if !force {
+            guard userQueue.count + contextQueue.count < 8 else { return }
+        }
 
         let seeds = (history.suffix(8).map(\.song) + [current?.song].compactMap { $0 })
         var excluding = Set(history.suffix(60).map(\.song.id))
@@ -604,7 +651,7 @@ final class PlayerEngine: ObservableObject {
         if let currentID = current?.song.id { excluding.insert(currentID) }
 
         autoplayTask = Task { [weak self] in
-            let songs = await provider.nextBatch(seeds: seeds, excluding: excluding)
+            let songs = await provider.nextBatch(seeds: seeds, excluding: excluding, count: 20)
             guard let self else { return }
             self.autoplayTask = nil
             guard !songs.isEmpty else { return }
@@ -614,7 +661,52 @@ final class PlayerEngine: ObservableObject {
                 self.context = PlaybackContext(label: "Autoplay", kind: .mix)
             }
             self.topUpWindow()
+            // Keep topping up until the buffer is healthy.
+            self.ensureAutoplayBuffer()
         }
+    }
+
+    private func forceAutoplayContinuation(playImmediately: Bool) async {
+        guard let provider = autoplayProvider else {
+            isPlaying = false
+            pushNowPlayingInfo()
+            return
+        }
+        var excluding = Set(history.suffix(60).map(\.song.id))
+        excluding.formUnion(userQueue.map(\.song.id))
+        excluding.formUnion(contextQueue.map(\.song.id))
+        let seeds = history.suffix(8).map(\.song)
+        let songs = await provider.nextBatch(seeds: seeds, excluding: excluding, count: 20)
+        guard !songs.isEmpty else {
+            isPlaying = false
+            pushNowPlayingInfo()
+            return
+        }
+        ratings.ingest(songs)
+        contextQueue.append(contentsOf: songs.map { QueueItem(song: $0, isAutoplay: true) })
+        if context == nil {
+            context = PlaybackContext(label: "Autoplay", kind: .mix)
+        }
+        if playImmediately, let next = peekUpcoming(limit: 1).first {
+            consumeFromQueues(next)
+            setCurrent(next, startPlaying: true)
+        } else {
+            topUpWindow()
+        }
+        maybeExtendWithAutoplay()
+    }
+
+    private func drainLowRatedFromQueues() {
+        guard PlaybackPreferences.skipLowRatedEverywhere else { return }
+        userQueue.removeAll { shouldSkipLowRated($0.song) }
+        contextQueue.removeAll { shouldSkipLowRated($0.song) }
+        resyncUpcomingWindow()
+    }
+
+    private func shouldSkipLowRated(_ song: Song) -> Bool {
+        guard PlaybackPreferences.skipLowRatedEverywhere else { return false }
+        let r = ratings.rating(for: song)
+        return (1...2).contains(r)
     }
 
     private func removeAutoplayTail() {

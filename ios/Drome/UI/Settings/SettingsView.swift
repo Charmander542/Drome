@@ -48,6 +48,10 @@ struct SettingsView: View {
 
             Section("Playback") {
                 Toggle("Autoplay / Infinite Shuffle", isOn: $player.autoplayEnabled)
+                Toggle("Skip low-rated songs everywhere", isOn: Binding(
+                    get: { PlaybackPreferences.skipLowRatedEverywhere },
+                    set: { PlaybackPreferences.skipLowRatedEverywhere = $0 }
+                ))
                 Picker("Default shuffle", selection: Binding(
                     get: { player.shuffleMode },
                     set: { player.shuffleMode = $0 }
@@ -55,6 +59,15 @@ struct SettingsView: View {
                     Text("Off").tag(ShuffleMode.off)
                     Text("Smart (rating-weighted)").tag(ShuffleMode.smart)
                     Text("Random").tag(ShuffleMode.random)
+                }
+                Picker("Autoplay recency exclusion", selection: Binding(
+                    get: { Int(PlaybackPreferences.autoplayRecencyHours) },
+                    set: { PlaybackPreferences.autoplayRecencyHours = Double($0) }
+                )) {
+                    Text("24 hours").tag(24)
+                    Text("3 days").tag(72)
+                    Text("7 days").tag(168)
+                    Text("30 days").tag(720)
                 }
             }
             .listRowBackground(DromeTheme.elevated)

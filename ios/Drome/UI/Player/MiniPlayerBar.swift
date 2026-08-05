@@ -26,7 +26,7 @@ struct MiniPlayerBar: View {
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(.white)
                                 .lineLimit(1)
-                            Text(artist.isEmpty ? "Unknown Artist" : artist)
+                            Text(artist.isEmpty ? "Unknown Artist" : (current.song.displayArtist.isEmpty ? artist : current.song.displayArtist))
                                 .font(.caption)
                                 .foregroundStyle(Color.white.opacity(0.65))
                                 .lineLimit(1)
@@ -52,6 +52,8 @@ struct MiniPlayerBar: View {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.body.weight(.bold))
                         .foregroundStyle(.white)
+                        // Optical center: nudge play triangle slightly left.
+                        .offset(x: player.isPlaying ? 0 : -1.5)
                         .frame(width: 40, height: 40)
                         .contentShape(Rectangle())
                 }

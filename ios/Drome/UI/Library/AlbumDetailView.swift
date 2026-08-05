@@ -12,6 +12,12 @@ struct AlbumDetailView: View {
     @State private var album: AlbumWithSongs?
     @State private var error: String?
     @State private var isLoading = true
+    @State private var artistDestination: ArtistNav?
+
+    private struct ArtistNav: Hashable, Identifiable {
+        let id: String
+        let name: String
+    }
 
     var body: some View {
         Group {
@@ -24,6 +30,9 @@ struct AlbumDetailView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(item: $artistDestination) { dest in
+            ArtistDetailView(artistID: dest.id, placeholderName: dest.name)
+        }
         .task { await load() }
     }
 
@@ -47,6 +56,8 @@ struct AlbumDetailView: View {
                         .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                 }
             }
+
+            SpotifyRecommendSection(query: "\(album.artist ?? "") \(album.name)")
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -84,22 +95,29 @@ struct AlbumDetailView: View {
                 Text(album.name)
                     .font(.title.bold())
                     .multilineTextAlignment(.center)
-                if let artist = album.artist {
-                    NavigationLink {
-                        if let artistId = album.artistId {
-                            ArtistDetailView(artistID: artistId, placeholderName: artist)
-                        }
-                    } label: {
-                        Text(artist)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(DromeTheme.muted)
-                    }
-                    .disabled(album.artistId == nil)
+                    .frame(maxWidth: .infinity)
+
+                if let artist = album.artist, !artist.isEmpty {
+                    albumArtistLink(
+                        artist: ArtistCredits.display(albumArtist: artist, artists: nil),
+                        artistId: album.artistId)
                 }
-                Text(metaLine(album))
-                    .font(.caption)
-                    .foregroundStyle(DromeTheme.muted)
+
+                HStack(spacing: 6) {
+                    if let rating = album.userRating, rating > 0 {
+                        RatingBadge(rating: rating, size: 11)
+                    }
+                    Text(metaLine(album))
+                        .font(.caption)
+                        .foregroundStyle(DromeTheme.muted)
+                }
+
+                StarRatingControl(rating: album.userRating ?? 0, size: 18) { newRating in
+                    Task { await rateAlbum(album, rating: newRating) }
+                }
+                .padding(.top, 4)
             }
+            .frame(maxWidth: .infinity)
 
             HStack(spacing: 12) {
                 Button {
@@ -112,7 +130,7 @@ struct AlbumDetailView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(DromeTheme.accent)
-                .foregroundStyle(.black)
+                .foregroundStyle(.white)
 
                 Button {
                     player.playShuffled(album.songs,
@@ -129,6 +147,30 @@ struct AlbumDetailView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 20)
+    }
+
+    @ViewBuilder
+    private func albumArtistLink(artist: String, artistId: String?) -> some View {
+        if let artistId, !artistId.isEmpty {
+            // Plain button + navigationDestination avoids List’s trailing chevron
+            // and keeps the name visually centered under the title.
+            Button {
+                artistDestination = ArtistNav(id: artistId, name: artist)
+            } label: {
+                Text(artist)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(DromeTheme.muted)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.plain)
+        } else {
+            Text(artist)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(DromeTheme.muted)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+        }
     }
 
     private func metaLine(_ album: AlbumWithSongs) -> String {
@@ -150,6 +192,19 @@ struct AlbumDetailView: View {
             album = loaded
             ratings.ingest(loaded.songs)
         } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func rateAlbum(_ current: AlbumWithSongs, rating: Int) async {
+        let clamped = min(5, max(0, rating))
+        var updated = current
+        updated.userRating = clamped == 0 ? nil : clamped
+        album = updated
+        do {
+            try await session.client.setRating(id: current.id, rating: clamped)
+        } catch {
+            album = current
             self.error = error.localizedDescription
         }
     }

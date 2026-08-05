@@ -38,7 +38,6 @@ struct NowPlayingView: View {
 
                 VStack(spacing: 0) {
                     grabber
-                        .gesture(dismissGesture)
 
                     panePicker
                         .frame(maxWidth: min(280, width - 48))
@@ -59,6 +58,10 @@ struct NowPlayingView: View {
             }
             .frame(width: width, height: height)
             .offset(y: max(0, dismissDrag))
+            .transaction { txn in
+                if dismissDrag > 0 { txn.animation = nil }
+            }
+            .simultaneousGesture(dismissGesture)
         }
         .ignoresSafeArea(edges: .bottom)
         .toolbar(.hidden, for: .navigationBar)
@@ -153,14 +156,28 @@ struct NowPlayingView: View {
     }
 
     private var dismissGesture: some Gesture {
-        DragGesture(minimumDistance: 12)
-            .onChanged { dismissDrag = max(0, $0.translation.height) }
-            .onEnded { value in
-                if value.translation.height > 140 {
-                    dismiss()
+        DragGesture(minimumDistance: 8, coordinateSpace: .local)
+            .onChanged { value in
+                // Only track mostly-vertical pulls; ignore diagonal noise.
+                guard value.translation.height > 0,
+                      value.translation.height > abs(value.translation.width) * 1.15
+                else { return }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    dismissDrag = value.translation.height
                 }
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+            }
+            .onEnded { value in
+                let shouldDismiss = value.translation.height > 140
+                    || value.predictedEndTranslation.height > 220
+                if shouldDismiss {
+                    dismiss()
                     dismissDrag = 0
+                } else {
+                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.9)) {
+                        dismissDrag = 0
+                    }
                 }
             }
     }
@@ -233,50 +250,56 @@ struct NowPlayingView: View {
     private func artSwipeGesture(containerWidth: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 24)
             .onChanged { value in
+                guard !artSwipeAnimating else { return }
                 guard abs(value.translation.width) > abs(value.translation.height) * 0.7 else { return }
                 artDragX = value.translation.width
             }
             .onEnded { value in
+                guard !artSwipeAnimating else { return }
                 let dx = value.translation.width
                 let predicted = value.predictedEndTranslation.width
                 let threshold = min(110, containerWidth * 0.22)
-                // Swipe left (finger moves left) → next track.
                 let goNext = dx < -threshold || predicted < -threshold * 1.4
-                // Swipe right → previous track (never restarts).
                 let goPrevious = dx > threshold || predicted > threshold * 1.4
 
                 if goNext {
-                    artSwipeAnimating = true
-                    withAnimation(.easeOut(duration: 0.18)) {
-                        artDragX = -containerWidth
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+                    completeArtSwipe(direction: -1, containerWidth: containerWidth) {
                         player.next()
-                        artDragX = containerWidth * 0.35
-                        artSwipeAnimating = false
-                        withAnimation(.interactiveSpring(response: 0.35, dampingFraction: 0.84)) {
-                            artDragX = 0
-                        }
                     }
                 } else if goPrevious {
-                    artSwipeAnimating = true
-                    withAnimation(.easeOut(duration: 0.18)) {
-                        artDragX = containerWidth
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+                    completeArtSwipe(direction: 1, containerWidth: containerWidth) {
                         player.previous(preferPreviousTrack: true)
-                        artDragX = -containerWidth * 0.35
-                        artSwipeAnimating = false
-                        withAnimation(.interactiveSpring(response: 0.35, dampingFraction: 0.84)) {
-                            artDragX = 0
-                        }
                     }
                 } else {
-                    withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.85)) {
+                    // Partial swipe — spring smoothly back; never jump.
+                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
                         artDragX = 0
                     }
                 }
             }
+    }
+
+    /// Animates the cover off-screen, swaps the track, then springs the new
+    /// cover in from the opposite edge without an intermediate hard set.
+    private func completeArtSwipe(direction: CGFloat, containerWidth: CGFloat, action: @escaping () -> Void) {
+        artSwipeAnimating = true
+        let exitX = direction * -containerWidth
+        let enterX = direction * containerWidth * 0.28
+        withAnimation(.easeOut(duration: 0.2)) {
+            artDragX = exitX
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            action()
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                artDragX = enterX
+            }
+            artSwipeAnimating = false
+            withAnimation(.interactiveSpring(response: 0.38, dampingFraction: 0.84)) {
+                artDragX = 0
+            }
+        }
     }
 
     private var coverURL: URL? {
@@ -288,7 +311,7 @@ struct NowPlayingView: View {
     private var metadataBlock: some View {
         let song = player.current?.song
         let title = cleaned(song?.title) ?? "Unknown Title"
-        let artist = cleaned(song?.artist) ?? "Unknown Artist"
+        let artist = cleaned(song.map { $0.displayArtist }) ?? "Unknown Artist"
 
         return HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
@@ -365,15 +388,14 @@ struct NowPlayingView: View {
         Group {
             if let song = player.current?.song {
                 StarRatingControl(rating: ratings.rating(for: song), size: 22) { newRating in
-                    Task {
-                        await ratings.setRating(newRating, for: song)
-                        if newRating == 0 {
-                            flash("Rating cleared")
-                        } else {
-                            flash("Rated \(newRating)★")
-                        }
+                    ratings.setRating(newRating, for: song)
+                    if newRating == 0 {
+                        flash("Rating cleared")
+                    } else {
+                        flash("Rated \(newRating)★")
                     }
                 }
+                .id("\(song.id)-\(ratings.revision)")
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -459,7 +481,9 @@ struct NowPlayingView: View {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.title2.weight(.bold))
                         .foregroundStyle(.black)
-                        .offset(x: player.isPlaying ? 0 : 2)
+                        // Optical center: nudge play triangle slightly left.
+                        .offset(x: player.isPlaying ? 0 : -2)
+                        .frame(width: 62, height: 62)
                 }
             }
             .buttonStyle(ScaleButtonStyle())
@@ -627,6 +651,13 @@ struct NowPlayingMoreSheet: View {
                     }
                     .listRowBackground(DromeTheme.elevated)
 
+                    Button {
+                        SongShare.present(song: song)
+                    } label: {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                    .listRowBackground(DromeTheme.elevated)
+
                     if rotation.contains(song.id) {
                         Button {
                             Task {
@@ -648,6 +679,14 @@ struct NowPlayingMoreSheet: View {
                         }
                         .listRowBackground(DromeTheme.elevated)
                     }
+
+                    Button {
+                        player.rerollAutoplayQueue()
+                        isPresented = false
+                    } label: {
+                        Label("Reroll Autoplay", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .listRowBackground(DromeTheme.elevated)
 
                     Button {
                         player.autoplayEnabled.toggle()

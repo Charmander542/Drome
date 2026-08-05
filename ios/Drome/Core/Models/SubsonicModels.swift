@@ -46,6 +46,8 @@ struct Song: Codable, Identifiable, Hashable {
     var albumId: String?
     var artist: String?
     var artistId: String?
+    /// OpenSubsonic multi-artist credits when the server provides them.
+    var artists: [ArtistRef]?
     var track: Int?
     var discNumber: Int?
     var year: Int?
@@ -65,6 +67,23 @@ struct Song: Codable, Identifiable, Hashable {
 
     var durationText: String {
         Formatters.duration(seconds: duration ?? 0)
+    }
+
+    var displayArtist: String {
+        ArtistCredits.display(for: self)
+    }
+}
+
+struct ArtistRef: Codable, Hashable, Identifiable {
+    /// Server artist id when present.
+    var artistId: String?
+    var name: String
+
+    var id: String { artistId ?? name }
+
+    enum CodingKeys: String, CodingKey {
+        case artistId = "id"
+        case name
     }
 }
 
@@ -100,6 +119,7 @@ struct AlbumWithSongs: Decodable {
     var duration: Int?
     var year: Int?
     var genre: String?
+    var userRating: Int?
     var song: [Song]?
 
     var songs: [Song] { song ?? [] }
@@ -107,7 +127,7 @@ struct AlbumWithSongs: Decodable {
     var asAlbum: Album {
         Album(id: id, name: name, artist: artist, artistId: artistId, coverArt: coverArt,
               songCount: songCount, duration: duration, playCount: nil, created: nil,
-              year: year, genre: genre, userRating: nil)
+              year: year, genre: genre, userRating: userRating)
     }
 }
 

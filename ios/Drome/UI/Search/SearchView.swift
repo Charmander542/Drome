@@ -2,41 +2,71 @@ import SwiftUI
 import Combine
 
 struct SearchView: View {
+    private enum Source: String, CaseIterable {
+        case library = "Library"
+        case spotify = "Spotify"
+    }
+
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject private var ratings: RatingsStore
 
+    @State private var source: Source = .library
     @State private var query = ""
     @State private var includeLyrics = false
     @State private var isSearching = false
     @State private var hits: [SearchHit] = []
+    @State private var spotifyHits: [SpotifySearchHit] = []
+    @State private var addingSpotifyIDs: Set<String> = []
+    @State private var addedSpotifyIDs: Set<String> = []
     @State private var error: String?
     @State private var debounceTask: Task<Void, Never>?
     @FocusState private var searchFocused: Bool
+    @State private var recentItems: [RecentSearchItem] = RecentSearchesStore.load()
 
     var body: some View {
         results
             .navigationTitle("Search")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
-                        prompt: "Artists, songs, albums…")
+                        prompt: source == .library
+                            ? "Artists, songs, albums…"
+                            : "Search Spotify tracks…")
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .focused($searchFocused)
             .onChange(of: query) { _, newValue in
                 scheduleSearch(newValue)
             }
+            .onChange(of: source) { _, _ in
+                hits = []
+                spotifyHits = []
+                error = nil
+                scheduleSearch(query)
+            }
+            .onAppear { recentItems = RecentSearchesStore.load() }
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        includeLyrics.toggle()
-                        scheduleSearch(query)
-                    } label: {
-                        Image(systemName: includeLyrics ? "text.quote" : "text.quote")
-                            .symbolVariant(includeLyrics ? .fill : .none)
-                            .foregroundStyle(includeLyrics ? DromeTheme.accent : Color.white.opacity(0.7))
+                ToolbarItem(placement: .principal) {
+                    Picker("Source", selection: $source) {
+                        ForEach(Source.allCases, id: \.self) { s in
+                            Text(s.rawValue).tag(s)
+                        }
                     }
-                    .accessibilityLabel(includeLyrics ? "Lyrics search on" : "Lyrics search off")
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 220)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if source == .library {
+                        Button {
+                            includeLyrics.toggle()
+                            scheduleSearch(query)
+                        } label: {
+                            Image(systemName: includeLyrics ? "text.quote" : "text.quote")
+                                .symbolVariant(includeLyrics ? .fill : .none)
+                                .foregroundStyle(includeLyrics ? DromeTheme.accent : Color.white.opacity(0.7))
+                        }
+                        .accessibilityLabel(includeLyrics ? "Lyrics search on" : "Lyrics search off")
+                    }
                 }
             }
             .scrollDismissesKeyboard(.interactively)
@@ -44,18 +74,185 @@ struct SearchView: View {
 
     @ViewBuilder
     private var results: some View {
+        switch source {
+        case .library:
+            libraryResults
+        case .spotify:
+            spotifyResults
+        }
+    }
+
+    @ViewBuilder
+    private var libraryResults: some View {
         if isSearching && hits.isEmpty {
             LoadingStateView(message: "Searching…")
         } else if let error {
             ErrorStateView(message: error)
         } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            EmptyStateView(title: "Find your music",
-                           systemImage: "magnifyingglass",
-                           message: "Try an artist, album, song, or a line of lyrics.")
+            recentSearchesView
         } else if hits.isEmpty && !isSearching {
             EmptyStateView(title: "No results", message: "Try a different query.")
         } else {
             rankedList
+        }
+    }
+
+    @ViewBuilder
+    private var spotifyResults: some View {
+        if session.wishlist == nil {
+            EmptyStateView(
+                title: "Wishlist not configured",
+                systemImage: "heart",
+                message: "Set your companion server URL in Settings to search Spotify and add tracks to your wishlist.")
+        } else if isSearching && spotifyHits.isEmpty {
+            LoadingStateView(message: "Searching Spotify…")
+        } else if let error {
+            ErrorStateView(message: error)
+        } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            recentSearchesView
+        } else if spotifyHits.isEmpty && !isSearching {
+            EmptyStateView(title: "No results", message: "Try a different query.")
+        } else {
+            spotifyList
+        }
+    }
+
+    @ViewBuilder
+    private var recentSearchesView: some View {
+        if recentItems.isEmpty {
+            EmptyStateView(
+                title: source == .library ? "Find your music" : "Search Spotify",
+                systemImage: "magnifyingglass",
+                message: source == .library
+                    ? "Try an artist, album, song, or a line of lyrics."
+                    : "Find tracks to add to your wishlist.")
+        } else if source == .spotify {
+            EmptyStateView(
+                title: "Search Spotify",
+                systemImage: "magnifyingglass",
+                message: "Find tracks to add to your wishlist.")
+        } else {
+            List {
+                Section {
+                    ForEach(recentItems) { item in
+                        recentItemRow(item)
+                            .listRowBackground(DromeTheme.background)
+                            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    RecentSearchesStore.remove(item)
+                                    recentItems = RecentSearchesStore.load()
+                                } label: {
+                                    Label("Remove", systemImage: "trash")
+                                }
+                            }
+                    }
+                } header: {
+                    HStack {
+                        Text("Recent")
+                        Spacer()
+                        Button("Clear") {
+                            RecentSearchesStore.clear()
+                            recentItems = []
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(DromeTheme.accent)
+                        .textCase(nil)
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
+        }
+    }
+
+    @ViewBuilder
+    private func recentItemRow(_ item: RecentSearchItem) -> some View {
+        switch item.kind {
+        case .artist:
+            NavigationLink {
+                ArtistDetailView(
+                    artistID: item.entityId,
+                    placeholderName: item.title)
+            } label: {
+                recentItemLabel(item, shape: .circle)
+            }
+            .simultaneousGesture(TapGesture().onEnded {
+                bumpRecent(item)
+            })
+
+        case .album:
+            NavigationLink {
+                AlbumDetailView(
+                    albumID: item.entityId,
+                    placeholder: item.decodedAlbum() ?? Album(
+                        id: item.entityId, name: item.title,
+                        artist: nil, artistId: nil, coverArt: item.coverArt,
+                        songCount: nil, duration: nil, playCount: nil,
+                        created: nil, year: nil, genre: nil, userRating: nil))
+            } label: {
+                recentItemLabel(item, shape: .rounded)
+            }
+            .simultaneousGesture(TapGesture().onEnded {
+                bumpRecent(item)
+            })
+
+        case .song:
+            Button {
+                bumpRecent(item)
+                if let song = item.decodedSong() {
+                    player.play([song], startAt: 0,
+                                context: PlaybackContext(label: "Search", kind: .search))
+                } else {
+                    Task { await playRecentSong(id: item.entityId) }
+                }
+            } label: {
+                recentItemLabel(item, shape: .rounded)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func recentItemLabel(_ item: RecentSearchItem, shape: CoverShape) -> some View {
+        HStack(spacing: 12) {
+            RemoteImage(
+                url: session.client.coverArtURL(id: item.coverArt ?? item.entityId, size: 120),
+                placeholderSymbol: item.kind == .artist ? "person.crop.circle" : "music.note")
+                .frame(width: 44, height: 44)
+                .clipShape(shape == .circle ? AnyShape(Circle()) : AnyShape(RoundedRectangle(cornerRadius: 4)))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                    .font(DromeTheme.rowTitle)
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text(item.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.muted)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Text(item.kind.rawValue.uppercased())
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(DromeTheme.muted)
+        }
+    }
+
+    private func bumpRecent(_ item: RecentSearchItem) {
+        RecentSearchesStore.remember(item)
+        recentItems = RecentSearchesStore.load()
+    }
+
+    private func playRecentSong(id: String) async {
+        do {
+            let song = try await session.client.song(id: id)
+            RecentSearchesStore.remember(song: song)
+            recentItems = RecentSearchesStore.load()
+            player.play([song], startAt: 0,
+                        context: PlaybackContext(label: "Search", kind: .search))
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 
@@ -80,6 +277,73 @@ struct SearchView: View {
         )
     }
 
+    private var spotifyList: some View {
+        List {
+            ForEach(spotifyHits) { hit in
+                spotifyRow(hit)
+                    .listRowBackground(DromeTheme.background)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .scrollDismissesKeyboard(.interactively)
+        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 12).onChanged { _ in
+                searchFocused = false
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                                to: nil, from: nil, for: nil)
+            }
+        )
+    }
+
+    private func spotifyRow(_ hit: SpotifySearchHit) -> some View {
+        HStack(spacing: 12) {
+            AsyncImage(url: URL(string: hit.coverUrl)) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().aspectRatio(contentMode: .fill)
+                default:
+                    Color(white: 0.16)
+                }
+            }
+            .frame(width: 44, height: 44)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(hit.title)
+                    .font(DromeTheme.rowTitle)
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text([hit.artist, hit.album].filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.muted)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+
+            Button {
+                Task { await addToWishlist(hit) }
+            } label: {
+                if addingSpotifyIDs.contains(hit.spotifyId) {
+                    ProgressView()
+                } else if addedSpotifyIDs.contains(hit.spotifyId) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(DromeTheme.accent)
+                } else {
+                    Text("Add to Wishlist")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(DromeTheme.accent)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(addingSpotifyIDs.contains(hit.spotifyId)
+                      || addedSpotifyIDs.contains(hit.spotifyId))
+        }
+    }
+
     @ViewBuilder
     private func hitRow(_ hit: SearchHit) -> some View {
         switch hit.kind {
@@ -90,6 +354,9 @@ struct SearchView: View {
                 } label: {
                     hitLabel(hit, shape: .circle)
                 }
+                .simultaneousGesture(TapGesture().onEnded {
+                    rememberHit(hit)
+                })
             }
         case .album:
             if let album = hit.album {
@@ -98,10 +365,14 @@ struct SearchView: View {
                 } label: {
                     hitLabel(hit, shape: .rounded)
                 }
+                .simultaneousGesture(TapGesture().onEnded {
+                    rememberHit(hit)
+                })
             }
         case .song:
             if let song = hit.song {
                 Button {
+                    rememberHit(hit)
                     let songs = hits.compactMap(\.song)
                     let start = songs.firstIndex(where: { $0.id == song.id }) ?? 0
                     player.play(songs.isEmpty ? [song] : songs, startAt: start,
@@ -118,11 +389,17 @@ struct SearchView: View {
                     Button { player.addToQueue(song) } label: {
                         Label("Add to Queue", systemImage: "text.append")
                     }
+                    Button {
+                        SongShare.present(song: song)
+                    } label: {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
                 }
             }
         case .lyrics:
             if let lyric = hit.lyrics {
                 Button {
+                    rememberHit(hit)
                     Task { await playLyricsHit(lyric) }
                 } label: {
                     VStack(alignment: .leading, spacing: 4) {
@@ -137,6 +414,11 @@ struct SearchView: View {
                 .buttonStyle(.plain)
             }
         }
+    }
+
+    private func rememberHit(_ hit: SearchHit) {
+        RecentSearchesStore.remember(hit: hit)
+        recentItems = RecentSearchesStore.load()
     }
 
     private enum CoverShape { case circle, rounded }
@@ -167,6 +449,7 @@ struct SearchView: View {
                         .lineLimit(1)
                     if hit.kind == .song, let song = hit.song {
                         RatingBadge(rating: ratings.rating(for: song))
+                            .id("\(song.id)-\(ratings.revision)")
                     } else if hit.kind == .album, let album = hit.album, let rating = album.userRating, rating > 0 {
                         RatingBadge(rating: rating)
                     }
@@ -208,13 +491,19 @@ struct SearchView: View {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             hits = []
+            spotifyHits = []
             error = nil
             return
         }
         debounceTask = Task {
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled else { return }
-            await runSearch(trimmed)
+            switch source {
+            case .library:
+                await runSearch(trimmed)
+            case .spotify:
+                await runSpotifySearch(trimmed)
+            }
         }
     }
 
@@ -234,6 +523,30 @@ struct SearchView: View {
             let metadata = try await metadataTask
             ratings.ingest(metadata.songs)
             hits = SearchRanker.rank(query: q, result: metadata, lyrics: lyrics)
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func runSpotifySearch(_ q: String) async {
+        guard let wishlist = session.wishlist else { return }
+        isSearching = true
+        error = nil
+        defer { isSearching = false }
+        do {
+            spotifyHits = try await wishlist.searchSpotify(query: q)
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func addToWishlist(_ hit: SpotifySearchHit) async {
+        guard let wishlist = session.wishlist else { return }
+        addingSpotifyIDs.insert(hit.spotifyId)
+        defer { addingSpotifyIDs.remove(hit.spotifyId) }
+        do {
+            _ = try await wishlist.add(spotifyLink: hit.spotifyUrl)
+            addedSpotifyIDs.insert(hit.spotifyId)
         } catch {
             self.error = error.localizedDescription
         }

@@ -9,17 +9,27 @@ final class AutoplayProvider {
     private let client: SubsonicClient
     private let ratings: RatingsStore
     private let rotation: RotationManager
+    private let database: AppDatabase
+    private let userKey: String
 
-    init(client: SubsonicClient, ratings: RatingsStore, rotation: RotationManager) {
+    init(client: SubsonicClient, ratings: RatingsStore, rotation: RotationManager,
+         database: AppDatabase, userKey: String) {
         self.client = client
         self.ratings = ratings
         self.rotation = rotation
+        self.database = database
+        self.userKey = userKey
     }
 
     func nextBatch(seeds: [Song], excluding: Set<String>, count: Int = 15) async -> [Song] {
         let excludedRotation = rotation.excludedIDs
+        let recentPlays = (try? database.recentPlayIDs(
+            userKey: userKey, withinHours: PlaybackPreferences.autoplayRecencyHours)) ?? []
         let isAllowed: (Song) -> Bool = { song in
-            !excluding.contains(song.id) && !excludedRotation.contains(song.id)
+            !excluding.contains(song.id)
+                && !excludedRotation.contains(song.id)
+                && !recentPlays.contains(song.id)
+                && !Self.isLowRatedExcluded(song, ratings: self.ratings)
         }
 
         // (a) Similar to recent listening: similar artists, then same genre.
@@ -79,5 +89,11 @@ final class AutoplayProvider {
             if !advanced { break }
         }
         return Array(result.prefix(count))
+    }
+
+    /// Low-rated tracks are always kept out of Infinite Shuffle pools.
+    private static func isLowRatedExcluded(_ song: Song, ratings: RatingsStore) -> Bool {
+        let r = ratings.rating(for: song)
+        return (1...2).contains(r)
     }
 }

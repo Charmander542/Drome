@@ -35,7 +35,7 @@ struct DownloadRecord {
 }
 
 /// On-device SQLite database (GRDB): lyrics cache, FTS5 lyrics search index,
-/// offline-download metadata, and Out-of-Rotation manual overrides.
+/// offline-download metadata, Out-of-Rotation manual overrides, and play history.
 final class AppDatabase {
     let pool: DatabasePool
 
@@ -113,6 +113,47 @@ final class AppDatabase {
                     album_offset INTEGER NOT NULL DEFAULT 0,
                     updated_at   TEXT NOT NULL
                 );
+                """)
+        }
+        migrator.registerMigration("v2") { db in
+            try db.execute(sql: """
+                CREATE TABLE play_history (
+                    user_key   TEXT NOT NULL,
+                    song_id    TEXT NOT NULL,
+                    played_at  REAL NOT NULL,
+                    song_json  TEXT NOT NULL
+                );
+                """)
+            try db.execute(sql: """
+                CREATE INDEX play_history_user_played_at
+                ON play_history (user_key, played_at DESC);
+                """)
+        }
+        migrator.registerMigration("v3_play_context") { db in
+            try db.execute(sql: """
+                ALTER TABLE play_history ADD COLUMN context_kind TEXT;
+                """)
+            try db.execute(sql: """
+                ALTER TABLE play_history ADD COLUMN context_id TEXT;
+                """)
+            try db.execute(sql: """
+                ALTER TABLE play_history ADD COLUMN context_label TEXT;
+                """)
+        }
+        migrator.registerMigration("v4_song_ratings") { db in
+            try db.execute(sql: """
+                CREATE TABLE song_ratings (
+                    user_key   TEXT NOT NULL,
+                    song_id    TEXT NOT NULL,
+                    rating     INTEGER NOT NULL,
+                    song_json  TEXT NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (user_key, song_id)
+                );
+                """)
+            try db.execute(sql: """
+                CREATE INDEX song_ratings_user_rating
+                ON song_ratings (user_key, rating DESC);
                 """)
         }
         return migrator
@@ -267,6 +308,294 @@ final class AppDatabase {
             try db.execute(sql: "DELETE FROM rotation_overrides WHERE user_key = ? AND song_id = ?",
                            arguments: [userKey, songId])
         }
+    }
+
+    // MARK: - Play history
+
+    /// Records a play and retains at most the newest 500 rows for the user.
+    func recordPlay(userKey: String, song: Song, context: PlaybackContext? = nil) throws {
+        let json = (try? JSONEncoder().encode(song))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        let playedAt = Date().timeIntervalSince1970
+        let kind: String?
+        let contextId: String?
+        let label: String?
+        switch context?.kind {
+        case .playlist(let id):
+            kind = "playlist"
+            contextId = id
+            label = context?.label
+        case .album:
+            kind = "album"
+            contextId = song.albumId
+            label = context?.label ?? song.album
+        case .artist:
+            kind = "artist"
+            contextId = song.artistId ?? context?.label
+            label = context?.label
+        case .genre:
+            kind = "genre"
+            contextId = context?.label
+            label = context?.label
+        case .search:
+            kind = "search"
+            contextId = nil
+            label = context?.label
+        case .mix:
+            kind = "mix"
+            // Stable key so "Chill" / "5 Stars" collapse across many tracks.
+            contextId = context?.label
+            label = context?.label
+        case .outOfRotation:
+            kind = "outOfRotation"
+            contextId = "outOfRotation"
+            label = context?.label ?? RotationManager.playlistName
+        case .none:
+            kind = nil
+            contextId = nil
+            label = nil
+        }
+        try pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO play_history
+                    (user_key, song_id, played_at, song_json, context_kind, context_id, context_label)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [userKey, song.id, playedAt, json, kind, contextId, label])
+            try db.execute(sql: """
+                DELETE FROM play_history
+                WHERE user_key = ?
+                  AND rowid NOT IN (
+                    SELECT rowid FROM play_history
+                    WHERE user_key = ?
+                    ORDER BY played_at DESC
+                    LIMIT 500
+                  )
+                """, arguments: [userKey, userKey])
+        }
+    }
+
+    /// Most-recent-first plays, unique by `song_id` (keeps the newest row).
+    func recentPlays(userKey: String, limit: Int = 50) throws -> [Song] {
+        try recentPlayEntries(userKey: userKey, limit: limit).compactMap {
+            if case .song(let song) = $0 { return song }
+            return nil
+        }
+    }
+
+    /// Home “Recently played” rail.
+    ///
+    /// - Playlists / albums / vibes / genres / artists collapse to one card.
+    /// - Individual songs only when the play came from search (or no context).
+    /// - Silent Autoplay extensions are omitted — the user didn’t pick them.
+    func recentPlayEntries(userKey: String, limit: Int = 40) throws -> [RecentPlayEntry] {
+        try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT song_id, song_json, context_kind, context_id, context_label
+                FROM play_history
+                WHERE user_key = ?
+                ORDER BY played_at DESC
+                LIMIT 500
+                """, arguments: [userKey])
+
+            var entries: [RecentPlayEntry] = []
+            var seen = Set<String>()
+
+            for row in rows {
+                let json: String = row["song_json"]
+                guard let data = json.data(using: .utf8),
+                      let song = try? JSONDecoder().decode(Song.self, from: data) else { continue }
+
+                let kind: String? = row["context_kind"]
+                let contextId: String? = row["context_id"]
+                let label: String? = row["context_label"]
+                let name = (label?.isEmpty == false) ? label! : nil
+
+                // Infinite Shuffle refill — not a user-chosen source.
+                if kind == "mix", (name == "Autoplay" || name == "Recently played") {
+                    continue
+                }
+
+                let entry: RecentPlayEntry?
+                switch kind {
+                case "playlist":
+                    guard let playlistId = contextId, !playlistId.isEmpty else { entry = nil; break }
+                    entry = .playlist(
+                        id: playlistId,
+                        name: name ?? "Playlist",
+                        coverSong: song)
+
+                case "album":
+                    guard let albumId = contextId ?? song.albumId, !albumId.isEmpty else {
+                        // No album id — fall back to the track.
+                        entry = .song(song)
+                        break
+                    }
+                    entry = .album(
+                        id: albumId,
+                        name: name ?? song.album ?? "Album",
+                        coverSong: song)
+
+                case "mix", "genre", "artist", "outOfRotation":
+                    let key = (contextId?.isEmpty == false ? contextId! : nil)
+                        ?? name
+                        ?? kind
+                        ?? "mix"
+                    let subtitle: String = {
+                        switch kind {
+                        case "genre": return "Genre"
+                        case "artist": return "Artist"
+                        case "outOfRotation": return "Playlist"
+                        default: return "Mix"
+                        }
+                    }()
+                    entry = .mix(
+                        key: "\(kind ?? "mix"):\(key)",
+                        name: name ?? key,
+                        coverSong: song,
+                        subtitle: subtitle)
+
+                case "search", .none:
+                    // Explicit track pick (search) or legacy rows without context.
+                    entry = .song(song)
+
+                default:
+                    entry = .song(song)
+                }
+
+                guard let entry else { continue }
+                guard seen.insert(entry.id).inserted else { continue }
+                entries.append(entry)
+                if entries.count >= limit { break }
+            }
+            return entries
+        }
+    }
+
+    /// Song IDs played within the given lookback window (default 72 hours).
+    func recentPlayIDs(userKey: String, withinHours: Double = 72) throws -> Set<String> {
+        let cutoff = Date().timeIntervalSince1970 - withinHours * 3600
+        return try pool.read { db in
+            let ids = try String.fetchAll(db, sql: """
+                SELECT DISTINCT song_id FROM play_history
+                WHERE user_key = ? AND played_at >= ?
+                """, arguments: [userKey, cutoff])
+            return Set(ids)
+        }
+    }
+
+    // MARK: - Song ratings (local index for Rated collections)
+
+    func upsertSongRating(userKey: String, song: Song, rating: Int) throws {
+        let clamped = min(5, max(0, rating))
+        if clamped == 0 {
+            try clearSongRating(userKey: userKey, songId: song.id)
+            return
+        }
+        let json = (try? JSONEncoder().encode(song))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        let updatedAt = Date().timeIntervalSince1970
+        try pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO song_ratings (user_key, song_id, rating, song_json, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (user_key, song_id) DO UPDATE SET
+                    rating = excluded.rating,
+                    song_json = excluded.song_json,
+                    updated_at = excluded.updated_at
+                """, arguments: [userKey, song.id, clamped, json, updatedAt])
+        }
+    }
+
+    func clearSongRating(userKey: String, songId: String) throws {
+        try pool.write { db in
+            try db.execute(sql: """
+                DELETE FROM song_ratings WHERE user_key = ? AND song_id = ?
+                """, arguments: [userKey, songId])
+        }
+    }
+
+    /// All locally indexed ratings for a user (song_id → rating).
+    func allSongRatings(userKey: String) throws -> [String: Int] {
+        try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT song_id, rating FROM song_ratings WHERE user_key = ?
+                """, arguments: [userKey])
+            var map: [String: Int] = [:]
+            for row in rows {
+                let id: String = row["song_id"]
+                let rating: Int = row["rating"]
+                map[id] = rating
+            }
+            return map
+        }
+    }
+
+    /// Songs with rating ≥ minRating, highest first.
+    func ratedSongs(userKey: String, minRating: Int, limit: Int = 500) throws -> [Song] {
+        try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT song_json, rating FROM song_ratings
+                WHERE user_key = ? AND rating >= ?
+                ORDER BY rating DESC, updated_at DESC
+                LIMIT ?
+                """, arguments: [userKey, minRating, limit])
+            return rows.compactMap { row -> Song? in
+                let json: String = row["song_json"]
+                guard let data = json.data(using: .utf8),
+                      var song = try? JSONDecoder().decode(Song.self, from: data) else { return nil }
+                let rating: Int = row["rating"]
+                song.userRating = rating
+                return song
+            }
+        }
+    }
+
+    /// Albums ranked by average of locally indexed track ratings.
+    func topRatedAlbumsFromSongs(userKey: String, limit: Int = 80) throws -> [Album] {
+        let songs = try ratedSongs(userKey: userKey, minRating: 1, limit: 2000)
+        var buckets: [String: (name: String, artist: String?, cover: String?, sum: Int, count: Int)] = [:]
+        for song in songs {
+            guard let albumId = song.albumId, !albumId.isEmpty else { continue }
+            let rating = song.userRating ?? 0
+            guard rating > 0 else { continue }
+            var bucket = buckets[albumId] ?? (
+                name: song.album ?? "Album",
+                artist: song.displayArtist,
+                cover: song.coverArt,
+                sum: 0,
+                count: 0
+            )
+            if bucket.name.isEmpty { bucket.name = song.album ?? "Album" }
+            if bucket.cover == nil { bucket.cover = song.coverArt }
+            bucket.sum += rating
+            bucket.count += 1
+            buckets[albumId] = bucket
+        }
+        return buckets
+            .map { id, b -> (Album, Double) in
+                let avg = Double(b.sum) / Double(max(b.count, 1))
+                var album = Album(
+                    id: id,
+                    name: b.name,
+                    artist: b.artist,
+                    artistId: nil,
+                    coverArt: b.cover,
+                    songCount: b.count,
+                    duration: nil,
+                    playCount: nil,
+                    created: nil,
+                    year: nil,
+                    genre: nil,
+                    userRating: Int(avg.rounded())
+                )
+                return (album, avg)
+            }
+            .sorted {
+                if $0.1 != $1.1 { return $0.1 > $1.1 }
+                return $0.0.name.localizedCaseInsensitiveCompare($1.0.name) == .orderedAscending
+            }
+            .prefix(limit)
+            .map(\.0)
     }
 
     // MARK: - Lyrics indexer progress

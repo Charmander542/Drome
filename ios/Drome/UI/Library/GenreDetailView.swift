@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct GenreDetailView: View {
-    let genre: Genre
+    let genre: NormalizedGenre
 
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
@@ -25,7 +25,7 @@ struct GenreDetailView: View {
                             HStack(spacing: 12) {
                                 Button {
                                     player.play(songs, startAt: 0,
-                                                context: PlaybackContext(label: genre.value, kind: .genre))
+                                                context: PlaybackContext(label: genre.displayName, kind: .genre))
                                 } label: {
                                     Label("Play", systemImage: "play.fill")
                                         .frame(maxWidth: .infinity)
@@ -36,7 +36,7 @@ struct GenreDetailView: View {
 
                                 Button {
                                     player.playShuffled(songs,
-                                                        context: PlaybackContext(label: genre.value, kind: .genre))
+                                                        context: PlaybackContext(label: genre.displayName, kind: .genre))
                                 } label: {
                                     Label("Shuffle", systemImage: "shuffle")
                                         .frame(maxWidth: .infinity)
@@ -54,7 +54,7 @@ struct GenreDetailView: View {
                                     .contentShape(Rectangle())
                                     .onTapGesture {
                                         player.play(songs, startAt: index,
-                                                    context: PlaybackContext(label: genre.value, kind: .genre))
+                                                    context: PlaybackContext(label: genre.displayName, kind: .genre))
                                     }
                                     .listRowBackground(DromeTheme.background)
                                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
@@ -90,21 +90,51 @@ struct GenreDetailView: View {
                 .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
             }
         }
-        .navigationTitle(genre.value)
-        .task { await load() }
+        .navigationTitle(genre.displayName)
+        .task(id: genre.id) { await load() }
     }
 
     private func load() async {
         isLoading = true
         error = nil
         defer { isLoading = false }
-        do {
-            async let a = session.client.albumList(type: .byGenre, size: 100, genre: genre.value)
-            async let s = session.client.songsByGenre(genre.value, count: 100)
-            (albums, songs) = try await (a, s)
-            ratings.ingest(songs)
-        } catch {
-            self.error = error.localizedDescription
+
+        let tags = genre.rawTags.isEmpty ? [genre.displayName] : genre.rawTags
+        let client = session.client
+        var albumByID: [String: Album] = [:]
+        var songByID: [String: Song] = [:]
+        var lastError: Error?
+
+        await withTaskGroup(of: (albums: [Album], songs: [Song], error: Error?).self) { group in
+            for tag in tags {
+                group.addTask {
+                    do {
+                        async let a = client.albumList(type: .byGenre, size: 100, genre: tag)
+                        async let s = client.songsByGenre(tag, count: 100)
+                        let (albums, songs) = try await (a, s)
+                        return (albums, songs, nil)
+                    } catch {
+                        return ([], [], error)
+                    }
+                }
+            }
+            for await result in group {
+                for album in result.albums { albumByID[album.id] = album }
+                for song in result.songs { songByID[song.id] = song }
+                if let err = result.error { lastError = err }
+            }
+        }
+
+        albums = albumByID.values.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        songs = songByID.values.sorted {
+            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+        }
+        ratings.ingest(songs)
+
+        if albums.isEmpty && songs.isEmpty, let lastError {
+            self.error = lastError.localizedDescription
         }
     }
 }

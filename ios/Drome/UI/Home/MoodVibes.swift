@@ -186,9 +186,10 @@ struct MoodVibeRail: View {
     }
 }
 
-private struct MoodVibeCard: View {
+/// Shared vibe tile — used on Home and in Recently Played.
+struct MoodVibeCard: View {
     let vibe: MoodVibe
-    let isSpinning: Bool
+    var isSpinning: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
