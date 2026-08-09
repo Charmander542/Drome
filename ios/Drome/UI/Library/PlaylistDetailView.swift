@@ -91,8 +91,13 @@ struct PlaylistDetailView: View {
                 onToggleEdit: { isEditing.toggle() },
                 onTogglePublic: { Task { await togglePublic() } },
                 onDownload: {
-                    guard let songs = playlist?.songs else { return }
-                    downloads.download(songs, albumName: playlist?.name)
+                    guard let playlist else { return }
+                    let songs = playlist.songs
+                    guard !songs.isEmpty else { return }
+                    downloads.download(
+                        songs,
+                        playlistId: playlist.id,
+                        playlistName: playlist.name)
                     flash("Downloading…")
                 },
                 onBulkOutOfRotation: { showBulkOORConfirm = true },
@@ -354,7 +359,8 @@ struct PlaylistAddSongsView: View {
                                         .foregroundStyle(DromeTheme.muted)
                                 }
                                 Spacer()
-                                Image(systemName: addedIDs.contains(song.id) ? "checkmark.circle.fill" : "plus.circle")
+                                Image(systemName: addedIDs.contains(song.id) ? "checkmark.circle.fill" : "plus.circle.fill")
+                                    .font(.title2)
                                     .foregroundStyle(addedIDs.contains(song.id) ? DromeTheme.accent : .white)
                             }
                         }
@@ -374,6 +380,11 @@ struct PlaylistAddSongsView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .task {
+            if let playlist = try? await session.client.playlist(id: playlistID) {
+                addedIDs = Set(playlist.songs.map(\.id))
+            }
+        }
     }
 
     private func schedule(_ raw: String) {
@@ -409,6 +420,9 @@ struct AddToPlaylistView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var playlists: [Playlist] = []
+    @State private var alreadyInPlaylistIDs: Set<String> = []
+    @State private var pendingPlaylistIDs: Set<String> = []
+    @State private var statusMessage: String?
     @State private var showCreate = false
     @State private var newName = ""
     @State private var error: String?
@@ -428,25 +442,36 @@ struct AddToPlaylistView: View {
             Section("Your playlists") {
                 ForEach(playlists.filter { $0.name != RotationManager.playlistName }) { playlist in
                     Button {
-                        Task {
-                            try? await session.client.updatePlaylist(id: playlist.id, addSongIds: [song.id])
-                            dismiss()
-                        }
+                        Task { await add(to: playlist) }
                     } label: {
                         HStack {
                             Text(playlist.name).foregroundStyle(.white)
                             Spacer()
-                            if let count = playlist.songCount {
+                            if pendingPlaylistIDs.contains(playlist.id) {
+                                ProgressView()
+                            } else if alreadyInPlaylistIDs.contains(playlist.id) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(DromeTheme.accent)
+                            } else if let count = playlist.songCount {
                                 Text("\(count)")
                                     .font(.caption)
                                     .foregroundStyle(DromeTheme.muted)
                             }
                         }
                     }
+                    .disabled(pendingPlaylistIDs.contains(playlist.id)
+                              || alreadyInPlaylistIDs.contains(playlist.id))
                     .listRowBackground(DromeTheme.elevated)
                 }
             }
 
+            if let statusMessage {
+                Text(statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.muted)
+                    .listRowBackground(Color.clear)
+            }
             if let error {
                 Text(error).foregroundStyle(.red).font(.caption)
             }
@@ -461,6 +486,24 @@ struct AddToPlaylistView: View {
                 Task { await createAndAdd() }
             }
             Button("Cancel", role: .cancel) { newName = "" }
+        }
+    }
+
+    private func add(to playlist: Playlist) async {
+        pendingPlaylistIDs.insert(playlist.id)
+        defer { pendingPlaylistIDs.remove(playlist.id) }
+        do {
+            let detail = try await session.client.playlist(id: playlist.id)
+            if detail.songs.contains(where: { $0.id == song.id }) {
+                alreadyInPlaylistIDs.insert(playlist.id)
+                statusMessage = "Already in “\(playlist.name)”"
+                return
+            }
+            try await session.client.updatePlaylist(id: playlist.id, addSongIds: [song.id])
+            alreadyInPlaylistIDs.insert(playlist.id)
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 

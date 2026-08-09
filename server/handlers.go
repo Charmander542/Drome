@@ -104,6 +104,13 @@ func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		entry.Status = statusSkipped
 	}
 
+	// Spotify ID uniqueness is enforced by the DB upsert. Also block near-
+	// duplicate albums/tracks that share title+artist under a different ID.
+	if existing, err := s.store.findActiveByTitleArtist(entry.Owner, entry.Kind, entry.Title, entry.Artist); err == nil && existing != nil {
+		writeJSON(w, http.StatusOK, existing)
+		return
+	}
+
 	if err := s.store.insert(entry); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not save entry: "+err.Error())
 		return
@@ -294,12 +301,15 @@ func (s *server) handleRetry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "entry was already downloaded and removed from the wishlist")
 		return
 	}
-	if err := s.store.setStatus(e.ID, statusQueued, ""); err != nil {
+	// Manual retry gets a fresh attempt budget.
+	if err := s.store.resetForRetry(e.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	e.Status = statusQueued
 	e.StatusMsg = ""
+	e.Attempts = 0
+	e.NextRetry = time.Time{}
 	s.downloads.kick()
 	writeJSON(w, http.StatusOK, e)
 }

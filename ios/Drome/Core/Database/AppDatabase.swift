@@ -34,6 +34,15 @@ struct DownloadRecord {
     var fileSize: Int64
 }
 
+/// Many-to-many: a downloaded song can belong to multiple playlists.
+struct DownloadPlaylistMembership: Hashable, Identifiable {
+    var id: String { "\(serverKey)|\(songId)|\(playlistId)" }
+    var serverKey: String
+    var songId: String
+    var playlistId: String
+    var playlistName: String
+}
+
 /// On-device SQLite database (GRDB): lyrics cache, FTS5 lyrics search index,
 /// offline-download metadata, Out-of-Rotation manual overrides, and play history.
 final class AppDatabase {
@@ -172,6 +181,23 @@ final class AppDatabase {
                 ON artist_images (server_key, artist_name);
                 """)
         }
+        migrator.registerMigration("v6_download_playlists") { db in
+            try db.execute(sql: """
+                CREATE TABLE download_playlists (
+                    server_key     TEXT NOT NULL,
+                    song_id        TEXT NOT NULL,
+                    playlist_id    TEXT NOT NULL,
+                    playlist_name  TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (server_key, song_id, playlist_id),
+                    FOREIGN KEY (server_key, song_id)
+                        REFERENCES downloads(server_key, song_id) ON DELETE CASCADE
+                );
+                """)
+            try db.execute(sql: """
+                CREATE INDEX download_playlists_playlist
+                ON download_playlists (server_key, playlist_id);
+                """)
+        }
         return migrator
     }
 
@@ -295,8 +321,40 @@ final class AppDatabase {
 
     func deleteDownload(serverKey: String, songId: String) throws {
         try pool.write { db in
+            // Explicit membership cleanup (FK cascade also applies when enabled).
+            try db.execute(sql: """
+                DELETE FROM download_playlists WHERE server_key = ? AND song_id = ?
+                """, arguments: [serverKey, songId])
             try db.execute(sql: "DELETE FROM downloads WHERE server_key = ? AND song_id = ?",
                            arguments: [serverKey, songId])
+        }
+    }
+
+    // MARK: - Download playlist membership
+
+    func upsertDownloadPlaylistMembership(_ membership: DownloadPlaylistMembership) throws {
+        try pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO download_playlists (server_key, song_id, playlist_id, playlist_name)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (server_key, song_id, playlist_id) DO UPDATE SET
+                    playlist_name = excluded.playlist_name
+                """, arguments: [membership.serverKey, membership.songId,
+                                 membership.playlistId, membership.playlistName])
+        }
+    }
+
+    func downloadPlaylistMemberships(serverKey: String) throws -> [DownloadPlaylistMembership] {
+        try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT * FROM download_playlists WHERE server_key = ?
+                ORDER BY playlist_name, song_id
+                """, arguments: [serverKey])
+            return rows.map {
+                DownloadPlaylistMembership(
+                    serverKey: $0["server_key"], songId: $0["song_id"],
+                    playlistId: $0["playlist_id"], playlistName: $0["playlist_name"])
+            }
         }
     }
 

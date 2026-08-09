@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -34,8 +35,11 @@ type downloadConfig struct {
 	Enabled      bool
 	MusicDir     string
 	SpotiflacBin string
+	RetagBin     string
 	Services     []string
 	Timeout      time.Duration
+	MaxAttempts  int
+	RetryBase    time.Duration
 }
 
 func downloadConfigFromEnv() downloadConfig {
@@ -44,7 +48,10 @@ func downloadConfigFromEnv() downloadConfig {
 		Enabled:      enabled == "1" || enabled == "true" || enabled == "yes",
 		MusicDir:     envOr("DROME_MUSIC_DIR", "/music"),
 		SpotiflacBin: envOr("DROME_SPOTIFLAC_BIN", "spotiflac"),
+		RetagBin:     envOr("DROME_RETAG_BIN", "drome-retag"),
 		Timeout:      envDuration("DROME_DOWNLOAD_TIMEOUT", 45*time.Minute),
+		MaxAttempts:  envInt("DROME_DOWNLOAD_MAX_ATTEMPTS", 5),
+		RetryBase:    envDuration("DROME_DOWNLOAD_RETRY_BASE", 2*time.Minute),
 	}
 	raw := envOr("DROME_SPOTIFLAC_SERVICES", "tidal,qobuz,amazon,deezer")
 	for _, part := range strings.Split(raw, ",") {
@@ -55,6 +62,9 @@ func downloadConfigFromEnv() downloadConfig {
 	}
 	if len(cfg.Services) == 0 {
 		cfg.Services = []string{"tidal", "qobuz", "amazon"}
+	}
+	if cfg.MaxAttempts < 1 {
+		cfg.MaxAttempts = 1
 	}
 	return cfg
 }
@@ -71,7 +81,20 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 	return d
 }
 
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	var n int
+	if _, err := fmt.Sscanf(v, "%d", &n); err != nil || n <= 0 {
+		return fallback
+	}
+	return n
+}
+
 // downloadWorker serializes SpotiFLAC jobs so we don't hammer providers.
+// The queue lives in SQLite, so jobs survive process restarts and outages.
 type downloadWorker struct {
 	cfg       downloadConfig
 	store     *wishlistStore
@@ -115,15 +138,25 @@ func (w *downloadWorker) Run(ctx context.Context) {
 		logf("auto-download disabled (DROME_AUTO_DOWNLOAD=false)")
 		return
 	}
-	logf("auto-download enabled → %s via %s (%s)", w.cfg.MusicDir, w.cfg.SpotiflacBin, strings.Join(w.cfg.Services, ","))
+	logf("auto-download enabled → %s via %s (%s); retag=%s maxAttempts=%d",
+		w.cfg.MusicDir, w.cfg.SpotiflacBin, strings.Join(w.cfg.Services, ","),
+		w.cfg.RetagBin, w.cfg.MaxAttempts)
 
-	// Recover jobs interrupted by a previous restart.
+	// Recover jobs interrupted by a previous restart; re-arm due retries.
 	if n, err := w.store.requeueDownloading(); err != nil {
 		logf("requeue downloading: %v", err)
 	} else if n > 0 {
 		logf("re-queued %d interrupted download(s)", n)
 	}
+	if n, err := w.store.requeueDueRetries(w.cfg.MaxAttempts); err != nil {
+		logf("requeue retries: %v", err)
+	} else if n > 0 {
+		logf("re-queued %d failed download(s) ready for retry", n)
+	}
 	w.kick()
+
+	ticker := time.NewTicker(45 * time.Second)
+	defer ticker.Stop()
 
 	for {
 		select {
@@ -132,6 +165,12 @@ func (w *downloadWorker) Run(ctx context.Context) {
 		case _, ok := <-w.wake:
 			if !ok {
 				return
+			}
+		case <-ticker.C:
+			if n, err := w.store.requeueDueRetries(w.cfg.MaxAttempts); err != nil {
+				logf("requeue retries: %v", err)
+			} else if n > 0 {
+				logf("re-queued %d due retry download(s)", n)
 			}
 		}
 		for {
@@ -149,16 +188,24 @@ func (w *downloadWorker) Run(ctx context.Context) {
 }
 
 func (w *downloadWorker) process(parent context.Context, e *entry) {
-	logf("download start id=%d %s %q — %q", e.ID, e.Kind, e.Artist, e.Title)
+	attempt := e.Attempts + 1
+	logf("download start id=%d attempt=%d/%d %s %q — %q",
+		e.ID, attempt, w.cfg.MaxAttempts, e.Kind, e.Artist, e.Title)
 	_ = w.store.setStatus(e.ID, statusDownloading, "")
 
 	ctx, cancel := context.WithTimeout(parent, w.cfg.Timeout)
 	defer cancel()
 
+	started := time.Now()
 	if err := w.runSpotiflac(ctx, e.SpotifyURL); err != nil {
-		msg := truncate(err.Error(), 500)
-		logf("download failed id=%d: %v", e.ID, err)
-		_ = w.store.setStatus(e.ID, statusFailed, msg)
+		w.fail(e, attempt, err)
+		return
+	}
+
+	if err := w.retagRecent(ctx, e, started); err != nil {
+		// Audio may already be on disk — still treat as failure so we retry
+		// retag rather than deleting the wishlist row with broken tags.
+		w.fail(e, attempt, fmt.Errorf("retag: %w", err))
 		return
 	}
 
@@ -166,13 +213,30 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 	if err := w.triggerScan(parent); err != nil {
 		logf("navidrome scan trigger: %v (library will pick up on next scheduled scan)", err)
 	}
-	// Leave the wishlist once the file is in the music library; Home’s
-	// “New in your library” rail is driven by Navidrome’s newest albums.
 	if err := w.store.delete(e.ID); err != nil {
 		logf("delete completed wishlist entry id=%d: %v", e.ID, err)
 		_ = w.store.setAcquired(e.ID, true)
 		_ = w.store.setStatus(e.ID, statusDone, "")
 	}
+}
+
+func (w *downloadWorker) fail(e *entry, attempt int, err error) {
+	msg := truncate(err.Error(), 500)
+	backoff := w.cfg.RetryBase * time.Duration(1<<min(attempt-1, 4))
+	if backoff > 30*time.Minute {
+		backoff = 30 * time.Minute
+	}
+	logf("download failed id=%d attempt=%d: %v (retry in %s)", e.ID, attempt, err, backoff)
+	if markErr := w.store.markFailed(e.ID, msg, attempt, w.cfg.MaxAttempts, backoff); markErr != nil {
+		logf("mark failed id=%d: %v", e.ID, markErr)
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (w *downloadWorker) runSpotiflac(ctx context.Context, spotifyURL string) error {
@@ -204,6 +268,67 @@ func (w *downloadWorker) runSpotiflac(ctx context.Context, spotifyURL string) er
 	return fmt.Errorf("spotiflac: %w\n%s", err, truncate(out, 2000))
 }
 
+// retagRecent applies wishlist Spotify metadata onto files touched by the job
+// so Navidrome never indexes Amazon ASINs / hex stubs as titles.
+func (w *downloadWorker) retagRecent(ctx context.Context, e *entry, started time.Time) error {
+	bin := w.cfg.RetagBin
+	if bin == "" {
+		return nil
+	}
+	if _, err := exec.LookPath(bin); err != nil {
+		// Fall back to alongside the spotiflac wrapper / repo script.
+		candidates := []string{
+			"/usr/local/bin/drome-retag",
+			filepath.Join(filepath.Dir(w.cfg.SpotiflacBin), "retag.py"),
+			"retag.py",
+		}
+		found := ""
+		for _, c := range candidates {
+			if st, err := os.Stat(c); err == nil && !st.IsDir() {
+				found = c
+				break
+			}
+		}
+		if found == "" {
+			return fmt.Errorf("retag binary not found (%s)", bin)
+		}
+		bin = found
+	}
+
+	kind := e.Kind
+	if kind != "album" {
+		kind = "track"
+	}
+	album := e.Album
+	if album == "" && kind == "album" {
+		album = e.Title
+	}
+
+	args := []string{
+		"--music-dir", w.cfg.MusicDir,
+		"--kind", kind,
+		"--title", e.Title,
+		"--artist", e.Artist,
+		"--album", album,
+		"--since-epoch", fmt.Sprintf("%d", started.Unix()),
+	}
+	var cmd *exec.Cmd
+	if strings.HasSuffix(bin, ".py") {
+		cmd = exec.CommandContext(ctx, "python3", append([]string{bin}, args...)...)
+	} else {
+		cmd = exec.CommandContext(ctx, bin, args...)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		out := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
+		return fmt.Errorf("%w: %s", err, truncate(out, 1000))
+	}
+	logf("retag ok id=%d: %s", e.ID, truncate(strings.TrimSpace(stdout.String()), 300))
+	return nil
+}
+
 // triggerScan asks Navidrome to rescan via the OpenSubsonic startScan endpoint
 // using optional admin credentials. If unset, we rely on ND_SCANSCHEDULE.
 func (w *downloadWorker) triggerScan(ctx context.Context) error {
@@ -213,7 +338,6 @@ func (w *downloadWorker) triggerScan(ctx context.Context) error {
 		return fmt.Errorf("DROME_NAVIDROME_SCAN_USER/PASSWORD not set")
 	}
 
-	// Prefer token auth so we never log the password in URLs elsewhere.
 	salt := fmt.Sprintf("drome%d", time.Now().UnixNano())
 	sum := md5Hex(pass + salt)
 

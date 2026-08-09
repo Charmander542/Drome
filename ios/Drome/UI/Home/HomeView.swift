@@ -5,6 +5,7 @@ struct HomeView: View {
     @EnvironmentObject private var env: AppEnvironment
 
     @State private var recentEntries: [RecentPlayEntry] = []
+    @State private var homePlaylists: [Playlist] = []
     @State private var frequent: [Album] = []
     @State private var newest: [Album] = []
     @State private var isLoading = false
@@ -30,6 +31,9 @@ struct HomeView: View {
 
                         if !recentEntries.isEmpty {
                             HorizontalRecentRail(title: "Recently played", entries: recentEntries)
+                        }
+                        if !homePlaylists.isEmpty {
+                            HorizontalPlaylistRail(title: "Playlists", playlists: homePlaylists)
                         }
                         if !frequent.isEmpty {
                             HorizontalAlbumRail(title: "Jump back in", albums: frequent)
@@ -100,9 +104,37 @@ struct HomeView: View {
                 userKey: session.account.userKey, limit: 40)) ?? []
             async let f = session.client.albumList(type: .frequent, size: 20)
             async let n = session.client.albumList(type: .newest, size: 20)
-            (frequent, newest) = try await (f, n)
+            async let p = session.client.playlists()
+            let (freq, neu, lists) = try await (f, n, p)
+            frequent = freq
+            newest = neu
+            homePlaylists = Self.rankedHomePlaylists(lists, recent: recentEntries)
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// Prefer recently played playlists, then frequently updated / larger ones.
+    private static func rankedHomePlaylists(_ playlists: [Playlist],
+                                            recent: [RecentPlayEntry]) -> [Playlist] {
+        var recentIDs: [String] = []
+        var seen = Set<String>()
+        for entry in recent {
+            if case .playlist(let id, _, _) = entry, seen.insert(id).inserted {
+                recentIDs.append(id)
+            }
+        }
+        let byID = Dictionary(uniqueKeysWithValues: playlists.map { ($0.id, $0) })
+        var ordered: [Playlist] = recentIDs.compactMap { byID[$0] }
+        let rest = playlists
+            .filter { !seen.contains($0.id) && $0.name != RotationManager.playlistName }
+            .sorted { a, b in
+                let ac = a.songCount ?? 0
+                let bc = b.songCount ?? 0
+                if ac != bc { return ac > bc }
+                return (a.changed ?? "") > (b.changed ?? "")
+            }
+        ordered.append(contentsOf: rest)
+        return Array(ordered.prefix(20))
     }
 }

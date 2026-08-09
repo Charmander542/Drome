@@ -36,9 +36,20 @@ enum SongNavigation {
         let artistId: String
         let name: String
 
+        init(artistId: String, name: String) {
+            self.artistId = artistId
+            self.name = name
+        }
+
         init(song: Song) {
-            artistId = song.artistId ?? ""
-            name = song.artist ?? song.displayArtist
+            if let credit = ArtistCredits.credits(for: song).first(where: { $0.artistId != nil }),
+               let id = credit.artistId {
+                artistId = id
+                name = credit.name
+            } else {
+                artistId = song.artistId ?? ""
+                name = song.artist ?? song.displayArtist
+            }
         }
     }
 
@@ -48,8 +59,19 @@ enum SongNavigation {
     }
 
     static func artistRoute(for song: Song) -> ArtistRoute? {
+        if let credit = ArtistCredits.credits(for: song).first(where: { ($0.artistId ?? "").isEmpty == false }),
+           let id = credit.artistId {
+            return ArtistRoute(artistId: id, name: credit.name)
+        }
         guard let id = song.artistId, !id.isEmpty else { return nil }
-        return ArtistRoute(song: song)
+        return ArtistRoute(artistId: id, name: song.artist ?? song.displayArtist)
+    }
+
+    static func artistRoutes(for song: Song) -> [ArtistRoute] {
+        ArtistCredits.credits(for: song).compactMap { credit in
+            guard let id = credit.artistId, !id.isEmpty else { return nil }
+            return ArtistRoute(artistId: id, name: credit.name)
+        }
     }
 }
 
@@ -66,6 +88,11 @@ final class SongNavigator: ObservableObject {
 
     func viewArtist(for song: Song) {
         artistRoute = SongNavigation.artistRoute(for: song)
+    }
+
+    func viewArtist(id: String, name: String) {
+        guard !id.isEmpty else { return }
+        artistRoute = SongNavigation.ArtistRoute(artistId: id, name: name)
     }
 }
 

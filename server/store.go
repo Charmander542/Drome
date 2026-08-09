@@ -22,6 +22,8 @@ type entry struct {
 	Acquired   bool      `json:"acquired"`
 	Status     string    `json:"status,omitempty"` // queued|downloading|done|failed|skipped
 	StatusMsg  string    `json:"statusMessage,omitempty"`
+	Attempts   int       `json:"attempts,omitempty"`
+	NextRetry  time.Time `json:"nextRetryAt,omitempty"`
 	CreatedAt  time.Time `json:"createdAt"`
 	// SourcePlaylistID/Name tag tracks imported from a Spotify playlist.
 	SourcePlaylistID   string `json:"sourcePlaylistId,omitempty"`
@@ -79,12 +81,14 @@ CREATE INDEX IF NOT EXISTS entries_status_idx ON entries(status, id);`
 		db.Close()
 		return nil, err
 	}
-	// Migrate DBs created before status / source-playlist columns existed.
+	// Migrate DBs created before status / source-playlist / retry columns existed.
 	for _, stmt := range []string{
 		`ALTER TABLE entries ADD COLUMN status TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE entries ADD COLUMN status_msg TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE entries ADD COLUMN source_playlist_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE entries ADD COLUMN source_playlist_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE entries ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE entries ADD COLUMN next_retry_at TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -95,6 +99,41 @@ CREATE INDEX IF NOT EXISTS entries_status_idx ON entries(status, id);`
 }
 
 func (s *wishlistStore) Close() error { return s.db.Close() }
+
+// findActiveByTitleArtist returns an existing non-acquired wishlist row with the
+// same owner/kind/title/artist (case-insensitive). Used to stop duplicate
+// Spotify album/track adds when the Spotify ID differs (deluxe/region).
+func (s *wishlistStore) findActiveByTitleArtist(owner, kind, title, artist string) (*entry, error) {
+	row := s.db.QueryRow(`
+		SELECT id, owner, kind, spotify_id, spotify_url, title, artist, album, cover_url,
+		       acquired, status, status_msg, attempts, next_retry_at,
+		       source_playlist_id, source_playlist_name, created_at
+		FROM entries
+		WHERE owner = ? AND kind = ?
+		  AND lower(trim(title)) = lower(trim(?))
+		  AND lower(trim(artist)) = lower(trim(?))
+		  AND acquired = 0
+		  AND status NOT IN ('done')
+		ORDER BY id DESC
+		LIMIT 1`, owner, kind, title, artist)
+	var e entry
+	var acquired int
+	var createdAt, nextRetry string
+	if err := row.Scan(&e.ID, &e.Owner, &e.Kind, &e.SpotifyID, &e.SpotifyURL,
+		&e.Title, &e.Artist, &e.Album, &e.CoverURL, &acquired, &e.Status, &e.StatusMsg,
+		&e.Attempts, &nextRetry, &e.SourcePlaylistID, &e.SourcePlaylistName, &createdAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	e.Acquired = acquired != 0
+	e.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	if nextRetry != "" {
+		e.NextRetry, _ = time.Parse(time.RFC3339, nextRetry)
+	}
+	return &e, nil
+}
 
 func (s *wishlistStore) insert(e *entry) error {
 	if e.Status == "" {
@@ -149,6 +188,7 @@ func (s *wishlistStore) listFor(user string) ([]entry, error) {
 	rows, err := s.db.Query(`
 		SELECT DISTINCT e.id, e.owner, e.kind, e.spotify_id, e.spotify_url,
 		       e.title, e.artist, e.album, e.cover_url, e.acquired, e.status, e.status_msg,
+		       e.attempts, e.next_retry_at,
 		       e.source_playlist_id, e.source_playlist_name, e.created_at
 		FROM entries e
 		LEFT JOIN entry_shares es ON es.entry_id = e.id
@@ -167,14 +207,17 @@ func (s *wishlistStore) listFor(user string) ([]entry, error) {
 	for rows.Next() {
 		var e entry
 		var acquired int
-		var createdAt string
+		var createdAt, nextRetry string
 		if err := rows.Scan(&e.ID, &e.Owner, &e.Kind, &e.SpotifyID, &e.SpotifyURL,
 			&e.Title, &e.Artist, &e.Album, &e.CoverURL, &acquired, &e.Status, &e.StatusMsg,
-			&e.SourcePlaylistID, &e.SourcePlaylistName, &createdAt); err != nil {
+			&e.Attempts, &nextRetry, &e.SourcePlaylistID, &e.SourcePlaylistName, &createdAt); err != nil {
 			return nil, err
 		}
 		e.Acquired = acquired != 0
 		e.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		if nextRetry != "" {
+			e.NextRetry, _ = time.Parse(time.RFC3339, nextRetry)
+		}
 		if e.Owner != user {
 			e.SharedBy = e.Owner
 		}
@@ -212,19 +255,22 @@ func (s *wishlistStore) listFor(user string) ([]entry, error) {
 func (s *wishlistStore) get(id int64) (*entry, error) {
 	var e entry
 	var acquired int
-	var createdAt string
+	var createdAt, nextRetry string
 	err := s.db.QueryRow(`
 		SELECT id, owner, kind, spotify_id, spotify_url, title, artist, album, cover_url, acquired, status, status_msg,
-		       source_playlist_id, source_playlist_name, created_at
+		       attempts, next_retry_at, source_playlist_id, source_playlist_name, created_at
 		FROM entries WHERE id = ?`, id).
 		Scan(&e.ID, &e.Owner, &e.Kind, &e.SpotifyID, &e.SpotifyURL,
 			&e.Title, &e.Artist, &e.Album, &e.CoverURL, &acquired, &e.Status, &e.StatusMsg,
-			&e.SourcePlaylistID, &e.SourcePlaylistName, &createdAt)
+			&e.Attempts, &nextRetry, &e.SourcePlaylistID, &e.SourcePlaylistName, &createdAt)
 	if err != nil {
 		return nil, err
 	}
 	e.Acquired = acquired != 0
 	e.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	if nextRetry != "" {
+		e.NextRetry, _ = time.Parse(time.RFC3339, nextRetry)
+	}
 	return &e, nil
 }
 
@@ -265,6 +311,43 @@ func (s *wishlistStore) purgeCompleted() (int64, error) {
 func (s *wishlistStore) setStatus(id int64, status, msg string) error {
 	_, err := s.db.Exec(`UPDATE entries SET status = ?, status_msg = ? WHERE id = ?`, status, msg, id)
 	return err
+}
+
+// resetForRetry clears failure state and attempt budget for a manual re-queue.
+func (s *wishlistStore) resetForRetry(id int64) error {
+	_, err := s.db.Exec(`
+		UPDATE entries SET status = ?, status_msg = '', attempts = 0, next_retry_at = ''
+		WHERE id = ?`, statusQueued, id)
+	return err
+}
+
+// markFailed increments attempts and either schedules a retry or leaves the
+// entry failed permanently once maxAttempts is reached.
+func (s *wishlistStore) markFailed(id int64, msg string, attempts, maxAttempts int, retryAfter time.Duration) error {
+	if attempts < maxAttempts {
+		next := time.Now().UTC().Add(retryAfter).Format(time.RFC3339)
+		_, err := s.db.Exec(`
+			UPDATE entries SET status = ?, status_msg = ?, attempts = ?, next_retry_at = ?
+			WHERE id = ?`, statusFailed, msg, attempts, next, id)
+		return err
+	}
+	_, err := s.db.Exec(`
+		UPDATE entries SET status = ?, status_msg = ?, attempts = ?, next_retry_at = ''
+		WHERE id = ?`, statusFailed, msg, attempts, id)
+	return err
+}
+
+// requeueDueRetries moves failed jobs whose next_retry_at has passed back to queued.
+func (s *wishlistStore) requeueDueRetries(maxAttempts int) (int64, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := s.db.Exec(`
+		UPDATE entries SET status = ?, status_msg = '', next_retry_at = ''
+		WHERE status = ? AND attempts < ? AND next_retry_at != '' AND next_retry_at <= ?`,
+		statusQueued, statusFailed, maxAttempts, now)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // nextQueued returns the oldest queued entry, or nil if the queue is empty.

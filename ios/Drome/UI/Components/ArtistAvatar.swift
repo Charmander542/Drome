@@ -72,11 +72,14 @@ struct ArtistAvatar: View {
         .frame(width: size, height: size)
         .clipShape(Circle())
         .task(id: artistId) {
+            // Show Navidrome cover immediately; defer Spotify resolve so fast
+            // flings don't stampede the network/decode path.
             spotifyURL = session.artistImages.cachedURL(artistId: artistId)
-            if spotifyURL == nil {
-                spotifyURL = await session.artistImages.resolve(
-                    artistId: artistId, name: name, wishlist: session.wishlist)
-            }
+            guard spotifyURL == nil else { return }
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard !Task.isCancelled else { return }
+            spotifyURL = await session.artistImages.resolve(
+                artistId: artistId, name: name, wishlist: session.wishlist)
         }
     }
 }

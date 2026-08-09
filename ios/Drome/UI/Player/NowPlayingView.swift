@@ -49,10 +49,13 @@ struct NowPlayingView: View {
                             songPane(width: width, height: height - 72)
                         case .lyrics:
                             lyricsPane
+                                // Match song pane's remaining height so the
+                                // Lyrics tab doesn't sit lower than Song.
+                                .frame(width: width, height: height - 72, alignment: .top)
                         }
                     }
                     .frame(width: width)
-                    .frame(maxHeight: .infinity)
+                    .frame(maxHeight: .infinity, alignment: .top)
                 }
                 .frame(width: width, height: height)
             }
@@ -327,7 +330,6 @@ struct NowPlayingView: View {
     private var metadataBlock: some View {
         let song = player.current?.song
         let title = cleaned(song?.title) ?? "Unknown Title"
-        let artist = cleaned(song.map { $0.displayArtist }) ?? "Unknown Artist"
 
         return HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
@@ -363,20 +365,16 @@ struct NowPlayingView: View {
                         .minimumScaleFactor(0.85)
                 }
 
-                // Tap artist → artist page.
-                if let song, let artistId = song.artistId, !artistId.isEmpty {
-                    NavigationLink {
-                        ArtistDetailView(artistID: artistId, placeholderName: artist)
-                    } label: {
-                        Text(artist)
-                            .font(.subheadline)
-                            .foregroundStyle(Color.white.opacity(0.7))
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.plain)
+                // Each credited artist name is independently tappable.
+                if let song {
+                    SongArtistLinks(
+                        song: song,
+                        font: .subheadline,
+                        color: Color.white.opacity(0.7)
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    Text(artist)
+                    Text("Unknown Artist")
                         .font(.subheadline)
                         .foregroundStyle(Color.white.opacity(0.7))
                         .lineLimit(1)
@@ -655,10 +653,21 @@ struct NowPlayingMoreSheet: View {
                         .listRowBackground(DromeTheme.elevated)
                     }
 
-                    if let artistId = song.artistId, !artistId.isEmpty {
+                    let artistRoutes = SongNavigation.artistRoutes(for: song)
+                    if artistRoutes.count > 1 {
+                        ForEach(artistRoutes) { route in
+                            NavigationLink {
+                                ArtistDetailView(artistID: route.artistId,
+                                                 placeholderName: route.name)
+                            } label: {
+                                Label(route.name, systemImage: "person.wave.2")
+                            }
+                            .listRowBackground(DromeTheme.elevated)
+                        }
+                    } else if let route = artistRoutes.first ?? SongNavigation.artistRoute(for: song) {
                         NavigationLink {
-                            ArtistDetailView(artistID: artistId,
-                                             placeholderName: song.artist ?? "Artist")
+                            ArtistDetailView(artistID: route.artistId,
+                                             placeholderName: route.name)
                         } label: {
                             Label("View Artist", systemImage: "person.wave.2")
                         }

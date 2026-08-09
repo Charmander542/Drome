@@ -9,6 +9,7 @@ final class DownloadManager: ObservableObject {
     @Published private(set) var progress: [String: Double] = [:]
     @Published private(set) var records: [DownloadRecord] = []
     @Published private(set) var downloadedIDs: Set<String> = []
+    @Published private(set) var playlistMemberships: [DownloadPlaylistMembership] = []
 
     private let client: SubsonicClient
     private let database: AppDatabase
@@ -60,6 +61,7 @@ final class DownloadManager: ObservableObject {
     private func reload() {
         records = (try? database.downloadRecords(serverKey: serverKey)) ?? []
         downloadedIDs = Set(records.filter { $0.state == "done" }.map(\.songId))
+        playlistMemberships = (try? database.downloadPlaylistMemberships(serverKey: serverKey)) ?? []
     }
 
     // MARK: - Queries
@@ -95,26 +97,51 @@ final class DownloadManager: ObservableObject {
     // MARK: - Enqueue / cancel / remove
 
     func download(_ songs: [Song], albumId: String? = nil, albumName: String? = nil,
-                  artist: String? = nil) {
-        for song in songs {
-            guard !downloadedIDs.contains(song.id), progress[song.id] == nil else { continue }
-            guard let url = client.downloadURL(songId: song.id) else { continue }
-            let json = (try? JSONEncoder().encode(song)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-            let record = DownloadRecord(
-                serverKey: serverKey, songId: song.id, songJSON: json,
-                albumId: albumId ?? song.albumId ?? "",
-                albumName: albumName ?? song.album ?? "",
-                artist: artist ?? song.artist ?? "",
-                state: "downloading", relPath: nil, fileSize: 0)
-            try? database.upsertDownload(record)
+                  artist: String? = nil, playlistId: String? = nil, playlistName: String? = nil) {
+        Task { await enqueueDownloads(songs, albumId: albumId, albumName: albumName,
+                                      artist: artist, playlistId: playlistId, playlistName: playlistName) }
+    }
 
-            let task = session.downloadTask(with: url)
-            task.taskDescription = song.id
-            tasksBySongID[song.id] = task
-            progress[song.id] = 0
-            task.resume()
+    /// Resolves each song from Navidrome before enqueue so offline metadata
+    /// always comes from the library (never a stale/Spotify-shaped snapshot).
+    private func enqueueDownloads(_ songs: [Song], albumId: String?, albumName: String?,
+                                  artist: String?, playlistId: String?, playlistName: String?) async {
+        for song in songs {
+            // Already offline: attach playlist membership without re-fetching bytes.
+            if downloadedIDs.contains(song.id) {
+                attachPlaylistMembership(songId: song.id, playlistId: playlistId, playlistName: playlistName)
+                continue
+            }
+            if progress[song.id] == nil {
+                guard let url = client.downloadURL(songId: song.id) else { continue }
+                let resolved = (try? await client.song(id: song.id)) ?? song
+                guard !resolved.id.isEmpty else { continue }
+                let json = (try? JSONEncoder().encode(resolved)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                let record = DownloadRecord(
+                    serverKey: serverKey, songId: resolved.id, songJSON: json,
+                    albumId: albumId ?? resolved.albumId ?? "",
+                    albumName: albumName ?? resolved.album ?? "",
+                    artist: artist ?? resolved.artist ?? "",
+                    state: "downloading", relPath: nil, fileSize: 0)
+                try? database.upsertDownload(record)
+
+                let task = session.downloadTask(with: url)
+                task.taskDescription = resolved.id
+                tasksBySongID[resolved.id] = task
+                progress[resolved.id] = 0
+                task.resume()
+            }
+            attachPlaylistMembership(songId: song.id, playlistId: playlistId, playlistName: playlistName)
         }
         reload()
+    }
+
+    private func attachPlaylistMembership(songId: String, playlistId: String?, playlistName: String?) {
+        guard let playlistId, !playlistId.isEmpty else { return }
+        let membership = DownloadPlaylistMembership(
+            serverKey: serverKey, songId: songId,
+            playlistId: playlistId, playlistName: playlistName ?? "")
+        try? database.upsertDownloadPlaylistMembership(membership)
     }
 
     func cancel(songId: String) {

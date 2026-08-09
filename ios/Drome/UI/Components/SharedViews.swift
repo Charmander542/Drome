@@ -58,6 +58,59 @@ struct HorizontalAlbumRail: View {
     }
 }
 
+struct PlaylistCard: View {
+    let playlist: Playlist
+    @Environment(\.session) private var session
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            RemoteImage(url: session?.client.coverArtURL(id: playlist.coverArt ?? playlist.id, size: 300),
+                        placeholderSymbol: "music.note.list")
+                .aspectRatio(1, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            Text(playlist.name)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            Text(playlist.songCount.map { "\($0) songs" } ?? "Playlist")
+                .font(.caption)
+                .foregroundStyle(DromeTheme.muted)
+                .lineLimit(1)
+        }
+        .hoverEffectDisabled()
+        .transaction { $0.animation = nil }
+    }
+}
+
+struct HorizontalPlaylistRail: View {
+    let title: String
+    let playlists: [Playlist]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(DromeTheme.headlineFont)
+                .padding(.horizontal, 16)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 14) {
+                    ForEach(playlists) { playlist in
+                        NavigationLink {
+                            PlaylistDetailView(playlistID: playlist.id)
+                        } label: {
+                            PlaylistCard(playlist: playlist)
+                                .frame(width: 148)
+                        }
+                        .buttonStyle(.plain)
+                        .hoverEffectDisabled()
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+        }
+    }
+}
+
 struct SectionHeader: View {
     let title: String
     var subtitle: String? = nil

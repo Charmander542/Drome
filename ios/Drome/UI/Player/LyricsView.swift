@@ -91,7 +91,7 @@ struct LyricsView: View {
                     }
                 }
                 .padding(.horizontal, 22)
-                .padding(.top, 28)
+                .padding(.top, 4)
                 .padding(.bottom, 160)
                 .frame(maxWidth: .infinity)
             }

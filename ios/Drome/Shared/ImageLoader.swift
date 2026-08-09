@@ -1,5 +1,6 @@
 import UIKit
 import SwiftUI
+import ImageIO
 
 /// Small async image loader with an in-memory cache. Uses the active
 /// account's URLSession so self-signed-certificate trust applies to artwork.
@@ -17,6 +18,8 @@ final class ImageLoader: @unchecked Sendable {
 
     init() {
         cache.countLimit = 400
+        // ~64 MB of decoded bitmaps; prefer evicting by cost over count alone.
+        cache.totalCostLimit = 64 * 1024 * 1024
     }
 
     func image(for url: URL) async -> UIImage? {
@@ -25,11 +28,50 @@ final class ImageLoader: @unchecked Sendable {
             return cached
         }
         guard let (data, response) = try? await session.data(from: url),
-              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
-              let image = UIImage(data: data)
+              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true
         else { return nil }
-        cache.setObject(image, forKey: key)
+
+        let maxPixel = Self.maxPixelDimension(for: url)
+        guard let image = Self.downsampledImage(data: data, maxPixel: maxPixel) else { return nil }
+        let cost = Self.approximateCost(of: image)
+        cache.setObject(image, forKey: key, cost: cost)
         return image
+    }
+
+    /// Prefer the Subsonic `size=` query (already list-sized). Fallback keeps
+    /// list art small even when the URL omits a size.
+    private static func maxPixelDimension(for url: URL) -> CGFloat {
+        guard let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              let sizeItem = items.first(where: { $0.name == "size" }),
+              let value = sizeItem.value, let size = Double(value), size > 0
+        else {
+            return 240
+        }
+        // Decode at ~2× for retina list cells without loading full art.
+        return CGFloat(min(max(size * 2, 120), 1200))
+    }
+
+    private static func downsampledImage(data: Data, maxPixel: CGFloat) -> UIImage? {
+        let options: [CFString: Any] = [kCGImageSourceShouldCache: false]
+        guard let source = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else {
+            return UIImage(data: data)
+        }
+        let thumbOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: cgImage)
+    }
+
+    private static func approximateCost(of image: UIImage) -> Int {
+        let width = Int(image.size.width * image.scale)
+        let height = Int(image.size.height * image.scale)
+        return max(width * height * 4, 1)
     }
 }
 
@@ -66,9 +108,11 @@ struct RemoteImage: View {
             // layout never flashes empty on every redraw.
             if loadedURL == url, image != nil { return }
             if let cached = await ImageLoader.shared.image(for: url) {
+                guard !Task.isCancelled else { return }
                 image = cached
                 loadedURL = url
             } else if loadedURL != url {
+                guard !Task.isCancelled else { return }
                 image = nil
                 loadedURL = nil
             }

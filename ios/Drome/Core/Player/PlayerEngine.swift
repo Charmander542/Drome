@@ -62,6 +62,11 @@ final class PlayerEngine: ObservableObject {
     private var autoplayGeneration = 0
     private var cancellables = Set<AnyCancellable>()
     private var timeObserver: Any?
+    /// Delayed lookahead insert so the current stream wins bandwidth first.
+    private var prefetchTask: Task<Void, Never>?
+    private var lastPublishedElapsed: TimeInterval = -1
+    /// Tracks AirPlay so we only rebuild when the route actually flips.
+    private var lastAirPlayActive = false
 
     private let client: SubsonicClient
     private let ratings: RatingsStore
@@ -78,13 +83,34 @@ final class PlayerEngine: ObservableObject {
         self.rotation = rotation
         self.downloads = downloads
 
+        // Prefer stalling briefly over underrunning / glitching on hiccups.
+        player.automaticallyWaitsToMinimizeStalling = true
+        player.actionAtItemEnd = .advance
+
         configureAudioSession()
         configureRemoteCommands()
         observePlayer()
+        lastAirPlayActive = isAirPlayRouteActive
+    }
+
+    /// Rebuild current item when AirPlay turns on/off so FLAC raw ↔ MP3.
+    private func handlePossibleAirPlayRouteChange() {
+        let airPlay = isAirPlayRouteActive
+        guard airPlay != lastAirPlayActive else { return }
+        lastAirPlayActive = airPlay
+        guard current != nil else { return }
+        let resume = isPlaying
+        let position = elapsed
+        rebuildWindow(startPlaying: resume)
+        if position > 0.5 {
+            seek(to: position)
+        }
     }
 
     func shutdown() {
         cancelAutoplayWork()
+        prefetchTask?.cancel()
+        prefetchTask = nil
         player.pause()
         player.rate = 0
         player.removeAllItems()
@@ -118,7 +144,8 @@ final class PlayerEngine: ObservableObject {
             : rest.map { QueueItem(song: $0) }
         userQueue.removeAll()
         history.removeAll()
-        setCurrent(QueueItem(song: startSong), startPlaying: true)
+        // Direct user tap — always honor the chosen track even if low-rated.
+        setCurrent(QueueItem(song: startSong), startPlaying: true, allowLowRated: true)
         ensureAutoplayBuffer()
     }
 
@@ -142,7 +169,7 @@ final class PlayerEngine: ObservableObject {
         contextQueue = pool.dropFirst().map { QueueItem(song: $0) }
         userQueue.removeAll()
         history.removeAll()
-        setCurrent(QueueItem(song: first), startPlaying: true)
+        setCurrent(QueueItem(song: first), startPlaying: true, allowLowRated: true)
         ensureAutoplayBuffer()
     }
 
@@ -297,7 +324,7 @@ final class PlayerEngine: ObservableObject {
         userQueue.insert(QueueItem(song: song), at: 0)
         if current == nil {
             let item = userQueue.removeFirst()
-            setCurrent(item, startPlaying: true)
+            setCurrent(item, startPlaying: true, allowLowRated: true)
         } else {
             resyncUpcomingWindow()
         }
@@ -308,7 +335,7 @@ final class PlayerEngine: ObservableObject {
         userQueue.append(QueueItem(song: song))
         if current == nil {
             let item = userQueue.removeFirst()
-            setCurrent(item, startPlaying: true)
+            setCurrent(item, startPlaying: true, allowLowRated: true)
         } else {
             resyncUpcomingWindow()
         }
@@ -326,7 +353,8 @@ final class PlayerEngine: ObservableObject {
             userQueue.removeAll()
             contextQueue.removeSubrange(0...idx)
         }
-        setCurrent(item, startPlaying: true)
+        // User tapped a specific queue row — play it even if low-rated.
+        setCurrent(item, startPlaying: true, allowLowRated: true)
         ensureAutoplayBuffer()
     }
 
@@ -370,7 +398,9 @@ final class PlayerEngine: ObservableObject {
 
     // MARK: - Player window management
 
-    private func setCurrent(_ item: QueueItem, startPlaying: Bool) {
+    /// - Parameter allowLowRated: When true (direct user selection), never
+    ///   auto-skip 1–2★ tracks. Skip only applies to programmatic advancement.
+    private func setCurrent(_ item: QueueItem, startPlaying: Bool, allowLowRated: Bool = false) {
         current = item
         elapsed = 0
         duration = TimeInterval(item.song.duration ?? 0)
@@ -378,7 +408,7 @@ final class PlayerEngine: ObservableObject {
         scrobbleNowPlaying(item.song)
         loadArtwork(for: item.song)
         onTrackStarted?(item.song)
-        if shouldSkipLowRated(item.song), peekUpcoming(limit: 1) != nil {
+        if !allowLowRated, shouldSkipLowRated(item.song), peekUpcoming(limit: 1) != nil {
             // Advance past globally-skipped low ratings without stalling.
             DispatchQueue.main.async { [weak self] in self?.next() }
         } else {
@@ -386,15 +416,47 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
+    private var isAirPlayRouteActive: Bool {
+        AVAudioSession.sharedInstance().currentRoute.outputs.contains {
+            $0.portType == .airPlay
+        }
+    }
+
     private func makePlayerItem(for song: Song) -> AVPlayerItem {
-        let url = downloads.localURL(songId: song.id)
-            ?? client.streamURL(songId: song.id)
+        // AirPlay receivers often cannot decode FLAC. Prefer a server-side
+        // MP3 transcoder stream while AirPlay is active; keep local/raw lossless
+        // for phone/Bluetooth/wired output.
+        let airPlay = isAirPlayRouteActive
+        let local = airPlay ? nil : downloads.localURL(songId: song.id)
+        let url = local
+            ?? client.streamURL(songId: song.id, compatibleWithAirPlay: airPlay)
             ?? URL(fileURLWithPath: "/dev/null")
-        return AVPlayerItem(url: url)
+        let asset = AVURLAsset(url: url)
+        let item = AVPlayerItem(asset: asset)
+        // Deep buffer for remote originals (often FLAC) so short network
+        // hiccups never starve the decoder. Local files need far less.
+        item.preferredForwardBufferDuration = local == nil ? 45 : 8
+        item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        // Do not cap bitrate — never trade quality for smoothness.
+        item.preferredPeakBitRate = 0
+        return item
+    }
+
+    /// How many *upcoming* items to keep in AVQueuePlayer.
+    /// Remote lossless streams are bandwidth-heavy; only preload one ahead so
+    /// the current track keeps the pipe. Local files can preload two.
+    private func upcomingPrefetchCount() -> Int {
+        let currentIsLocal = current.map { downloads.localURL(songId: $0.song.id) != nil } ?? false
+        let upcoming = peekUpcoming(limit: 2)
+        let upcomingAllLocal = !upcoming.isEmpty
+            && upcoming.allSatisfy { downloads.localURL(songId: $0.song.id) != nil }
+        if currentIsLocal && upcomingAllLocal { return 2 }
+        return 1
     }
 
     private func rebuildWindow(startPlaying: Bool) {
         isRebuilding = true
+        prefetchTask?.cancel()
         // Pause before tearing down HTTP streams so a replaced item cannot
         // keep decoding while the next track starts (audible overlap).
         player.pause()
@@ -406,15 +468,19 @@ final class PlayerEngine: ObservableObject {
             pushNowPlayingInfo()
         }
         guard let current else { return }
-        for queueItem in [current] + peekUpcoming(limit: 2) {
-            let playerItem = makePlayerItem(for: queueItem.song)
-            window.append((playerItem, queueItem))
-            player.insert(playerItem, after: player.items().last)
-        }
+
+        // Insert the current item alone first so its buffer claims bandwidth
+        // before any lookahead streams open.
+        let playerItem = makePlayerItem(for: current.song)
+        window.append((playerItem, current))
+        player.insert(playerItem, after: nil)
+
         if startPlaying {
             activateAudioSession()
             player.play()
         }
+
+        schedulePrefetchTopUp(delayNanoseconds: 1_200_000_000)
     }
 
     /// Keeps the preloaded window in sync after queue edits without touching
@@ -422,29 +488,35 @@ final class PlayerEngine: ObservableObject {
     private func resyncUpcomingWindow() {
         guard let first = window.first else { return }
         isRebuilding = true
+        prefetchTask?.cancel()
         for entry in window.dropFirst() {
             player.remove(entry.playerItem)
         }
         window = [first]
-        if repeatMode != .one {
-            for queueItem in peekUpcoming(limit: 2) {
-                let playerItem = makePlayerItem(for: queueItem.song)
-                window.append((playerItem, queueItem))
-                player.insert(playerItem, after: player.items().last)
-            }
-        }
         isRebuilding = false
+        // Prefer the playing item; top up lookahead after a beat.
+        schedulePrefetchTopUp(delayNanoseconds: 400_000_000)
     }
 
-    /// Tops up the window after a natural advance.
+    /// Tops up the window after a natural advance or delayed prefetch.
     private func topUpWindow() {
-        guard window.count < 3, repeatMode != .one else { return }
+        let targetCount = 1 + upcomingPrefetchCount()
+        guard window.count < targetCount, repeatMode != .one else { return }
         let queued = Set(window.map(\.queueItem.id))
-        for queueItem in peekUpcoming(limit: 3) where !queued.contains(queueItem.id) {
-            if window.count >= 3 { break }
+        for queueItem in peekUpcoming(limit: targetCount) where !queued.contains(queueItem.id) {
+            if window.count >= targetCount { break }
             let playerItem = makePlayerItem(for: queueItem.song)
             window.append((playerItem, queueItem))
             player.insert(playerItem, after: player.items().last)
+        }
+    }
+
+    private func schedulePrefetchTopUp(delayNanoseconds: UInt64) {
+        prefetchTask?.cancel()
+        prefetchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            guard !Task.isCancelled, let self else { return }
+            self.topUpWindow()
         }
     }
 
@@ -479,17 +551,22 @@ final class PlayerEngine: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // Publish playhead ~2 Hz for UI; karaoke uses accurateElapsed() instead.
         timeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
+            forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
             queue: .main
         ) { [weak self] time in
             Task { @MainActor [weak self] in
                 guard let self, !self.isRebuilding else { return }
-                // While a seek is in flight, keep the optimistic playhead until
-                // the completion handler settles on the real position.
                 guard self.seekEpoch == self.appliedSeekEpoch else { return }
                 let seconds = time.seconds
                 guard seconds.isFinite, seconds >= 0 else { return }
+                // Skip tiny updates to cut SwiftUI churn while audio stays smooth.
+                if abs(seconds - self.lastPublishedElapsed) < 0.2,
+                   abs(seconds - self.elapsed) < 0.2 {
+                    return
+                }
+                self.lastPublishedElapsed = seconds
                 self.elapsed = seconds
                 if let itemDuration = self.player.currentItem?.duration.seconds,
                    itemDuration.isFinite, itemDuration > 0 {
@@ -515,10 +592,28 @@ final class PlayerEngine: ObservableObject {
         NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
+                guard let self else { return }
                 let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
                     .flatMap(AVAudioSession.RouteChangeReason.init)
                 if reason == .oldDeviceUnavailable {
-                    self?.pause()
+                    self.pause()
+                    return
+                }
+                // Rebuild the player item when entering/leaving AirPlay so we
+                // switch between lossless raw and AirPlay-compatible MP3.
+                if reason == .newDeviceAvailable || reason == .routeConfigurationChange {
+                    self.handlePossibleAirPlayRouteChange()
+                }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: AVAudioSession.mediaServicesWereResetNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.configureAudioSession()
+                self?.activateAudioSession()
+                if self?.isPlaying == true {
+                    self?.player.play()
                 }
             }
             .store(in: &cancellables)
@@ -556,11 +651,18 @@ final class PlayerEngine: ObservableObject {
         duration = TimeInterval(newCurrent.song.duration ?? 0)
         isPlaying = player.timeControlStatus == .playing
         topUpWindow()
+        // Prefetch the following track after the new current claims bandwidth.
+        schedulePrefetchTopUp(delayNanoseconds: 800_000_000)
         pushNowPlayingInfo()
         scrobbleNowPlaying(newCurrent.song)
         loadArtwork(for: newCurrent.song)
         onTrackStarted?(newCurrent.song)
-        ensureAutoplayBuffer()
+        // Gapless advance is programmatic — honor skip-low-rated here.
+        if shouldSkipLowRated(newCurrent.song), peekUpcoming(limit: 1) != nil {
+            DispatchQueue.main.async { [weak self] in self?.next() }
+        } else {
+            ensureAutoplayBuffer()
+        }
     }
 
     private func handleItemDidEnd(_ item: AVPlayerItem?) {
@@ -807,11 +909,14 @@ final class PlayerEngine: ObservableObject {
     // MARK: - System integration
 
     private func configureAudioSession() {
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        let session = AVAudioSession.sharedInstance()
+        // Exclusive music playback — never duck or mix with other audio.
+        try? session.setCategory(.playback, mode: .default, options: [])
+        try? session.setActive(true, options: [])
     }
 
     private func activateAudioSession() {
-        try? AVAudioSession.sharedInstance().setActive(true)
+        try? AVAudioSession.sharedInstance().setActive(true, options: [])
     }
 
     private func configureRemoteCommands() {

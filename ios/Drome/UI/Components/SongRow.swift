@@ -71,10 +71,16 @@ struct SongRow: View {
                             .foregroundStyle(DromeTheme.accent)
                     }
                 }
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(DromeTheme.muted)
-                    .lineLimit(1)
+                HStack(spacing: 0) {
+                    SongArtistLinks(song: song, font: .subheadline, color: DromeTheme.muted)
+                    if showAlbum, let album = song.album, !album.isEmpty {
+                        Text(" · \(album)")
+                            .font(.subheadline)
+                            .foregroundStyle(DromeTheme.muted)
+                            .lineLimit(1)
+                    }
+                }
+                .lineLimit(1)
             }
 
             Spacer(minLength: 8)
@@ -113,9 +119,20 @@ struct SongRow: View {
                 Label("View Album", systemImage: "square.stack")
             }
         }
-        if SongNavigation.artistRoute(for: song) != nil {
+        let artistRoutes = SongNavigation.artistRoutes(for: song)
+        if artistRoutes.count > 1 {
+            Menu {
+                ForEach(artistRoutes) { route in
+                    Button(route.name) {
+                        songNavigator.viewArtist(id: route.artistId, name: route.name)
+                    }
+                }
+            } label: {
+                Label("View Artist", systemImage: "person.wave.2")
+            }
+        } else if let route = artistRoutes.first ?? SongNavigation.artistRoute(for: song) {
             Button {
-                songNavigator.viewArtist(for: song)
+                songNavigator.viewArtist(id: route.artistId, name: route.name)
             } label: {
                 Label("View Artist", systemImage: "person.wave.2")
             }
@@ -179,14 +196,6 @@ struct SongRow: View {
 
     private var isCurrent: Bool {
         player.current?.song.id == song.id
-    }
-
-    private var subtitle: String {
-        var parts: [String] = []
-        let artist = song.displayArtist
-        if !artist.isEmpty { parts.append(artist) }
-        if showAlbum, let album = song.album, !album.isEmpty { parts.append(album) }
-        return parts.joined(separator: " · ")
     }
 
     private var coverURL: URL? {

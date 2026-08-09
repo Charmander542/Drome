@@ -5,10 +5,14 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
     case artists = "Artists"
     case albums = "Albums"
     case songs = "Songs"
-    case downloads = "Downloaded"
     case outOfRotation = "Out of Rotation"
 
     var id: String { rawValue }
+
+    /// Tabs shown in the Library filter bar (Downloads lives under Playlists).
+    static var topBarCases: [LibraryFilter] {
+        [.playlists, .artists, .albums, .songs, .outOfRotation]
+    }
 
     /// Short label for the compact segmented bar.
     var shortTitle: String {
@@ -17,8 +21,7 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
         case .artists: return "Artists"
         case .albums: return "Albums"
         case .songs: return "Songs"
-        case .downloads: return "Downloaded"
-        case .outOfRotation: return "Rotation"
+        case .outOfRotation: return "Out of Rotation"
         }
     }
 }
@@ -34,6 +37,9 @@ struct LibraryView: View {
     @State private var albums: [Album] = []
     @State private var artistIndexes: [ArtistIndex] = []
     @State private var songs: [Song] = []
+    @State private var albumSectionsCache: [(letter: String, albums: [Album])] = []
+    @State private var artistSectionsCache: [(letter: String, artists: [Artist])] = []
+    @State private var songSectionsCache: [(letter: String, songs: [Song])] = []
     @State private var isLoading = false
     @State private var error: String?
     @State private var showCreatePlaylist = false
@@ -118,7 +124,7 @@ struct LibraryView: View {
 
     private var filterBar: some View {
         HStack(spacing: 0) {
-            ForEach(LibraryFilter.allCases) { item in
+            ForEach(LibraryFilter.topBarCases) { item in
                 Button {
                     filter = item
                 } label: {
@@ -127,7 +133,7 @@ struct LibraryView: View {
                             .font(.caption.weight(filter == item ? .bold : .semibold))
                             .foregroundStyle(filter == item ? Color.white : Color.white.opacity(0.55))
                             .lineLimit(1)
-                            .minimumScaleFactor(0.7)
+                            .minimumScaleFactor(0.65)
                         Capsule()
                             .fill(filter == item ? DromeTheme.accent : Color.clear)
                             .frame(height: 2)
@@ -156,8 +162,6 @@ struct LibraryView: View {
             case .albums: albumsList
             case .artists: artistsList
             case .songs: songsList
-            case .downloads:
-                DownloadsView()
             case .outOfRotation:
                 outOfRotationContent
             }
@@ -170,7 +174,7 @@ struct LibraryView: View {
         case .albums: return albums.isEmpty
         case .artists: return artistIndexes.isEmpty
         case .songs: return songs.isEmpty
-        case .downloads, .outOfRotation: return false
+        case .outOfRotation: return false
         }
     }
 
@@ -197,6 +201,14 @@ struct LibraryView: View {
                     Label("Create playlist", systemImage: "plus.circle.fill")
                         .font(.body.weight(.semibold))
                         .foregroundStyle(DromeTheme.accent)
+                }
+                .listRowBackground(DromeTheme.elevated)
+
+                NavigationLink {
+                    DownloadsView()
+                } label: {
+                    Label("Downloaded", systemImage: "arrow.down.circle.fill")
+                        .font(.body.weight(.semibold))
                 }
                 .listRowBackground(DromeTheme.elevated)
 
@@ -311,7 +323,7 @@ struct LibraryView: View {
     private var albumsList: some View {
         ScrollViewReader { proxy in
             List {
-                ForEach(albumSections, id: \.letter) { section in
+                ForEach(albumSectionsCache, id: \.letter) { section in
                     Section {
                         ForEach(section.albums) { album in
                             NavigationLink {
@@ -327,7 +339,9 @@ struct LibraryView: View {
                                             .font(.caption)
                                             .foregroundStyle(DromeTheme.muted)
                                     }
+                                    Spacer(minLength: 0)
                                 }
+                                .frame(minHeight: 56)
                             }
                             .listRowBackground(DromeTheme.background)
                         }
@@ -343,7 +357,7 @@ struct LibraryView: View {
             .scrollContentBackground(.hidden)
             .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
             .overlay(alignment: .trailing) {
-                AlphabetScrubber(letters: albumSections.map(\.letter)) { letter in
+                AlphabetScrubber(letters: albumSectionsCache.map(\.letter)) { letter in
                     proxy.scrollTo(letter, anchor: .top)
                 }
                 .padding(.vertical, 8)
@@ -352,7 +366,7 @@ struct LibraryView: View {
         }
     }
 
-    private var albumSections: [(letter: String, albums: [Album])] {
+    private func rebuildAlbumSections(from albums: [Album]) -> [(letter: String, albums: [Album])] {
         let grouped = Dictionary(grouping: albums) { album -> String in
             LibrarySortLetter.sectionLetter(for: album.name)
         }
@@ -369,7 +383,7 @@ struct LibraryView: View {
     private var artistsList: some View {
         ScrollViewReader { proxy in
             List {
-                ForEach(artistSections, id: \.letter) { section in
+                ForEach(artistSectionsCache, id: \.letter) { section in
                     Section {
                         ForEach(section.artists) { artist in
                             NavigationLink {
@@ -402,7 +416,7 @@ struct LibraryView: View {
             .scrollContentBackground(.hidden)
             .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
             .overlay(alignment: .trailing) {
-                AlphabetScrubber(letters: artistSections.map(\.letter)) { letter in
+                AlphabetScrubber(letters: artistSectionsCache.map(\.letter)) { letter in
                     proxy.scrollTo(letter, anchor: .top)
                 }
                 .padding(.vertical, 8)
@@ -411,9 +425,9 @@ struct LibraryView: View {
         }
     }
 
-    private var artistSections: [(letter: String, artists: [Artist])] {
+    private func rebuildArtistSections(from indexes: [ArtistIndex]) -> [(letter: String, artists: [Artist])] {
         var buckets: [String: [Artist]] = [:]
-        for index in artistIndexes {
+        for index in indexes {
             let letter = LibrarySortLetter.sectionLetter(for: index.name, preferWholeIfSingle: true)
             buckets[letter, default: []].append(contentsOf: index.artists)
         }
@@ -432,13 +446,13 @@ struct LibraryView: View {
     private var songsList: some View {
         ScrollViewReader { proxy in
             List {
-                ForEach(songSections, id: \.letter) { section in
+                ForEach(songSectionsCache, id: \.letter) { section in
                     Section {
                         ForEach(Array(section.songs.enumerated()), id: \.element.id) { index, song in
                             SongRow(song: song, showAlbum: true)
                                 .contentShape(Rectangle())
                                 .onTapGesture {
-                                    let flat = songSections.flatMap(\.songs)
+                                    let flat = songSectionsCache.flatMap(\.songs)
                                     let start = flat.firstIndex(where: { $0.id == song.id }) ?? 0
                                     playerPlay(flat, startAt: start)
                                 }
@@ -456,7 +470,7 @@ struct LibraryView: View {
             .scrollContentBackground(.hidden)
             .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
             .overlay(alignment: .trailing) {
-                AlphabetScrubber(letters: songSections.map(\.letter)) { letter in
+                AlphabetScrubber(letters: songSectionsCache.map(\.letter)) { letter in
                     proxy.scrollTo(letter, anchor: .top)
                 }
                 .padding(.vertical, 8)
@@ -465,7 +479,7 @@ struct LibraryView: View {
         }
     }
 
-    private var songSections: [(letter: String, songs: [Song])] {
+    private func rebuildSongSections(from songs: [Song]) -> [(letter: String, songs: [Song])] {
         let grouped = Dictionary(grouping: songs) { song -> String in
             LibrarySortLetter.sectionLetter(for: song.title)
         }
@@ -492,7 +506,6 @@ struct LibraryView: View {
     }
 
     private func load() async {
-        guard filter != .downloads else { return }
         if filter == .outOfRotation {
             await rotation.refresh()
             return
@@ -507,11 +520,14 @@ struct LibraryView: View {
                 await rotation.refresh()
             case .albums:
                 albums = try await session.client.albumList(type: .alphabeticalByName, size: 500)
+                albumSectionsCache = rebuildAlbumSections(from: albums)
             case .artists:
                 artistIndexes = try await session.client.artists()
+                artistSectionsCache = rebuildArtistSections(from: artistIndexes)
             case .songs:
                 songs = try await loadSongCatalog()
-            case .downloads, .outOfRotation:
+                songSectionsCache = rebuildSongSections(from: songs)
+            case .outOfRotation:
                 break
             }
         } catch {

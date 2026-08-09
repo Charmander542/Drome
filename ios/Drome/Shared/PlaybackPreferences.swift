@@ -21,15 +21,19 @@ enum PlaybackPreferences {
     }
 }
 
-/// Formats multi-artist credits for display.
+/// One credited artist under a song — optionally linked to a Navidrome artist id.
+struct ArtistCredit: Hashable, Identifiable {
+    var id: String { artistId ?? name }
+    var name: String
+    var artistId: String?
+}
+
+/// Formats multi-artist credits for display and navigation.
 enum ArtistCredits {
     /// Prefer OpenSubsonic `artists[]` when present; otherwise parse common
     /// separators in the single `artist` string.
     static func display(for song: Song) -> String {
-        if let artists = song.artists, !artists.isEmpty {
-            return artists.map(\.name).filter { !$0.isEmpty }.joined(separator: ", ")
-        }
-        return split(song.artist ?? "").joined(separator: ", ")
+        credits(for: song).map(\.name).joined(separator: ", ")
     }
 
     static func display(albumArtist: String?, artists: [ArtistRef]?) -> String {
@@ -37,6 +41,28 @@ enum ArtistCredits {
             return artists.map(\.name).filter { !$0.isEmpty }.joined(separator: ", ")
         }
         return split(albumArtist ?? "").joined(separator: ", ")
+    }
+
+    /// Individual credits for tappable artist names.
+    static func credits(for song: Song) -> [ArtistCredit] {
+        if let artists = song.artists, !artists.isEmpty {
+            let mapped = artists.compactMap { ref -> ArtistCredit? in
+                let name = ref.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty else { return nil }
+                let id = ref.artistId?.trimmingCharacters(in: .whitespacesAndNewlines)
+                return ArtistCredit(name: name, artistId: (id?.isEmpty == false) ? id : nil)
+            }
+            if !mapped.isEmpty { return mapped }
+        }
+        let names = split(song.artist ?? "")
+        if names.isEmpty { return [] }
+        // Single primary artistId only attaches to the first parsed name.
+        return names.enumerated().map { index, name in
+            ArtistCredit(
+                name: name,
+                artistId: index == 0 ? song.artistId.flatMap { $0.isEmpty ? nil : $0 } : nil
+            )
+        }
     }
 
     static func split(_ raw: String) -> [String] {

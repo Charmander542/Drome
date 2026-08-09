@@ -65,6 +65,8 @@ enum LibraryMatcher {
             guard looksOwned(hit, owned: owned) else { return nil }
             let titleKey = normalize(hit.title)
             let artistKey = normalize(hit.artist)
+            // Require a title + artist match — never fall back to title-only
+            // (that mis-resolves Spotify hits onto the wrong Navidrome track).
             return result.songs.first { song in
                 let t = normalize(song.title)
                 guard t == titleKey else { return false }
@@ -72,7 +74,7 @@ enum LibraryMatcher {
                 let a = normalize(song.displayArtist)
                 return a.contains(artistKey) || artistKey.contains(a)
                     || a.split(separator: " ").first.map(String.init) == artistKey.split(separator: " ").first.map(String.init)
-            } ?? result.songs.first { normalize($0.title) == titleKey }
+            }
         } catch {
             return nil
         }

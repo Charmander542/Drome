@@ -217,6 +217,7 @@ struct SearchView: View {
                 if let song = item.decodedSong() {
                     player.play([song], startAt: 0,
                                 context: PlaybackContext(label: "Search", kind: .search))
+                    NowPlayingPresenter.open()
                 } else {
                     Task { await playRecentSong(id: item.entityId) }
                 }
@@ -264,6 +265,7 @@ struct SearchView: View {
             recentItems = RecentSearchesStore.load()
             player.play([song], startAt: 0,
                         context: PlaybackContext(label: "Search", kind: .search))
+            NowPlayingPresenter.open()
         } catch {
             self.error = error.localizedDescription
         }
@@ -389,6 +391,7 @@ struct SearchView: View {
                 Button {
                     player.play([song], startAt: 0,
                                 context: PlaybackContext(label: "Library", kind: .search))
+                    NowPlayingPresenter.open()
                 } label: {
                     Image(systemName: "play.circle.fill")
                         .font(.title2)
@@ -409,6 +412,7 @@ struct SearchView: View {
                 ProgressView()
             } else if addedSpotifyIDs.contains(hit.spotifyId) {
                 Image(systemName: "checkmark.circle.fill")
+                    .font(.title2)
                     .foregroundStyle(DromeTheme.accent)
             } else {
                 Image(systemName: "plus.circle.fill")
@@ -455,6 +459,7 @@ struct SearchView: View {
                     let start = songs.firstIndex(where: { $0.id == song.id }) ?? 0
                     player.play(songs.isEmpty ? [song] : songs, startAt: start,
                                 context: PlaybackContext(label: "Search", kind: .search))
+                    NowPlayingPresenter.open()
                 } label: {
                     hitLabel(hit, shape: .rounded)
                 }
@@ -675,6 +680,7 @@ struct SearchView: View {
             let song = try await session.client.song(id: hit.songId)
             player.play([song], startAt: 0,
                         context: PlaybackContext(label: "Lyrics search", kind: .search))
+            NowPlayingPresenter.open()
         } catch {
             self.error = error.localizedDescription
         }

@@ -52,5 +52,8 @@ struct MainTabView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             keyboardVisible = false
         }
+        .onReceive(NotificationCenter.default.publisher(for: .dromeOpenNowPlaying)) { _ in
+            showNowPlaying = true
+        }
     }
 }

@@ -12,10 +12,12 @@ URL="$1"
 OUT="$2"
 shift 2
 
-# Default layout matches the existing Navidrome library: Artist/Album/NN - Title.flac
+# Python SpotiFLAC uses {track} (not {track_number}). Layout matches the
+# existing Navidrome library: Artist/Album/NN - Title.flac
+# Drome always post-processes with retag.py so wishlist Spotify metadata wins
+# even when SpotiFLAC leaves provider IDs as titles.
 exec spotiflac "$URL" "$OUT" \
   --use-artist-subfolders \
   --use-album-subfolders \
-  --use-track-numbers \
-  --filename-format "{track_number} - {title}" \
+  --filename-format "{track} - {title}" \
   "$@"

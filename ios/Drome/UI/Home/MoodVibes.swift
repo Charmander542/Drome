@@ -186,50 +186,50 @@ struct MoodVibeRail: View {
     }
 }
 
-/// Shared vibe tile — used on Home and in Recently Played.
+/// Shared vibe tile — sized like `AlbumCard` (148pt square art + two text lines).
 struct MoodVibeCard: View {
     let vibe: MoodVibe
     var isSpinning: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
+        VStack(alignment: .leading, spacing: 8) {
+            ZStack {
+                LinearGradient(colors: vibe.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
                 Image(systemName: vibe.symbol)
-                    .font(.title3.weight(.bold))
-                Spacer()
+                    .font(.system(size: 64, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if isSpinning {
                     ProgressView()
                         .tint(.white)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .padding(12)
                 } else if vibe == .lucky {
                     Image(systemName: "sparkles")
                         .font(.caption.weight(.bold))
-                        .opacity(0.85)
+                        .foregroundStyle(.white.opacity(0.85))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .padding(12)
                 }
             }
-
-            Spacer(minLength: 0)
+            .aspectRatio(1, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
+            }
 
             Text(vibe.title)
-                .font(.headline.weight(.bold))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
-                .lineLimit(2)
-                .minimumScaleFactor(0.85)
+                .lineLimit(1)
             Text(vibe.blurb)
                 .font(.caption)
-                .foregroundStyle(Color.white.opacity(0.8))
-                .lineLimit(2)
+                .foregroundStyle(DromeTheme.muted)
+                .lineLimit(1)
         }
-        .padding(14)
-        .frame(width: vibe == .lucky ? 168 : 148, height: 128, alignment: .leading)
-        .background(
-            LinearGradient(colors: vibe.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
-        }
-        .shadow(color: vibe.colors.first?.opacity(0.35) ?? .clear, radius: 12, y: 6)
+        .frame(width: 148)
+        .hoverEffectDisabled()
         .scaleEffect(isSpinning ? 0.97 : 1)
         .animation(.easeInOut(duration: 0.15), value: isSpinning)
     }

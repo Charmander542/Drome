@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 
 /// Composition root. Owns the account store and the currently active session;
 /// switching accounts tears down one session and builds another, so all
@@ -68,6 +69,7 @@ final class AppSession: ObservableObject, Identifiable {
     let lyricsService: LyricsService
     let lyricsIndexer: LyricsIndexer
     let artistImages: ArtistImageStore
+    private var playbackSideEffectCancellables = Set<AnyCancellable>()
 
     var id: UUID { account.id }
 
@@ -87,8 +89,12 @@ final class AppSession: ObservableObject, Identifiable {
         downloads = DownloadManager(client: client, database: database, serverKey: account.serverKey)
         player = PlayerEngine(client: client, ratings: ratings, rotation: rotation, downloads: downloads)
         let userKey = account.userKey
+        // History writes must never contend with the audio render path.
         player.onTrackStarted = { [player] song in
-            try? database.recordPlay(userKey: userKey, song: song, context: player.context)
+            let context = player.context
+            Task.detached(priority: .utility) {
+                try? database.recordPlay(userKey: userKey, song: song, context: context)
+            }
         }
         player.autoplayProvider = AutoplayProvider(
             client: client, ratings: ratings, rotation: rotation,
@@ -101,9 +107,25 @@ final class AppSession: ObservableObject, Identifiable {
         ImageLoader.shared.session = client.session
         Task { await rotation.refresh() }
         lyricsIndexer.start()
+
+        // Pause library lyrics crawling while audio is playing so indexing
+        // network I/O cannot starve the stream.
+        player.$isPlaying
+            .removeDuplicates()
+            .debounce(for: .milliseconds(800), scheduler: RunLoop.main)
+            .sink { [weak lyricsIndexer] playing in
+                guard let lyricsIndexer else { return }
+                if playing {
+                    lyricsIndexer.stop()
+                } else if lyricsIndexer.isEnabled {
+                    lyricsIndexer.start()
+                }
+            }
+            .store(in: &playbackSideEffectCancellables)
     }
 
     func teardown() {
+        playbackSideEffectCancellables.removeAll()
         player.shutdown()
         lyricsIndexer.stop()
         downloads.invalidate()

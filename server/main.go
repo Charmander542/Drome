@@ -30,9 +30,11 @@ type config struct {
 	SpotifyMarket       string
 	DBPath              string
 	Download            downloadConfig
+	Cleanup             cleanupConfig
 }
 
 func configFromEnv() config {
+	dl := downloadConfigFromEnv()
 	cfg := config{
 		ListenAddr:          envOr("DROME_LISTEN_ADDR", ":4534"),
 		NavidromeURL:        envOr("DROME_NAVIDROME_URL", "http://navidrome:4533"),
@@ -40,7 +42,8 @@ func configFromEnv() config {
 		SpotifyClientSecret: os.Getenv("DROME_SPOTIFY_CLIENT_SECRET"),
 		SpotifyMarket:       envOr("DROME_SPOTIFY_MARKET", "US"),
 		DBPath:              envOr("DROME_DB_PATH", "drome.db"),
-		Download:            downloadConfigFromEnv(),
+		Download:            dl,
+		Cleanup:             cleanupConfigFromEnv(dl.MusicDir),
 	}
 	return cfg
 }
@@ -75,6 +78,7 @@ func main() {
 	}
 
 	worker := newDownloadWorker(cfg.Download, store, newNavidromeVerifier(cfg.NavidromeURL, 5*time.Minute), cfg.NavidromeURL)
+	cleaner := newLibraryCleaner(cfg.Cleanup, worker.triggerScan)
 	srv := &server{
 		store:     store,
 		navidrome: worker.navidrome,
@@ -85,6 +89,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go worker.Run(ctx)
+	go cleaner.Run(ctx)
 
 	httpSrv := &http.Server{Addr: cfg.ListenAddr, Handler: srv.routes()}
 	go func() {
@@ -95,8 +100,9 @@ func main() {
 		worker.Close()
 	}()
 
-	log.Printf("drome-server listening on %s (navidrome: %s, db: %s, music: %s)",
-		cfg.ListenAddr, cfg.NavidromeURL, cfg.DBPath, cfg.Download.MusicDir)
+	log.Printf("drome-server listening on %s (navidrome: %s, db: %s, music: %s, cleanup: %v/%s)",
+		cfg.ListenAddr, cfg.NavidromeURL, cfg.DBPath, cfg.Download.MusicDir,
+		cfg.Cleanup.Enabled, cfg.Cleanup.Interval)
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
