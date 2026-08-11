@@ -202,6 +202,12 @@ def main() -> int:
         print("no recent audio files to retag", file=sys.stderr)
         return 3
 
+    # Track wishlist jobs download one file. The mtime window often still
+    # includes files from the previous job; applying args.title to all of
+    # them renames every recent track to the latest entry.
+    if args.kind == "track" and not args.files_json and len(files) > 1:
+        files = [max(files, key=lambda p: p.stat().st_mtime)]
+
     files.sort(key=lambda p: p.name.lower())
     # For album downloads, assign track numbers by filename order when missing.
     results = []
