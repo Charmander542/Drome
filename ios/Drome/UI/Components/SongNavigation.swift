@@ -92,15 +92,38 @@ final class SongNavigator: ObservableObject {
 
     func viewArtist(id: String, name: String) {
         guard !id.isEmpty else { return }
-        artistRoute = SongNavigation.ArtistRoute(artistId: id, name: name)
+        let route = SongNavigation.ArtistRoute(artistId: id, name: name)
+        // Clearing first forces `navigationDestination(item:)` to fire even when
+        // tapping the same artist again; also avoids stale presentation races.
+        if artistRoute?.artistId == route.artistId {
+            artistRoute = nil
+            DispatchQueue.main.async { self.artistRoute = route }
+        } else {
+            artistRoute = route
+        }
+    }
+}
+
+private struct SongNavigatorKey: EnvironmentKey {
+    static let defaultValue: SongNavigator? = nil
+}
+
+extension EnvironmentValues {
+    /// Optional accessor so artist taps never hard-crash if a stack forgot to inject.
+    var songNavigator: SongNavigator? {
+        get { self[SongNavigatorKey.self] }
+        set { self[SongNavigatorKey.self] = newValue }
     }
 }
 
 extension View {
     /// Register once on the `NavigationStack` root (outside any lazy container).
+    /// Apply to the `NavigationStack` itself (not only its root content) so pushed
+    /// album/playlist pages inherit `SongNavigator`.
     func songNavigationDestinations(navigator: SongNavigator) -> some View {
         self
             .environmentObject(navigator)
+            .environment(\.songNavigator, navigator)
             .navigationDestination(item: Binding(
                 get: { navigator.albumRoute },
                 set: { navigator.albumRoute = $0 }
@@ -138,7 +161,22 @@ struct SongNavigationStack<Content: View>: View {
     var body: some View {
         NavigationStack {
             content()
-                .songNavigationDestinations(navigator: navigator)
+                .navigationDestination(item: Binding(
+                    get: { navigator.albumRoute },
+                    set: { navigator.albumRoute = $0 }
+                )) { route in
+                    AlbumDetailView(albumID: route.albumId, placeholder: route.album)
+                }
+                .navigationDestination(item: Binding(
+                    get: { navigator.artistRoute },
+                    set: { navigator.artistRoute = $0 }
+                )) { route in
+                    ArtistDetailView(artistID: route.artistId, placeholderName: route.name)
+                }
         }
+        // Critical: inject on the stack, not only the root page, so pushed
+        // Album/Playlist/Artist detail views still see SongNavigator.
+        .environmentObject(navigator)
+        .environment(\.songNavigator, navigator)
     }
 }

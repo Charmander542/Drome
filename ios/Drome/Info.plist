@@ -49,6 +49,10 @@
 		<key>UIImageRespectsSafeAreaInsets</key>
 		<false/>
 	</dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Drome uses the microphone for CarPlay voice search.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Drome uses speech recognition so you can search your library by voice in CarPlay.</string>
 </dict>
 </plist>
 

@@ -100,8 +100,13 @@ enum SearchRanker {
             ))
         }
 
-        // Stable sort: score desc, then kind priority (artist > album > song > lyrics), then title.
+        // Stable sort: artists with 0 albums last, then score desc, then kind
+        // priority (artist > album > song > lyrics), then title.
         return hits.sorted { a, b in
+            let aEmptyArtist = a.kind == .artist && (a.artist?.albumCount ?? -1) == 0
+            let bEmptyArtist = b.kind == .artist && (b.artist?.albumCount ?? -1) == 0
+            if aEmptyArtist != bEmptyArtist { return !aEmptyArtist && bEmptyArtist }
+
             if abs(a.score - b.score) > 0.5 { return a.score > b.score }
             let kindOrder: [SearchHit.Kind: Int] = [.artist: 0, .album: 1, .song: 2, .lyrics: 3]
             let ka = kindOrder[a.kind] ?? 9

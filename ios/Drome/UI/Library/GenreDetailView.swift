@@ -49,11 +49,12 @@ struct GenreDetailView: View {
                         }
 
                         Section("Songs") {
-                            ForEach(Array(songs.prefix(40).enumerated()), id: \.element.id) { index, song in
+                            ForEach(Array(songs.prefix(40).enumerated()), id: \.element.id) { _, song in
                                 SongRow(song: song, showAlbum: true)
                                     .contentShape(Rectangle())
                                     .onTapGesture {
-                                        player.play(songs, startAt: index,
+                                        let start = songs.firstIndex(where: { $0.id == song.id }) ?? 0
+                                        player.play(songs, startAt: start,
                                                     context: PlaybackContext(label: genre.displayName, kind: .genre))
                                     }
                                     .listRowBackground(DromeTheme.background)
@@ -87,7 +88,7 @@ struct GenreDetailView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
-                .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
+                .dromeMiniPlayerClearance()
             }
         }
         .navigationTitle(genre.displayName)
@@ -99,18 +100,24 @@ struct GenreDetailView: View {
         error = nil
         defer { isLoading = false }
 
-        let tags = genre.rawTags.isEmpty ? [genre.displayName] : genre.rawTags
+        let tags = Array((genre.rawTags.isEmpty ? [genre.displayName] : genre.rawTags).prefix(8))
         let client = session.client
         var albumByID: [String: Album] = [:]
         var songByID: [String: Song] = [:]
         var lastError: Error?
 
+        // Bound concurrency — many raw tag aliases used to stampede the server.
         await withTaskGroup(of: (albums: [Album], songs: [Song], error: Error?).self) { group in
-            for tag in tags {
+            var inFlight = 0
+            var tagIterator = tags.makeIterator()
+
+            func enqueueNext() {
+                guard let tag = tagIterator.next() else { return }
+                inFlight += 1
                 group.addTask {
                     do {
-                        async let a = client.albumList(type: .byGenre, size: 100, genre: tag)
-                        async let s = client.songsByGenre(tag, count: 100)
+                        async let a = client.albumList(type: .byGenre, size: 80, genre: tag)
+                        async let s = client.songsByGenre(tag, count: 80)
                         let (albums, songs) = try await (a, s)
                         return (albums, songs, nil)
                     } catch {
@@ -118,10 +125,16 @@ struct GenreDetailView: View {
                     }
                 }
             }
-            for await result in group {
+
+            for _ in 0..<min(3, tags.count) {
+                enqueueNext()
+            }
+            while let result = await group.next() {
+                inFlight -= 1
                 for album in result.albums { albumByID[album.id] = album }
                 for song in result.songs { songByID[song.id] = song }
                 if let err = result.error { lastError = err }
+                enqueueNext()
             }
         }
 

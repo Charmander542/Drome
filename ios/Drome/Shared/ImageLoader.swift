@@ -32,10 +32,25 @@ final class ImageLoader: @unchecked Sendable {
         else { return nil }
 
         let maxPixel = Self.maxPixelDimension(for: url)
-        guard let image = Self.downsampledImage(data: data, maxPixel: maxPixel) else { return nil }
+        // Decode / downsample off the main actor so fast list scrolls don't jank.
+        let image = await Task.detached(priority: .userInitiated) {
+            Self.downsampledImage(data: data, maxPixel: maxPixel)
+        }.value
+        guard let image else { return nil }
         let cost = Self.approximateCost(of: image)
         cache.setObject(image, forKey: key, cost: cost)
         return image
+    }
+
+    /// Synchronous memory lookup so list cells can paint without awaiting.
+    func cachedImage(for url: URL) -> UIImage? {
+        cache.object(forKey: url.absoluteString as NSString)
+    }
+
+    /// Insert a decoded image (e.g. freshly saved offline cover art).
+    func cacheImage(_ image: UIImage, for url: URL) {
+        let cost = Self.approximateCost(of: image)
+        cache.setObject(image, forKey: url.absoluteString as NSString, cost: cost)
     }
 
     /// Prefer the Subsonic `size=` query (already list-sized). Fallback keeps
@@ -98,6 +113,13 @@ struct RemoteImage: View {
             }
         }
         .clipped()
+        .onAppear {
+            guard let url, image == nil || loadedURL != url else { return }
+            if let cached = ImageLoader.shared.cachedImage(for: url) {
+                image = cached
+                loadedURL = url
+            }
+        }
         .task(id: url) {
             guard let url else {
                 image = nil
@@ -107,6 +129,11 @@ struct RemoteImage: View {
             // Keep the previous image on screen while a new URL loads so the
             // layout never flashes empty on every redraw.
             if loadedURL == url, image != nil { return }
+            if let cached = ImageLoader.shared.cachedImage(for: url) {
+                image = cached
+                loadedURL = url
+                return
+            }
             if let cached = await ImageLoader.shared.image(for: url) {
                 guard !Task.isCancelled else { return }
                 image = cached

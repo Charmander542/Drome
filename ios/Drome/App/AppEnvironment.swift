@@ -69,9 +69,20 @@ final class AppSession: ObservableObject, Identifiable {
     let lyricsService: LyricsService
     let lyricsIndexer: LyricsIndexer
     let artistImages: ArtistImageStore
+    let connectivity: ConnectivityMonitor
     private var playbackSideEffectCancellables = Set<AnyCancellable>()
 
     var id: UUID { account.id }
+
+    /// Prefer locally downloaded cover art when present (offline-safe).
+    func artworkURL(id: String?, size: Int = 600) -> URL? {
+        if let local = downloads.localCoverURL(coverId: id) { return local }
+        return client.coverArtURL(id: id, size: size)
+    }
+
+    func artworkURL(for song: Song, size: Int = 600) -> URL? {
+        artworkURL(id: song.coverArt ?? song.albumId ?? song.id, size: size)
+    }
 
     var wishlist: DromeWishlistClient? {
         account.wishlistURL.map { url in
@@ -103,6 +114,7 @@ final class AppSession: ObservableObject, Identifiable {
         lyricsIndexer = LyricsIndexer(client: client, database: database,
                                       lyricsService: lyricsService, serverKey: account.serverKey)
         artistImages = ArtistImageStore(database: database, serverKey: account.serverKey)
+        connectivity = ConnectivityMonitor()
 
         ImageLoader.shared.session = client.session
         Task { await rotation.refresh() }

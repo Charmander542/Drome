@@ -40,7 +40,11 @@ struct LibraryView: View {
     @State private var albumSectionsCache: [(letter: String, albums: [Album])] = []
     @State private var artistSectionsCache: [(letter: String, artists: [Artist])] = []
     @State private var songSectionsCache: [(letter: String, songs: [Song])] = []
+    /// Flat play order for the Songs tab — avoid rebuilding on every tap.
+    @State private var flatSongsCache: [Song] = []
+    @State private var songIndexByID: [String: Int] = [:]
     @State private var isLoading = false
+    @State private var catalogLoadProgress: String?
     @State private var error: String?
     @State private var showCreatePlaylist = false
     @State private var newPlaylistName = ""
@@ -56,6 +60,13 @@ struct LibraryView: View {
                 Text(scanStatusText)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(DromeTheme.accent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 6)
+            } else if let catalogLoadProgress {
+                Text(catalogLoadProgress)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(DromeTheme.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 6)
@@ -207,8 +218,15 @@ struct LibraryView: View {
                 NavigationLink {
                     DownloadsView()
                 } label: {
-                    Label("Downloaded", systemImage: "arrow.down.circle.fill")
-                        .font(.body.weight(.semibold))
+                    HStack {
+                        Label("Downloaded", systemImage: "arrow.down.circle.fill")
+                            .font(.body.weight(.semibold))
+                        Spacer()
+                        if downloads.downloadedCount > 0 {
+                            Text("\(downloads.downloadedCount)")
+                                .foregroundStyle(DromeTheme.muted)
+                        }
+                    }
                 }
                 .listRowBackground(DromeTheme.elevated)
 
@@ -272,6 +290,15 @@ struct LibraryView: View {
                                         Image(systemName: "lock.fill")
                                             .font(.caption2)
                                             .foregroundStyle(DromeTheme.muted)
+                                    }
+                                    if downloads.isPlaylistFullyDownloaded(
+                                        playlistId: playlist.id,
+                                        expectedCount: playlist.songCount ?? 0)
+                                    {
+                                        Image(systemName: "arrow.down.circle.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(DromeTheme.accent)
+                                            .accessibilityLabel("Downloaded")
                                     }
                                 }
                                 Text(playlistSubtitle(playlist))
@@ -448,13 +475,12 @@ struct LibraryView: View {
             List {
                 ForEach(songSectionsCache, id: \.letter) { section in
                     Section {
-                        ForEach(Array(section.songs.enumerated()), id: \.element.id) { index, song in
+                        ForEach(section.songs, id: \.id) { song in
                             SongRow(song: song, showAlbum: true)
                                 .contentShape(Rectangle())
                                 .onTapGesture {
-                                    let flat = songSectionsCache.flatMap(\.songs)
-                                    let start = flat.firstIndex(where: { $0.id == song.id }) ?? 0
-                                    playerPlay(flat, startAt: start)
+                                    let start = songIndexByID[song.id] ?? 0
+                                    playerPlay(flatSongsCache, startAt: start)
                                 }
                                 .listRowBackground(DromeTheme.background)
                         }
@@ -479,7 +505,27 @@ struct LibraryView: View {
         }
     }
 
-    private func rebuildSongSections(from songs: [Song]) -> [(letter: String, songs: [Song])] {
+    private func applySongCatalog(_ songs: [Song]) async {
+        let sections = await Task.detached(priority: .userInitiated) {
+            Self.buildSongSections(from: songs)
+        }.value
+        guard !Task.isCancelled else { return }
+        songSectionsCache = sections
+        let flat = sections.flatMap(\.songs)
+        flatSongsCache = flat
+        var index: [String: Int] = [:]
+        index.reserveCapacity(flat.count)
+        for (i, song) in flat.enumerated() {
+            index[song.id] = i
+        }
+        songIndexByID = index
+        self.songs = flat
+    }
+
+    /// Pure section builder — safe to run off the main actor.
+    private nonisolated static func buildSongSections(
+        from songs: [Song]
+    ) -> [(letter: String, songs: [Song])] {
         let grouped = Dictionary(grouping: songs) { song -> String in
             LibrarySortLetter.sectionLetter(for: song.title)
         }
@@ -490,6 +536,22 @@ struct LibraryView: View {
                     .localizedCaseInsensitiveCompare(LibrarySortLetter.sortableName($1.title)) == .orderedAscending
             }
             return (letter: letter, songs: sorted)
+        }
+    }
+
+    private nonisolated static func buildAlbumSections(
+        from albums: [Album]
+    ) -> [(letter: String, albums: [Album])] {
+        let grouped = Dictionary(grouping: albums) { album -> String in
+            LibrarySortLetter.sectionLetter(for: album.name)
+        }
+        return grouped.keys.sorted(by: LibrarySortLetter.sectionLetterSort).compactMap { letter in
+            guard let items = grouped[letter], !items.isEmpty else { return nil }
+            let sorted = items.sorted {
+                LibrarySortLetter.sortableName($0.name)
+                    .localizedCaseInsensitiveCompare(LibrarySortLetter.sortableName($1.name)) == .orderedAscending
+            }
+            return (letter: letter, albums: sorted)
         }
     }
 
@@ -512,21 +574,29 @@ struct LibraryView: View {
         }
         isLoading = true
         error = nil
-        defer { isLoading = false }
+        catalogLoadProgress = nil
+        defer {
+            isLoading = false
+            if filter != .songs { catalogLoadProgress = nil }
+        }
         do {
             switch filter {
             case .playlists:
                 playlists = try await session.client.playlists()
                 await rotation.refresh()
             case .albums:
-                albums = try await session.client.albumList(type: .alphabeticalByName, size: 500)
-                albumSectionsCache = rebuildAlbumSections(from: albums)
+                let loaded = try await loadAllAlbums()
+                let sections = await Task.detached(priority: .userInitiated) {
+                    Self.buildAlbumSections(from: loaded)
+                }.value
+                guard !Task.isCancelled else { return }
+                albums = loaded
+                albumSectionsCache = sections
             case .artists:
                 artistIndexes = try await session.client.artists()
                 artistSectionsCache = rebuildArtistSections(from: artistIndexes)
             case .songs:
-                songs = try await loadSongCatalog()
-                songSectionsCache = rebuildSongSections(from: songs)
+                await loadFullSongCatalog()
             case .outOfRotation:
                 break
             }
@@ -535,8 +605,102 @@ struct LibraryView: View {
         }
     }
 
-    /// Best-effort flat song catalog for the Songs tab.
-    private func loadSongCatalog() async throws -> [Song] {
+    /// Page through `getAlbumList2` until the server returns an empty page.
+    private func loadAllAlbums() async throws -> [Album] {
+        var all: [Album] = []
+        var offset = 0
+        let pageSize = 200
+        while !Task.isCancelled {
+            let page = try await session.client.albumList(
+                type: .alphabeticalByName, size: pageSize, offset: offset)
+            if page.isEmpty { break }
+            all.append(contentsOf: page)
+            offset += page.count
+            if page.count < pageSize { break }
+            if all.count >= 10_000 { break }
+            await Task.yield()
+        }
+        var seen = Set<String>()
+        return all.filter { seen.insert($0.id).inserted }
+    }
+
+    /// Build the Songs tab from album pages. UI updates are throttled so Search
+    /// and other tabs stay responsive (keyboard included) while this runs.
+    private func loadFullSongCatalog() async {
+        var collected: [Song] = []
+        var seen = Set<String>()
+        var offset = 0
+        let pageSize = 40
+        let concurrency = 4
+        var lastPublishedCount = 0
+        var lastPublish = Date.distantPast
+
+        catalogLoadProgress = "Loading songs…"
+
+        while !Task.isCancelled {
+            let albums: [Album]
+            do {
+                albums = try await session.client.albumList(
+                    type: .alphabeticalByName, size: pageSize, offset: offset)
+            } catch {
+                if collected.isEmpty {
+                    if let fallback = try? await loadSongCatalogFallback() {
+                        await applySongCatalog(fallback)
+                        session.ratings.ingest(fallback)
+                    } else {
+                        self.error = error.localizedDescription
+                    }
+                }
+                catalogLoadProgress = nil
+                return
+            }
+            if albums.isEmpty { break }
+
+            for chunkStart in stride(from: 0, to: albums.count, by: concurrency) {
+                if Task.isCancelled { return }
+                let chunk = Array(albums[chunkStart..<min(chunkStart + concurrency, albums.count)])
+                await withTaskGroup(of: [Song].self) { group in
+                    for album in chunk {
+                        group.addTask {
+                            ((try? await session.client.album(id: album.id))?.songs) ?? []
+                        }
+                    }
+                    for await songs in group {
+                        for song in songs where seen.insert(song.id).inserted {
+                            collected.append(song)
+                        }
+                    }
+                }
+
+                let dueByCount = collected.count - lastPublishedCount >= 120
+                let dueByTime = Date().timeIntervalSince(lastPublish) >= 0.6
+                if dueByCount || dueByTime {
+                    await applySongCatalog(collected)
+                    lastPublishedCount = collected.count
+                    lastPublish = Date()
+                    catalogLoadProgress = "Loading songs… \(collected.count)"
+                }
+                await Task.yield()
+            }
+
+            offset += albums.count
+            if albums.count < pageSize { break }
+        }
+
+        if !Task.isCancelled {
+            await applySongCatalog(collected)
+            if collected.isEmpty, let fallback = try? await loadSongCatalogFallback() {
+                await applySongCatalog(fallback)
+                session.ratings.ingest(fallback)
+            } else if !collected.isEmpty {
+                session.ratings.ingest(collected)
+            }
+        }
+        catalogLoadProgress = nil
+    }
+
+    /// Best-effort flat song catalog when album paging isn't available.
+    private func loadSongCatalogFallback() async throws -> [Song] {
         var result = try await session.client.search(
             "", artistCount: 0, albumCount: 0, songCount: 500
         ).song ?? []
@@ -669,6 +833,7 @@ struct GenreBrowserView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .dromeMiniPlayerClearance()
             }
         }
         .navigationTitle("Genres")

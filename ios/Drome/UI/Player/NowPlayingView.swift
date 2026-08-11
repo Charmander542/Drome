@@ -5,6 +5,7 @@ import SwiftUI
 /// the visible phone width (no UIScreen / overflow clipping).
 struct NowPlayingView: View {
     @EnvironmentObject private var player: PlayerEngine
+    @EnvironmentObject private var clock: PlaybackClock
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var ratings: RatingsStore
     @EnvironmentObject private var rotation: RotationManager
@@ -146,8 +147,7 @@ struct NowPlayingView: View {
         ZStack {
             Color.black
             if let song = player.current?.song {
-                RemoteImage(url: session.client.coverArtURL(
-                    id: song.coverArt ?? song.albumId ?? song.id, size: 200))
+                RemoteImage(url: session.artworkURL(for: song, size: 200))
                     .scaledToFill()
                     .blur(radius: 80)
                     .opacity(0.4)
@@ -323,8 +323,7 @@ struct NowPlayingView: View {
 
     private var coverURL: URL? {
         guard let song = player.current?.song else { return nil }
-        return session.client.coverArtURL(
-            id: song.coverArt ?? song.albumId ?? song.id, size: 800)
+        return session.artworkURL(for: song, size: 800)
     }
 
     private var metadataBlock: some View {
@@ -426,7 +425,7 @@ struct NowPlayingView: View {
 
     private var scrubber: some View {
         let total = stableDuration
-        let displayed = isSeeking ? seekElapsed : min(max(0, player.elapsed), total)
+        let displayed = isSeeking ? seekElapsed : min(max(0, clock.elapsed), total)
 
         return VStack(spacing: 6) {
             Slider(
@@ -441,7 +440,7 @@ struct NowPlayingView: View {
                 onEditingChanged: { editing in
                     if editing {
                         if !isSeeking {
-                            seekElapsed = min(max(0, player.elapsed), total)
+                            seekElapsed = min(max(0, clock.elapsed), total)
                         }
                         isSeeking = true
                     } else {
@@ -568,7 +567,7 @@ struct NowPlayingView: View {
     }
 
     private var stableDuration: Double {
-        let live = player.duration
+        let live = clock.duration
         if live.isFinite, live > 0.5 { return live }
         if let meta = player.current?.song.duration, meta > 0 { return Double(meta) }
         return max(live, 0.1)

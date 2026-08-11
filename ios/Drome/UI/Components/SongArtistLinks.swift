@@ -8,7 +8,9 @@ struct SongArtistLinks: View {
     var color: Color = DromeTheme.muted
     var lineLimit: Int? = 1
 
-    @EnvironmentObject private var songNavigator: SongNavigator
+    /// Optional — never use `@EnvironmentObject` here so a missing injector
+    /// cannot fatalError on tap. `SongNavigationStack` sets this key.
+    @Environment(\.songNavigator) private var songNavigator
     @Environment(\.session) private var session
 
     @State private var resolvingName: String?
@@ -26,7 +28,7 @@ struct SongArtistLinks: View {
                     .lineLimit(lineLimit)
             } else {
                 HStack(spacing: 0) {
-                    ForEach(Array(credits.enumerated()), id: \.element.id) { index, credit in
+                    ForEach(Array(credits.enumerated()), id: \.offset) { index, credit in
                         if index > 0 {
                             Text(", ")
                                 .font(font)
@@ -46,7 +48,7 @@ struct SongArtistLinks: View {
                             }
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.borderless)
                         .disabled(resolvingName != nil)
                         .accessibilityLabel("View \(credit.name)")
                     }
@@ -58,17 +60,24 @@ struct SongArtistLinks: View {
 
     private func open(_ credit: ArtistCredit) {
         if let id = credit.artistId, !id.isEmpty {
-            songNavigator.viewArtist(id: id, name: credit.name)
+            navigate(id: id, name: credit.name)
             return
         }
         guard let session else { return }
         resolvingName = credit.name
-        Task {
-            defer { resolvingName = nil }
+        Task { @MainActor in
             let id = await Self.resolveArtistID(name: credit.name, client: session.client)
+            resolvingName = nil
             if let id {
-                songNavigator.viewArtist(id: id, name: credit.name)
+                navigate(id: id, name: credit.name)
             }
+        }
+    }
+
+    private func navigate(id: String, name: String) {
+        guard let songNavigator else { return }
+        DispatchQueue.main.async {
+            songNavigator.viewArtist(id: id, name: name)
         }
     }
 

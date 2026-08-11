@@ -21,4 +21,9 @@ extension View {
             .background(DromeTheme.background.ignoresSafeArea())
             .preferredColorScheme(.dark)
     }
+
+    /// Clears space above the floating mini player + tab bar.
+    func dromeMiniPlayerClearance(_ height: CGFloat = 84) -> some View {
+        safeAreaInset(edge: .bottom) { Color.clear.frame(height: height) }
+    }
 }

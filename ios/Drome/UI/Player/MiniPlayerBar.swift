@@ -4,6 +4,7 @@ struct MiniPlayerBar: View {
     var onOpen: () -> Void
 
     @EnvironmentObject private var player: PlayerEngine
+    @EnvironmentObject private var clock: PlaybackClock
     @EnvironmentObject private var session: AppSession
 
     var body: some View {
@@ -14,12 +15,10 @@ struct MiniPlayerBar: View {
             HStack(spacing: 12) {
                 Button(action: onOpen) {
                     HStack(spacing: 12) {
-                        RemoteImage(url: session.client.coverArtURL(
-                            id: current.song.coverArt ?? current.song.albumId ?? current.song.id,
-                            size: 120))
+                        RemoteImage(url: session.artworkURL(for: current.song, size: 120))
                             .frame(width: 48, height: 48)
                             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            .id(current.id)
+                            .id("\(current.id)-\(session.downloads.coverRevision)")
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text(title.isEmpty ? "Unknown Title" : title)
@@ -40,7 +39,7 @@ struct MiniPlayerBar: View {
                             .stroke(DromeTheme.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                             .rotationEffect(.degrees(-90))
                             .frame(width: 18, height: 18)
-                            .opacity(player.duration > 0 ? 1 : 0)
+                            .opacity(clock.duration > 0 ? 1 : 0)
                     }
                     .contentShape(Rectangle())
                 }
@@ -85,8 +84,8 @@ struct MiniPlayerBar: View {
     }
 
     private var progress: CGFloat {
-        let total = player.duration
+        let total = clock.duration
         guard total.isFinite, total > 0 else { return 0 }
-        return CGFloat(min(max(player.elapsed / total, 0), 1))
+        return CGFloat(min(max(clock.elapsed / total, 0), 1))
     }
 }

@@ -25,8 +25,10 @@ final class PlayerEngine: ObservableObject {
     @Published private(set) var history: [QueueItem] = []
     @Published private(set) var context: PlaybackContext?
     @Published private(set) var isPlaying = false
-    @Published private(set) var elapsed: TimeInterval = 0
-    @Published private(set) var duration: TimeInterval = 0
+    /// Playhead lives on `clock` for SwiftUI; these mirrors are for engine logic.
+    private(set) var elapsed: TimeInterval = 0
+    private(set) var duration: TimeInterval = 0
+    let clock = PlaybackClock()
     @Published var repeatMode: RepeatMode = .off {
         didSet { resyncUpcomingWindow() }
     }
@@ -238,7 +240,7 @@ final class PlayerEngine: ObservableObject {
 
     func seek(to time: TimeInterval) {
         guard let item = player.currentItem else {
-            elapsed = max(0, time)
+            setPlayhead(elapsed: max(0, time))
             pushNowPlayingInfo()
             return
         }
@@ -276,11 +278,13 @@ final class PlayerEngine: ObservableObject {
                 guard let self, self.seekEpoch == epoch else { return }
                 self.appliedSeekEpoch = epoch
                 let actual = self.player.currentTime().seconds
-                self.elapsed = (actual.isFinite && actual >= 0) ? actual : seconds
+                let nextElapsed = (actual.isFinite && actual >= 0) ? actual : seconds
+                var nextDuration = self.duration
                 if let itemDuration = self.player.currentItem?.duration.seconds,
                    itemDuration.isFinite, itemDuration > 0 {
-                    self.duration = itemDuration
+                    nextDuration = itemDuration
                 }
+                self.setPlayhead(elapsed: nextElapsed, duration: nextDuration)
                 self.pushNowPlayingInfo()
                 if finished, shouldResume {
                     self.activateAudioSession()
@@ -289,7 +293,7 @@ final class PlayerEngine: ObservableObject {
             }
         }
 
-        elapsed = seconds
+        setPlayhead(elapsed: seconds)
         pushNowPlayingInfo()
     }
 
@@ -299,6 +303,14 @@ final class PlayerEngine: ObservableObject {
         let seconds = player.currentTime().seconds
         guard seconds.isFinite, seconds >= 0 else { return elapsed }
         return seconds
+    }
+
+    private func setPlayhead(elapsed: TimeInterval, duration newDuration: TimeInterval? = nil) {
+        self.elapsed = elapsed
+        if let newDuration {
+            duration = newDuration
+        }
+        clock.set(elapsed: elapsed, duration: newDuration ?? duration)
     }
 
     func cycleShuffleMode() {
@@ -402,8 +414,7 @@ final class PlayerEngine: ObservableObject {
     ///   auto-skip 1–2★ tracks. Skip only applies to programmatic advancement.
     private func setCurrent(_ item: QueueItem, startPlaying: Bool, allowLowRated: Bool = false) {
         current = item
-        elapsed = 0
-        duration = TimeInterval(item.song.duration ?? 0)
+        setPlayhead(elapsed: 0, duration: TimeInterval(item.song.duration ?? 0))
         rebuildWindow(startPlaying: startPlaying)
         scrobbleNowPlaying(item.song)
         loadArtwork(for: item.song)
@@ -567,11 +578,12 @@ final class PlayerEngine: ObservableObject {
                     return
                 }
                 self.lastPublishedElapsed = seconds
-                self.elapsed = seconds
+                var nextDuration = self.duration
                 if let itemDuration = self.player.currentItem?.duration.seconds,
                    itemDuration.isFinite, itemDuration > 0 {
-                    self.duration = itemDuration
+                    nextDuration = itemDuration
                 }
+                self.setPlayhead(elapsed: seconds, duration: nextDuration)
             }
         }
 
@@ -647,8 +659,7 @@ final class PlayerEngine: ObservableObject {
         // Assign a fresh value so SwiftUI always observes the change even if
         // song metadata happens to compare equal.
         current = newCurrent
-        elapsed = 0
-        duration = TimeInterval(newCurrent.song.duration ?? 0)
+        setPlayhead(elapsed: 0, duration: TimeInterval(newCurrent.song.duration ?? 0))
         isPlaying = player.timeControlStatus == .playing
         topUpWindow()
         // Prefetch the following track after the new current claims bandwidth.
@@ -694,14 +705,14 @@ final class PlayerEngine: ObservableObject {
         }
         // Infinite Shuffle must keep going — never silently stop at the end.
         if autoplayEnabled, repeatMode == .off {
-            elapsed = duration
+            setPlayhead(elapsed: duration)
             pushNowPlayingInfo()
             continueWithAutoplayIfNeeded(playImmediately: true)
             return
         }
         player.pause()
         player.rate = 0
-        elapsed = duration
+        setPlayhead(elapsed: duration)
         isPlaying = false
         pushNowPlayingInfo()
     }
@@ -934,7 +945,10 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func loadArtwork(for song: Song) {
-        guard let url = client.coverArtURL(id: song.coverArt ?? song.albumId ?? song.id) else {
+        let coverId = song.coverArt ?? song.albumId ?? song.id
+        let url = downloads.localCoverURL(coverId: coverId)
+            ?? client.coverArtURL(id: coverId)
+        guard let url else {
             nowPlaying.setArtwork(nil, songID: nil)
             return
         }

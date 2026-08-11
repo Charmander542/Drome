@@ -17,9 +17,11 @@ extension View {
             .environment(\.session, session)
             .environmentObject(session)
             .environmentObject(session.player)
+            .environmentObject(session.player.clock)
             .environmentObject(session.ratings)
             .environmentObject(session.rotation)
             .environmentObject(session.downloads)
             .environmentObject(session.lyricsIndexer)
+            .environmentObject(session.connectivity)
     }
 }

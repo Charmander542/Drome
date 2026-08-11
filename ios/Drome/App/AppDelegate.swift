@@ -1,4 +1,5 @@
 import UIKit
+import CarPlay
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
     /// Stored so the background download session can tell the system when all
@@ -14,7 +15,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      configurationForConnecting connectingSceneSession: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
-        if connectingSceneSession.role.rawValue == "CPTemplateApplicationSceneSessionRoleApplication" {
+        if connectingSceneSession.role == .carTemplateApplication {
             let config = UISceneConfiguration(
                 name: "Drome-CarPlay",
                 sessionRole: connectingSceneSession.role)

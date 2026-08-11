@@ -76,7 +76,7 @@ struct HomeView: View {
             AccountSwitcherSheet().environmentObject(env)
         }
         .sheet(isPresented: $showSettings) {
-            NavigationStack {
+            SongNavigationStack {
                 SettingsView()
                     .dromeSession(session)
                     .environmentObject(env)

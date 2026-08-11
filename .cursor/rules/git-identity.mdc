@@ -1,0 +1,14 @@
+---
+description: Push and commit as the user, never as Cursor
+alwaysApply: true
+---
+
+# Git identity
+
+When committing or pushing, use Charlie’s identity and credentials — never Cursor’s bot/cloud author or Cursor-managed remotes.
+
+- Prefer local git user / `gh` auth (GitHub: Charmander542).
+- Do not set author/committer to Cursor Agent, cursor, or similar.
+- Do not amend or rewrite commits to attribute them to Cursor.
+- If push auth fails, ask Charlie to authenticate (`gh auth login` or SSH keys) instead of using a Cursor-owned remote or token.
+- Never update git config unless explicitly asked.

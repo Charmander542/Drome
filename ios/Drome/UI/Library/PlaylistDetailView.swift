@@ -34,6 +34,11 @@ struct PlaylistDetailView: View {
         return playlist.name == RotationManager.playlistName
     }
 
+    private var isFullyDownloaded: Bool {
+        guard let playlist, !playlist.songs.isEmpty else { return false }
+        return downloads.isPlaylistFullyDownloaded(songIds: playlist.songs.map(\.id))
+    }
+
     private var contextKind: PlaybackContext.Kind {
         isSystem ? .outOfRotation : .playlist(id: playlistID)
     }
@@ -50,8 +55,8 @@ struct PlaylistDetailView: View {
         }
         .navigationTitle(prefersInlineTitle
                          ? "Your Library"
-                         : (playlist?.name ?? placeholder?.name ?? "Playlist"))
-        .navigationBarTitleDisplayMode(prefersInlineTitle ? .inline : .large)
+                         : "")
+        .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .toolbar { toolbarContent }
         .alert("Rename Playlist", isPresented: $showRename) {
@@ -135,6 +140,21 @@ struct PlaylistDetailView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        if !prefersInlineTitle {
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: 6) {
+                    Text(playlist?.name ?? placeholder?.name ?? "Playlist")
+                        .font(.headline)
+                        .lineLimit(1)
+                    if isFullyDownloaded {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.subheadline)
+                            .foregroundStyle(DromeTheme.accent)
+                            .accessibilityLabel("Downloaded")
+                    }
+                }
+            }
+        }
         if isEditing {
             ToolbarItem(placement: .topBarLeading) {
                 Button("Done") { isEditing = false }

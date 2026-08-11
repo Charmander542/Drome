@@ -13,18 +13,21 @@ final class ArtistImageStore: ObservableObject {
         self.serverKey = serverKey
     }
 
-    func cachedURL(artistId: String) -> URL? {
-        if let url = memory[artistId] { return url }
+    /// Memory-only — never hits SQLite on the main/render path.
+    func memoryURL(artistId: String) -> URL? {
+        memory[artistId]
+    }
+
+    func resolve(artistId: String, name: String, wishlist: DromeWishlistClient?) async -> URL? {
+        if let cached = memory[artistId] { return cached }
+
+        // Disk lookup off the hot path (after scroll settle in the avatar).
         if let raw = try? database.artistImageURL(serverKey: serverKey, artistId: artistId),
            let url = URL(string: raw) {
             memory[artistId] = url
             return url
         }
-        return nil
-    }
 
-    func resolve(artistId: String, name: String, wishlist: DromeWishlistClient?) async -> URL? {
-        if let cached = cachedURL(artistId: artistId) { return cached }
         guard let wishlist, !name.isEmpty else { return nil }
 
         if let existing = inflight[artistId] {
@@ -72,11 +75,11 @@ struct ArtistAvatar: View {
         .frame(width: size, height: size)
         .clipShape(Circle())
         .task(id: artistId) {
-            // Show Navidrome cover immediately; defer Spotify resolve so fast
-            // flings don't stampede the network/decode path.
-            spotifyURL = session.artistImages.cachedURL(artistId: artistId)
+            // Show Navidrome cover immediately; only touch memory here.
+            spotifyURL = session.artistImages.memoryURL(artistId: artistId)
             guard spotifyURL == nil else { return }
-            try? await Task.sleep(nanoseconds: 180_000_000)
+            // Defer Spotify / SQLite so fast flings cancel before work starts.
+            try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
             spotifyURL = await session.artistImages.resolve(
                 artistId: artistId, name: name, wishlist: session.wishlist)

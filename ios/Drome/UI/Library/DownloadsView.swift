@@ -9,6 +9,8 @@ private enum DownloadsGroupMode: String, CaseIterable, Identifiable {
 }
 
 struct DownloadsView: View {
+    var isOfflineMode: Bool = false
+
     @EnvironmentObject private var downloads: DownloadManager
     @EnvironmentObject private var player: PlayerEngine
 
@@ -48,12 +50,12 @@ struct DownloadsView: View {
                 .listRowBackground(Color.clear)
 
                 HStack {
-                    Text("Storage used")
+                    Text(doneRecords.count == 1 ? "1 song" : "\(doneRecords.count) songs")
                     Spacer()
                     Text(Formatters.fileSize(downloads.totalBytesUsed))
                         .foregroundStyle(DromeTheme.muted)
                 }
-                if !doneRecords.isEmpty {
+                if !isOfflineMode, !doneRecords.isEmpty {
                     Button(role: .destructive) {
                         downloads.removeAll()
                     } label: {
@@ -66,25 +68,8 @@ struct DownloadsView: View {
             if !active.isEmpty {
                 Section("In progress") {
                     ForEach(active, id: \.songId) { record in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(title(for: record)).font(DromeTheme.rowTitle)
-                                Text(record.state.capitalized)
-                                    .font(.caption)
-                                    .foregroundStyle(DromeTheme.muted)
-                            }
-                            Spacer()
-                            if let progress = downloads.progress[record.songId] {
-                                ProgressView(value: progress)
-                                    .frame(width: 60)
-                            }
-                            Button {
-                                downloads.cancel(songId: record.songId)
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(DromeTheme.muted)
-                            }
-                            .buttonStyle(.plain)
+                        ActiveDownloadRow(record: record, progress: downloads.liveProgress) {
+                            downloads.cancel(songId: record.songId)
                         }
                         .listRowBackground(DromeTheme.background)
                     }
@@ -111,7 +96,7 @@ struct DownloadsView: View {
                         SongRow(
                             song: song,
                             showAlbum: groupMode != .album,
-                            trailing: AnyView(
+                            trailing: isOfflineMode ? nil : AnyView(
                                 Button(role: .destructive) {
                                     downloads.remove(songId: song.id)
                                 } label: {
@@ -135,16 +120,19 @@ struct DownloadsView: View {
             }
 
             if downloads.records.isEmpty {
-                EmptyStateView(title: "No downloads yet",
-                               systemImage: "arrow.down.circle",
-                               message: "Download albums or playlists from their detail screens for offline listening.")
+                EmptyStateView(
+                    title: isOfflineMode ? "No downloads available" : "No downloads yet",
+                    systemImage: "arrow.down.circle",
+                    message: isOfflineMode
+                        ? "Connect to your server, then download albums or playlists for offline listening."
+                        : "Download albums or playlists from their detail screens for offline listening.")
                     .listRowBackground(Color.clear)
             }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
-        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
-        .navigationTitle("Downloads")
+        .dromeMiniPlayerClearance()
+        .navigationTitle(isOfflineMode ? "Offline Library" : "Downloads")
     }
 
     // MARK: - Grouping
@@ -172,7 +160,6 @@ struct DownloadsView: View {
     }
 
     private func groupByPlaylist() -> [(id: String, name: String, songs: [Song])] {
-        let doneById = Dictionary(uniqueKeysWithValues: doneRecords.map { ($0.songId, $0) })
         let memberships = downloads.playlistMemberships
         let byPlaylist = Dictionary(grouping: memberships) { $0.playlistId }
 
@@ -182,8 +169,7 @@ struct DownloadsView: View {
                 ? (rows.first?.playlistName ?? "Playlist")
                 : "Playlist"
             let songs = rows.compactMap { membership -> Song? in
-                guard let record = doneById[membership.songId] else { return nil }
-                return song(from: record)
+                song(fromSongId: membership.songId)
             }
             guard !songs.isEmpty else { return nil }
             return (id: "playlist:\(playlistId)", name: name, songs: songs)
@@ -201,10 +187,47 @@ struct DownloadsView: View {
     }
 
     private func song(from record: DownloadRecord) -> Song? {
-        try? JSONDecoder().decode(Song.self, from: Data(record.songJSON.utf8))
+        downloads.song(forDownloadedId: record.songId)
+            ?? (try? JSONDecoder().decode(Song.self, from: Data(record.songJSON.utf8)))
+    }
+
+    private func song(fromSongId songId: String) -> Song? {
+        downloads.song(forDownloadedId: songId)
     }
 
     private func title(for record: DownloadRecord) -> String {
         song(from: record)?.title ?? record.songId
+    }
+}
+
+private struct ActiveDownloadRow: View {
+    let record: DownloadRecord
+    @ObservedObject var progress: DownloadProgressStore
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(DromeTheme.rowTitle)
+                Text(record.state.capitalized)
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.muted)
+            }
+            Spacer()
+            if let value = progress.values[record.songId] {
+                ProgressView(value: value)
+                    .frame(width: 60)
+            }
+            Button(action: onCancel) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(DromeTheme.muted)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var title: String {
+        (try? JSONDecoder().decode(Song.self, from: Data(record.songJSON.utf8)))?.title
+            ?? record.songId
     }
 }

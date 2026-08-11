@@ -61,6 +61,7 @@ struct HorizontalAlbumRail: View {
 struct PlaylistCard: View {
     let playlist: Playlist
     @Environment(\.session) private var session
+    @EnvironmentObject private var downloads: DownloadManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -69,10 +70,20 @@ struct PlaylistCard: View {
                 .aspectRatio(1, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            Text(playlist.name)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
+            HStack(spacing: 4) {
+                Text(playlist.name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                if downloads.isPlaylistFullyDownloaded(
+                    playlistId: playlist.id,
+                    expectedCount: playlist.songCount ?? 0)
+                {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(DromeTheme.accent)
+                }
+            }
             Text(playlist.songCount.map { "\($0) songs" } ?? "Playlist")
                 .font(.caption)
                 .foregroundStyle(DromeTheme.muted)

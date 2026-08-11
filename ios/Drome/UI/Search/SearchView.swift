@@ -10,7 +10,7 @@ struct SearchView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject private var ratings: RatingsStore
-    @EnvironmentObject private var songNavigator: SongNavigator
+    @Environment(\.songNavigator) private var songNavigator
 
     @State private var source: Source = .library
     @State private var query = ""
@@ -23,7 +23,7 @@ struct SearchView: View {
     @State private var error: String?
     @State private var debounceTask: Task<Void, Never>?
     @FocusState private var searchFocused: Bool
-    @State private var recentItems: [RecentSearchItem] = RecentSearchesStore.load()
+    @State private var recentItems: [RecentSearchItem] = []
     @State private var matchedSongs: [String: Song] = [:]
     @State private var matchedAlbums: [String: Album] = [:]
 
@@ -43,6 +43,10 @@ struct SearchView: View {
             }
             .onChange(of: query) { _, newValue in
                 scheduleSearch(newValue)
+                NotificationCenter.default.post(
+                    name: .dromeCarPlaySearchQuery,
+                    object: nil,
+                    userInfo: ["query": newValue])
             }
             .onChange(of: source) { _, _ in
                 hits = []
@@ -50,7 +54,21 @@ struct SearchView: View {
                 error = nil
                 scheduleSearch(query)
             }
-            .onAppear { recentItems = RecentSearchesStore.load() }
+            .task {
+                // Decode recents off the critical path so the keyboard can appear.
+                let loaded = await Task.detached(priority: .utility) {
+                    RecentSearchesStore.load()
+                }.value
+                recentItems = loaded
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .dromeFocusCarPlaySearch)) { _ in
+                source = .library
+                // Let the tab settle before focusing — avoids a frozen keyboard.
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                    searchFocused = true
+                }
+            }
             .scrollDismissesKeyboard(.interactively)
     }
 
@@ -99,11 +117,26 @@ struct SearchView: View {
     private var libraryResults: some View {
         if isSearching && hits.isEmpty {
             LoadingStateView(message: "Searching…")
+        } else if isSearching {
+            ZStack(alignment: .top) {
+                rankedList
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Searching…")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(DromeTheme.muted)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: Capsule())
+                .padding(.top, 8)
+            }
         } else if let error {
             ErrorStateView(message: error)
         } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             recentSearchesView
-        } else if hits.isEmpty && !isSearching {
+        } else if hits.isEmpty {
             EmptyStateView(title: "No results", message: "Try a different query.")
         } else {
             rankedList
@@ -473,12 +506,12 @@ struct SearchView: View {
                         Label("Add to Queue", systemImage: "text.append")
                     }
                     if SongNavigation.albumRoute(for: song) != nil {
-                        Button { songNavigator.viewAlbum(for: song) } label: {
+                        Button { songNavigator?.viewAlbum(for: song) } label: {
                             Label("View Album", systemImage: "square.stack")
                         }
                     }
                     if SongNavigation.artistRoute(for: song) != nil {
-                        Button { songNavigator.viewArtist(for: song) } label: {
+                        Button { songNavigator?.viewArtist(for: song) } label: {
                             Label("View Artist", systemImage: "person.wave.2")
                         }
                     }
@@ -586,10 +619,14 @@ struct SearchView: View {
             hits = []
             spotifyHits = []
             error = nil
+            isSearching = false
             return
         }
+        // Show loading immediately so typing never feels like a freeze.
+        isSearching = true
+        error = nil
         debounceTask = Task {
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(nanoseconds: 280_000_000)
             guard !Task.isCancelled else { return }
             switch source {
             case .library:
@@ -605,17 +642,23 @@ struct SearchView: View {
         error = nil
         defer { isSearching = false }
         do {
+            let serverKey = session.account.serverKey
+            let wantLyrics = includeLyrics
             async let metadataTask = session.client.search(q, artistCount: 20, albumCount: 20, songCount: 40)
             let lyrics: [LyricsSearchMatch]
-            if includeLyrics {
-                lyrics = (try? AppEnvironment.shared.database.searchLyrics(
-                    serverKey: session.account.serverKey, query: q)) ?? []
+            if wantLyrics {
+                lyrics = await Task.detached(priority: .userInitiated) {
+                    (try? AppEnvironment.shared?.database.searchLyrics(
+                        serverKey: serverKey, query: q)) ?? []
+                }.value
             } else {
                 lyrics = []
             }
             let metadata = try await metadataTask
-            ratings.ingest(metadata.songs)
+            guard !Task.isCancelled else { return }
             hits = SearchRanker.rank(query: q, result: metadata, lyrics: lyrics)
+            // Ingest after painting results so the keyboard stays responsive.
+            ratings.ingest(metadata.songs)
         } catch {
             self.error = error.localizedDescription
         }

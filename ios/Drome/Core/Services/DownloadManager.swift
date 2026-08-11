@@ -1,4 +1,24 @@
 import Foundation
+import UIKit
+
+/// Live download fractions — separate from `DownloadManager` so list rows that
+/// only care about "is downloaded?" aren't invalidated on every progress tick.
+@MainActor
+final class DownloadProgressStore: ObservableObject {
+    @Published private(set) var values: [String: Double] = [:]
+
+    func set(_ songId: String, fraction: Double) {
+        values[songId] = fraction
+    }
+
+    func remove(_ songId: String) {
+        values[songId] = nil
+    }
+
+    func contains(_ songId: String) -> Bool {
+        values[songId] != nil
+    }
+}
 
 /// Manages offline downloads of original (lossless) files via a background
 /// URLSession, so queued albums keep downloading when the app is suspended.
@@ -6,10 +26,17 @@ import Foundation
 /// player transparently prefers them over streaming.
 @MainActor
 final class DownloadManager: ObservableObject {
-    @Published private(set) var progress: [String: Double] = [:]
+    /// Observed only by in-progress download UI (not SongRow lists).
+    let liveProgress = DownloadProgressStore()
     @Published private(set) var records: [DownloadRecord] = []
     @Published private(set) var downloadedIDs: Set<String> = []
     @Published private(set) var playlistMemberships: [DownloadPlaylistMembership] = []
+    /// playlistId → count of memberships that are locally downloaded.
+    private var downloadedCountByPlaylist: [String: Int] = [:]
+    /// Decoded metadata for finished downloads; rebuilt in `reload()`.
+    private(set) var doneSongsById: [String: Song] = [:]
+    /// Bumps when a local cover file is written so list art can refresh offline.
+    @Published private(set) var coverRevision: UInt64 = 0
 
     private let client: SubsonicClient
     private let database: AppDatabase
@@ -17,6 +44,7 @@ final class DownloadManager: ObservableObject {
     private var session: URLSession!
     private let sessionDelegate = DownloadSessionDelegate()
     private var tasksBySongID: [String: URLSessionDownloadTask] = [:]
+    private var coverInflight: Set<String> = []
 
     init(client: SubsonicClient, database: AppDatabase, serverKey: String) {
         self.client = client
@@ -33,6 +61,8 @@ final class DownloadManager: ObservableObject {
         config.sessionSendsLaunchEvents = true
         session = URLSession(configuration: config, delegate: sessionDelegate, delegateQueue: nil)
 
+        try? FileManager.default.createDirectory(at: artDirectory, withIntermediateDirectories: true)
+
         reload()
         // Reattach to tasks that survived an app relaunch.
         session.getAllTasks { tasks in
@@ -43,6 +73,7 @@ final class DownloadManager: ObservableObject {
                 }
             }
         }
+        Task { await self.backfillMissingCoverArt() }
     }
 
     func invalidate() {
@@ -58,10 +89,30 @@ final class DownloadManager: ObservableObject {
         return dir
     }
 
+    private var artDirectory: URL {
+        Self.directory(for: serverKey).appendingPathComponent("Art", isDirectory: true)
+    }
+
     private func reload() {
         records = (try? database.downloadRecords(serverKey: serverKey)) ?? []
         downloadedIDs = Set(records.filter { $0.state == "done" }.map(\.songId))
         playlistMemberships = (try? database.downloadPlaylistMemberships(serverKey: serverKey)) ?? []
+        var decoded: [String: Song] = [:]
+        for record in records where record.state == "done" {
+            if let song = try? JSONDecoder().decode(Song.self, from: Data(record.songJSON.utf8)) {
+                decoded[record.songId] = song
+            }
+        }
+        doneSongsById = decoded
+        rebuildPlaylistDownloadCounts()
+    }
+
+    private func rebuildPlaylistDownloadCounts() {
+        var counts: [String: Int] = [:]
+        for row in playlistMemberships where downloadedIDs.contains(row.songId) {
+            counts[row.playlistId, default: 0] += 1
+        }
+        downloadedCountByPlaylist = counts
     }
 
     // MARK: - Queries
@@ -74,13 +125,45 @@ final class DownloadManager: ObservableObject {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    /// Local album art for a cover id (shared across songs on the same album).
+    func localCoverURL(coverId: String?) -> URL? {
+        guard let coverId, !coverId.isEmpty else { return nil }
+        let base = Self.safeFileComponent(coverId)
+        let dir = artDirectory
+        for ext in ["jpg", "jpeg", "png", "webp"] {
+            let url = dir.appendingPathComponent("\(base).\(ext)")
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
+    func localCoverURL(for song: Song) -> URL? {
+        localCoverURL(coverId: song.coverArt ?? song.albumId ?? song.id)
+    }
+
     func isDownloaded(_ songId: String) -> Bool {
         downloadedIDs.contains(songId)
     }
 
-    func isBusy(_ songId: String) -> Bool {
-        progress[songId] != nil
+    var downloadedCount: Int { downloadedIDs.count }
+
+    /// True when every song id is present in the local download set.
+    func isPlaylistFullyDownloaded(songIds: [String]) -> Bool {
+        !songIds.isEmpty && songIds.allSatisfy { downloadedIDs.contains($0) }
     }
+
+    /// Best-effort list-row check using precomputed membership counts.
+    func isPlaylistFullyDownloaded(playlistId: String, expectedCount: Int) -> Bool {
+        guard expectedCount > 0 else { return false }
+        return (downloadedCountByPlaylist[playlistId] ?? 0) >= expectedCount
+    }
+
+    func isBusy(_ songId: String) -> Bool {
+        liveProgress.contains(songId)
+    }
+
+    /// Snapshot for UIs that still expect a dictionary (prefer `liveProgress`).
+    var progress: [String: Double] { liveProgress.values }
 
     var totalBytesUsed: Int64 {
         records.filter { $0.state == "done" }.reduce(0) { $0 + $1.fileSize }
@@ -89,9 +172,11 @@ final class DownloadManager: ObservableObject {
     /// Songs that are downloaded, decoded from stored metadata (for offline
     /// browsing and the storage screen).
     func downloadedSongs() -> [Song] {
-        records
-            .filter { $0.state == "done" }
-            .compactMap { try? JSONDecoder().decode(Song.self, from: Data($0.songJSON.utf8)) }
+        Array(doneSongsById.values)
+    }
+
+    func song(forDownloadedId songId: String) -> Song? {
+        doneSongsById[songId]
     }
 
     // MARK: - Enqueue / cancel / remove
@@ -112,7 +197,7 @@ final class DownloadManager: ObservableObject {
                 attachPlaylistMembership(songId: song.id, playlistId: playlistId, playlistName: playlistName)
                 continue
             }
-            if progress[song.id] == nil {
+            if !liveProgress.contains(song.id) {
                 guard let url = client.downloadURL(songId: song.id) else { continue }
                 let resolved = (try? await client.song(id: song.id)) ?? song
                 guard !resolved.id.isEmpty else { continue }
@@ -128,7 +213,7 @@ final class DownloadManager: ObservableObject {
                 let task = session.downloadTask(with: url)
                 task.taskDescription = resolved.id
                 tasksBySongID[resolved.id] = task
-                progress[resolved.id] = 0
+                liveProgress.set(resolved.id, fraction: 0)
                 task.resume()
             }
             attachPlaylistMembership(songId: song.id, playlistId: playlistId, playlistName: playlistName)
@@ -147,7 +232,7 @@ final class DownloadManager: ObservableObject {
     func cancel(songId: String) {
         tasksBySongID[songId]?.cancel()
         tasksBySongID[songId] = nil
-        progress[songId] = nil
+        liveProgress.remove(songId)
         try? database.deleteDownload(serverKey: serverKey, songId: songId)
         reload()
     }
@@ -168,25 +253,100 @@ final class DownloadManager: ObservableObject {
             }
             try? database.deleteDownload(serverKey: serverKey, songId: record.songId)
         }
+        try? FileManager.default.removeItem(at: artDirectory)
+        try? FileManager.default.createDirectory(at: artDirectory, withIntermediateDirectories: true)
         reload()
+    }
+
+    // MARK: - Cover art
+
+    func ensureCoverArt(for song: Song) {
+        let coverId = song.coverArt ?? song.albumId ?? song.id
+        Task { await downloadCoverIfNeeded(coverId: coverId) }
+    }
+
+    private func backfillMissingCoverArt() async {
+        let songs = Array(doneSongsById.values)
+        for song in songs {
+            let coverId = song.coverArt ?? song.albumId ?? song.id
+            await downloadCoverIfNeeded(coverId: coverId)
+        }
+    }
+
+    private func downloadCoverIfNeeded(coverId: String) async {
+        guard !coverId.isEmpty else { return }
+        if localCoverURL(coverId: coverId) != nil { return }
+        guard !coverInflight.contains(coverId) else { return }
+        coverInflight.insert(coverId)
+        defer { coverInflight.remove(coverId) }
+
+        guard let url = client.coverArtURL(id: coverId, size: 600) else { return }
+        // Use the API session so self-signed servers work; keep this off the
+        // background download session (audio files only).
+        guard let (data, response) = try? await client.session.data(from: url),
+              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
+              !data.isEmpty
+        else { return }
+
+        let ext = Self.imageExtension(for: response, data: data)
+        let dest = artDirectory.appendingPathComponent("\(Self.safeFileComponent(coverId)).\(ext)")
+        do {
+            try FileManager.default.createDirectory(at: artDirectory, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try data.write(to: dest, options: .atomic)
+            // Seed memory cache so offline rows paint without another decode wait.
+            if let image = UIImage(data: data) {
+                ImageLoader.shared.cacheImage(image, for: dest)
+            }
+            coverRevision &+= 1
+        } catch {
+            // Non-fatal — audio download still succeeded.
+        }
+    }
+
+    private static func safeFileComponent(_ raw: String) -> String {
+        raw.replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+            .replacingOccurrences(of: "?", with: "_")
+    }
+
+    private static func imageExtension(for response: URLResponse, data: Data) -> String {
+        let mime = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
+        if mime.contains("png") { return "png" }
+        if mime.contains("webp") { return "webp" }
+        if mime.contains("jpeg") || mime.contains("jpg") { return "jpg" }
+        // Sniff magic bytes.
+        if data.count >= 8 {
+            let png: [UInt8] = [0x89, 0x50, 0x4E, 0x47]
+            if data.prefix(4).elementsEqual(png) { return "png" }
+        }
+        return "jpg"
     }
 
     // MARK: - Delegate callbacks (hopped onto the main actor)
 
     fileprivate func handleProgress(songId: String, fraction: Double) {
-        progress[songId] = fraction
+        let previous = liveProgress.values[songId] ?? -1
+        // Coalesce tiny progress ticks so the Downloads screen stays calm.
+        if fraction < 0.999, abs(fraction - previous) < 0.05 { return }
+        liveProgress.set(songId, fraction: fraction)
     }
 
     fileprivate func handleFinished(songId: String, relPath: String, fileSize: Int64) {
-        progress[songId] = nil
+        liveProgress.remove(songId)
         tasksBySongID[songId] = nil
         try? database.setDownloadState(serverKey: serverKey, songId: songId,
                                        state: "done", relPath: relPath, fileSize: fileSize)
         reload()
+        if let song = doneSongsById[songId] {
+            ensureCoverArt(for: song)
+        }
     }
 
     fileprivate func handleFailed(songId: String) {
-        progress[songId] = nil
+        liveProgress.remove(songId)
         tasksBySongID[songId] = nil
         try? database.setDownloadState(serverKey: serverKey, songId: songId, state: "failed")
         reload()

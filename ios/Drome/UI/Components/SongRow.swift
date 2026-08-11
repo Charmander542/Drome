@@ -16,81 +16,39 @@ struct SongRow: View {
 
     @State private var showAddToPlaylist = false
 
-    @EnvironmentObject private var songNavigator: SongNavigator
+    @Environment(\.songNavigator) private var songNavigator
 
     var body: some View {
-        rowContent
-            .contentShape(Rectangle())
-            .contextMenu { contextMenu }
-            .modifier(ConditionalSongSwipe(enabled: enablesSwipeActions, song: song))
-            .sheet(isPresented: $showAddToPlaylist) {
-                if let session {
-                    NavigationStack {
-                        AddToPlaylistView(song: song)
-                            .dromeSession(session)
-                            .toolbar {
-                                ToolbarItem(placement: .cancellationAction) {
-                                    Button("Close") { showAddToPlaylist = false }
-                                }
+        // Equatable content skips heavy row rebuilds when global stores tick
+        // (play/pause, download progress, rating ingest) but this song's
+        // visible state is unchanged.
+        EquatableSongRowContent(
+            song: song,
+            index: index,
+            showAlbum: showAlbum,
+            trailing: trailing,
+            isCurrent: player.current?.song.id == song.id,
+            rating: ratings.rating(for: song),
+            inRotation: rotation.contains(song.id),
+            isDownloaded: downloads.isDownloaded(song.id),
+            coverURL: session?.artworkURL(for: song, size: 120)
+        )
+        .equatable()
+        .contentShape(Rectangle())
+        .contextMenu { contextMenu }
+        .modifier(ConditionalSongSwipe(enabled: enablesSwipeActions, song: song))
+        .sheet(isPresented: $showAddToPlaylist) {
+            if let session {
+                NavigationStack {
+                    AddToPlaylistView(song: song)
+                        .dromeSession(session)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Close") { showAddToPlaylist = false }
                             }
-                    }
-                    .preferredColorScheme(.dark)
+                        }
                 }
-            }
-    }
-
-    private var rowContent: some View {
-        HStack(spacing: 12) {
-            if let index {
-                Text("\(index)")
-                    .font(.subheadline.monospacedDigit())
-                    .foregroundStyle(isCurrent ? DromeTheme.accent : DromeTheme.muted)
-                    .frame(width: 22, alignment: .trailing)
-            } else {
-                RemoteImage(url: coverURL)
-                    .frame(width: 48, height: 48)
-                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(song.title)
-                        .font(DromeTheme.rowTitle)
-                        .foregroundStyle(isCurrent ? DromeTheme.accent : .white)
-                        .lineLimit(1)
-                    RatingBadge(rating: ratings.rating(for: song))
-                        .id("\(song.id)-\(ratings.revision)")
-                    if rotation.contains(song.id) {
-                        Image(systemName: "lock.fill")
-                            .font(.caption2)
-                            .foregroundStyle(DromeTheme.muted)
-                    }
-                    if downloads.isDownloaded(song.id) {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(DromeTheme.accent)
-                    }
-                }
-                HStack(spacing: 0) {
-                    SongArtistLinks(song: song, font: .subheadline, color: DromeTheme.muted)
-                    if showAlbum, let album = song.album, !album.isEmpty {
-                        Text(" · \(album)")
-                            .font(.subheadline)
-                            .foregroundStyle(DromeTheme.muted)
-                            .lineLimit(1)
-                    }
-                }
-                .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-
-            if let trailing {
-                trailing
-            } else {
-                Text(song.durationText)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(DromeTheme.muted)
+                .preferredColorScheme(.dark)
             }
         }
     }
@@ -114,7 +72,7 @@ struct SongRow: View {
         }
         if SongNavigation.albumRoute(for: song) != nil {
             Button {
-                songNavigator.viewAlbum(for: song)
+                songNavigator?.viewAlbum(for: song)
             } label: {
                 Label("View Album", systemImage: "square.stack")
             }
@@ -124,7 +82,7 @@ struct SongRow: View {
             Menu {
                 ForEach(artistRoutes) { route in
                     Button(route.name) {
-                        songNavigator.viewArtist(id: route.artistId, name: route.name)
+                        songNavigator?.viewArtist(id: route.artistId, name: route.name)
                     }
                 }
             } label: {
@@ -132,7 +90,7 @@ struct SongRow: View {
             }
         } else if let route = artistRoutes.first ?? SongNavigation.artistRoute(for: song) {
             Button {
-                songNavigator.viewArtist(id: route.artistId, name: route.name)
+                songNavigator?.viewArtist(id: route.artistId, name: route.name)
             } label: {
                 Label("View Artist", systemImage: "person.wave.2")
             }
@@ -193,13 +151,89 @@ struct SongRow: View {
             }
         }
     }
+}
 
-    private var isCurrent: Bool {
-        player.current?.song.id == song.id
+/// Heavy row chrome — skipped via `.equatable()` when inputs are unchanged.
+private struct EquatableSongRowContent: View, Equatable {
+    let song: Song
+    let index: Int?
+    let showAlbum: Bool
+    let trailing: AnyView?
+    let isCurrent: Bool
+    let rating: Int
+    let inRotation: Bool
+    let isDownloaded: Bool
+    let coverURL: URL?
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.song.id == rhs.song.id
+            && lhs.song.title == rhs.song.title
+            && lhs.song.duration == rhs.song.duration
+            && lhs.song.album == rhs.song.album
+            && lhs.song.displayArtist == rhs.song.displayArtist
+            && lhs.index == rhs.index
+            && lhs.showAlbum == rhs.showAlbum
+            && lhs.isCurrent == rhs.isCurrent
+            && lhs.rating == rhs.rating
+            && lhs.inRotation == rhs.inRotation
+            && lhs.isDownloaded == rhs.isDownloaded
+            && lhs.coverURL == rhs.coverURL
+            && (lhs.trailing == nil) == (rhs.trailing == nil)
     }
 
-    private var coverURL: URL? {
-        session?.client.coverArtURL(id: song.coverArt ?? song.albumId, size: 120)
+    var body: some View {
+        HStack(spacing: 12) {
+            if let index {
+                Text("\(index)")
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(isCurrent ? DromeTheme.accent : DromeTheme.muted)
+                    .frame(width: 22, alignment: .trailing)
+            } else {
+                RemoteImage(url: coverURL)
+                    .frame(width: 48, height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(song.title)
+                        .font(DromeTheme.rowTitle)
+                        .foregroundStyle(isCurrent ? DromeTheme.accent : .white)
+                        .lineLimit(1)
+                    RatingBadge(rating: rating)
+                    if inRotation {
+                        Image(systemName: "lock.fill")
+                            .font(.caption2)
+                            .foregroundStyle(DromeTheme.muted)
+                    }
+                    if isDownloaded {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(DromeTheme.accent)
+                    }
+                }
+                HStack(spacing: 0) {
+                    SongArtistLinks(song: song, font: .subheadline, color: DromeTheme.muted)
+                    if showAlbum, let album = song.album, !album.isEmpty {
+                        Text(" · \(album)")
+                            .font(.subheadline)
+                            .foregroundStyle(DromeTheme.muted)
+                            .lineLimit(1)
+                    }
+                }
+                .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            if let trailing {
+                trailing
+            } else {
+                Text(song.durationText)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(DromeTheme.muted)
+            }
+        }
     }
 }
 
