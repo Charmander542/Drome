@@ -17,7 +17,9 @@ type entry struct {
 	SpotifyURL string    `json:"spotifyUrl"`
 	Title      string    `json:"title"`
 	Artist     string    `json:"artist"`
+	AlbumArtist string   `json:"albumArtist,omitempty"` // primary only — for Navidrome album grouping
 	Album      string    `json:"album"`
+	UPC        string    `json:"upc,omitempty"`
 	CoverURL   string    `json:"coverUrl"`
 	Acquired   bool      `json:"acquired"`
 	Status     string    `json:"status,omitempty"` // queued|downloading|done|failed|skipped

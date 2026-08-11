@@ -169,6 +169,13 @@ func joinArtists(artists []spotifyArtist) string {
 	return strings.Join(names, ", ")
 }
 
+func firstArtistName(artists []spotifyArtist) string {
+	if len(artists) == 0 {
+		return ""
+	}
+	return artists[0].Name
+}
+
 func bestImage(images []spotifyImage) string {
 	best := ""
 	bestW := -1
@@ -204,8 +211,10 @@ func (c *spotifyClient) resolveAPI(ctx context.Context, e *entry) error {
 			Name    string          `json:"name"`
 			Artists []spotifyArtist `json:"artists"`
 			Album   struct {
-				Name   string         `json:"name"`
-				Images []spotifyImage `json:"images"`
+				ID      string          `json:"id"`
+				Name    string          `json:"name"`
+				Artists []spotifyArtist `json:"artists"`
+				Images  []spotifyImage  `json:"images"`
 			} `json:"album"`
 		}
 		if err := c.apiGET(ctx, "/tracks/"+e.SpotifyID, &t); err != nil {
@@ -213,21 +222,38 @@ func (c *spotifyClient) resolveAPI(ctx context.Context, e *entry) error {
 		}
 		e.Title = t.Name
 		e.Artist = joinArtists(t.Artists)
+		e.AlbumArtist = firstArtistName(t.Album.Artists)
+		if e.AlbumArtist == "" {
+			e.AlbumArtist = firstArtistName(t.Artists)
+		}
 		e.Album = t.Album.Name
 		e.CoverURL = bestImage(t.Album.Images)
+		if t.Album.ID != "" {
+			if upc, err := c.albumUPC(ctx, t.Album.ID); err == nil {
+				e.UPC = upc
+			}
+		}
 	case "album":
 		var a struct {
 			Name    string          `json:"name"`
 			Artists []spotifyArtist `json:"artists"`
 			Images  []spotifyImage  `json:"images"`
+			ExternalIDs struct {
+				UPC string `json:"upc"`
+			} `json:"external_ids"`
 		}
 		if err := c.apiGET(ctx, "/albums/"+e.SpotifyID, &a); err != nil {
 			return err
 		}
 		e.Title = a.Name
 		e.Artist = joinArtists(a.Artists)
+		e.AlbumArtist = firstArtistName(a.Artists)
+		if e.AlbumArtist == "" {
+			e.AlbumArtist = e.Artist
+		}
 		e.Album = a.Name
 		e.CoverURL = bestImage(a.Images)
+		e.UPC = a.ExternalIDs.UPC
 	case "playlist":
 		var p struct {
 			Name  string `json:"name"`
@@ -241,12 +267,59 @@ func (c *spotifyClient) resolveAPI(ctx context.Context, e *entry) error {
 		}
 		e.Title = p.Name
 		e.Artist = p.Owner.DisplayName
+		e.AlbumArtist = p.Owner.DisplayName
 		e.Album = p.Name
 		e.CoverURL = bestImage(p.Images)
 	default:
 		return fmt.Errorf("unsupported kind %q", e.Kind)
 	}
 	return nil
+}
+
+func (c *spotifyClient) albumUPC(ctx context.Context, albumID string) (string, error) {
+	var a struct {
+		ExternalIDs struct {
+			UPC string `json:"upc"`
+		} `json:"external_ids"`
+	}
+	if err := c.apiGET(ctx, "/albums/"+albumID, &a); err != nil {
+		return "", err
+	}
+	return a.ExternalIDs.UPC, nil
+}
+
+// albumIdentity returns primary album artist + UPC for retagging downloads so
+// Navidrome groups an album as one release even when tracks have guest artists.
+func (c *spotifyClient) albumIdentity(ctx context.Context, e *entry) (albumArtist, upc string) {
+	if e.AlbumArtist != "" {
+		albumArtist = e.AlbumArtist
+		upc = e.UPC
+		if upc != "" || !c.hasAPICreds() {
+			return albumArtist, upc
+		}
+	}
+	if !c.hasAPICreds() {
+		if albumArtist != "" {
+			return albumArtist, upc
+		}
+		return e.Artist, ""
+	}
+	tmp := &entry{Kind: e.Kind, SpotifyID: e.SpotifyID}
+	if err := c.resolveAPI(ctx, tmp); err != nil {
+		if albumArtist != "" {
+			return albumArtist, upc
+		}
+		return e.Artist, ""
+	}
+	if tmp.AlbumArtist != "" {
+		albumArtist = tmp.AlbumArtist
+	} else if albumArtist == "" {
+		albumArtist = tmp.Artist
+	}
+	if tmp.UPC != "" {
+		upc = tmp.UPC
+	}
+	return albumArtist, upc
 }
 
 var (
@@ -302,6 +375,7 @@ func (c *spotifyClient) resolveOpenGraph(ctx context.Context, e *entry) error {
 		}
 		if len(parts) >= 1 {
 			e.Artist = parts[0]
+			e.AlbumArtist = parts[0]
 		}
 		// Album isn't reliably in OG for tracks; leave empty.
 	case "album":
@@ -312,10 +386,14 @@ func (c *spotifyClient) resolveOpenGraph(ctx context.Context, e *entry) error {
 		e.Album = e.Title
 		if len(parts) >= 1 {
 			e.Artist = parts[0]
+			e.AlbumArtist = parts[0]
 		}
 	}
 	if e.Title == "" {
 		return fmt.Errorf("could not parse title from public metadata")
+	}
+	if e.AlbumArtist == "" {
+		e.AlbumArtist = e.Artist
 	}
 	return nil
 }

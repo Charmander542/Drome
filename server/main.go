@@ -77,7 +77,7 @@ func main() {
 		log.Printf("spotify metadata: public Open Graph / oEmbed (no API key)")
 	}
 
-	worker := newDownloadWorker(cfg.Download, store, newNavidromeVerifier(cfg.NavidromeURL, 5*time.Minute), cfg.NavidromeURL)
+	worker := newDownloadWorker(cfg.Download, store, newNavidromeVerifier(cfg.NavidromeURL, 5*time.Minute), spotify, cfg.NavidromeURL)
 	cleaner := newLibraryCleaner(cfg.Cleanup, worker.triggerScan)
 	srv := &server{
 		store:     store,

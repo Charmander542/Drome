@@ -99,6 +99,7 @@ type downloadWorker struct {
 	cfg       downloadConfig
 	store     *wishlistStore
 	navidrome *navidromeVerifier
+	spotify   *spotifyClient
 	baseURL   string
 
 	mu     sync.Mutex
@@ -106,11 +107,12 @@ type downloadWorker struct {
 	closed bool
 }
 
-func newDownloadWorker(cfg downloadConfig, store *wishlistStore, navidrome *navidromeVerifier, baseURL string) *downloadWorker {
+func newDownloadWorker(cfg downloadConfig, store *wishlistStore, navidrome *navidromeVerifier, spotify *spotifyClient, baseURL string) *downloadWorker {
 	return &downloadWorker{
 		cfg:       cfg,
 		store:     store,
 		navidrome: navidrome,
+		spotify:   spotify,
 		baseURL:   baseURL,
 		wake:      make(chan struct{}, 1),
 	}
@@ -303,13 +305,25 @@ func (w *downloadWorker) retagRecent(ctx context.Context, e *entry, started time
 	if album == "" && kind == "album" {
 		album = e.Title
 	}
+	albumArtist, upc := "", ""
+	if w.spotify != nil {
+		albumArtist, upc = w.spotify.albumIdentity(ctx, e)
+	}
+	if albumArtist == "" {
+		albumArtist = e.AlbumArtist
+	}
+	if albumArtist == "" {
+		albumArtist = e.Artist
+	}
 
 	args := []string{
 		"--music-dir", w.cfg.MusicDir,
 		"--kind", kind,
 		"--title", e.Title,
 		"--artist", e.Artist,
+		"--album-artist", albumArtist,
 		"--album", album,
+		"--upc", upc,
 		"--since-epoch", fmt.Sprintf("%d", started.Unix()),
 	}
 	var cmd *exec.Cmd
