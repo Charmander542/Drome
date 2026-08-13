@@ -13,12 +13,12 @@ struct DromeApp: App {
                     .environmentObject(env)
                     .environmentObject(env.accounts)
 
-                SplashOverlay(isVisible: $showSplash)
-            }
-            .task {
-                // Brief hold so launch → first frame stays on-brand, then fade.
-                try? await Task.sleep(nanoseconds: 700_000_000)
-                showSplash = false
+                if showSplash {
+                    SplashScreenView {
+                        showSplash = false
+                    }
+                    .zIndex(1)
+                }
             }
         }
     }

@@ -76,7 +76,7 @@ struct WishlistView: View {
                 }
                 .listRowBackground(DromeTheme.elevated)
             } footer: {
-                Text("Search tracks, albums, or playlists — missing playlist tracks are queued for download.")
+                Text("Search tracks, albums, or artists — or paste any Spotify link below to download.")
             }
 
             if !searchResults.isEmpty {
@@ -90,7 +90,7 @@ struct WishlistView: View {
             Section {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
-                        TextField("Paste Spotify playlist or track links", text: $pasteURL, axis: .vertical)
+                        TextField("Paste any Spotify link", text: $pasteURL, axis: .vertical)
                             .lineLimit(2...5)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
@@ -123,9 +123,9 @@ struct WishlistView: View {
                 }
                 .listRowBackground(DromeTheme.elevated)
             } header: {
-                Text("Paste for download")
+                Text("Paste to download")
             } footer: {
-                Text("Paste a Spotify playlist URL (or several track links). Tracks you already own are skipped; the rest queue for download into Navidrome.")
+                Text("Paste any Spotify link to download the songs from it. Tracks you already own are skipped; the rest queue for download into Navidrome.")
             }
 
             if let importBanner {
@@ -154,7 +154,7 @@ struct WishlistView: View {
             } else {
                 Section("Wishlist") {
                     if entries.isEmpty {
-                        Text("Nothing here yet. Search Spotify or paste a playlist above.")
+                        Text("Nothing here yet. Search Spotify or paste a link above.")
                             .foregroundStyle(DromeTheme.muted)
                             .listRowBackground(Color.clear)
                     }

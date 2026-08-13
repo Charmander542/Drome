@@ -25,6 +25,9 @@ final class PlayerEngine: ObservableObject {
     @Published private(set) var history: [QueueItem] = []
     @Published private(set) var context: PlaybackContext?
     @Published private(set) var isPlaying = false
+    /// Sticky transport intent. AVPlayer briefly reports paused / waiting while
+    /// skipping tracks — UI follows this so the play/pause button does not flash.
+    private var wantsToPlay = false
     /// Playhead lives on `clock` for SwiftUI; these mirrors are for engine logic.
     private(set) var elapsed: TimeInterval = 0
     private(set) var duration: TimeInterval = 0
@@ -130,7 +133,7 @@ final class PlayerEngine: ObservableObject {
         guard airPlay != lastAirPlayActive else { return }
         lastAirPlayActive = airPlay
         guard current != nil else { return }
-        let resume = isPlaying
+        let resume = wantsToPlay
         let position = elapsed
         rebuildWindow(startPlaying: resume)
         if position > 0.5 {
@@ -286,21 +289,31 @@ final class PlayerEngine: ObservableObject {
     // MARK: - Public API: transport
 
     func playPause() {
-        if isPlaying { pause() } else { resume() }
+        if wantsToPlay { pause() } else { resume() }
     }
 
     func resume() {
+        setPlaybackIntent(true)
         activateAudioSession()
         player.play()
         persistSessionSoon()
     }
 
     func pause() {
+        setPlaybackIntent(false)
         player.pause()
         persistSessionNow()
     }
 
+    private func setPlaybackIntent(_ playing: Bool) {
+        wantsToPlay = playing
+        if isPlaying != playing {
+            isPlaying = playing
+        }
+    }
+
     func next() {
+        let keepPlaying = wantsToPlay
         // Drop leading low-rated tracks when the user opted into global skip.
         drainLowRatedFromQueues()
         guard peekUpcoming(limit: 1).first != nil else {
@@ -318,6 +331,7 @@ final class PlayerEngine: ObservableObject {
             if let item = player.currentItem {
                 handleCurrentItemChange(item)
             }
+            applyPlaybackIntent(keepPlaying)
             ensureAutoplayBuffer()
             return
         }
@@ -327,11 +341,12 @@ final class PlayerEngine: ObservableObject {
             scrobbleSubmission(current.song)
         }
         consumeFromQueues(upNext)
-        setCurrent(upNext, startPlaying: true)
+        setCurrent(upNext, startPlaying: keepPlaying)
         ensureAutoplayBuffer()
     }
 
     func previous(preferPreviousTrack: Bool = false) {
+        let keepPlaying = wantsToPlay
         // Hardware / lock-screen previous: restart if we're >3s into the track.
         if !preferPreviousTrack && elapsed > 3 {
             seek(to: 0)
@@ -342,7 +357,7 @@ final class PlayerEngine: ObservableObject {
             if let current {
                 contextQueue.insert(current, at: 0)
             }
-            setCurrent(prev, startPlaying: true)
+            setCurrent(prev, startPlaying: keepPlaying)
             return
         }
         // Accidental Play replaced the queue — restore the displaced session.
@@ -353,6 +368,7 @@ final class PlayerEngine: ObservableObject {
     /// Art-swipe advance: exactly one step to the peeked neighbor, no low-rated
     /// drain / auto-skip (those would land on a different song than the cover).
     func advanceFromArtSwipe(goingNext: Bool) {
+        let keepPlaying = wantsToPlay
         if goingNext {
             guard let upNext = peekUpcoming(limit: 1).first else { return }
             cancelAutoplayWork()
@@ -363,11 +379,24 @@ final class PlayerEngine: ObservableObject {
             consumeFromQueues(upNext)
             // Force the setCurrent path (not AVQueuePlayer.advance) so we don't
             // hit handleCurrentItemChange's async low-rated skip.
-            setCurrent(upNext, startPlaying: true, allowLowRated: true)
+            setCurrent(upNext, startPlaying: keepPlaying, allowLowRated: true)
             ensureAutoplayBuffer()
         } else {
             previous(preferPreviousTrack: true)
         }
+    }
+
+    /// Re-assert play/pause after a skip so transient AVPlayer status cannot
+    /// flip the transport button.
+    private func applyPlaybackIntent(_ playing: Bool) {
+        setPlaybackIntent(playing)
+        if playing {
+            activateAudioSession()
+            player.play()
+        } else {
+            player.pause()
+        }
+        pushNowPlayingInfo()
     }
 
     /// Song behind the current cover (in-queue history, else undone session).
@@ -696,7 +725,10 @@ final class PlayerEngine: ObservableObject {
 
         if startPlaying {
             activateAudioSession()
+            setPlaybackIntent(true)
             player.play()
+        } else {
+            setPlaybackIntent(false)
         }
 
         schedulePrefetchTopUp(delayNanoseconds: 1_200_000_000)
@@ -783,7 +815,28 @@ final class PlayerEngine: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] status in
                 guard let self else { return }
-                self.isPlaying = status == .playing
+                switch status {
+                case .playing:
+                    // External resume (lock screen / CarPlay / headphones).
+                    self.wantsToPlay = true
+                    if !self.isPlaying { self.isPlaying = true }
+                case .waitingToPlayAtSpecifiedRate:
+                    // Buffering — keep the button on the sticky intent.
+                    if self.isPlaying != self.wantsToPlay {
+                        self.isPlaying = self.wantsToPlay
+                    }
+                case .paused:
+                    if self.isRebuilding || self.wantsToPlay {
+                        // Transient pause during skip/rebuild — do not flip UI.
+                        if self.isPlaying != self.wantsToPlay {
+                            self.isPlaying = self.wantsToPlay
+                        }
+                    } else if self.isPlaying {
+                        self.isPlaying = false
+                    }
+                @unknown default:
+                    break
+                }
                 self.pushNowPlayingInfo()
             }
             .store(in: &cancellables)
@@ -850,7 +903,7 @@ final class PlayerEngine: ObservableObject {
             .sink { [weak self] _ in
                 self?.configureAudioSession()
                 self?.activateAudioSession()
-                if self?.isPlaying == true {
+                if self?.wantsToPlay == true {
                     self?.player.play()
                 }
             }
@@ -886,7 +939,10 @@ final class PlayerEngine: ObservableObject {
         // song metadata happens to compare equal.
         current = newCurrent
         setPlayhead(elapsed: 0, duration: TimeInterval(newCurrent.song.duration ?? 0))
-        isPlaying = player.timeControlStatus == .playing
+        // Keep transport UI on sticky intent — AVPlayer status flickers here.
+        if isPlaying != wantsToPlay {
+            isPlaying = wantsToPlay
+        }
         topUpWindow()
         // Prefetch the following track after the new current claims bandwidth.
         schedulePrefetchTopUp(delayNanoseconds: 800_000_000)
@@ -939,7 +995,7 @@ final class PlayerEngine: ObservableObject {
         player.pause()
         player.rate = 0
         setPlayhead(elapsed: duration)
-        isPlaying = false
+        setPlaybackIntent(false)
         pushNowPlayingInfo()
     }
 
@@ -1009,7 +1065,7 @@ final class PlayerEngine: ObservableObject {
             if playImmediately {
                 player.pause()
                 player.rate = 0
-                isPlaying = false
+                setPlaybackIntent(false)
                 pushNowPlayingInfo()
             }
             return
@@ -1026,7 +1082,7 @@ final class PlayerEngine: ObservableObject {
             if playImmediately {
                 player.pause()
                 player.rate = 0
-                isPlaying = false
+                setPlaybackIntent(false)
                 pushNowPlayingInfo()
             }
             return
@@ -1083,7 +1139,7 @@ final class PlayerEngine: ObservableObject {
             if playImmediately {
                 player.pause()
                 player.rate = 0
-                isPlaying = false
+                setPlaybackIntent(false)
                 pushNowPlayingInfo()
             }
             return
@@ -1107,7 +1163,7 @@ final class PlayerEngine: ObservableObject {
             if playImmediately {
                 player.pause()
                 player.rate = 0
-                isPlaying = false
+                setPlaybackIntent(false)
                 pushNowPlayingInfo()
             }
             return
