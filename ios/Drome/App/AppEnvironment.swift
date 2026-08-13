@@ -100,6 +100,13 @@ final class AppSession: ObservableObject, Identifiable {
         downloads = DownloadManager(client: client, database: database, serverKey: account.serverKey)
         player = PlayerEngine(client: client, ratings: ratings, rotation: rotation, downloads: downloads)
         let userKey = account.userKey
+        let sessionStore = PlaybackSessionStore(userKey: userKey)
+        player.attachSessionStore(sessionStore)
+        // Restore last queue into the mini player (paused) after first paint.
+        Task { @MainActor [player] in
+            await Task.yield()
+            _ = player.restorePersistedSessionIfNeeded()
+        }
         // History writes must never contend with the audio render path.
         player.onTrackStarted = { [player] song in
             let context = player.context

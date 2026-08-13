@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -70,17 +71,48 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"results": hits})
 }
 
-// POST /wishlist  body: {"url": "https://open.spotify.com/track/..."}
+// POST /wishlist  body: {"url": "..."} or {"urls": ["...", "..."]}
+// Accepts track/album/playlist links (including multi-link clipboard pastes).
+// Playlists expand into per-track wishlist downloads.
 func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		URL string `json:"url"`
+		URL  string   `json:"url"`
+		URLs []string `json:"urls"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.URL == "" {
-		writeError(w, http.StatusBadRequest, "body must be JSON with a non-empty \"url\" field")
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "body must be JSON with a \"url\" or \"urls\" field")
 		return
 	}
 
-	kind, id, err := parseSpotifyLink(body.URL)
+	var rawLinks []string
+	switch {
+	case len(body.URLs) > 0:
+		rawLinks = body.URLs
+	case strings.TrimSpace(body.URL) != "":
+		rawLinks = extractSpotifyLinks(body.URL)
+		if len(rawLinks) == 0 {
+			rawLinks = []string{body.URL}
+		}
+	default:
+		writeError(w, http.StatusBadRequest, "body must be JSON with a non-empty \"url\" or \"urls\" field")
+		return
+	}
+
+	// Cap batch size so a huge clipboard dump can't stall the worker.
+	const maxBatch = 40
+	if len(rawLinks) > maxBatch {
+		rawLinks = rawLinks[:maxBatch]
+	}
+
+	if len(rawLinks) == 1 {
+		s.handleCreateOne(w, r, rawLinks[0])
+		return
+	}
+	s.handleCreateBatch(w, r, rawLinks)
+}
+
+func (s *server) handleCreateOne(w http.ResponseWriter, r *http.Request, raw string) {
+	kind, id, _, err := normalizeSpotifyPaste(r.Context(), s.spotify.http, raw)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
@@ -91,10 +123,82 @@ func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	entry, existed, err := s.addResolvedEntry(r, kind, id)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	status := http.StatusCreated
+	if existed {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, entry)
+}
+
+func (s *server) handleCreateBatch(w http.ResponseWriter, r *http.Request, rawLinks []string) {
+	var (
+		entries      []entry
+		added        int
+		skippedOwned int
+		playlistName string
+		playlistID   string
+		failed       []string
+	)
+
+	for _, raw := range rawLinks {
+		kind, id, _, err := normalizeSpotifyPaste(r.Context(), s.spotify.http, raw)
+		if err != nil {
+			failed = append(failed, raw+": "+err.Error())
+			continue
+		}
+		if kind == "playlist" {
+			name, imported, owned, err := s.importPlaylistTracks(r, id)
+			if err != nil {
+				failed = append(failed, raw+": "+err.Error())
+				continue
+			}
+			if playlistName == "" {
+				playlistName = name
+				playlistID = id
+			}
+			entries = append(entries, imported...)
+			added += len(imported)
+			skippedOwned += owned
+			continue
+		}
+		e, _, err := s.addResolvedEntry(r, kind, id)
+		if err != nil {
+			failed = append(failed, raw+": "+err.Error())
+			continue
+		}
+		entries = append(entries, *e)
+		added++
+	}
+
+	if added == 0 && skippedOwned == 0 && len(failed) > 0 {
+		writeError(w, http.StatusUnprocessableEntity, "could not import any links: "+failed[0])
+		return
+	}
+	if entries == nil {
+		entries = []entry{}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"kind":               "playlistImport",
+		"playlistId":         playlistID,
+		"playlistName":       playlistName,
+		"added":              added,
+		"skippedOwned":       skippedOwned,
+		"entries":            entries,
+		"sourcePlaylistId":   playlistID,
+		"sourcePlaylistName": playlistName,
+		"failed":             failed,
+	})
+}
+
+func (s *server) addResolvedEntry(r *http.Request, kind, id string) (*entry, bool, error) {
 	entry, err := s.spotify.resolve(r.Context(), kind, id)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "could not resolve link: "+err.Error())
-		return
+		return nil, false, fmt.Errorf("could not resolve link: %w", err)
 	}
 	entry.Owner = requestUser(r)
 	entry.CreatedAt = time.Now()
@@ -104,28 +208,41 @@ func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		entry.Status = statusSkipped
 	}
 
-	// Spotify ID uniqueness is enforced by the DB upsert. Also block near-
-	// duplicate albums/tracks that share title+artist under a different ID.
 	if existing, err := s.store.findActiveByTitleArtist(entry.Owner, entry.Kind, entry.Title, entry.Artist); err == nil && existing != nil {
-		writeJSON(w, http.StatusOK, existing)
-		return
+		return existing, true, nil
 	}
 
 	if err := s.store.insert(entry); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not save entry: "+err.Error())
-		return
+		return nil, false, fmt.Errorf("could not save entry: %w", err)
 	}
 	if entry.Status == statusQueued && s.downloads != nil {
 		s.downloads.kick()
 	}
-	writeJSON(w, http.StatusCreated, entry)
+	return entry, false, nil
 }
 
 func (s *server) handlePlaylistImport(w http.ResponseWriter, r *http.Request, playlistID string) {
-	name, tracks, err := s.spotify.playlistTracks(r.Context(), playlistID)
+	name, added, skippedOwned, err := s.importPlaylistTracks(r, playlistID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "could not load playlist: "+err.Error())
 		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"kind":                 "playlistImport",
+		"playlistId":           playlistID,
+		"playlistName":         name,
+		"added":                len(added),
+		"skippedOwned":         skippedOwned,
+		"entries":              added,
+		"sourcePlaylistId":     playlistID,
+		"sourcePlaylistName":   name,
+	})
+}
+
+func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (name string, added []entry, skippedOwned int, err error) {
+	name, tracks, err := s.spotify.playlistTracks(r.Context(), playlistID)
+	if err != nil {
+		return "", nil, 0, err
 	}
 	owner := requestUser(r)
 	user, token, salt := requestCreds(r)
@@ -134,8 +251,6 @@ func (s *server) handlePlaylistImport(w http.ResponseWriter, r *http.Request, pl
 		status = statusQueued
 	}
 
-	var added []entry
-	skippedOwned := 0
 	now := time.Now()
 	for _, t := range tracks {
 		if s.navidrome.libraryOwns(r.Context(), user, token, salt, t.Title, t.Artist) {
@@ -167,16 +282,7 @@ func (s *server) handlePlaylistImport(w http.ResponseWriter, r *http.Request, pl
 	if added == nil {
 		added = []entry{}
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"kind":                 "playlistImport",
-		"playlistId":           playlistID,
-		"playlistName":         name,
-		"added":                len(added),
-		"skippedOwned":         skippedOwned,
-		"entries":              added,
-		"sourcePlaylistId":     playlistID,
-		"sourcePlaylistName":   name,
-	})
+	return name, added, skippedOwned, nil
 }
 
 func (s *server) handleArtistImage(w http.ResponseWriter, r *http.Request) {

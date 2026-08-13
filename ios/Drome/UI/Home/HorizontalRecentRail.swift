@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Horizontal rail for recently played albums, playlists, mixes, and songs.
-/// Cards mirror the source they came from (no badge overlays) and deep-link
-/// back to that same place.
+/// Cards mirror the source they came from and resume the saved shuffle /
+/// queue / playhead when possible.
 struct HorizontalRecentRail: View {
     let title: String
     let entries: [RecentPlayEntry]
@@ -35,8 +35,7 @@ struct HorizontalRecentRail: View {
         switch entry {
         case .song(let song):
             Button {
-                player.play([song], startAt: 0,
-                            context: PlaybackContext(label: song.title, kind: .search))
+                resumeOrPlaySong(song)
             } label: {
                 coverCard(
                     coverID: song.coverArt ?? song.albumId ?? song.id,
@@ -49,16 +48,8 @@ struct HorizontalRecentRail: View {
             .hoverEffectDisabled()
 
         case .album(let id, let name, let coverSong):
-            NavigationLink {
-                AlbumDetailView(albumID: id, placeholder: Album(
-                    id: id,
-                    name: name,
-                    artist: coverSong.displayArtist,
-                    artistId: coverSong.artistId,
-                    coverArt: coverSong.coverArt,
-                    songCount: nil, duration: nil, playCount: nil,
-                    created: nil, year: nil, genre: nil, userRating: nil
-                ))
+            Button {
+                resumeOrPlayAlbum(id: id, name: name, coverSong: coverSong)
             } label: {
                 coverCard(
                     coverID: coverSong.coverArt ?? coverSong.albumId ?? id,
@@ -71,8 +62,8 @@ struct HorizontalRecentRail: View {
             .hoverEffectDisabled()
 
         case .playlist(let id, let name, let coverSong):
-            NavigationLink {
-                PlaylistDetailView(playlistID: id)
+            Button {
+                resumeOrPlayPlaylist(id: id, name: name, coverSong: coverSong)
             } label: {
                 coverCard(
                     coverID: coverSong.coverArt ?? coverSong.albumId ?? coverSong.id,
@@ -92,8 +83,8 @@ struct HorizontalRecentRail: View {
     @ViewBuilder
     private func mixCard(name: String, coverSong: Song, subtitle: String) -> some View {
         if let vibe = MoodVibe.allCases.first(where: { $0.title == name }) {
-            // Exact same vibe tile as "What's the vibe?" — tap restarts it.
             Button {
+                if player.resumeSession(forKey: "mix:\(name)") { return }
                 Task {
                     spinningVibe = vibe
                     await MoodPlayer.play(vibe, session: session)
@@ -107,8 +98,9 @@ struct HorizontalRecentRail: View {
             .disabled(spinningVibe != nil)
 
         } else if let collection = RatedCollection.allCases.first(where: { $0.rawValue == name }) {
-            NavigationLink {
-                RatedCollectionDetailView(collection: collection)
+            Button {
+                if player.resumeSession(forKey: "mix:\(name)") { return }
+                Task { await playRatedCollection(collection) }
             } label: {
                 ratedFolderCard(collection)
             }
@@ -116,13 +108,9 @@ struct HorizontalRecentRail: View {
             .hoverEffectDisabled()
 
         } else if subtitle == "Genre" {
-            NavigationLink {
-                GenreDetailView(genre: NormalizedGenre(
-                    displayName: name,
-                    rawTags: [name],
-                    songCount: 0,
-                    albumCount: 0
-                ))
+            Button {
+                if player.resumeSession(forKey: "genre:\(name)") { return }
+                Task { await playGenre(name) }
             } label: {
                 coverCard(
                     coverID: coverSong.coverArt ?? coverSong.albumId ?? coverSong.id,
@@ -135,8 +123,9 @@ struct HorizontalRecentRail: View {
             .hoverEffectDisabled()
 
         } else if subtitle == "Artist", let artistId = coverSong.artistId {
-            NavigationLink {
-                ArtistDetailView(artistID: artistId, placeholderName: name)
+            Button {
+                if player.resumeSession(forKey: "artist:\(artistId)") { return }
+                Task { await playArtist(id: artistId, name: name) }
             } label: {
                 coverCard(
                     coverID: coverSong.coverArt ?? coverSong.artistId ?? coverSong.id,
@@ -150,8 +139,10 @@ struct HorizontalRecentRail: View {
 
         } else if name == RotationManager.playlistName || subtitle == "Playlist",
                   let playlistID = rotation.playlist?.id {
-            NavigationLink {
-                PlaylistDetailView(playlistID: playlistID)
+            Button {
+                if player.resumeSession(forKey: "outOfRotation") { return }
+                if player.resumeSession(forKey: "playlist:\(playlistID)") { return }
+                Task { await playPlaylist(id: playlistID, name: name) }
             } label: {
                 coverCard(
                     coverID: coverSong.coverArt ?? coverSong.albumId ?? coverSong.id,
@@ -164,13 +155,89 @@ struct HorizontalRecentRail: View {
             .hoverEffectDisabled()
 
         } else {
-            coverCard(
-                coverID: coverSong.coverArt ?? coverSong.albumId ?? coverSong.id,
-                title: name,
-                subtitle: subtitle,
-                badge: nil
-            )
+            Button {
+                _ = player.resumeSession(forKey: "mix:\(name)")
+            } label: {
+                coverCard(
+                    coverID: coverSong.coverArt ?? coverSong.albumId ?? coverSong.id,
+                    title: name,
+                    subtitle: subtitle,
+                    badge: nil
+                )
+            }
+            .buttonStyle(.plain)
+            .hoverEffectDisabled()
         }
+    }
+
+    private func resumeOrPlaySong(_ song: Song) {
+        if player.resumeSession(forKey: "song:\(song.id)") { return }
+        if let albumId = song.albumId, player.resumeSession(forKey: "album:\(albumId)") { return }
+        player.play([song], startAt: 0,
+                    context: PlaybackContext(label: song.title, kind: .search))
+    }
+
+    private func resumeOrPlayAlbum(id: String, name: String, coverSong: Song) {
+        if player.resumeSession(forKey: "album:\(id)") { return }
+        Task {
+            if let album = try? await session.client.album(id: id), !album.songs.isEmpty {
+                LibraryDetailCache.store(album: album)
+                let start = album.songs.firstIndex(where: { $0.id == coverSong.id }) ?? 0
+                player.play(album.songs, startAt: start,
+                            context: PlaybackContext(label: name, kind: .album(id: id)))
+            } else {
+                player.play([coverSong], startAt: 0,
+                            context: PlaybackContext(label: name, kind: .album(id: id)))
+            }
+        }
+    }
+
+    private func resumeOrPlayPlaylist(id: String, name: String, coverSong: Song) {
+        if player.resumeSession(forKey: "playlist:\(id)") { return }
+        Task { await playPlaylist(id: id, name: name, startSongId: coverSong.id) }
+    }
+
+    private func playPlaylist(id: String, name: String, startSongId: String? = nil) async {
+        guard let playlist = try? await session.client.playlist(id: id),
+              !playlist.songs.isEmpty else { return }
+        LibraryDetailCache.store(playlist: playlist)
+        let start = startSongId.flatMap { sid in playlist.songs.firstIndex(where: { $0.id == sid }) } ?? 0
+        let kind: PlaybackContext.Kind = playlist.name == RotationManager.playlistName
+            ? .outOfRotation
+            : .playlist(id: id)
+        player.play(playlist.songs, startAt: start,
+                    context: PlaybackContext(label: name, kind: kind))
+    }
+
+    private func playArtist(id: String, name: String) async {
+        let songs = (try? await session.client.topSongs(artistName: name, count: 40)) ?? []
+        guard !songs.isEmpty else { return }
+        player.play(songs, startAt: 0,
+                    context: PlaybackContext(label: name, kind: .artist(id: id)))
+    }
+
+    private func playGenre(_ name: String) async {
+        let songs = (try? await session.client.songsByGenre(name, count: 200)) ?? []
+        guard !songs.isEmpty else { return }
+        player.play(songs, startAt: 0,
+                    context: PlaybackContext(label: name, kind: .genre))
+    }
+
+    private func playRatedCollection(_ collection: RatedCollection) async {
+        let minRating: Int
+        switch collection {
+        case .fiveStars: minRating = 5
+        case .fourPlus: minRating = 4
+        case .topAlbums: minRating = 4
+        }
+        var songs = ratings.cachedSongs(minRating: minRating)
+        if songs.isEmpty {
+            await ratings.discoverFromServer()
+            songs = ratings.cachedSongs(minRating: minRating)
+        }
+        guard !songs.isEmpty else { return }
+        player.play(songs, startAt: 0,
+                    context: PlaybackContext(label: collection.rawValue, kind: .mix))
     }
 
     /// Matches the Rated library folder tiles (icon plate, not a song cover + badge).
@@ -199,7 +266,7 @@ struct HorizontalRecentRail: View {
 
     private func coverCard(coverID: String, title: String, subtitle: String, badge: Int?) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            RemoteImage(url: session.client.coverArtURL(id: coverID, size: 300))
+            RemoteImage(url: session.artworkURL(id: coverID, size: 300))
                 .frame(width: 148, height: 148)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             HStack(spacing: 4) {

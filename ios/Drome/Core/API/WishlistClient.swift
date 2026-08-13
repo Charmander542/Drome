@@ -42,6 +42,7 @@ struct WishlistPlaylistImport: Codable {
     var entries: [WishlistEntry]
     var sourcePlaylistId: String?
     var sourcePlaylistName: String?
+    var failed: [String]?
 }
 
 enum WishlistAddResult {
@@ -152,6 +153,26 @@ struct DromeWishlistClient {
     func add(spotifyLink: String) async throws -> WishlistAddResult {
         struct Body: Encodable { var url: String }
         let (data, _) = try await sendRaw(path: "/wishlist", method: "POST", body: Body(url: spotifyLink))
+        return try decodeAddResult(from: data)
+    }
+
+    /// Paste one or many Spotify links (tracks, albums, playlists).
+    func add(spotifyLinks: [String]) async throws -> WishlistAddResult {
+        let cleaned = spotifyLinks
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !cleaned.isEmpty else {
+            throw WishlistError.server("No Spotify links to import.")
+        }
+        if cleaned.count == 1 {
+            return try await add(spotifyLink: cleaned[0])
+        }
+        struct Body: Encodable { var urls: [String] }
+        let (data, _) = try await sendRaw(path: "/wishlist", method: "POST", body: Body(urls: cleaned))
+        return try decodeAddResult(from: data)
+    }
+
+    private func decodeAddResult(from data: Data) throws -> WishlistAddResult {
         if let importResult = try? JSONDecoder().decode(WishlistPlaylistImport.self, from: data),
            importResult.kind == "playlistImport" {
             return .playlist(importResult)

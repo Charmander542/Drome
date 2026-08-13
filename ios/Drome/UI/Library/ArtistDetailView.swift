@@ -49,7 +49,7 @@ struct ArtistDetailView: View {
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 player.play(topSongs, startAt: index,
-                                            context: PlaybackContext(label: artist.name, kind: .artist))
+                                            context: PlaybackContext(label: artist.name, kind: .artist(id: artist.id)))
                             }
                             .listRowBackground(DromeTheme.background)
                             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
@@ -90,33 +90,46 @@ struct ArtistDetailView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    guard !topSongs.isEmpty else { return }
-                    player.playShuffled(topSongs,
-                                        context: PlaybackContext(label: artist.name, kind: .artist))
+                    let pool = topSongs.isEmpty ? ownedSongs : topSongs
+                    guard !pool.isEmpty else { return }
+                    player.playShuffled(pool,
+                                        context: PlaybackContext(label: artist.name, kind: .artist(id: artist.id)))
                 } label: {
                     Image(systemName: "shuffle")
                 }
-                .disabled(topSongs.isEmpty)
+                .disabled(topSongs.isEmpty && ownedSongs.isEmpty)
             }
         }
     }
 
     private func load() async {
-        isLoading = true
+        if let cached = LibraryDetailCache.artist(artistID) {
+            artist = cached.artist
+            topSongs = cached.topSongs
+            ownedSongs = cached.owned
+            isLoading = false
+        } else {
+            isLoading = true
+        }
         error = nil
         defer { isLoading = false }
         do {
+            // Albums first so the page is usable; popular/owned fill in after.
             let loaded = try await session.client.artist(id: artistID)
             artist = loaded
-            topSongs = (try? await session.client.topSongs(artistName: loaded.name, count: 10)) ?? []
-            session.ratings.ingest(topSongs)
+            isLoading = false
 
-            // Pull a wider artist song sample so “missing on Spotify” filtering
-            // doesn’t only know about the top-5 popular list.
-            let search = try? await session.client.search(
+            async let topTask = session.client.topSongs(artistName: loaded.name, count: 10)
+            async let searchTask = session.client.search(
                 loaded.name, artistCount: 0, albumCount: 0, songCount: 50)
+
+            let fetchedTop = (try? await topTask) ?? []
+            topSongs = fetchedTop
+            session.ratings.ingest(fetchedTop)
+
+            let search = try? await searchTask
             var byID: [String: Song] = [:]
-            for song in topSongs { byID[song.id] = song }
+            for song in fetchedTop { byID[song.id] = song }
             for song in search?.songs ?? [] {
                 let artistMatch = song.displayArtist
                     .localizedCaseInsensitiveContains(loaded.name)
@@ -127,8 +140,11 @@ struct ArtistDetailView: View {
             }
             ownedSongs = Array(byID.values)
             session.ratings.ingest(ownedSongs)
+            LibraryDetailCache.store(artist: loaded, topSongs: topSongs, owned: ownedSongs)
         } catch {
-            self.error = error.localizedDescription
+            if artist == nil {
+                self.error = error.localizedDescription
+            }
         }
     }
 }

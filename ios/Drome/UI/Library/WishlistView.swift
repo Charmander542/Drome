@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct WishlistView: View {
     @EnvironmentObject private var session: AppSession
@@ -12,6 +13,7 @@ struct WishlistView: View {
     @State private var addingIDs: Set<String> = []
     @State private var isAddingPaste = false
     @State private var error: String?
+    @State private var importBanner: String?
     @State private var shareTarget: WishlistEntry?
     @State private var shareUsername = ""
     @State private var searchTask: Task<Void, Never>?
@@ -30,6 +32,7 @@ struct WishlistView: View {
                 list
             }
         }
+        .navigationTitle("Wishlist")
         .task { await load() }
         .refreshable { await load() }
         .alert("Share entry", isPresented: Binding(
@@ -73,7 +76,7 @@ struct WishlistView: View {
                 }
                 .listRowBackground(DromeTheme.elevated)
             } footer: {
-                Text("Search Spotify tracks, albums, or playlists — or paste a Spotify link. Playlist imports skip tracks you already own.")
+                Text("Search tracks, albums, or playlists — missing playlist tracks are queued for download.")
             }
 
             if !searchResults.isEmpty {
@@ -85,24 +88,53 @@ struct WishlistView: View {
             }
 
             Section {
-                HStack {
-                    TextField("Or paste a Spotify link", text: $pasteURL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                    Button {
-                        Task { await addPaste() }
-                    } label: {
-                        if isAddingPaste {
-                            ProgressView()
-                        } else {
-                            Image(systemName: "plus.circle.fill")
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        TextField("Paste Spotify playlist or track links", text: $pasteURL, axis: .vertical)
+                            .lineLimit(2...5)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+
+                        Button {
+                            pasteFromClipboard()
+                        } label: {
+                            Image(systemName: "doc.on.clipboard")
+                                .font(.body.weight(.semibold))
                                 .foregroundStyle(DromeTheme.accent)
                         }
+                        .accessibilityLabel("Paste from clipboard")
+                        .disabled(isAddingPaste)
+
+                        Button {
+                            Task { await addPaste() }
+                        } label: {
+                            if isAddingPaste {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "plus.circle.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(DromeTheme.accent)
+                            }
+                        }
+                        .disabled(isAddingPaste || pasteURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityLabel("Import pasted links")
                     }
-                    .disabled(isAddingPaste || pasteURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 .listRowBackground(DromeTheme.elevated)
+            } header: {
+                Text("Paste for download")
+            } footer: {
+                Text("Paste a Spotify playlist URL (or several track links). Tracks you already own are skipped; the rest queue for download into Navidrome.")
+            }
+
+            if let importBanner {
+                Section {
+                    Text(importBanner)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(DromeTheme.accent)
+                }
+                .listRowBackground(Color.clear)
             }
 
             if let error {
@@ -122,7 +154,7 @@ struct WishlistView: View {
             } else {
                 Section("Wishlist") {
                     if entries.isEmpty {
-                        Text("Nothing here yet. Search Spotify or paste a link above.")
+                        Text("Nothing here yet. Search Spotify or paste a playlist above.")
                             .foregroundStyle(DromeTheme.muted)
                             .listRowBackground(Color.clear)
                     }
@@ -373,17 +405,59 @@ struct WishlistView: View {
 
     private func addPaste() async {
         guard let client = session.wishlist else { return }
-        let url = pasteURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !url.isEmpty else { return }
+        let raw = pasteURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return }
         isAddingPaste = true
         error = nil
+        importBanner = nil
         defer { isAddingPaste = false }
         do {
-            try await applyAddResult(client.add(spotifyLink: url))
+            let links = Self.extractSpotifyLinks(from: raw)
+            let result: WishlistAddResult
+            if links.count > 1 {
+                result = try await client.add(spotifyLinks: links)
+            } else {
+                result = try await client.add(spotifyLink: links.first ?? raw)
+            }
+            try await applyAddResult(result)
             pasteURL = ""
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    private func pasteFromClipboard() {
+        guard let text = UIPasteboard.general.string?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else {
+            error = "Clipboard is empty."
+            return
+        }
+        pasteURL = text
+        error = nil
+    }
+
+    /// Pull Spotify URLs/URIs out of a clipboard dump (mirrors server extractor).
+    private static func extractSpotifyLinks(from raw: String) -> [String] {
+        let pattern = #"(?i)(?:https?://(?:open|play)\.spotify\.com/[^\s<>"']+|https?://spotify\.link/[^\s<>"']+|spotify:(?:track|album|playlist):[0-9A-Za-z]{15,40})"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return [raw]
+        }
+        let ns = raw as NSString
+        let matches = regex.matches(in: raw, range: NSRange(location: 0, length: ns.length))
+        var seen = Set<String>()
+        var out: [String] = []
+        for match in matches {
+            var link = ns.substring(with: match.range)
+            while let last = link.last, ".,);]}>'\"\n".contains(last) {
+                link.removeLast()
+            }
+            let key = link.lowercased()
+            if seen.insert(key).inserted {
+                out.append(link)
+            }
+        }
+        return out.isEmpty ? [raw] : out
     }
 
     private func applyAddResult(_ result: WishlistAddResult) async {
@@ -394,6 +468,8 @@ struct WishlistView: View {
             } else {
                 entries.insert(entry, at: 0)
             }
+            let label = entry.kind == "album" ? "Album" : "Track"
+            importBanner = "\(label) queued: \(entry.title)"
         case .playlist(let imported):
             for entry in imported.entries.reversed() {
                 if let idx = entries.firstIndex(where: { $0.id == entry.id }) {
@@ -402,12 +478,30 @@ struct WishlistView: View {
                     entries.insert(entry, at: 0)
                 }
             }
+            let name = imported.playlistName ?? imported.sourcePlaylistName
+            var parts: [String] = []
+            if let name, !name.isEmpty {
+                parts.append("Imported “\(name)”")
+            } else {
+                parts.append("Imported links")
+            }
+            parts.append("added \(imported.added)")
+            if imported.skippedOwned > 0 {
+                parts.append("skipped \(imported.skippedOwned) already owned")
+            }
+            if let failed = imported.failed, !failed.isEmpty {
+                parts.append("\(failed.count) failed")
+            }
+            importBanner = parts.joined(separator: " · ")
+
             if imported.added == 0 && imported.skippedOwned > 0 {
                 error = "All \(imported.skippedOwned) tracks already look like they’re in your library."
-            } else if imported.skippedOwned > 0 {
-                error = "Added \(imported.added); skipped \(imported.skippedOwned) already owned."
+            } else {
+                error = nil
             }
-            groupByPlaylist = true
+            if imported.added > 0 || (imported.sourcePlaylistId?.isEmpty == false) {
+                groupByPlaylist = true
+            }
         }
     }
 

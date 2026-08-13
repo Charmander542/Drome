@@ -56,4 +56,22 @@ enum LibrarySortLetter {
         if rhs == "#" { return true }
         return lhs.localizedStandardCompare(rhs) == .orderedAscending
     }
+
+    /// Full scrubber index — always A–Z/# even while the catalog is still filling.
+    static let scrubberLetters: [String] =
+        (65...90).map { String(UnicodeScalar($0)!) } + ["#"]
+
+    /// Pick the best existing section for a scrubber letter. Exact match wins;
+    /// otherwise the next letter at or after `wanted`, else the previous one.
+    /// Never returns nil when `letters` is non-empty.
+    static func nearestSectionLetter(_ wanted: String, in letters: [String]) -> String? {
+        guard !letters.isEmpty else { return nil }
+        if letters.contains(wanted) { return wanted }
+
+        let ordered = letters.sorted(by: sectionLetterSort)
+        if let next = ordered.first(where: { sectionLetterSort(wanted, $0) }) {
+            return next
+        }
+        return ordered.last
+    }
 }

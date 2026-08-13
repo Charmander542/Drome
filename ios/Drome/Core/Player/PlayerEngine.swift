@@ -33,8 +33,15 @@ final class PlayerEngine: ObservableObject {
         didSet { resyncUpcomingWindow() }
     }
     @Published var shuffleMode: ShuffleMode = .off {
-        didSet { guard oldValue != shuffleMode else { return }; reorderContextForShuffleChange() }
+        didSet {
+            guard oldValue != shuffleMode, !suppressShuffleReorder else { return }
+            reorderContextForShuffleChange()
+            persistSessionSoon()
+        }
     }
+    /// When true, assigning `shuffleMode` does not reshuffle the existing queue
+    /// (used when starting a fresh Play or restoring a saved session).
+    private var suppressShuffleReorder = false
     @Published var autoplayEnabled: Bool = UserDefaults.standard.object(forKey: "drome.autoplay") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(autoplayEnabled, forKey: "drome.autoplay")
@@ -75,6 +82,12 @@ final class PlayerEngine: ObservableObject {
     private let rotation: RotationManager
     private let downloads: DownloadManager
     private let nowPlaying = NowPlayingCenter()
+    private var sessionStore: PlaybackSessionStore?
+    private var persistTask: Task<Void, Never>?
+    /// Snapshots of queues displaced by an accidental `play` / `playShuffled`.
+    /// Art-swipe previous restores these when in-queue history is empty.
+    private var sessionUndoStack: [PlaybackSessionSnapshot] = []
+    private let maxSessionUndo = 8
 
     // MARK: Init
 
@@ -92,7 +105,23 @@ final class PlayerEngine: ObservableObject {
         configureAudioSession()
         configureRemoteCommands()
         observePlayer()
+        observeAppLifecycle()
         lastAirPlayActive = isAirPlayRouteActive
+    }
+
+    /// Wire per-account persistence for Recently Played + cold-start resume.
+    func attachSessionStore(_ store: PlaybackSessionStore) {
+        sessionStore = store
+    }
+
+    /// Rebuild the last listening session after launch (paused) so the mini
+    /// player can offer Continue without auto-playing.
+    @discardableResult
+    func restorePersistedSessionIfNeeded() -> Bool {
+        guard current == nil else { return false }
+        guard let snap = sessionStore?.latest() else { return false }
+        restore(snap, seeking: true, startPlaying: false, recordPlay: false)
+        return true
     }
 
     /// Rebuild current item when AirPlay turns on/off so FLAC raw ↔ MP3.
@@ -126,35 +155,37 @@ final class PlayerEngine: ObservableObject {
 
     // MARK: - Public API: starting playback
 
-    /// Play a collection starting at the tapped index. With shuffle on, the
-    /// remaining tracks are reordered by the active shuffle mode.
+    /// Play a collection starting at the tapped index, always in order
+    /// (Play turns shuffle off; use `playShuffled` for shuffle).
     func play(_ songs: [Song], startAt index: Int = 0, context: PlaybackContext) {
         guard songs.indices.contains(index) else { return }
+        pushSessionUndoIfNeeded()
         cancelAutoplayWork()
         ratings.ingest(songs)
+        if shuffleMode != .off {
+            suppressShuffleReorder = true
+            shuffleMode = .off
+            suppressShuffleReorder = false
+        }
         self.context = context
         fullContextSongs = songs
 
         let startSong = songs[index]
-        var rest = Array(songs[(index + 1)...])
-        if shuffleMode != .off {
-            rest = orderedForShuffle(Array(songs[..<index]) + rest)
-        }
         originalContextOrder = Array(songs[(index + 1)...]).map { QueueItem(song: $0) }
-        contextQueue = shuffleMode == .off
-            ? originalContextOrder
-            : rest.map { QueueItem(song: $0) }
+        contextQueue = originalContextOrder
         userQueue.removeAll()
         history.removeAll()
         // Direct user tap — always honor the chosen track even if low-rated.
         setCurrent(QueueItem(song: startSong), startPlaying: true, allowLowRated: true)
         ensureAutoplayBuffer()
+        persistSessionSoon()
     }
 
     /// Shuffle-button entry point: enables shuffle (smart by default) and
     /// picks the opening track from the weighted pool too.
     func playShuffled(_ songs: [Song], context: PlaybackContext) {
         guard !songs.isEmpty else { return }
+        pushSessionUndoIfNeeded()
         cancelAutoplayWork()
         ratings.ingest(songs)
         if shuffleMode == .off { shuffleMode = .smart }
@@ -164,7 +195,18 @@ final class PlayerEngine: ObservableObject {
         let pool = orderedForShuffle(songs)
         guard let first = pool.first else {
             // Everything was excluded (e.g. all out of rotation): play as-is.
-            play(songs, startAt: 0, context: context)
+            // Undo already pushed; nested play would double-push — skip.
+            self.context = context
+            fullContextSongs = songs
+            originalContextOrder = Array(songs.dropFirst()).map { QueueItem(song: $0) }
+            contextQueue = originalContextOrder
+            userQueue.removeAll()
+            history.removeAll()
+            if let song = songs.first {
+                setCurrent(QueueItem(song: song), startPlaying: true, allowLowRated: true)
+            }
+            ensureAutoplayBuffer()
+            persistSessionSoon()
             return
         }
         originalContextOrder = songs.filter { $0.id != first.id }.map { QueueItem(song: $0) }
@@ -173,6 +215,72 @@ final class PlayerEngine: ObservableObject {
         history.removeAll()
         setCurrent(QueueItem(song: first), startPlaying: true, allowLowRated: true)
         ensureAutoplayBuffer()
+        persistSessionSoon()
+    }
+
+    /// Restore a previously saved listening session (queue + shuffle + position).
+    @discardableResult
+    func resumeSession(forKey key: String) -> Bool {
+        guard let snap = sessionStore?.snapshot(forResumeKey: key) else { return false }
+        restore(snap, seeking: true, startPlaying: true, recordPlay: true)
+        return true
+    }
+
+    /// Resume the most recently persisted session and start playing.
+    @discardableResult
+    func resumeLatestSession() -> Bool {
+        guard let snap = sessionStore?.latest() else { return false }
+        restore(snap, seeking: true, startPlaying: true, recordPlay: true)
+        return true
+    }
+
+    private func restore(_ snap: PlaybackSessionSnapshot,
+                         seeking: Bool = true,
+                         startPlaying: Bool = true,
+                         recordPlay: Bool = true) {
+        cancelAutoplayWork()
+        ratings.ingest(snap.fullContextSongs + [snap.currentSong]
+                       + snap.history + snap.userQueue + snap.contextQueue)
+        suppressShuffleReorder = true
+        shuffleMode = ShuffleMode(rawValue: snap.shuffleMode) ?? .off
+        suppressShuffleReorder = false
+        switch snap.repeatMode {
+        case "all": repeatMode = .all
+        case "one": repeatMode = .one
+        default: repeatMode = .off
+        }
+        autoplayEnabled = snap.autoplayEnabled
+        context = snap.makeContext()
+        fullContextSongs = snap.fullContextSongs
+        history = snap.history.map { QueueItem(song: $0) }
+        userQueue = snap.userQueue.map { QueueItem(song: $0) }
+        contextQueue = snap.contextQueue.map { QueueItem(song: $0) }
+        originalContextOrder = snap.originalContextOrder.map { QueueItem(song: $0) }
+        setCurrent(QueueItem(song: snap.currentSong),
+                   startPlaying: startPlaying,
+                   allowLowRated: true,
+                   recordPlay: recordPlay)
+        if seeking, snap.elapsed > 0.5 {
+            // Paint the mini-player progress immediately; AV seek catches up.
+            setPlayhead(elapsed: snap.elapsed)
+            seek(to: snap.elapsed)
+        }
+        ensureAutoplayBuffer()
+        persistSessionSoon()
+    }
+
+    private func persistSessionSoon() {
+        persistTask?.cancel()
+        persistTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            persistSessionNow()
+        }
+    }
+
+    private func persistSessionNow() {
+        guard let store = sessionStore, let snap = makeSessionSnapshot() else { return }
+        store.save(snap)
     }
 
     // MARK: - Public API: transport
@@ -184,10 +292,12 @@ final class PlayerEngine: ObservableObject {
     func resume() {
         activateAudioSession()
         player.play()
+        persistSessionSoon()
     }
 
     func pause() {
         player.pause()
+        persistSessionNow()
     }
 
     func next() {
@@ -228,14 +338,104 @@ final class PlayerEngine: ObservableObject {
             return
         }
         // Art-swipe / explicit "go back": always the last played song — never restart.
-        guard let prev = history.popLast() else {
-            if !preferPreviousTrack { seek(to: 0) }
+        if let prev = history.popLast() {
+            if let current {
+                contextQueue.insert(current, at: 0)
+            }
+            setCurrent(prev, startPlaying: true)
             return
         }
-        if let current {
-            contextQueue.insert(current, at: 0)
+        // Accidental Play replaced the queue — restore the displaced session.
+        if restoreUndoneSession() { return }
+        if !preferPreviousTrack { seek(to: 0) }
+    }
+
+    /// Art-swipe advance: exactly one step to the peeked neighbor, no low-rated
+    /// drain / auto-skip (those would land on a different song than the cover).
+    func advanceFromArtSwipe(goingNext: Bool) {
+        if goingNext {
+            guard let upNext = peekUpcoming(limit: 1).first else { return }
+            cancelAutoplayWork()
+            if let current {
+                history.append(current)
+                scrobbleSubmission(current.song)
+            }
+            consumeFromQueues(upNext)
+            // Force the setCurrent path (not AVQueuePlayer.advance) so we don't
+            // hit handleCurrentItemChange's async low-rated skip.
+            setCurrent(upNext, startPlaying: true, allowLowRated: true)
+            ensureAutoplayBuffer()
+        } else {
+            previous(preferPreviousTrack: true)
         }
-        setCurrent(prev, startPlaying: true)
+    }
+
+    /// Song behind the current cover (in-queue history, else undone session).
+    var artSwipePreviousSong: Song? {
+        if let song = history.last?.song { return song }
+        return sessionUndoStack.last?.currentSong
+    }
+
+    /// Song ahead of the current cover in Up Next.
+    var artSwipeNextSong: Song? {
+        peekUpcoming(limit: 1).first?.song
+    }
+
+    /// True when swipe-back can restore either history or a displaced queue.
+    var canArtSwipePrevious: Bool {
+        !history.isEmpty || !sessionUndoStack.isEmpty
+    }
+
+    var canArtSwipeNext: Bool {
+        !peekUpcoming(limit: 1).isEmpty
+    }
+
+    private func pushSessionUndoIfNeeded() {
+        guard let snap = makeSessionSnapshot() else { return }
+        // Don't stack identical consecutive snapshots.
+        if let last = sessionUndoStack.last,
+           last.currentSong.id == snap.currentSong.id,
+           last.resumeKey == snap.resumeKey,
+           last.contextQueue.map(\.id) == snap.contextQueue.map(\.id) {
+            return
+        }
+        sessionUndoStack.append(snap)
+        if sessionUndoStack.count > maxSessionUndo {
+            sessionUndoStack.removeFirst(sessionUndoStack.count - maxSessionUndo)
+        }
+    }
+
+    @discardableResult
+    private func restoreUndoneSession() -> Bool {
+        guard let snap = sessionUndoStack.popLast() else { return false }
+        restore(snap, seeking: true)
+        return true
+    }
+
+    private func makeSessionSnapshot() -> PlaybackSessionSnapshot? {
+        guard let current, let context else { return nil }
+        return PlaybackSessionSnapshot(
+            resumeKey: context.resumeKey(fallbackSong: current.song),
+            label: context.label,
+            kind: context.kind,
+            currentSong: current.song,
+            elapsed: accurateElapsed(),
+            shuffleMode: shuffleMode.rawValue,
+            repeatMode: {
+                switch repeatMode {
+                case .off: return "off"
+                case .all: return "all"
+                case .one: return "one"
+                }
+            }(),
+            autoplayEnabled: autoplayEnabled,
+            history: history.map(\.song),
+            userQueue: userQueue.map(\.song),
+            contextQueue: contextQueue.map(\.song),
+            originalContextOrder: originalContextOrder.map(\.song),
+            fullContextSongs: fullContextSongs,
+            updatedAt: Date().timeIntervalSince1970
+        )
     }
 
     func seek(to time: TimeInterval) {
@@ -412,19 +612,27 @@ final class PlayerEngine: ObservableObject {
 
     /// - Parameter allowLowRated: When true (direct user selection), never
     ///   auto-skip 1–2★ tracks. Skip only applies to programmatic advancement.
-    private func setCurrent(_ item: QueueItem, startPlaying: Bool, allowLowRated: Bool = false) {
+    /// - Parameter recordPlay: When false (cold-start restore), skip scrobble /
+    ///   recent-play writes until the user actually presses play.
+    private func setCurrent(_ item: QueueItem,
+                            startPlaying: Bool,
+                            allowLowRated: Bool = false,
+                            recordPlay: Bool = true) {
         current = item
         setPlayhead(elapsed: 0, duration: TimeInterval(item.song.duration ?? 0))
         rebuildWindow(startPlaying: startPlaying)
-        scrobbleNowPlaying(item.song)
         loadArtwork(for: item.song)
-        onTrackStarted?(item.song)
+        if recordPlay {
+            scrobbleNowPlaying(item.song)
+            onTrackStarted?(item.song)
+        }
         if !allowLowRated, shouldSkipLowRated(item.song), peekUpcoming(limit: 1) != nil {
             // Advance past globally-skipped low ratings without stalling.
             DispatchQueue.main.async { [weak self] in self?.next() }
         } else {
             ensureAutoplayBuffer()
         }
+        persistSessionSoon()
     }
 
     private var isAirPlayRouteActive: Bool {
@@ -541,6 +749,24 @@ final class PlayerEngine: ObservableObject {
         } else if let idx = contextQueue.firstIndex(where: { $0.id == item.id }) {
             contextQueue.remove(at: idx)
         }
+    }
+
+    // MARK: - App lifecycle
+
+    private func observeAppLifecycle() {
+        NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.persistSessionNow()
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.persistSessionNow()
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Player observation
@@ -945,16 +1171,44 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func loadArtwork(for song: Song) {
-        let coverId = song.coverArt ?? song.albumId ?? song.id
-        let url = downloads.localCoverURL(coverId: coverId)
-            ?? client.coverArtURL(id: coverId)
-        guard let url else {
-            nowPlaying.setArtwork(nil, songID: nil)
+        // Clear stale art immediately so CarPlay doesn't keep the previous
+        // track's tile while the next cover loads.
+        nowPlaying.setArtwork(nil, songID: nil)
+        pushNowPlayingInfo()
+
+        let candidates = [
+            song.coverArt,
+            song.albumId,
+            song.id,
+        ].compactMap { $0 }.filter { !$0.isEmpty }
+
+        // Prefer a local download cover, then a large remote fetch — CarPlay's
+        // foreground album tile needs more than a tiny list thumbnail.
+        let localURL: URL? = candidates.lazy
+            .compactMap { self.downloads.localCoverURL(coverId: $0) }
+            .first
+        let remoteURL: URL? = candidates.lazy
+            .compactMap { self.client.coverArtURL(id: $0, size: 1200) }
+            .first
+        guard let url = localURL ?? remoteURL else { return }
+
+        if let cached = ImageLoader.shared.cachedImage(for: url) {
+            nowPlaying.setArtwork(cached, songID: song.id)
+            pushNowPlayingInfo()
             return
         }
+
         Task { [weak self] in
-            let image = await ImageLoader.shared.image(for: url)
-            guard let self, self.current?.song.id == song.id else { return }
+            var image = await ImageLoader.shared.image(for: url)
+            // Fallback: try remaining cover ids if the first URL failed.
+            if image == nil {
+                for id in candidates.dropFirst() {
+                    guard let alt = self?.client.coverArtURL(id: id, size: 1200) else { continue }
+                    image = await ImageLoader.shared.image(for: alt)
+                    if image != nil { break }
+                }
+            }
+            guard let self, self.current?.song.id == song.id, let image else { return }
             self.nowPlaying.setArtwork(image, songID: song.id)
             self.pushNowPlayingInfo()
         }

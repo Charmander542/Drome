@@ -46,6 +46,10 @@ final class CarPlaySceneDelegate: UIResponder,
     func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene,
                                   didConnect interfaceController: CPInterfaceController) {
         self.interfaceController = interfaceController
+        // List artwork must be rasterized for the *car* display scale.
+        let scale = interfaceController.carTraitCollection.displayScale
+        CarPlayArtwork.carDisplayScale = scale > 0 ? scale : 2.0
+        CarPlayArtwork.prepare()
         sessionConfiguration = CPSessionConfiguration(delegate: self)
         configureNowPlayingTemplate()
         rebuildRoot()
@@ -312,7 +316,12 @@ final class CarPlaySceneDelegate: UIResponder,
             albumItem.accessoryType = .disclosureIndicator
             albumItem.handler = { [weak self] _, completion in
                 Task {
-                    await self?.showAlbum(id: albumId, name: albumName, session: session)
+                    await self?.showAlbum(
+                        id: albumId,
+                        name: albumName,
+                        session: session,
+                        coverArt: song.coverArt,
+                        artist: song.artist)
                     completion()
                 }
             }
@@ -413,6 +422,11 @@ final class CarPlaySceneDelegate: UIResponder,
                 ])]
             }
             template.updateSections(sections)
+            CarPlayArtwork.prefetch(
+                ids: frequent.map { $0.coverArt ?? $0.id }
+                    + newest.map { $0.coverArt ?? $0.id }
+                    + ranked.prefix(12).map { $0.coverArt ?? $0.id },
+                session: session)
         }
         return template
     }
@@ -441,7 +455,12 @@ final class CarPlaySceneDelegate: UIResponder,
             item.accessoryType = .disclosureIndicator
             item.handler = { [weak self] _, completion in
                 Task {
-                    await self?.showAlbum(id: id, name: name, session: session)
+                    await self?.showAlbum(
+                        id: id,
+                        name: name,
+                        session: session,
+                        coverArt: cover.coverArt,
+                        artist: cover.artist)
                     completion()
                 }
             }
@@ -456,7 +475,8 @@ final class CarPlaySceneDelegate: UIResponder,
             item.accessoryType = .disclosureIndicator
             item.handler = { [weak self] _, completion in
                 Task {
-                    await self?.showPlaylist(id: id, name: name, session: session)
+                    await self?.showPlaylist(
+                        id: id, name: name, coverArt: cover.coverArt, session: session)
                     completion()
                 }
             }
@@ -683,57 +703,12 @@ final class CarPlaySceneDelegate: UIResponder,
         searchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 200_000_000)
             guard !Task.isCancelled, let self else { return }
-            let result = try? await session.client.search(
-                trimmed, artistCount: 10, albumCount: 12, songCount: 30)
+            let result = (try? await session.client.search(
+                trimmed, artistCount: 12, albumCount: 12, songCount: 24))
+                ?? SearchResult3(artist: nil, album: nil, song: nil)
             guard !Task.isCancelled else { return }
-
-            var sections: [CPListSection] = []
-            self.searchSongs = [:]
-            self.searchAlbums = [:]
-            self.searchArtists = [:]
-
-            let songs = result?.song ?? []
-            if !songs.isEmpty {
-                for song in songs { self.searchSongs[song.id] = song }
-                sections.append(CPListSection(
-                    items: self.songItems(songs, label: trimmed, kind: .search, session: session),
-                    header: "Songs",
-                    sectionIndexTitle: nil))
-            }
-            let albums = result?.album ?? []
-            if !albums.isEmpty {
-                sections.append(CPListSection(
-                    items: self.albumItems(albums, session: session),
-                    header: "Albums",
-                    sectionIndexTitle: nil))
-            }
-            let artists = Self.artistsWithEmptyAlbumsLast(result?.artist ?? [])
-            if !artists.isEmpty {
-                let items: [CPListItem] = artists.map { artist in
-                    self.searchArtists[artist.id] = artist
-                    let item = CPListItem(
-                        text: artist.name,
-                        detailText: artist.albumCount.map { "\($0) albums" })
-                    item.accessoryType = .disclosureIndicator
-                    item.handler = { [weak self] _, completion in
-                        Task {
-                            await self?.showArtist(
-                                id: artist.id, name: artist.name, session: session)
-                            completion()
-                        }
-                    }
-                    return item
-                }
-                sections.append(CPListSection(
-                    items: items, header: "Artists", sectionIndexTitle: nil))
-            }
-
-            if sections.isEmpty {
-                sections = [CPListSection(items: [
-                    CPListItem(text: "No results", detailText: "“\(trimmed)”")
-                ])]
-            }
-            list.updateSections(sections)
+            list.updateSections(self.makeSearchSections(
+                from: result, query: trimmed, session: session))
         }
     }
 
@@ -773,55 +748,33 @@ final class CarPlaySceneDelegate: UIResponder,
         searchTask?.cancel()
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard query.count >= 1, let session = AppEnvironment.shared?.session else {
+            searchSongs = [:]; searchAlbums = [:]; searchArtists = [:]
             completionHandler([])
             return
         }
 
         searchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 220_000_000)
-            guard !Task.isCancelled else { return }
-            let result = try? await session.client.search(
-                query, artistCount: 10, albumCount: 12, songCount: 30)
-            guard !Task.isCancelled, let self else { return }
-
-            var items: [CPListItem] = []
-            self.searchSongs = [:]
-            self.searchAlbums = [:]
-            self.searchArtists = [:]
-
-            for song in result?.song ?? [] {
-                self.searchSongs[song.id] = song
-                let item = self.listItem(
-                    text: song.title,
-                    detail: song.displayArtist,
-                    coverArt: song.coverArt,
-                    fallbackId: song.albumId ?? song.id,
-                    session: session)
-                item.userInfo = ["kind": "song", "id": song.id]
-                items.append(item)
+            guard let self else {
+                completionHandler([])
+                return
             }
-            for album in result?.album ?? [] {
-                self.searchAlbums[album.id] = album
-                let item = self.listItem(
-                    text: album.name,
-                    detail: album.artist,
-                    coverArt: album.coverArt,
-                    fallbackId: album.id,
-                    session: session)
-                item.accessoryType = .disclosureIndicator
-                item.userInfo = ["kind": "album", "id": album.id]
-                items.append(item)
-            }
-            for artist in Self.artistsWithEmptyAlbumsLast(result?.artist ?? []) {
-                self.searchArtists[artist.id] = artist
-                let item = CPListItem(
-                    text: artist.name,
-                    detailText: artist.albumCount.map { "\($0) albums" })
-                item.accessoryType = .disclosureIndicator
-                item.userInfo = ["kind": "artist", "id": artist.id]
-                items.append(item)
+            if Task.isCancelled {
+                completionHandler([])
+                return
             }
 
+            let result = (try? await session.client.search(
+                query, artistCount: 8, albumCount: 8, songCount: 12))
+                ?? SearchResult3(artist: nil, album: nil, song: nil)
+            guard !Task.isCancelled else {
+                completionHandler([])
+                return
+            }
+
+            // CPSearchTemplate is a flat list and only keeps a short prefix —
+            // put artists/albums first so they aren't buried under songs.
+            let items = self.makeFlatSearchItems(from: result, session: session, limit: 20)
             completionHandler(items)
         }
     }
@@ -829,9 +782,12 @@ final class CarPlaySceneDelegate: UIResponder,
     func searchTemplate(_ searchTemplate: CPSearchTemplate,
                         selectedResult item: CPListItem,
                         completionHandler: @escaping () -> Void) {
-        guard let session = AppEnvironment.shared?.session,
-              let info = item.userInfo as? [String: String],
-              let kind = info["kind"], let id = info["id"] else {
+        guard let session = AppEnvironment.shared?.session else {
+            completionHandler()
+            return
+        }
+        let info = Self.searchUserInfo(from: item)
+        guard let kind = info["kind"], let id = info["id"] else {
             completionHandler()
             return
         }
@@ -844,15 +800,172 @@ final class CarPlaySceneDelegate: UIResponder,
                 }
             case "album":
                 let name = self?.searchAlbums[id]?.name ?? "Album"
-                await self?.showAlbum(id: id, name: name, session: session)
+                await self?.showAlbum(
+                    id: id,
+                    name: name,
+                    session: session,
+                    coverArt: self?.searchAlbums[id]?.coverArt,
+                    artist: self?.searchAlbums[id]?.artist,
+                    year: self?.searchAlbums[id]?.year,
+                    songCount: self?.searchAlbums[id]?.songCount)
             case "artist":
                 let name = self?.searchArtists[id]?.name ?? "Artist"
-                await self?.showArtist(id: id, name: name, session: session)
+                await self?.showArtist(
+                    id: id,
+                    name: name,
+                    session: session,
+                    coverArt: self?.searchArtists[id]?.coverArt)
             default:
                 break
             }
             completionHandler()
         }
+    }
+
+    /// `userInfo` comes back as NSDictionary / [String: Any] — never cast straight to `[String: String]`.
+    private static func searchUserInfo(from item: CPListItem) -> [String: String] {
+        guard let raw = item.userInfo as? [AnyHashable: Any] else { return [:] }
+        var out: [String: String] = [:]
+        for (key, value) in raw {
+            guard let key = key as? String else { continue }
+            if let string = value as? String {
+                out[key] = string
+            } else {
+                out[key] = "\(value)"
+            }
+        }
+        return out
+    }
+
+    /// Flat results for `CPSearchTemplate` — artists & albums before songs, hard cap.
+    private func makeFlatSearchItems(
+        from result: SearchResult3,
+        session: AppSession,
+        limit: Int
+    ) -> [CPListItem] {
+        searchSongs = [:]
+        searchAlbums = [:]
+        searchArtists = [:]
+
+        var items: [CPListItem] = []
+        let artists = Self.artistsWithEmptyAlbumsLast(result.artists)
+        let albums = result.albums
+        let songs = result.songs
+
+        for artist in artists {
+            guard items.count < limit else { break }
+            searchArtists[artist.id] = artist
+            let item = listItem(
+                text: artist.name,
+                detail: artist.albumCount.map { "Artist · \($0) albums" } ?? "Artist",
+                coverArt: artist.coverArt,
+                fallbackId: artist.id,
+                session: session,
+                style: .artist)
+            item.accessoryType = .disclosureIndicator
+            item.userInfo = ["kind": "artist", "id": artist.id]
+            items.append(item)
+        }
+        for album in albums {
+            guard items.count < limit else { break }
+            searchAlbums[album.id] = album
+            let detail = [album.artist, "Album"].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+            let item = listItem(
+                text: album.name,
+                detail: detail.isEmpty ? "Album" : detail,
+                coverArt: album.coverArt,
+                fallbackId: album.id,
+                session: session,
+                style: .album)
+            item.accessoryType = .disclosureIndicator
+            item.userInfo = ["kind": "album", "id": album.id]
+            items.append(item)
+        }
+        for song in songs {
+            guard items.count < limit else { break }
+            searchSongs[song.id] = song
+            let item = listItem(
+                text: song.title,
+                detail: song.displayArtist,
+                coverArt: song.coverArt,
+                fallbackId: song.albumId ?? song.id,
+                session: session,
+                style: .song)
+            item.userInfo = ["kind": "song", "id": song.id]
+            items.append(item)
+        }
+        return items
+    }
+
+    /// Sectioned results for list templates (mirrored phone / voice / letter pad).
+    private func makeSearchSections(
+        from result: SearchResult3,
+        query: String,
+        session: AppSession
+    ) -> [CPListSection] {
+        searchSongs = [:]
+        searchAlbums = [:]
+        searchArtists = [:]
+
+        var sections: [CPListSection] = []
+
+        let artists = Self.artistsWithEmptyAlbumsLast(result.artists)
+        if !artists.isEmpty {
+            let items: [CPListItem] = artists.map { artist in
+                searchArtists[artist.id] = artist
+                let item = listItem(
+                    text: artist.name,
+                    detail: artist.albumCount.map { "\($0) albums" } ?? "Artist",
+                    coverArt: artist.coverArt,
+                    fallbackId: artist.id,
+                    session: session,
+                    style: .artist)
+                item.accessoryType = .disclosureIndicator
+                item.handler = { [weak self] _, completion in
+                    Task {
+                        await self?.showArtist(
+                            id: artist.id,
+                            name: artist.name,
+                            session: session,
+                            coverArt: artist.coverArt)
+                        completion()
+                    }
+                }
+                return item
+            }
+            sections.append(CPListSection(items: items, header: "Artists", sectionIndexTitle: nil))
+        }
+
+        let albums = result.albums
+        if !albums.isEmpty {
+            for album in albums { searchAlbums[album.id] = album }
+            sections.append(CPListSection(
+                items: albumItems(albums, session: session),
+                header: "Albums",
+                sectionIndexTitle: nil))
+        }
+
+        let songs = result.songs
+        if !songs.isEmpty {
+            for song in songs { searchSongs[song.id] = song }
+            sections.append(CPListSection(
+                items: songItems(songs, label: query, kind: .search, session: session),
+                header: "Songs",
+                sectionIndexTitle: nil))
+        }
+
+        if sections.isEmpty {
+            sections = [CPListSection(items: [
+                CPListItem(text: "No results", detailText: "“\(query)”")
+            ])]
+        } else {
+            CarPlayArtwork.prefetch(
+                ids: (result.artists.map { $0.coverArt ?? $0.id }
+                      + result.albums.map { $0.coverArt ?? $0.id }
+                      + result.songs.prefix(12).map { $0.coverArt ?? $0.albumId ?? $0.id }),
+                session: session)
+        }
+        return sections
     }
 
     func searchTemplateSearchButtonPressed(_ searchTemplate: CPSearchTemplate) {
@@ -1093,51 +1206,10 @@ final class CarPlaySceneDelegate: UIResponder,
 
     private func showSearchResults(query: String, session: AppSession, title: String) async {
         guard let interfaceController else { return }
-        let result = try? await session.client.search(
-            query, artistCount: 12, albumCount: 12, songCount: 24)
-
-        var sections: [CPListSection] = []
-
-        let songs = result?.song ?? []
-        if !songs.isEmpty {
-            sections.append(CPListSection(
-                items: songItems(songs, label: query, kind: .search, session: session),
-                header: "Songs",
-                sectionIndexTitle: nil))
-        }
-
-        let albums = result?.album ?? []
-        if !albums.isEmpty {
-            sections.append(CPListSection(
-                items: albumItems(albums, session: session),
-                header: "Albums",
-                sectionIndexTitle: nil))
-        }
-
-        let artists = Self.artistsWithEmptyAlbumsLast(result?.artist ?? [])
-        if !artists.isEmpty {
-            let items: [CPListItem] = artists.map { artist in
-                let item = CPListItem(
-                    text: artist.name,
-                    detailText: artist.albumCount.map { "\($0) albums" })
-                item.accessoryType = .disclosureIndicator
-                item.handler = { [weak self] _, completion in
-                    Task {
-                        await self?.showArtist(id: artist.id, name: artist.name, session: session)
-                        completion()
-                    }
-                }
-                return item
-            }
-            sections.append(CPListSection(items: items, header: "Artists", sectionIndexTitle: nil))
-        }
-
-        if sections.isEmpty {
-            sections = [CPListSection(items: [
-                CPListItem(text: "No results", detailText: "Nothing matched “\(query)”")
-            ])]
-        }
-
+        let result = (try? await session.client.search(
+            query, artistCount: 12, albumCount: 12, songCount: 24))
+            ?? SearchResult3(artist: nil, album: nil, song: nil)
+        let sections = makeSearchSections(from: result, query: query, session: session)
         let list = CPListTemplate(title: title, sections: sections)
         interfaceController.pushTemplate(list, animated: true, completion: nil)
     }
@@ -1168,6 +1240,30 @@ final class CarPlaySceneDelegate: UIResponder,
                 completion()
             }
             shortcuts.append(downloads)
+
+            let artists = libraryShortcut(
+                title: "Artists",
+                detail: "Browse your artists",
+                systemImage: "person.2.fill")
+            artists.handler = { [weak self] _, completion in
+                Task {
+                    await self?.showArtistsBrowse(session: session)
+                    completion()
+                }
+            }
+            shortcuts.append(artists)
+
+            let albums = libraryShortcut(
+                title: "Albums",
+                detail: "Browse your albums",
+                systemImage: "square.stack.fill")
+            albums.handler = { [weak self] _, completion in
+                Task {
+                    await self?.showAlbumsBrowse(session: session)
+                    completion()
+                }
+            }
+            shortcuts.append(albums)
 
             let rated = libraryShortcut(
                 title: "Top Rated",
@@ -1386,7 +1482,8 @@ final class CarPlaySceneDelegate: UIResponder,
                 detail: playlist.songCount.map { "\($0) songs" } ?? "Playlist",
                 coverArt: playlist.coverArt,
                 fallbackId: playlist.id,
-                session: session)
+                session: session,
+                style: .playlist)
             item.accessoryType = .disclosureIndicator
             if session.downloads.isPlaylistFullyDownloaded(
                 playlistId: playlist.id, expectedCount: playlist.songCount ?? 0)
@@ -1395,7 +1492,11 @@ final class CarPlaySceneDelegate: UIResponder,
             }
             item.handler = { [weak self] _, completion in
                 Task {
-                    await self?.showPlaylist(id: playlist.id, name: playlist.name, session: session)
+                    await self?.showPlaylist(
+                        id: playlist.id,
+                        name: playlist.name,
+                        coverArt: playlist.coverArt,
+                        session: session)
                     completion()
                 }
             }
@@ -1404,17 +1505,30 @@ final class CarPlaySceneDelegate: UIResponder,
     }
 
     private func albumItems(_ albums: [Album], session: AppSession) -> [CPListItem] {
-        albums.map { album in
+        // Warm covers so the next page / this list fills in immediately.
+        CarPlayArtwork.prefetch(
+            ids: albums.map { $0.coverArt ?? $0.id },
+            session: session)
+
+        return albums.map { album in
             let item = listItem(
                 text: album.name,
                 detail: album.artist,
                 coverArt: album.coverArt,
                 fallbackId: album.id,
-                session: session)
+                session: session,
+                style: .album)
             item.accessoryType = .disclosureIndicator
             item.handler = { [weak self] _, completion in
                 Task {
-                    await self?.showAlbum(id: album.id, name: album.name, session: session)
+                    await self?.showAlbum(
+                        id: album.id,
+                        name: album.name,
+                        session: session,
+                        coverArt: album.coverArt,
+                        artist: album.artist,
+                        year: album.year,
+                        songCount: album.songCount)
                     completion()
                 }
             }
@@ -1424,13 +1538,18 @@ final class CarPlaySceneDelegate: UIResponder,
 
     private func songItems(_ songs: [Song], label: String,
                            kind: PlaybackContext.Kind, session: AppSession) -> [CPListItem] {
-        songs.enumerated().map { index, song in
+        CarPlayArtwork.prefetch(
+            ids: songs.prefix(24).map { $0.coverArt ?? $0.albumId ?? $0.id },
+            session: session)
+
+        return songs.enumerated().map { index, song in
             let item = listItem(
                 text: song.title,
                 detail: song.artist,
                 coverArt: song.coverArt,
                 fallbackId: song.albumId ?? song.id,
-                session: session)
+                session: session,
+                style: .song)
             item.handler = { [weak self] _, completion in
                 self?.playSongs(songs, startAt: index, label: label, kind: kind, session: session)
                 completion()
@@ -1439,23 +1558,600 @@ final class CarPlaySceneDelegate: UIResponder,
         }
     }
 
-    private func showPlaylist(id: String, name: String, session: AppSession) async {
+    private func showAlbum(
+        id: String,
+        name: String,
+        session: AppSession,
+        coverArt: String? = nil,
+        artist: String? = nil,
+        year: Int? = nil,
+        songCount: Int? = nil
+    ) async {
         guard let interfaceController else { return }
-        guard let playlist = try? await session.client.playlist(id: id) else { return }
+
+        let cached = LibraryDetailCache.album(id)
+        // Instant shell with artwork so the page never opens blank.
+        let shell = cached ?? AlbumWithSongs(
+            id: id,
+            name: name,
+            artist: artist,
+            artistId: nil,
+            coverArt: coverArt,
+            songCount: songCount,
+            duration: nil,
+            year: year,
+            genre: nil,
+            userRating: nil,
+            song: [])
+
+        let placeholder = CPListTemplate(
+            title: name,
+            sections: albumDetailSections(
+                album: shell,
+                fallbackName: name,
+                loading: cached == nil || (cached?.songs.isEmpty ?? true),
+                session: session))
+        interfaceController.pushTemplate(placeholder, animated: true, completion: nil)
+
+        // Prefetch the hero cover at CarPlay size right away.
+        CarPlayArtwork.prefetch(ids: [coverArt ?? id], session: session, limit: 1)
+
+        let album: AlbumWithSongs
+        if let fresh = try? await session.client.album(id: id) {
+            LibraryDetailCache.store(album: fresh)
+            album = fresh
+        } else if let cached {
+            album = cached
+        } else {
+            placeholder.updateSections([CPListSection(items: [
+                albumHeroItem(shell, session: session, loading: false, playable: false),
+                CPListItem(text: "Couldn't load album", detailText: "Try again when you’re parked")
+            ])])
+            return
+        }
+
+        placeholder.updateSections(albumDetailSections(
+            album: album, fallbackName: name, loading: false, session: session))
+    }
+
+    private func albumDetailSections(
+        album: AlbumWithSongs?,
+        fallbackName: String,
+        loading: Bool,
+        session: AppSession
+    ) -> [CPListSection] {
+        guard let album else {
+            let item = CPListItem(
+                text: loading ? fallbackName : "Album unavailable",
+                detailText: loading ? "Loading…" : nil)
+            CarPlayArtwork.attach(
+                to: item, coverArt: nil, fallbackId: nil, session: session, style: .album)
+            return [CPListSection(items: [item])]
+        }
+
+        let songs = album.songs
+        let kind = PlaybackContext.Kind.album(id: album.id)
+        var sections: [CPListSection] = []
+
+        var headerItems: [CPListItem] = [
+            albumHeroItem(album, session: session, loading: loading && songs.isEmpty, playable: !songs.isEmpty)
+        ]
+
+        if !songs.isEmpty {
+            let play = actionItem(
+                title: "Play",
+                detail: albumActionSubtitle(album),
+                systemImage: "play.fill",
+                coverArt: album.coverArt,
+                fallbackId: album.id,
+                session: session,
+                style: .album)
+            play.handler = { [weak self] _, completion in
+                self?.playSongs(songs, startAt: 0, label: album.name, kind: kind, session: session)
+                completion()
+            }
+            headerItems.append(play)
+
+            let shuffle = actionItem(
+                title: "Shuffle",
+                detail: "\(songs.count) songs",
+                systemImage: "shuffle")
+            shuffle.handler = { [weak self] _, completion in
+                session.player.playShuffled(
+                    songs, context: PlaybackContext(label: album.name, kind: kind))
+                self?.pushNowPlaying()
+                completion()
+            }
+            headerItems.append(shuffle)
+        } else if loading {
+            let loadingRow = CPListItem(text: "Loading tracks…", detailText: "Almost ready")
+            if let image = UIImage(systemName: "ellipsis") {
+                loadingRow.setImage(image)
+            }
+            headerItems.append(loadingRow)
+        }
+
+        if let artistId = album.artistId, !artistId.isEmpty,
+           let artistName = album.artist, !artistName.isEmpty {
+            let artist = actionItem(
+                title: artistName,
+                detail: "Go to artist",
+                systemImage: "person.fill")
+            artist.accessoryType = .disclosureIndicator
+            artist.handler = { [weak self] _, completion in
+                Task {
+                    await self?.showArtist(
+                        id: artistId, name: artistName, session: session)
+                    completion()
+                }
+            }
+            headerItems.append(artist)
+        }
+
+        sections.append(CPListSection(items: headerItems, header: nil, sectionIndexTitle: nil))
+
+        guard !songs.isEmpty else { return sections }
+
+        let discs = Dictionary(grouping: songs) { $0.discNumber ?? 1 }
+        let discKeys = discs.keys.sorted()
+        let multiDisc = discKeys.count > 1
+
+        for disc in discKeys {
+            let discSongs = (discs[disc] ?? []).sorted {
+                ($0.track ?? 0) < ($1.track ?? 0)
+            }
+            let header = multiDisc ? "Disc \(disc)" : "Tracks"
+            sections.append(CPListSection(
+                items: albumTrackItems(discSongs, album: album, session: session),
+                header: header,
+                sectionIndexTitle: nil))
+        }
+        return sections
+    }
+
+    private func albumHeroItem(
+        _ album: AlbumWithSongs,
+        session: AppSession,
+        loading: Bool,
+        playable: Bool
+    ) -> CPListItem {
+        var detailParts: [String] = []
+        if let artist = album.artist, !artist.isEmpty { detailParts.append(artist) }
+        if loading {
+            detailParts.append("Loading…")
+        } else {
+            let meta = albumActionSubtitle(album)
+            if meta != "Album" { detailParts.append(meta) }
+        }
+        let item = CPListItem(
+            text: album.name,
+            detailText: detailParts.isEmpty ? "Album" : detailParts.joined(separator: " · "))
+        CarPlayArtwork.attach(
+            to: item,
+            coverArt: album.coverArt,
+            fallbackId: album.id,
+            session: session,
+            style: .album)
+        if playable, !album.songs.isEmpty {
+            let songs = album.songs
+            let kind = PlaybackContext.Kind.album(id: album.id)
+            item.handler = { [weak self] _, completion in
+                self?.playSongs(songs, startAt: 0, label: album.name, kind: kind, session: session)
+                completion()
+            }
+        }
+        return item
+    }
+
+    private func albumActionSubtitle(_ album: AlbumWithSongs) -> String {
+        var parts: [String] = []
+        if !album.songs.isEmpty {
+            parts.append("\(album.songs.count) song\(album.songs.count == 1 ? "" : "s")")
+        } else if let count = album.songCount, count > 0 {
+            parts.append("\(count) songs")
+        }
+        if let year = album.year { parts.append(String(year)) }
+        if let genre = album.genre, !genre.isEmpty { parts.append(genre) }
+        return parts.isEmpty ? "Album" : parts.joined(separator: " · ")
+    }
+
+    private func albumTrackItems(
+        _ songs: [Song],
+        album: AlbumWithSongs,
+        session: AppSession
+    ) -> [CPListItem] {
+        let kind = PlaybackContext.Kind.album(id: album.id)
+        return songs.enumerated().map { index, song in
+            let trackNo = song.track.map(String.init) ?? "\(index + 1)"
+            let detailParts = [song.durationText].filter { !$0.isEmpty && $0 != "0:00" }
+            let item = CPListItem(
+                text: song.title,
+                detailText: detailParts.isEmpty ? trackNo : "\(trackNo) · \(detailParts.joined())")
+            // Album page: track numbers stay glanceable; hero carries the cover.
+            item.handler = { [weak self] _, completion in
+                self?.playSongs(
+                    album.songs, startAt: album.songs.firstIndex(where: { $0.id == song.id }) ?? index,
+                    label: album.name, kind: kind, session: session)
+                completion()
+            }
+            return item
+        }
+    }
+
+    private func showArtist(
+        id: String,
+        name: String,
+        session: AppSession,
+        coverArt: String? = nil
+    ) async {
+        guard let interfaceController else { return }
+
+        let cached = LibraryDetailCache.artist(id)
+        let shellArtist = cached?.artist ?? ArtistWithAlbums(
+            id: id,
+            name: name,
+            coverArt: coverArt,
+            artistImageUrl: nil,
+            albumCount: nil,
+            album: nil)
+
+        let placeholder = CPListTemplate(
+            title: name,
+            sections: artistDetailSections(
+                artist: shellArtist,
+                topSongs: cached?.topSongs ?? [],
+                fallbackName: name,
+                loading: cached == nil,
+                session: session))
+        interfaceController.pushTemplate(placeholder, animated: true, completion: nil)
+        CarPlayArtwork.prefetch(ids: [coverArt ?? id], session: session, limit: 1)
+
+        async let artistTask = session.client.artist(id: id)
+        async let topTask = session.client.topSongs(artistName: name, count: 20)
+
+        let artist = try? await artistTask
+        let topSongs = (try? await topTask) ?? []
+
+        if let artist {
+            LibraryDetailCache.store(artist: artist, topSongs: topSongs, owned: cached?.owned ?? [])
+            placeholder.updateSections(artistDetailSections(
+                artist: artist,
+                topSongs: topSongs,
+                fallbackName: name,
+                loading: false,
+                session: session))
+            CarPlayArtwork.prefetch(
+                ids: artist.albums.map { $0.coverArt ?? $0.id },
+                session: session)
+        } else if cached == nil {
+            placeholder.updateSections([CPListSection(items: [
+                artistHeroItem(shellArtist, session: session, loading: false),
+                CPListItem(text: "Couldn't load artist", detailText: "Try again when you’re parked")
+            ])])
+        } else if !topSongs.isEmpty {
+            LibraryDetailCache.store(
+                artist: cached!.artist, topSongs: topSongs, owned: cached?.owned ?? [])
+            placeholder.updateSections(artistDetailSections(
+                artist: cached?.artist,
+                topSongs: topSongs,
+                fallbackName: name,
+                loading: false,
+                session: session))
+        }
+    }
+
+    private func artistDetailSections(
+        artist: ArtistWithAlbums?,
+        topSongs: [Song],
+        fallbackName: String,
+        loading: Bool,
+        session: AppSession
+    ) -> [CPListSection] {
+        let artistId = artist?.id
+        let artistName = artist?.name ?? fallbackName
+        let albums = artist?.albums ?? []
+        let popular = Array(topSongs.prefix(8))
+        let kind: PlaybackContext.Kind = artistId.map { .artist(id: $0) } ?? .mix
+
+        var sections: [CPListSection] = []
+        var headerItems: [CPListItem] = []
+
+        if let artist {
+            headerItems.append(artistHeroItem(artist, session: session, loading: loading && popular.isEmpty && albums.isEmpty))
+        }
+
+        if !popular.isEmpty {
+            let play = actionItem(
+                title: "Play Popular",
+                detail: "\(popular.count) songs",
+                systemImage: "play.fill",
+                coverArt: popular.first?.coverArt,
+                fallbackId: popular.first?.albumId ?? popular.first?.id,
+                session: session,
+                style: .song)
+            play.handler = { [weak self] _, completion in
+                self?.playSongs(popular, startAt: 0, label: artistName, kind: kind, session: session)
+                completion()
+            }
+            headerItems.append(play)
+
+            let shuffle = actionItem(
+                title: "Shuffle Popular",
+                detail: nil,
+                systemImage: "shuffle")
+            shuffle.handler = { [weak self] _, completion in
+                session.player.playShuffled(
+                    popular, context: PlaybackContext(label: artistName, kind: kind))
+                self?.pushNowPlaying()
+                completion()
+            }
+            headerItems.append(shuffle)
+        } else if loading {
+            let loadingRow = CPListItem(text: "Loading…", detailText: "Popular songs & albums")
+            if let image = UIImage(systemName: "ellipsis") {
+                loadingRow.setImage(image)
+            }
+            headerItems.append(loadingRow)
+        } else if !albums.isEmpty {
+            let browse = actionItem(
+                title: "\(albums.count) albums",
+                detail: "In your library",
+                systemImage: "square.stack.fill")
+            browse.handler = { _, completion in completion() }
+            headerItems.append(browse)
+        }
+
+        if headerItems.isEmpty {
+            headerItems = [CPListItem(text: "Nothing found", detailText: "No songs or albums yet")]
+        }
+        sections.append(CPListSection(items: headerItems, header: nil, sectionIndexTitle: nil))
+
+        if !popular.isEmpty {
+            let items = popular.enumerated().map { index, song -> CPListItem in
+                let item = listItem(
+                    text: song.title,
+                    detail: song.album,
+                    coverArt: song.coverArt,
+                    fallbackId: song.albumId ?? song.id,
+                    session: session,
+                    style: .song)
+                item.handler = { [weak self] _, completion in
+                    self?.playSongs(popular, startAt: index, label: artistName, kind: kind, session: session)
+                    completion()
+                }
+                return item
+            }
+            sections.append(CPListSection(items: items, header: "Popular", sectionIndexTitle: nil))
+        }
+
+        if !albums.isEmpty {
+            let sorted = albums.sorted { lhs, rhs in
+                let ly = lhs.year ?? 0
+                let ry = rhs.year ?? 0
+                if ly != ry { return ly > ry }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+            sections.append(CPListSection(
+                items: artistAlbumItems(sorted, session: session),
+                header: "Albums",
+                sectionIndexTitle: nil))
+        }
+
+        return sections
+    }
+
+    private func artistHeroItem(
+        _ artist: ArtistWithAlbums,
+        session: AppSession,
+        loading: Bool
+    ) -> CPListItem {
+        var detailParts: [String] = []
+        if let count = artist.albumCount, count > 0 {
+            detailParts.append("\(count) albums")
+        } else if !artist.albums.isEmpty {
+            detailParts.append("\(artist.albums.count) albums")
+        }
+        if loading { detailParts.append("Loading…") }
+        let item = CPListItem(
+            text: artist.name,
+            detailText: detailParts.isEmpty ? "Artist" : detailParts.joined(separator: " · "))
+        CarPlayArtwork.attach(
+            to: item,
+            coverArt: artist.coverArt,
+            fallbackId: artist.id,
+            session: session,
+            style: .artist)
+        return item
+    }
+
+    private func artistAlbumItems(_ albums: [Album], session: AppSession) -> [CPListItem] {
+        albumItems(albums, session: session)
+    }
+
+    private func showArtistsBrowse(session: AppSession) async {
+        guard let interfaceController else { return }
+        let indexes = (try? await session.client.artists()) ?? []
+        let artists = Self.artistsWithEmptyAlbumsLast(indexes.flatMap(\.artists))
+        CarPlayArtwork.prefetch(
+            ids: artists.prefix(40).map { $0.coverArt ?? $0.id },
+            session: session)
+        let items: [CPListItem] = artists.map { artist in
+            let item = listItem(
+                text: artist.name,
+                detail: artist.albumCount.map { "\($0) albums" } ?? "Artist",
+                coverArt: artist.coverArt,
+                fallbackId: artist.id,
+                session: session,
+                style: .artist)
+            item.accessoryType = .disclosureIndicator
+            item.handler = { [weak self] _, completion in
+                Task {
+                    await self?.showArtist(
+                        id: artist.id,
+                        name: artist.name,
+                        session: session,
+                        coverArt: artist.coverArt)
+                    completion()
+                }
+            }
+            return item
+        }
+        let list = CPListTemplate(
+            title: "Artists",
+            sections: [CPListSection(items: items.isEmpty
+                                     ? [CPListItem(text: "No artists", detailText: nil)]
+                                     : items)])
+        interfaceController.pushTemplate(list, animated: true, completion: nil)
+    }
+
+    private func showAlbumsBrowse(session: AppSession) async {
+        guard let interfaceController else { return }
+        let page = (try? await session.client.albumList(
+            type: .alphabeticalByName, size: 80, offset: 0)) ?? []
+        var items = albumItems(page, session: session)
+        if page.count >= 80 {
+            let more = actionItem(
+                title: "Load More Albums",
+                detail: "Continue A–Z",
+                systemImage: "ellipsis.circle")
+            more.handler = { [weak self] _, completion in
+                Task {
+                    await self?.showAlbumsBrowseMore(offset: page.count, session: session)
+                    completion()
+                }
+            }
+            items.append(more)
+        }
+        let list = CPListTemplate(
+            title: "Albums",
+            sections: [CPListSection(items: items.isEmpty
+                                     ? [CPListItem(text: "No albums", detailText: nil)]
+                                     : items)])
+        interfaceController.pushTemplate(list, animated: true, completion: nil)
+    }
+
+    private func showAlbumsBrowseMore(offset: Int, session: AppSession) async {
+        guard let interfaceController else { return }
+        let page = (try? await session.client.albumList(
+            type: .alphabeticalByName, size: 80, offset: offset)) ?? []
+        var items = albumItems(page, session: session)
+        if page.count >= 80 {
+            let more = actionItem(
+                title: "Load More Albums",
+                detail: "Continue A–Z",
+                systemImage: "ellipsis.circle")
+            more.handler = { [weak self] _, completion in
+                Task {
+                    await self?.showAlbumsBrowseMore(offset: offset + page.count, session: session)
+                    completion()
+                }
+            }
+            items.append(more)
+        }
+        let list = CPListTemplate(
+            title: "More Albums",
+            sections: [CPListSection(items: items.isEmpty
+                                     ? [CPListItem(text: "That’s everything", detailText: nil)]
+                                     : items)])
+        interfaceController.pushTemplate(list, animated: true, completion: nil)
+    }
+
+    private func actionItem(
+        title: String,
+        detail: String?,
+        systemImage: String,
+        coverArt: String? = nil,
+        fallbackId: String? = nil,
+        session: AppSession? = nil,
+        style: CarPlayArtwork.Style = .album
+    ) -> CPListItem {
+        let item = CPListItem(text: title, detailText: detail)
+        if let session, coverArt != nil || fallbackId != nil {
+            CarPlayArtwork.attach(
+                to: item, coverArt: coverArt, fallbackId: fallbackId, session: session, style: style)
+        } else if let image = UIImage(systemName: systemImage) {
+            item.setImage(image)
+        }
+        return item
+    }
+
+    private func showPlaylist(
+        id: String,
+        name: String,
+        coverArt: String? = nil,
+        session: AppSession
+    ) async {
+        guard let interfaceController else { return }
+
+        let cached = LibraryDetailCache.playlist(id)
+        let shellSongs = cached?.songs ?? []
+        var loadingItems: [CPListItem] = []
+        let hero = CPListItem(
+            text: name,
+            detailText: shellSongs.isEmpty ? "Loading playlist…" : "\(shellSongs.count) songs")
+        CarPlayArtwork.attach(
+            to: hero, coverArt: coverArt ?? cached?.coverArt, fallbackId: id,
+            session: session, style: .playlist)
+        loadingItems.append(hero)
+        if shellSongs.isEmpty {
+            let loadingRow = CPListItem(text: "Loading tracks…", detailText: nil)
+            if let image = UIImage(systemName: "ellipsis") {
+                loadingRow.setImage(image)
+            }
+            loadingItems.append(loadingRow)
+        }
+
+        let placeholder = CPListTemplate(
+            title: name,
+            sections: [CPListSection(items: loadingItems)])
+        interfaceController.pushTemplate(placeholder, animated: true, completion: nil)
+
+        guard let playlist = try? await session.client.playlist(id: id) else {
+            placeholder.updateSections([CPListSection(items: [
+                hero,
+                CPListItem(text: "Couldn't load playlist", detailText: nil)
+            ])])
+            return
+        }
+        LibraryDetailCache.store(playlist: playlist)
 
         var items: [CPListItem] = []
         let kind: PlaybackContext.Kind = playlist.name == RotationManager.playlistName
             ? .outOfRotation : .playlist(id: id)
 
+        let readyHero = CPListItem(
+            text: playlist.name,
+            detailText: playlist.songs.isEmpty ? "Empty playlist" : "\(playlist.songs.count) songs")
+        CarPlayArtwork.attach(
+            to: readyHero,
+            coverArt: playlist.coverArt ?? coverArt,
+            fallbackId: id,
+            session: session,
+            style: .playlist)
         if !playlist.songs.isEmpty {
-            let playAll = CPListItem(text: "Play", detailText: "\(playlist.songs.count) songs")
+            readyHero.handler = { [weak self] _, completion in
+                self?.playSongs(playlist.songs, startAt: 0, label: name, kind: kind, session: session)
+                completion()
+            }
+        }
+        items.append(readyHero)
+
+        if !playlist.songs.isEmpty {
+            let playAll = actionItem(
+                title: "Play",
+                detail: "\(playlist.songs.count) songs",
+                systemImage: "play.fill",
+                coverArt: playlist.coverArt ?? coverArt,
+                fallbackId: id,
+                session: session,
+                style: .playlist)
             playAll.handler = { [weak self] _, completion in
                 self?.playSongs(playlist.songs, startAt: 0, label: name, kind: kind, session: session)
                 completion()
             }
             items.append(playAll)
 
-            let shuffle = CPListItem(text: "Shuffle", detailText: nil)
+            let shuffle = actionItem(title: "Shuffle", detail: nil, systemImage: "shuffle")
             shuffle.handler = { [weak self] _, completion in
                 session.player.playShuffled(
                     playlist.songs,
@@ -1467,105 +2163,23 @@ final class CarPlaySceneDelegate: UIResponder,
             items.append(contentsOf: songItems(playlist.songs, label: name, kind: kind, session: session))
         }
 
-        if items.isEmpty {
-            items = [CPListItem(text: "Empty playlist", detailText: nil)]
-        }
-
-        let detail = CPListTemplate(title: name, sections: [CPListSection(items: items)])
-        interfaceController.pushTemplate(detail, animated: true, completion: nil)
-    }
-
-    private func showAlbum(id: String, name: String, session: AppSession) async {
-        guard let interfaceController else { return }
-        guard let album = try? await session.client.album(id: id),
-              !album.songs.isEmpty else { return }
-
-        var items: [CPListItem] = []
-        let playAll = CPListItem(text: "Play Album", detailText: "\(album.songs.count) songs")
-        playAll.handler = { [weak self] _, completion in
-            self?.playSongs(album.songs, startAt: 0, label: name, kind: .album, session: session)
-            completion()
-        }
-        items.append(playAll)
-
-        let shuffle = CPListItem(text: "Shuffle", detailText: nil)
-        shuffle.handler = { [weak self] _, completion in
-            session.player.playShuffled(album.songs,
-                                        context: PlaybackContext(label: name, kind: .album))
-            self?.pushNowPlaying()
-            completion()
-        }
-        items.append(shuffle)
-        items.append(contentsOf: songItems(album.songs, label: name, kind: .album, session: session))
-
-        let detail = CPListTemplate(title: name, sections: [CPListSection(items: items)])
-        interfaceController.pushTemplate(detail, animated: true, completion: nil)
-    }
-
-    private func showArtist(id: String, name: String, session: AppSession) async {
-        guard let interfaceController else { return }
-        let songs = (try? await session.client.topSongs(artistName: name, count: 40)) ?? []
-        let albums = (try? await session.client.artist(id: id))?.albums ?? []
-
-        var sections: [CPListSection] = []
-        if !songs.isEmpty {
-            var items: [CPListItem] = []
-            let playTop = CPListItem(text: "Play Top Songs", detailText: nil)
-            playTop.handler = { [weak self] _, completion in
-                self?.playSongs(songs, startAt: 0, label: name, kind: .artist, session: session)
-                completion()
-            }
-            items.append(playTop)
-            items.append(contentsOf: songItems(songs, label: name, kind: .artist, session: session))
-            sections.append(CPListSection(items: items, header: "Top Songs", sectionIndexTitle: nil))
-        }
-        if !albums.isEmpty {
-            sections.append(CPListSection(
-                items: albumItems(albums, session: session),
-                header: "Albums",
-                sectionIndexTitle: nil))
-        }
-        if sections.isEmpty {
-            sections = [CPListSection(items: [CPListItem(text: "Nothing found", detailText: nil)])]
-        }
-
-        let detail = CPListTemplate(title: name, sections: sections)
-        interfaceController.pushTemplate(detail, animated: true, completion: nil)
+        placeholder.updateSections([CPListSection(items: items)])
     }
 
     // MARK: - Artwork + playback helpers
 
-    private func listItem(text: String, detail: String?, coverArt: String?,
-                          fallbackId: String?, session: AppSession) -> CPListItem {
+    private func listItem(
+        text: String,
+        detail: String?,
+        coverArt: String?,
+        fallbackId: String?,
+        session: AppSession,
+        style: CarPlayArtwork.Style = .album
+    ) -> CPListItem {
         let item = CPListItem(text: text, detailText: detail)
-        attachArtwork(to: item, coverArt: coverArt, fallbackId: fallbackId, session: session)
+        CarPlayArtwork.attach(
+            to: item, coverArt: coverArt, fallbackId: fallbackId, session: session, style: style)
         return item
-    }
-
-    private func attachArtwork(to item: CPListItem, coverArt: String?,
-                               fallbackId: String?, session: AppSession) {
-        guard let url = session.artworkURL(id: coverArt ?? fallbackId, size: 180) else { return }
-        if let cached = ImageLoader.shared.cachedImage(for: url) {
-            item.setImage(Self.scaledListImage(cached))
-            return
-        }
-        Task {
-            guard let image = await ImageLoader.shared.image(for: url) else { return }
-            item.setImage(Self.scaledListImage(image))
-        }
-    }
-
-    private static func scaledListImage(_ image: UIImage) -> UIImage {
-        let maxSize = CPListItem.maximumImageSize
-        let renderer = UIGraphicsImageRenderer(size: maxSize)
-        return renderer.image { _ in
-            let scale = min(maxSize.width / max(image.size.width, 1),
-                            maxSize.height / max(image.size.height, 1))
-            let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-            let origin = CGPoint(x: (maxSize.width - size.width) / 2,
-                                 y: (maxSize.height - size.height) / 2)
-            image.draw(in: CGRect(origin: origin, size: size))
-        }
     }
 
     private func playSongs(_ songs: [Song], startAt: Int, label: String,

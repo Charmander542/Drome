@@ -15,6 +15,9 @@ final class SubsonicClient {
     /// image views and AVPlayer items keep a constant URL across redraws.
     private let mediaSalt: String
     private let mediaToken: String
+    private let nativeTokenLock = NSLock()
+    private var cachedNativeToken: String?
+    private var cachedNativeTokenAt: Date?
 
     init(account: Account, password: String) {
         self.account = account
@@ -322,5 +325,203 @@ final class SubsonicClient {
             URLQueryItem(name: "id", value: id),
             URLQueryItem(name: "size", value: String(size)),
         ], stableMediaAuth: true)
+    }
+
+    // MARK: - Navidrome native (playlist cover + song catalog)
+
+    /// Page through the native song index sorted by title — much faster and more
+    /// coherent than reconstructing the catalog album-by-album.
+    func nativeSongs(start: Int, end: Int) async throws -> [Song] {
+        let token = try await nativeAuthToken()
+        guard var components = URLComponents(url: account.serverURL, resolvingAgainstBaseURL: false) else {
+            throw SubsonicError.invalidURL
+        }
+        var path = components.path
+        if path.hasSuffix("/") { path.removeLast() }
+        components.path = path + "/api/song"
+        components.queryItems = [
+            URLQueryItem(name: "_start", value: String(max(0, start))),
+            URLQueryItem(name: "_end", value: String(max(start, end))),
+            URLQueryItem(name: "_sort", value: "title"),
+            URLQueryItem(name: "_order", value: "ASC"),
+        ]
+        guard let url = components.url else { throw SubsonicError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "x-nd-authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw SubsonicError.http(status: status)
+        }
+        let files = try JSONDecoder().decode([NativeMediaFile].self, from: data)
+        return files.map { $0.asSong() }
+    }
+
+    /// Upload a custom playlist cover via Navidrome's native API
+    /// (`POST /api/playlist/{id}/image`). Requires JWT from `/auth/login`.
+    func uploadPlaylistCover(id: String, imageData: Data, filename: String) async throws {
+        let token = try await nativeAuthToken()
+        guard var components = URLComponents(url: account.serverURL, resolvingAgainstBaseURL: false) else {
+            throw SubsonicError.invalidURL
+        }
+        var path = components.path
+        if path.hasSuffix("/") { path.removeLast() }
+        components.path = path + "/api/playlist/\(id)/image"
+        guard let url = components.url else { throw SubsonicError.invalidURL }
+
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "x-nd-authorization")
+
+        var body = Data()
+        let name = filename.isEmpty ? "cover.jpg" : filename
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"image\"; filename=\"\(name)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+        body.append(imageData)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw SubsonicError.http(status: status)
+        }
+    }
+
+    /// Remove a custom playlist cover (`DELETE /api/playlist/{id}/image`).
+    func deletePlaylistCover(id: String) async throws {
+        let token = try await nativeAuthToken()
+        guard var components = URLComponents(url: account.serverURL, resolvingAgainstBaseURL: false) else {
+            throw SubsonicError.invalidURL
+        }
+        var path = components.path
+        if path.hasSuffix("/") { path.removeLast() }
+        components.path = path + "/api/playlist/\(id)/image"
+        guard let url = components.url else { throw SubsonicError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "x-nd-authorization")
+
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw SubsonicError.http(status: status)
+        }
+    }
+
+    private func nativeAuthToken() async throws -> String {
+        nativeTokenLock.lock()
+        if let cachedNativeToken,
+           let cachedNativeTokenAt,
+           Date().timeIntervalSince(cachedNativeTokenAt) < 45 * 60 {
+            nativeTokenLock.unlock()
+            return cachedNativeToken
+        }
+        nativeTokenLock.unlock()
+
+        guard var components = URLComponents(url: account.serverURL, resolvingAgainstBaseURL: false) else {
+            throw SubsonicError.invalidURL
+        }
+        var path = components.path
+        if path.hasSuffix("/") { path.removeLast() }
+        components.path = path + "/auth/login"
+        guard let url = components.url else { throw SubsonicError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let payload = ["username": account.username, "password": password]
+        request.httpBody = try JSONEncoder().encode(payload)
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw SubsonicError.http(status: status)
+        }
+        struct LoginResponse: Decodable { var token: String? }
+        let decoded = try JSONDecoder().decode(LoginResponse.self, from: data)
+        guard let token = decoded.token, !token.isEmpty else {
+            throw SubsonicError.http(status: 401)
+        }
+        nativeTokenLock.lock()
+        cachedNativeToken = token
+        cachedNativeTokenAt = Date()
+        nativeTokenLock.unlock()
+        return token
+    }
+}
+
+/// Navidrome `/api/song` row — mapped into our Subsonic `Song` model.
+private struct NativeMediaFile: Decodable {
+    let id: String
+    var title: String?
+    var album: String?
+    var albumId: String?
+    var artist: String?
+    var artistId: String?
+    var trackNumber: Int?
+    var discNumber: Int?
+    var year: Int?
+    var genre: String?
+    var hasCoverArt: Bool?
+    var size: Int64?
+    var suffix: String?
+    var duration: Double?
+    var bitRate: Int?
+    var sampleRate: Int?
+    var bitDepth: Int?
+    var path: String?
+    var playCount: Int?
+    var rating: Int?
+    var starred: Bool?
+    var createdAt: String?
+
+    func asSong() -> Song {
+        let cover: String?
+        if hasCoverArt == true {
+            cover = id
+        } else {
+            cover = albumId
+        }
+        return Song(
+            id: id,
+            title: title?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "Unknown Title",
+            album: album,
+            albumId: albumId,
+            artist: artist,
+            artistId: artistId,
+            artists: nil,
+            track: trackNumber,
+            discNumber: discNumber,
+            year: year,
+            genre: genre,
+            coverArt: cover,
+            size: size,
+            suffix: suffix,
+            duration: duration.map { Int($0.rounded()) },
+            bitRate: bitRate,
+            samplingRate: sampleRate,
+            bitDepth: bitDepth,
+            contentType: nil,
+            path: path,
+            playCount: playCount,
+            userRating: (rating ?? 0) > 0 ? rating : nil,
+            starred: starred == true ? "true" : nil,
+            created: createdAt
+        )
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

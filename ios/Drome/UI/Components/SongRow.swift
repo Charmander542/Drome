@@ -7,6 +7,8 @@ struct SongRow: View {
     var trailing: AnyView? = nil
     /// When true (default), attaches List swipe actions for queue.
     var enablesSwipeActions: Bool = true
+    /// Cheaper row for huge catalogs (plain artist text, still shows cover).
+    var lightweight: Bool = false
 
     @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject private var ratings: RatingsStore
@@ -31,12 +33,13 @@ struct SongRow: View {
             rating: ratings.rating(for: song),
             inRotation: rotation.contains(song.id),
             isDownloaded: downloads.isDownloaded(song.id),
-            coverURL: session?.artworkURL(for: song, size: 120)
+            coverURL: session?.artworkURL(for: song, size: 96),
+            lightweight: lightweight
         )
         .equatable()
         .contentShape(Rectangle())
         .contextMenu { contextMenu }
-        .modifier(ConditionalSongSwipe(enabled: enablesSwipeActions, song: song))
+        .modifier(ConditionalSongSwipe(enabled: enablesSwipeActions && !lightweight, song: song))
         .sheet(isPresented: $showAddToPlaylist) {
             if let session {
                 NavigationStack {
@@ -164,6 +167,7 @@ private struct EquatableSongRowContent: View, Equatable {
     let inRotation: Bool
     let isDownloaded: Bool
     let coverURL: URL?
+    let lightweight: Bool
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.song.id == rhs.song.id
@@ -178,6 +182,7 @@ private struct EquatableSongRowContent: View, Equatable {
             && lhs.inRotation == rhs.inRotation
             && lhs.isDownloaded == rhs.isDownloaded
             && lhs.coverURL == rhs.coverURL
+            && lhs.lightweight == rhs.lightweight
             && (lhs.trailing == nil) == (rhs.trailing == nil)
     }
 
@@ -213,7 +218,14 @@ private struct EquatableSongRowContent: View, Equatable {
                     }
                 }
                 HStack(spacing: 0) {
-                    SongArtistLinks(song: song, font: .subheadline, color: DromeTheme.muted)
+                    if lightweight {
+                        Text(song.displayArtist)
+                            .font(.subheadline)
+                            .foregroundStyle(DromeTheme.muted)
+                            .lineLimit(1)
+                    } else {
+                        SongArtistLinks(song: song, font: .subheadline, color: DromeTheme.muted)
+                    }
                     if showAlbum, let album = song.album, !album.isEmpty {
                         Text(" · \(album)")
                             .font(.subheadline)

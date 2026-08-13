@@ -1,4 +1,6 @@
 import SwiftUI
+import PhotosUI
+import UIKit
 
 struct PlaylistDetailView: View {
     let playlistID: String
@@ -26,6 +28,11 @@ struct PlaylistDetailView: View {
     @State private var showMoreSheet = false
     @State private var showBulkOORConfirm = false
     @State private var statusMessage: String?
+    @State private var coverPickerItem: PhotosPickerItem?
+    @State private var isUploadingCover = false
+    @State private var coverBump: TimeInterval = 0
+    /// Rows painted so far — full `playlist.songs` stays available for Play/Shuffle.
+    @State private var visibleSongCount = ProgressiveSongReveal.initial
 
     private var isSystem: Bool {
         guard let playlist else {
@@ -45,12 +52,15 @@ struct PlaylistDetailView: View {
 
     var body: some View {
         Group {
-            if isLoading && playlist == nil {
-                LoadingStateView()
-            } else if let error, playlist == nil {
-                ErrorStateView(message: error) { Task { await load() } }
-            } else if let playlist {
+            if let playlist {
                 content(playlist)
+            } else if let placeholder, isLoading {
+                // Paint header + disabled actions immediately from the list row.
+                content(Self.shell(from: placeholder), songsReady: false)
+            } else if isLoading {
+                LoadingStateView()
+            } else if let error {
+                ErrorStateView(message: error) { Task { await load() } }
             }
         }
         .navigationTitle(prefersInlineTitle
@@ -93,7 +103,12 @@ struct PlaylistDetailView: View {
                     renameText = playlist?.name ?? ""
                     showRename = true
                 },
-                onToggleEdit: { isEditing.toggle() },
+                onToggleEdit: {
+                    isEditing.toggle()
+                    if isEditing, let playlist {
+                        visibleSongCount = max(visibleSongCount, playlist.songs.count)
+                    }
+                },
                 onTogglePublic: { Task { await togglePublic() } },
                 onDownload: {
                     guard let playlist else { return }
@@ -111,6 +126,10 @@ struct PlaylistDetailView: View {
             .dromeSession(session)
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
+        }
+        .onChange(of: coverPickerItem) { _, item in
+            guard let item else { return }
+            Task { await uploadCover(from: item) }
         }
         .confirmationDialog(
             "Mark All Out of Rotation?",
@@ -170,12 +189,33 @@ struct PlaylistDetailView: View {
         }
     }
 
-    private func content(_ playlist: PlaylistWithSongs) -> some View {
-        List {
+    private static func shell(from placeholder: Playlist) -> PlaylistWithSongs {
+        PlaylistWithSongs(
+            id: placeholder.id,
+            name: placeholder.name,
+            comment: placeholder.comment,
+            owner: placeholder.owner,
+            isPublic: placeholder.isPublic,
+            songCount: placeholder.songCount,
+            duration: placeholder.duration,
+            coverArt: placeholder.coverArt,
+            entry: [])
+    }
+
+    private func content(_ playlist: PlaylistWithSongs, songsReady: Bool = true) -> some View {
+        let allSongs = playlist.songs
+        let visible = Array(allSongs.prefix(visibleSongCount))
+        let canPlay = songsReady && !allSongs.isEmpty
+
+        return List {
             Section {
+                playlistHeader(playlist)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 8, trailing: 16))
+
                 HStack(spacing: 12) {
                     Button {
-                        player.play(playlist.songs, startAt: 0,
+                        player.play(allSongs, startAt: 0,
                                     context: PlaybackContext(label: playlist.name, kind: contextKind))
                     } label: {
                         Label("Play", systemImage: "play.fill")
@@ -184,16 +224,23 @@ struct PlaylistDetailView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(DromeTheme.accent)
                     .foregroundStyle(.white)
+                    .disabled(!canPlay)
 
                     Button {
-                        player.playShuffled(playlist.songs,
+                        player.playShuffled(allSongs,
                                             context: PlaybackContext(label: playlist.name, kind: contextKind))
                     } label: {
-                        Label("Shuffle", systemImage: "shuffle")
-                            .frame(maxWidth: .infinity)
+                        if songsReady {
+                            Label("Shuffle", systemImage: "shuffle")
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                        }
                     }
                     .buttonStyle(.bordered)
                     .tint(.white)
+                    .disabled(!canPlay)
                 }
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
@@ -222,17 +269,28 @@ struct PlaylistDetailView: View {
             }
 
             Section {
-                if playlist.songs.isEmpty {
+                if !songsReady {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Text("Loading tracks…")
+                            .font(.subheadline)
+                            .foregroundStyle(DromeTheme.muted)
+                        Spacer()
+                    }
+                    .listRowBackground(Color.clear)
+                } else if allSongs.isEmpty {
                     Text(isSystem ? "Nothing out of rotation." : "No songs yet. Tap Add songs.")
                         .foregroundStyle(DromeTheme.muted)
                         .listRowBackground(Color.clear)
                 }
-                ForEach(Array(playlist.songs.enumerated()), id: \.element.id) { index, song in
+
+                ForEach(Array(visible.enumerated()), id: \.element.id) { index, song in
                     SongRow(song: song, showAlbum: true)
                         .contentShape(Rectangle())
                         .onTapGesture {
                             guard !isEditing else { return }
-                            player.play(playlist.songs, startAt: index,
+                            player.play(allSongs, startAt: index,
                                         context: PlaybackContext(label: playlist.name, kind: contextKind))
                         }
                         .listRowBackground(DromeTheme.background)
@@ -240,6 +298,20 @@ struct PlaylistDetailView: View {
                 }
                 .onMove(perform: isEditing && !isSystem ? move : nil)
                 .onDelete(perform: isSystem ? nil : deleteSongs)
+
+                if songsReady, visibleSongCount < allSongs.count {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                            .padding(.vertical, 8)
+                        Spacer()
+                    }
+                    .listRowBackground(Color.clear)
+                    .onAppear {
+                        ProgressiveSongReveal.expand(
+                            visibleCount: &visibleSongCount, total: allSongs.count)
+                    }
+                }
             }
         }
         .listStyle(.plain)
@@ -248,17 +320,148 @@ struct PlaylistDetailView: View {
         .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
     }
 
+    private func playlistHeader(_ playlist: PlaylistWithSongs) -> some View {
+        VStack(spacing: 14) {
+            ZStack(alignment: .bottomTrailing) {
+                RemoteImage(
+                    url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 600),
+                    placeholderSymbol: "music.note.list"
+                )
+                .id("\(playlist.id)-\(coverBump)")
+                .frame(width: 180, height: 180)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .shadow(color: .black.opacity(0.4), radius: 18, y: 10)
+                .overlay {
+                    if isUploadingCover {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(.black.opacity(0.45))
+                        ProgressView()
+                    }
+                }
+
+                if !isSystem {
+                    PhotosPicker(selection: $coverPickerItem, matching: .images) {
+                        Image(systemName: "camera.fill")
+                            .font(.caption.weight(.semibold))
+                            .padding(10)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(8)
+                    .disabled(isUploadingCover)
+                    .accessibilityLabel("Change cover image")
+                }
+            }
+
+            VStack(spacing: 6) {
+                if prefersInlineTitle {
+                    EmptyView()
+                } else {
+                    Text(playlist.name)
+                        .font(.title2.bold())
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                }
+
+                Text("\(playlist.songs.count) songs")
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.muted)
+
+                if !isSystem {
+                    HStack(spacing: 16) {
+                        Button {
+                            renameText = playlist.name
+                            showRename = true
+                        } label: {
+                            Label("Rename", systemImage: "pencil")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(DromeTheme.accent)
+
+                        PhotosPicker(selection: $coverPickerItem, matching: .images) {
+                            Label("Cover", systemImage: "photo")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(DromeTheme.accent)
+                        .disabled(isUploadingCover)
+                    }
+                    .padding(.top, 2)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
     private func load() async {
-        isLoading = true
+        if let cached = LibraryDetailCache.playlist(playlistID) {
+            playlist = cached
+            visibleSongCount = ProgressiveSongReveal.clampInitial(total: cached.songs.count)
+            isLoading = false
+        } else {
+            isLoading = true
+        }
         error = nil
         defer { isLoading = false }
         do {
             let loaded = try await session.client.playlist(id: playlistID)
+            visibleSongCount = ProgressiveSongReveal.clampInitial(total: loaded.songs.count)
             playlist = loaded
-            ratings.ingest(loaded.songs)
+            LibraryDetailCache.store(playlist: loaded)
+            let songs = loaded.songs
+            Task {
+                await Task.yield()
+                ratings.ingest(songs)
+            }
         } catch {
-            self.error = error.localizedDescription
+            if playlist == nil {
+                self.error = error.localizedDescription
+            }
         }
+    }
+
+    private func uploadCover(from item: PhotosPickerItem) async {
+        coverPickerItem = nil
+        guard !isSystem else { return }
+        isUploadingCover = true
+        defer { isUploadingCover = false }
+        do {
+            guard let transfer = try await item.loadTransferable(type: PlaylistCoverTransfer.self) else {
+                flash("Couldn't read that photo")
+                return
+            }
+            let compressed = Self.compressCover(transfer.data) ?? transfer.data
+            try await session.client.uploadPlaylistCover(
+                id: playlistID,
+                imageData: compressed,
+                filename: "cover.jpg"
+            )
+            if let url = session.artworkURL(id: playlist?.coverArt ?? playlistID, size: 600) {
+                ImageLoader.shared.removeCached(for: url)
+            }
+            if let url = session.artworkURL(id: playlistID, size: 600) {
+                ImageLoader.shared.removeCached(for: url)
+            }
+            if let url = session.artworkURL(id: playlistID, size: 300) {
+                ImageLoader.shared.removeCached(for: url)
+            }
+            coverBump = Date().timeIntervalSince1970
+            await load()
+            flash("Cover updated")
+        } catch {
+            flash(error.localizedDescription)
+        }
+    }
+
+    private static func compressCover(_ data: Data) -> Data? {
+        guard let image = UIImage(data: data) else { return data }
+        let maxSide: CGFloat = 1600
+        let scale = min(1, maxSide / max(image.size.width, image.size.height))
+        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let resized = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+        return resized.jpegData(compressionQuality: 0.85)
     }
 
     private func move(from source: IndexSet, to destination: Int) {
@@ -330,6 +533,16 @@ struct PlaylistDetailView: View {
         Task {
             try? await Task.sleep(nanoseconds: 1_600_000_000)
             if statusMessage == message { statusMessage = nil }
+        }
+    }
+}
+
+private struct PlaylistCoverTransfer: Transferable {
+    let data: Data
+
+    static var transferRepresentation: some TransferRepresentation {
+        DataRepresentation(importedContentType: .image) { data in
+            PlaylistCoverTransfer(data: data)
         }
     }
 }

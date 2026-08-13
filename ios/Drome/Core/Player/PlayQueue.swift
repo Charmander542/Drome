@@ -18,9 +18,9 @@ struct QueueItem: Identifiable, Equatable {
 /// queue screen, and used to decide shuffle-exclusion semantics.
 struct PlaybackContext: Equatable {
     enum Kind: Equatable {
-        case album
+        case album(id: String)
         case playlist(id: String)
-        case artist
+        case artist(id: String)
         case genre
         case search
         case mix
@@ -35,6 +35,27 @@ struct PlaybackContext: Equatable {
     /// selection everywhere else).
     var allowsOutOfRotation: Bool {
         kind == .outOfRotation
+    }
+
+    /// Stable key used to resume a listening session from Recently Played.
+    func resumeKey(fallbackSong: Song? = nil) -> String {
+        switch kind {
+        case .album(let id):
+            return "album:\(id)"
+        case .playlist(let id):
+            return "playlist:\(id)"
+        case .artist(let id):
+            return "artist:\(id)"
+        case .genre:
+            return "genre:\(label)"
+        case .mix:
+            return "mix:\(label)"
+        case .outOfRotation:
+            return "outOfRotation"
+        case .search:
+            if let id = fallbackSong?.id { return "song:\(id)" }
+            return "search:\(label)"
+        }
     }
 }
 

@@ -23,33 +23,74 @@ final class RatingsStore: ObservableObject {
     weak var rotation: RotationManager?
     private var inFlight: [String: Task<Void, Never>] = [:]
     private var discoveryTask: Task<Void, Never>?
+    private var ingestTask: Task<Void, Never>?
 
     init(client: SubsonicClient, database: AppDatabase, userKey: String) {
         self.client = client
         self.database = database
         self.userKey = userKey
-        if let stored = try? database.allSongRatings(userKey: userKey) {
-            ratings = stored
-        }
+        // Don't block AppSession / first paint on a sync ratings table read.
+        Task { await self.loadCachedRatings() }
     }
 
-    func ingest(_ songs: [Song]) {
+    private func loadCachedRatings() async {
+        let key = userKey
+        let db = database
+        let stored = await Task.detached(priority: .utility) {
+            (try? db.allSongRatings(userKey: key)) ?? [:]
+        }.value
+        guard !stored.isEmpty else { return }
+        // Merge without clobbering anything the user already set this session.
         var next = ratings
         var changed = false
+        for (id, rating) in stored where next[id] == nil {
+            next[id] = rating
+            changed = true
+        }
+        guard changed else { return }
+        ratings = next
+        revision &+= 1
+    }
+
+    /// Merge server `userRating` values into the local index.
+    /// DB work is batched off the main actor so catalog / search ingest cannot
+    /// hang the UI for seconds.
+    func ingest(_ songs: [Song]) {
+        guard !songs.isEmpty else { return }
+        var next = ratings
+        var changed = false
+        var toPersist: [(song: Song, rating: Int)] = []
+        toPersist.reserveCapacity(min(songs.count, 64))
+
         for song in songs {
             guard let serverRating = song.userRating, serverRating > 0 else { continue }
-            // Never clobber a local rating the user already set this session /
-            // persisted previously — local index is source of truth for UI.
             if next[song.id] == nil {
                 next[song.id] = serverRating
                 changed = true
             }
             let effective = next[song.id] ?? serverRating
-            try? database.upsertSongRating(userKey: userKey, song: song, rating: effective)
+            // Skip rows we already indexed at this rating — the old path wrote
+            // every song on every ingest and froze the main thread.
+            if ratings[song.id] == effective { continue }
+            var snapshot = song
+            snapshot.userRating = effective
+            toPersist.append((snapshot, effective))
         }
-        guard changed else { return }
-        ratings = next
-        revision &+= 1
+
+        if changed {
+            ratings = next
+            revision &+= 1
+        }
+
+        guard !toPersist.isEmpty else { return }
+        let key = userKey
+        let db = database
+        ingestTask?.cancel()
+        ingestTask = Task(priority: .utility) {
+            await Task.detached(priority: .utility) {
+                try? db.upsertSongRatings(userKey: key, songs: toPersist)
+            }.value
+        }
     }
 
     func rating(for song: Song) -> Int {
@@ -81,14 +122,20 @@ final class RatingsStore: ObservableObject {
 
         var snapshot = song
         snapshot.userRating = clamped == 0 ? nil : clamped
-        if clamped == 0 {
-            try? database.clearSongRating(userKey: userKey, songId: song.id)
-        } else {
-            try? database.upsertSongRating(userKey: userKey, song: snapshot, rating: clamped)
+        let key = userKey
+        let db = database
+        let songID = song.id
+        Task(priority: .utility) {
+            await Task.detached(priority: .utility) {
+                if clamped == 0 {
+                    try? db.clearSongRating(userKey: key, songId: songID)
+                } else {
+                    try? db.upsertSongRating(userKey: key, song: snapshot, rating: clamped)
+                }
+            }.value
         }
 
         inFlight[song.id]?.cancel()
-        let songID = song.id
         inFlight[songID] = Task { [weak self] in
             guard let self else { return }
             do {

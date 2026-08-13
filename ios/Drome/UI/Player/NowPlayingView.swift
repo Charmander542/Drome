@@ -1,5 +1,13 @@
 import SwiftUI
 
+
+/// One cover in the Now Playing art strip. `id` is the song id so SwiftUI
+/// reuses the same RemoteImage when a cover moves from next → current.
+private struct ArtStripPage: Identifiable, Equatable {
+    let id: String
+    let url: URL?
+}
+
 /// Spotify-style full-screen Now Playing.
 /// All sizing is derived from the local GeometryReader so content always fits
 /// the visible phone width (no UIScreen / overflow clipping).
@@ -16,10 +24,16 @@ struct NowPlayingView: View {
     @State private var showAddToPlaylist = false
     @State private var isSeeking = false
     @State private var seekElapsed: Double = 0
+    /// Brief override so skip/restart can glide the scrubber to 0.
+    @State private var scrubAnimElapsed: Double?
+    @State private var lastScrubDisplayed: Double = 0
     @State private var dismissDrag: CGFloat = 0
     @State private var flashMessage: String?
+    /// Always [previous, current, next] — center is index 1 when drag is 0.
+    @State private var artPages: [ArtStripPage] = []
     @State private var artDragX: CGFloat = 0
     @State private var artSwipeAnimating = false
+    @State private var artContainerWidth: CGFloat = 390
     @State private var showMoreSheet = false
 
     private enum Pane: String, CaseIterable {
@@ -146,8 +160,10 @@ struct NowPlayingView: View {
     private var background: some View {
         ZStack {
             Color.black
-            if let song = player.current?.song {
-                RemoteImage(url: session.artworkURL(for: song, size: 200))
+            // Prefer the strip's centered cover so the blur doesn't jump ahead
+            // of the art swipe animation.
+            if let url = artPages.count > 1 ? artPages[1].url : artPages.first?.url {
+                RemoteImage(url: url)
                     .scaledToFill()
                     .blur(radius: 80)
                     .opacity(0.4)
@@ -244,7 +260,44 @@ struct NowPlayingView: View {
     }
 
     private func artwork(side: CGFloat, containerWidth: CGFloat) -> some View {
-        RemoteImage(url: coverURL)
+        let stride = containerWidth
+
+        return ZStack {
+            ForEach(Array(artPages.enumerated()), id: \.element.id) { index, page in
+                coverCard(url: page.url, side: side)
+                    // Fixed center slot = index 1. Neighbors live at ±stride.
+                    .offset(x: CGFloat(index - 1) * stride + artDragX)
+            }
+        }
+        .frame(width: containerWidth, height: side)
+        .clipped()
+        .contentShape(Rectangle())
+        .onAppear { artContainerWidth = containerWidth }
+        .onChange(of: containerWidth) { _, width in artContainerWidth = width }
+        .gesture(artSwipeGesture(containerWidth: containerWidth))
+        .simultaneousGesture(swipeUpToLyricsGesture)
+        .onChange(of: player.current?.song.id) { _, _ in
+            guard !artSwipeAnimating else { return }
+            reloadArtPages(keepingDrag: false)
+            animateScrubToStart()
+        }
+        .onChange(of: player.userQueue.count) { _, _ in
+            guard !artSwipeAnimating else { return }
+            reloadArtPages(keepingDrag: false)
+        }
+        .onChange(of: player.contextQueue.count) { _, _ in
+            guard !artSwipeAnimating else { return }
+            reloadArtPages(keepingDrag: false)
+        }
+        .onChange(of: player.history.count) { _, _ in
+            guard !artSwipeAnimating else { return }
+            reloadArtPages(keepingDrag: false)
+        }
+        .onAppear { reloadArtPages(keepingDrag: false) }
+    }
+
+    private func coverCard(url: URL?, side: CGFloat) -> some View {
+        RemoteImage(url: url)
             .frame(width: side, height: side)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .shadow(color: .black.opacity(0.5), radius: 20, y: 12)
@@ -252,45 +305,84 @@ struct NowPlayingView: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(Color.white.opacity(0.06), lineWidth: 1)
             }
-            .offset(x: artDragX)
-            .opacity(1 - min(abs(artDragX) / (containerWidth * 0.9), 0.35))
-            .gesture(artSwipeGesture(containerWidth: containerWidth))
-            .simultaneousGesture(swipeUpToLyricsGesture)
-            .animation(artSwipeAnimating ? nil : .interactiveSpring(response: 0.28, dampingFraction: 0.86),
-                       value: artDragX)
-            .id(player.current?.song.id ?? "none")
-            .transition(.asymmetric(
-                insertion: .opacity.combined(with: .scale(scale: 0.96)),
-                removal: .opacity
-            ))
-            .frame(maxWidth: .infinity)
+    }
+
+    private func makeArtPages() -> [ArtStripPage] {
+        let currentSong = player.current?.song
+        let prevSong = player.artSwipePreviousSong
+        let nextSong = player.artSwipeNextSong
+
+        let prev: ArtStripPage = {
+            if let prevSong, prevSong.id != currentSong?.id {
+                return ArtStripPage(id: prevSong.id, url: session.artworkURL(for: prevSong, size: 800))
+            }
+            return ArtStripPage(id: "placeholder-prev", url: nil)
+        }()
+        let current: ArtStripPage = {
+            if let currentSong {
+                return ArtStripPage(id: currentSong.id, url: session.artworkURL(for: currentSong, size: 800))
+            }
+            return ArtStripPage(id: "placeholder-current", url: nil)
+        }()
+        let next: ArtStripPage = {
+            if let nextSong, nextSong.id != currentSong?.id, nextSong.id != prevSong?.id {
+                return ArtStripPage(id: nextSong.id, url: session.artworkURL(for: nextSong, size: 800))
+            }
+            return ArtStripPage(id: "placeholder-next", url: nil)
+        }()
+
+        let pages = [prev, current, next]
+        ImageLoader.shared.prefetch(pages.compactMap(\.url))
+        return pages
+    }
+
+    private func reloadArtPages(keepingDrag: Bool) {
+        artPages = makeArtPages()
+        if !keepingDrag {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { artDragX = 0 }
+        }
+    }
+
+    private var canSwipeArtPrevious: Bool {
+        guard artPages.count == 3 else { return false }
+        return !artPages[0].id.hasPrefix("placeholder")
+    }
+
+    private var canSwipeArtNext: Bool {
+        guard artPages.count == 3 else { return false }
+        return !artPages[2].id.hasPrefix("placeholder")
     }
 
     private func artSwipeGesture(containerWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 24)
+        DragGesture(minimumDistance: 20)
             .onChanged { value in
                 guard !artSwipeAnimating else { return }
                 guard abs(value.translation.width) > abs(value.translation.height) * 0.7 else { return }
-                artDragX = value.translation.width
+                var dx = value.translation.width
+                if dx > 0, !canSwipeArtPrevious {
+                    dx = rubberBand(dx, limit: containerWidth * 0.22)
+                } else if dx < 0, !canSwipeArtNext {
+                    dx = -rubberBand(-dx, limit: containerWidth * 0.22)
+                }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { artDragX = dx }
             }
             .onEnded { value in
                 guard !artSwipeAnimating else { return }
                 let dx = value.translation.width
                 let predicted = value.predictedEndTranslation.width
                 let threshold = min(110, containerWidth * 0.22)
-                let goNext = dx < -threshold || predicted < -threshold * 1.4
-                let goPrevious = dx > threshold || predicted > threshold * 1.4
+                let goNext = (dx < -threshold || predicted < -threshold * 1.4) && canSwipeArtNext
+                let goPrevious = (dx > threshold || predicted > threshold * 1.4) && canSwipeArtPrevious
 
                 if goNext {
-                    completeArtSwipe(direction: -1, containerWidth: containerWidth) {
-                        player.next()
-                    }
+                    completeArtSwipe(goingNext: true, containerWidth: containerWidth)
                 } else if goPrevious {
-                    completeArtSwipe(direction: 1, containerWidth: containerWidth) {
-                        player.previous(preferPreviousTrack: true)
-                    }
+                    completeArtSwipe(goingNext: false, containerWidth: containerWidth)
                 } else {
-                    // Partial swipe — spring smoothly back; never jump.
                     withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
                         artDragX = 0
                     }
@@ -298,32 +390,112 @@ struct NowPlayingView: View {
             }
     }
 
-    /// Animates the cover off-screen, swaps the track, then springs the new
-    /// cover in from the opposite edge without an intermediate hard set.
-    private func completeArtSwipe(direction: CGFloat, containerWidth: CGFloat, action: @escaping () -> Void) {
-        artSwipeAnimating = true
-        let exitX = direction * -containerWidth
-        let enterX = direction * containerWidth * 0.28
-        withAnimation(.easeOut(duration: 0.2)) {
-            artDragX = exitX
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            action()
-            var transaction = Transaction(animation: nil)
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                artDragX = enterX
-            }
-            artSwipeAnimating = false
-            withAnimation(.interactiveSpring(response: 0.38, dampingFraction: 0.84)) {
-                artDragX = 0
-            }
+    private func rubberBand(_ value: CGFloat, limit: CGFloat) -> CGFloat {
+        guard limit > 0 else { return 0 }
+        return (1 - (1 / ((value * 0.55 / limit) + 1))) * limit
+    }
+
+    private func skipNextWithArt() {
+        guard !artSwipeAnimating else { return }
+        if canSwipeArtNext {
+            completeArtSwipe(goingNext: true, containerWidth: artContainerWidth)
+        } else {
+            animateScrubToStart()
+            player.next()
         }
     }
 
-    private var coverURL: URL? {
-        guard let song = player.current?.song else { return nil }
-        return session.artworkURL(for: song, size: 800)
+    private func skipPreviousWithArt() {
+        guard !artSwipeAnimating else { return }
+        // Match hardware/previous button: restart if we're >3s in.
+        if player.elapsed > 3 {
+            animateScrubToStart()
+            player.previous()
+            return
+        }
+        if canSwipeArtPrevious {
+            completeArtSwipe(goingNext: false, containerWidth: artContainerWidth)
+        } else {
+            player.previous(preferPreviousTrack: true)
+        }
+    }
+
+    /// Glide the scrubber thumb to 0 so skips don't hard-jump the playhead UI.
+    private func animateScrubToStart() {
+        let from = isSeeking ? seekElapsed : (scrubAnimElapsed ?? lastScrubDisplayed)
+        guard from > 0.35 else {
+            scrubAnimElapsed = nil
+            return
+        }
+        scrubAnimElapsed = from
+        withAnimation(.easeOut(duration: 0.28)) {
+            scrubAnimElapsed = 0
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            scrubAnimElapsed = nil
+        }
+    }
+
+    private func completeArtSwipe(goingNext: Bool, containerWidth: CGFloat) {
+        guard artPages.count == 3 else { return }
+        artSwipeAnimating = true
+        let exitX = goingNext ? -containerWidth : containerWidth
+
+        // Snapshot before anything moves / playback changes.
+        let prev = artPages[0]
+        let current = artPages[1]
+        let next = artPages[2]
+
+        withAnimation(.easeInOut(duration: 0.28)) {
+            artDragX = exitX
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+            // At exitX the neighbor is already visually centered:
+            //   next swipe → index 2 at offset 0
+            //   prev swipe → index 0 at offset 0
+            // Snap pages + drag together so that same song-id stays on-center
+            // at index 1 with drag 0. Do this BEFORE touching the player so a
+            // published track change can't rebuild the strip one frame early.
+            let rotated: [ArtStripPage] = goingNext
+                ? [current, next, ArtStripPage(id: "placeholder-next-pending", url: nil)]
+                : [ArtStripPage(id: "placeholder-prev-pending", url: nil), prev, current]
+
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                artPages = rotated
+                artDragX = 0
+            }
+
+            player.advanceFromArtSwipe(goingNext: goingNext)
+
+            // Fill the new off-screen neighbor; center (index 1) stays put.
+            var filled = artPages
+            if goingNext {
+                if let song = player.artSwipeNextSong, song.id != filled[1].id {
+                    filled[2] = ArtStripPage(
+                        id: song.id,
+                        url: session.artworkURL(for: song, size: 800)
+                    )
+                } else {
+                    filled[2] = ArtStripPage(id: "placeholder-next", url: nil)
+                }
+            } else if let song = player.artSwipePreviousSong, song.id != filled[1].id {
+                filled[0] = ArtStripPage(
+                    id: song.id,
+                    url: session.artworkURL(for: song, size: 800)
+                )
+            } else {
+                filled[0] = ArtStripPage(id: "placeholder-prev", url: nil)
+            }
+            withTransaction(transaction) {
+                artPages = filled
+            }
+            ImageLoader.shared.prefetch(filled.compactMap(\.url))
+            artSwipeAnimating = false
+        }
     }
 
     private var metadataBlock: some View {
@@ -425,13 +597,19 @@ struct NowPlayingView: View {
 
     private var scrubber: some View {
         let total = stableDuration
-        let displayed = isSeeking ? seekElapsed : min(max(0, clock.elapsed), total)
+        let live = min(max(0, clock.elapsed), total)
+        let displayed: Double = {
+            if isSeeking { return seekElapsed }
+            if let scrubAnimElapsed { return scrubAnimElapsed }
+            return live
+        }()
 
         return VStack(spacing: 6) {
             Slider(
                 value: Binding(
                     get: { displayed },
                     set: { newValue in
+                        scrubAnimElapsed = nil
                         seekElapsed = newValue
                         if !isSeeking { isSeeking = true }
                     }
@@ -439,6 +617,7 @@ struct NowPlayingView: View {
                 in: 0...max(total, 0.1),
                 onEditingChanged: { editing in
                     if editing {
+                        scrubAnimElapsed = nil
                         if !isSeeking {
                             seekElapsed = min(max(0, clock.elapsed), total)
                         }
@@ -455,6 +634,15 @@ struct NowPlayingView: View {
                 }
             )
             .tint(.white)
+            .onChange(of: displayed) { old, value in
+                guard scrubAnimElapsed == nil else { return }
+                // Preserve the pre-skip position when the playhead hard-jumps to 0.
+                if value < 0.25, old > 1 {
+                    lastScrubDisplayed = old
+                } else {
+                    lastScrubDisplayed = value
+                }
+            }
 
             HStack {
                 Text(Formatters.playbackTime(displayed))
@@ -488,12 +676,13 @@ struct NowPlayingView: View {
 
             Spacer(minLength: 0)
 
-            Button { player.previous() } label: {
+            Button { skipPreviousWithArt() } label: {
                 Image(systemName: "backward.fill")
                     .font(.title2)
                     .foregroundStyle(.white)
                     .frame(width: 48, height: 48)
             }
+            .disabled(artSwipeAnimating)
 
             Button { player.playPause() } label: {
                 ZStack {
@@ -506,12 +695,13 @@ struct NowPlayingView: View {
             }
             .buttonStyle(ScaleButtonStyle())
 
-            Button { player.next() } label: {
+            Button { skipNextWithArt() } label: {
                 Image(systemName: "forward.fill")
                     .font(.title2)
                     .foregroundStyle(.white)
                     .frame(width: 48, height: 48)
             }
+            .disabled(artSwipeAnimating)
 
             Spacer(minLength: 0)
 

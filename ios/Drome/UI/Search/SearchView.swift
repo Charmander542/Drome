@@ -8,14 +8,13 @@ struct SearchView: View {
     }
 
     @EnvironmentObject private var session: AppSession
-    @EnvironmentObject private var player: PlayerEngine
-    @EnvironmentObject private var ratings: RatingsStore
     @Environment(\.songNavigator) private var songNavigator
 
     @State private var source: Source = .library
     @State private var query = ""
     @State private var includeLyrics = false
     @State private var isSearching = false
+    @State private var hasCompletedSearch = false
     @State private var hits: [SearchHit] = []
     @State private var spotifyHits: [SpotifySearchHit] = []
     @State private var addingSpotifyIDs: Set<String> = []
@@ -42,16 +41,14 @@ struct SearchView: View {
                 searchControls
             }
             .onChange(of: query) { _, newValue in
+                // Keep this handler tiny — any heavy work here stalls the keyboard.
                 scheduleSearch(newValue)
-                NotificationCenter.default.post(
-                    name: .dromeCarPlaySearchQuery,
-                    object: nil,
-                    userInfo: ["query": newValue])
             }
             .onChange(of: source) { _, _ in
                 hits = []
                 spotifyHits = []
                 error = nil
+                hasCompletedSearch = false
                 scheduleSearch(query)
             }
             .task {
@@ -115,31 +112,44 @@ struct SearchView: View {
 
     @ViewBuilder
     private var libraryResults: some View {
-        if isSearching && hits.isEmpty {
-            LoadingStateView(message: "Searching…")
-        } else if isSearching {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            recentSearchesView
+        } else if let error, hits.isEmpty {
+            ErrorStateView(message: error)
+        } else if hits.isEmpty {
+            // Quiet placeholder while debouncing / in-flight — swapping to a
+            // full LoadingStateView here stalls the first keystroke.
+            if hasCompletedSearch && !isSearching {
+                EmptyStateView(title: "No results", message: "Try a different query.")
+            } else {
+                ZStack {
+                    Color.clear
+                    if isSearching {
+                        ProgressView()
+                            .tint(DromeTheme.muted)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        } else {
             ZStack(alignment: .top) {
                 rankedList
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Searching…")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(DromeTheme.muted)
+                if isSearching {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Searching…")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(DromeTheme.muted)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.top, 8)
+                    .allowsHitTesting(false)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.ultraThinMaterial, in: Capsule())
-                .padding(.top, 8)
             }
-        } else if let error {
-            ErrorStateView(message: error)
-        } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            recentSearchesView
-        } else if hits.isEmpty {
-            EmptyStateView(title: "No results", message: "Try a different query.")
-        } else {
-            rankedList
         }
     }
 
@@ -248,7 +258,7 @@ struct SearchView: View {
             Button {
                 bumpRecent(item)
                 if let song = item.decodedSong() {
-                    player.play([song], startAt: 0,
+                    session.player.play([song], startAt: 0,
                                 context: PlaybackContext(label: "Search", kind: .search))
                     NowPlayingPresenter.open()
                 } else {
@@ -296,7 +306,7 @@ struct SearchView: View {
             let song = try await session.client.song(id: id)
             RecentSearchesStore.remember(song: song)
             recentItems = RecentSearchesStore.load()
-            player.play([song], startAt: 0,
+            session.player.play([song], startAt: 0,
                         context: PlaybackContext(label: "Search", kind: .search))
             NowPlayingPresenter.open()
         } catch {
@@ -422,7 +432,7 @@ struct SearchView: View {
         default:
             if let song = matchedSongs[hit.spotifyId] {
                 Button {
-                    player.play([song], startAt: 0,
+                    session.player.play([song], startAt: 0,
                                 context: PlaybackContext(label: "Library", kind: .search))
                     NowPlayingPresenter.open()
                 } label: {
@@ -490,7 +500,7 @@ struct SearchView: View {
                     rememberHit(hit)
                     let songs = hits.compactMap(\.song)
                     let start = songs.firstIndex(where: { $0.id == song.id }) ?? 0
-                    player.play(songs.isEmpty ? [song] : songs, startAt: start,
+                    session.player.play(songs.isEmpty ? [song] : songs, startAt: start,
                                 context: PlaybackContext(label: "Search", kind: .search))
                     NowPlayingPresenter.open()
                 } label: {
@@ -499,10 +509,10 @@ struct SearchView: View {
                 .buttonStyle(.plain)
                 .songSwipeActions(for: song)
                 .contextMenu {
-                    Button { player.playNext(song) } label: {
+                    Button { session.player.playNext(song) } label: {
                         Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
                     }
-                    Button { player.addToQueue(song) } label: {
+                    Button { session.player.addToQueue(song) } label: {
                         Label("Add to Queue", systemImage: "text.append")
                     }
                     if SongNavigation.albumRoute(for: song) != nil {
@@ -574,8 +584,9 @@ struct SearchView: View {
                         .foregroundStyle(.white)
                         .lineLimit(1)
                     if hit.kind == .song, let song = hit.song {
-                        RatingBadge(rating: ratings.rating(for: song))
-                            .id("\(song.id)-\(ratings.revision)")
+                        // Don't remount on every ratings.revision — that made
+                        // search feel like a hang when ingest published.
+                        RatingBadge(rating: session.ratings.rating(for: song))
                     } else if hit.kind == .album, let album = hit.album, let rating = album.userRating, rating > 0 {
                         RatingBadge(rating: rating)
                     }
@@ -620,14 +631,23 @@ struct SearchView: View {
             spotifyHits = []
             error = nil
             isSearching = false
+            hasCompletedSearch = false
+            NotificationCenter.default.post(
+                name: .dromeCarPlaySearchQuery,
+                object: nil,
+                userInfo: ["query": ""])
             return
         }
-        // Show loading immediately so typing never feels like a freeze.
-        isSearching = true
+        // Do not flip isSearching here — that rebuilds results under the
+        // keyboard and makes the first character feel stuck.
         error = nil
         debounceTask = Task {
-            try? await Task.sleep(nanoseconds: 280_000_000)
+            try? await Task.sleep(nanoseconds: 220_000_000)
             guard !Task.isCancelled else { return }
+            NotificationCenter.default.post(
+                name: .dromeCarPlaySearchQuery,
+                object: nil,
+                userInfo: ["query": trimmed])
             switch source {
             case .library:
                 await runSearch(trimmed)
@@ -640,7 +660,10 @@ struct SearchView: View {
     private func runSearch(_ q: String) async {
         isSearching = true
         error = nil
-        defer { isSearching = false }
+        defer {
+            isSearching = false
+            hasCompletedSearch = true
+        }
         do {
             let serverKey = session.account.serverKey
             let wantLyrics = includeLyrics
@@ -656,9 +679,17 @@ struct SearchView: View {
             }
             let metadata = try await metadataTask
             guard !Task.isCancelled else { return }
-            hits = SearchRanker.rank(query: q, result: metadata, lyrics: lyrics)
-            // Ingest after painting results so the keyboard stays responsive.
-            ratings.ingest(metadata.songs)
+            let ranked = await Task.detached(priority: .userInitiated) {
+                SearchRanker.rank(query: q, result: metadata, lyrics: lyrics)
+            }.value
+            guard !Task.isCancelled else { return }
+            hits = ranked
+            // Ingest after the list paints — never block ranking/publish on DB.
+            let songs = metadata.songs
+            Task { @MainActor in
+                await Task.yield()
+                session.ratings.ingest(songs)
+            }
         } catch {
             self.error = error.localizedDescription
         }
@@ -721,7 +752,7 @@ struct SearchView: View {
     private func playLyricsHit(_ hit: LyricsSearchMatch) async {
         do {
             let song = try await session.client.song(id: hit.songId)
-            player.play([song], startAt: 0,
+            session.player.play([song], startAt: 0,
                         context: PlaybackContext(label: "Lyrics search", kind: .search))
             NowPlayingPresenter.open()
         } catch {

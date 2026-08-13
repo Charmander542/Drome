@@ -46,11 +46,27 @@ func (c *spotifyClient) hasAPICreds() bool {
 
 var spotifyIDPattern = regexp.MustCompile(`^[0-9A-Za-z]{15,40}$`)
 
-// parseSpotifyLink accepts open.spotify.com URLs (including /intl-xx/ and
-// /embed/ variants) and spotify:track:... URIs, returning the resource kind
-// ("track", "album", or "playlist") and its Spotify ID.
+// Matches open.spotify / play.spotify / spotify.link URLs and spotify: URIs
+// buried in pasted clipboard text.
+var spotifyLinkInText = regexp.MustCompile(`(?i)(?:https?://(?:open|play)\.spotify\.com/[^\s<>"']+|https?://spotify\.link/[^\s<>"']+|spotify:(?:track|album|playlist):[0-9A-Za-z]{15,40})`)
+
+// parseSpotifyLink accepts open.spotify.com URLs (including /intl-xx/,
+// /embed/, and legacy /user/.../playlist/ variants), spotify.link short
+// URLs (caller should resolve redirects first), and spotify:track:... URIs.
+// Also extracts a single link when paste text wraps it in other words.
 func parseSpotifyLink(raw string) (kind, id string, err error) {
 	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", "", fmt.Errorf("empty spotify link")
+	}
+
+	// If the paste is prose + a URL, pull the first Spotify link out.
+	if extracted := extractSpotifyLinks(raw); len(extracted) == 1 && extracted[0] != raw {
+		raw = extracted[0]
+	} else if len(extracted) > 1 {
+		// Multi-link paste is handled by the batch path; still try first token.
+		raw = extracted[0]
+	}
 
 	if strings.HasPrefix(raw, "spotify:") {
 		parts := strings.Split(raw, ":")
@@ -65,7 +81,12 @@ func parseSpotifyLink(raw string) (kind, id string, err error) {
 		return "", "", fmt.Errorf("not a valid URL: %w", err)
 	}
 	host := strings.ToLower(u.Hostname())
-	if host != "open.spotify.com" && host != "play.spotify.com" {
+	switch host {
+	case "open.spotify.com", "play.spotify.com":
+		// continue
+	case "spotify.link":
+		return "", "", fmt.Errorf("spotify short link must be resolved before parsing")
+	default:
 		return "", "", fmt.Errorf("not a spotify link (host %q)", host)
 	}
 
@@ -74,12 +95,119 @@ func parseSpotifyLink(raw string) (kind, id string, err error) {
 		if s == "" || s == "embed" || strings.HasPrefix(s, "intl-") {
 			continue
 		}
-		segments = append(segments, s)
+		// Drop query-like junk sometimes left in path segments.
+		if i := strings.IndexAny(s, "?#"); i >= 0 {
+			s = s[:i]
+		}
+		if s != "" {
+			segments = append(segments, s)
+		}
 	}
+
+	// Modern: /track/{id}, /album/{id}, /playlist/{id}
 	if len(segments) >= 2 && (segments[0] == "track" || segments[0] == "album" || segments[0] == "playlist") && spotifyIDPattern.MatchString(segments[1]) {
 		return segments[0], segments[1], nil
 	}
+	// Legacy: /user/{userId}/playlist/{id}
+	if len(segments) >= 4 && segments[0] == "user" && segments[2] == "playlist" && spotifyIDPattern.MatchString(segments[3]) {
+		return "playlist", segments[3], nil
+	}
 	return "", "", fmt.Errorf("unsupported spotify link (only track, album, and playlist links are supported)")
+}
+
+// extractSpotifyLinks returns unique Spotify URLs/URIs found in pasted text,
+// preserving order. Falls back to the trimmed whole string when nothing matches
+// so single clean URLs still work.
+func extractSpotifyLinks(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	matches := spotifyLinkInText.FindAllString(raw, -1)
+	if len(matches) == 0 {
+		// Whole paste might already be a clean URL / URI.
+		if strings.Contains(raw, "spotify") || strings.HasPrefix(raw, "spotify:") {
+			return []string{strings.TrimRight(raw, ".,);]}>'\"")}
+		}
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		m = strings.TrimRight(m, ".,);]}>'\"")
+		key := strings.ToLower(m)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, m)
+	}
+	return out
+}
+
+// resolveSpotifyShortLink follows redirects from spotify.link (and similar)
+// until an open.spotify.com / play.spotify.com URL is reached.
+func resolveSpotifyShortLink(ctx context.Context, httpClient *http.Client, raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "open.spotify.com" || host == "play.spotify.com" || strings.HasPrefix(raw, "spotify:") {
+		return raw, nil
+	}
+	if host != "spotify.link" && !strings.HasSuffix(host, ".spotify.link") {
+		return raw, nil
+	}
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 15 * time.Second}
+	}
+	client := *httpClient
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 8 {
+			return fmt.Errorf("too many redirects")
+		}
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, raw, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "DromeWishlist/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		// Some CDNs reject HEAD — retry with GET but discard body.
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("User-Agent", "DromeWishlist/1.0")
+		resp, err = client.Do(req)
+		if err != nil {
+			return "", err
+		}
+	}
+	defer resp.Body.Close()
+	final := resp.Request.URL.String()
+	if final == "" {
+		return "", fmt.Errorf("short link did not resolve")
+	}
+	return final, nil
+}
+
+// normalizeSpotifyPaste resolves short links then parses kind/id.
+func normalizeSpotifyPaste(ctx context.Context, httpClient *http.Client, raw string) (kind, id, canonical string, err error) {
+	raw = strings.TrimSpace(raw)
+	resolved, err := resolveSpotifyShortLink(ctx, httpClient, raw)
+	if err != nil {
+		return "", "", "", fmt.Errorf("could not resolve short link: %w", err)
+	}
+	kind, id, err = parseSpotifyLink(resolved)
+	if err != nil {
+		return "", "", "", err
+	}
+	return kind, id, resolved, nil
 }
 
 func (c *spotifyClient) token(ctx context.Context) (string, error) {

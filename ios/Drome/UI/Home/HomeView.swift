@@ -100,15 +100,19 @@ struct HomeView: View {
         error = nil
         defer { isLoading = false }
         do {
-            recentEntries = (try? AppEnvironment.shared.database.recentPlayEntries(
-                userKey: session.account.userKey, limit: 40)) ?? []
+            let userKey = session.account.userKey
+            let db = AppEnvironment.shared.database
+            async let recentTask = Task.detached(priority: .utility) {
+                (try? db.recentPlayEntries(userKey: userKey, limit: 40)) ?? []
+            }.value
             async let f = session.client.albumList(type: .frequent, size: 20)
             async let n = session.client.albumList(type: .newest, size: 20)
             async let p = session.client.playlists()
-            let (freq, neu, lists) = try await (f, n, p)
+            let (recent, freq, neu, lists) = try await (recentTask, f, n, p)
+            recentEntries = recent
             frequent = freq
             newest = neu
-            homePlaylists = Self.rankedHomePlaylists(lists, recent: recentEntries)
+            homePlaylists = Self.rankedHomePlaylists(lists, recent: recent)
         } catch {
             self.error = error.localizedDescription
         }

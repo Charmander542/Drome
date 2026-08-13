@@ -399,13 +399,13 @@ final class AppDatabase {
             kind = "playlist"
             contextId = id
             label = context?.label
-        case .album:
+        case .album(let id):
             kind = "album"
-            contextId = song.albumId
+            contextId = id.isEmpty ? song.albumId : id
             label = context?.label ?? song.album
-        case .artist:
+        case .artist(let id):
             kind = "artist"
-            contextId = song.artistId ?? context?.label
+            contextId = id.isEmpty ? (song.artistId ?? context?.label) : id
             label = context?.label
         case .genre:
             kind = "genre"
@@ -577,6 +577,29 @@ final class AppDatabase {
                     song_json = excluded.song_json,
                     updated_at = excluded.updated_at
                 """, arguments: [userKey, song.id, clamped, json, updatedAt])
+        }
+    }
+
+    /// Batch upsert in a single transaction — used by catalog / search ingest.
+    func upsertSongRatings(userKey: String, songs: [(song: Song, rating: Int)]) throws {
+        guard !songs.isEmpty else { return }
+        let encoder = JSONEncoder()
+        let updatedAt = Date().timeIntervalSince1970
+        try pool.write { db in
+            for entry in songs {
+                let clamped = min(5, max(0, entry.rating))
+                guard clamped > 0 else { continue }
+                let json = (try? encoder.encode(entry.song))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                try db.execute(sql: """
+                    INSERT INTO song_ratings (user_key, song_id, rating, song_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT (user_key, song_id) DO UPDATE SET
+                        rating = excluded.rating,
+                        song_json = excluded.song_json,
+                        updated_at = excluded.updated_at
+                    """, arguments: [userKey, entry.song.id, clamped, json, updatedAt])
+            }
         }
     }
 

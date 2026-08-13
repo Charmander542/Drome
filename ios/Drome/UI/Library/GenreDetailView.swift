@@ -126,6 +126,18 @@ struct GenreDetailView: View {
                 }
             }
 
+            func publish() {
+                albums = albumByID.values.sorted {
+                    $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+                songs = songByID.values.sorted {
+                    $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+                }
+                if !songs.isEmpty || !albums.isEmpty {
+                    isLoading = false
+                }
+            }
+
             for _ in 0..<min(3, tags.count) {
                 enqueueNext()
             }
@@ -134,16 +146,11 @@ struct GenreDetailView: View {
                 for album in result.albums { albumByID[album.id] = album }
                 for song in result.songs { songByID[song.id] = song }
                 if let err = result.error { lastError = err }
+                publish()
                 enqueueNext()
             }
         }
 
-        albums = albumByID.values.sorted {
-            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-        }
-        songs = songByID.values.sorted {
-            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
-        }
         ratings.ingest(songs)
 
         if albums.isEmpty && songs.isEmpty, let lastError {

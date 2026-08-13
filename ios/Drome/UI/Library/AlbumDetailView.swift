@@ -13,6 +13,7 @@ struct AlbumDetailView: View {
     @State private var error: String?
     @State private var isLoading = true
     @State private var artistDestination: ArtistNav?
+    @State private var visibleSongCount = ProgressiveSongReveal.initial
 
     private struct ArtistNav: Hashable, Identifiable {
         let id: String
@@ -21,12 +22,14 @@ struct AlbumDetailView: View {
 
     var body: some View {
         Group {
-            if isLoading && album == nil {
-                LoadingStateView()
-            } else if let error, album == nil {
-                ErrorStateView(message: error) { Task { await load() } }
-            } else if let album {
+            if let album {
                 content(album)
+            } else if let placeholder, isLoading {
+                content(Self.shell(from: placeholder), songsReady: false)
+            } else if isLoading {
+                LoadingStateView()
+            } else if let error {
+                ErrorStateView(message: error) { Task { await load() } }
             }
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -36,32 +39,79 @@ struct AlbumDetailView: View {
         .task { await load() }
     }
 
-    private func content(_ album: AlbumWithSongs) -> some View {
-        List {
+    private static func shell(from placeholder: Album) -> AlbumWithSongs {
+        AlbumWithSongs(
+            id: placeholder.id,
+            name: placeholder.name,
+            artist: placeholder.artist,
+            artistId: placeholder.artistId,
+            coverArt: placeholder.coverArt,
+            songCount: placeholder.songCount,
+            duration: placeholder.duration,
+            year: placeholder.year,
+            genre: placeholder.genre,
+            userRating: placeholder.userRating,
+            song: [])
+    }
+
+    private func content(_ album: AlbumWithSongs, songsReady: Bool = true) -> some View {
+        let allSongs = album.songs
+        let visible = Array(allSongs.prefix(visibleSongCount))
+        let canPlay = songsReady && !allSongs.isEmpty
+
+        return List {
             Section {
-                header(album)
+                header(album, canPlay: canPlay, songsReady: songsReady)
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets())
             }
 
             Section {
-                ForEach(Array(album.songs.enumerated()), id: \.element.id) { index, song in
+                if !songsReady {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Text("Loading tracks…")
+                            .font(.subheadline)
+                            .foregroundStyle(DromeTheme.muted)
+                        Spacer()
+                    }
+                    .listRowBackground(Color.clear)
+                }
+
+                ForEach(Array(visible.enumerated()), id: \.element.id) { index, song in
                     SongRow(song: song, index: index + 1)
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            player.play(album.songs, startAt: index,
-                                        context: PlaybackContext(label: album.name, kind: .album))
+                            player.play(allSongs, startAt: index,
+                                        context: PlaybackContext(label: album.name, kind: .album(id: album.id)))
                         }
                         .listRowBackground(DromeTheme.background)
                         .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                 }
+
+                if songsReady, visibleSongCount < allSongs.count {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                            .padding(.vertical, 8)
+                        Spacer()
+                    }
+                    .listRowBackground(Color.clear)
+                    .onAppear {
+                        ProgressiveSongReveal.expand(
+                            visibleCount: &visibleSongCount, total: allSongs.count)
+                    }
+                }
             }
 
-            SpotifyMissingTracksSection(
-                buttonTitle: "Find songs on this album you’re missing",
-                query: spotifyAlbumQuery(album),
-                ownedSongs: album.songs
-            )
+            if songsReady {
+                SpotifyMissingTracksSection(
+                    buttonTitle: "Find songs on this album you’re missing",
+                    query: spotifyAlbumQuery(album),
+                    ownedSongs: allSongs
+                )
+            }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -70,17 +120,19 @@ struct AlbumDetailView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
-                        downloads.download(album.songs, albumId: album.id,
+                        downloads.download(allSongs, albumId: album.id,
                                            albumName: album.name, artist: album.artist)
                     } label: {
                         Label("Download Album", systemImage: "arrow.down.circle")
                     }
+                    .disabled(!canPlay)
                     Button {
-                        player.playShuffled(album.songs,
-                                            context: PlaybackContext(label: album.name, kind: .album))
+                        player.playShuffled(allSongs,
+                                            context: PlaybackContext(label: album.name, kind: .album(id: album.id)))
                     } label: {
                         Label("Shuffle Play", systemImage: "shuffle")
                     }
+                    .disabled(!canPlay)
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -88,7 +140,7 @@ struct AlbumDetailView: View {
         }
     }
 
-    private func header(_ album: AlbumWithSongs) -> some View {
+    private func header(_ album: AlbumWithSongs, canPlay: Bool, songsReady: Bool) -> some View {
         VStack(spacing: 16) {
             RemoteImage(url: session.client.coverArtURL(id: album.coverArt ?? album.id, size: 600))
                 .frame(width: 220, height: 220)
@@ -126,7 +178,7 @@ struct AlbumDetailView: View {
             HStack(spacing: 12) {
                 Button {
                     player.play(album.songs, startAt: 0,
-                                context: PlaybackContext(label: album.name, kind: .album))
+                                context: PlaybackContext(label: album.name, kind: .album(id: album.id)))
                 } label: {
                     Label("Play", systemImage: "play.fill")
                         .frame(maxWidth: .infinity)
@@ -135,17 +187,25 @@ struct AlbumDetailView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(DromeTheme.accent)
                 .foregroundStyle(.white)
+                .disabled(!canPlay)
 
                 Button {
                     player.playShuffled(album.songs,
-                                        context: PlaybackContext(label: album.name, kind: .album))
+                                        context: PlaybackContext(label: album.name, kind: .album(id: album.id)))
                 } label: {
-                    Label("Shuffle", systemImage: "shuffle")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                    Group {
+                        if songsReady {
+                            Label("Shuffle", systemImage: "shuffle")
+                        } else {
+                            ProgressView()
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
                 }
                 .buttonStyle(.bordered)
                 .tint(.white)
+                .disabled(!canPlay)
             }
             .padding(.horizontal, 16)
         }
@@ -180,7 +240,8 @@ struct AlbumDetailView: View {
     private func metaLine(_ album: AlbumWithSongs) -> String {
         var parts: [String] = []
         if let year = album.year { parts.append(String(year)) }
-        parts.append("\(album.songs.count) songs")
+        let count = album.songCount ?? album.songs.count
+        if count > 0 { parts.append("\(count) songs") }
         if let duration = album.duration {
             parts.append(Formatters.longDuration(seconds: duration))
         }
@@ -188,15 +249,29 @@ struct AlbumDetailView: View {
     }
 
     private func load() async {
-        isLoading = true
+        if let cached = LibraryDetailCache.album(albumID) {
+            album = cached
+            visibleSongCount = ProgressiveSongReveal.clampInitial(total: cached.songs.count)
+            isLoading = false
+        } else {
+            isLoading = true
+        }
         error = nil
         defer { isLoading = false }
         do {
             let loaded = try await session.client.album(id: albumID)
+            visibleSongCount = ProgressiveSongReveal.clampInitial(total: loaded.songs.count)
             album = loaded
-            ratings.ingest(loaded.songs)
+            LibraryDetailCache.store(album: loaded)
+            let songs = loaded.songs
+            Task {
+                await Task.yield()
+                ratings.ingest(songs)
+            }
         } catch {
-            self.error = error.localizedDescription
+            if album == nil {
+                self.error = error.localizedDescription
+            }
         }
     }
 

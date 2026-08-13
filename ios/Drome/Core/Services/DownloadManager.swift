@@ -94,17 +94,34 @@ final class DownloadManager: ObservableObject {
     }
 
     private func reload() {
-        records = (try? database.downloadRecords(serverKey: serverKey)) ?? []
-        downloadedIDs = Set(records.filter { $0.state == "done" }.map(\.songId))
-        playlistMemberships = (try? database.downloadPlaylistMemberships(serverKey: serverKey)) ?? []
-        var decoded: [String: Song] = [:]
-        for record in records where record.state == "done" {
-            if let song = try? JSONDecoder().decode(Song.self, from: Data(record.songJSON.utf8)) {
-                decoded[record.songId] = song
-            }
-        }
-        doneSongsById = decoded
+        let key = serverKey
+        let db = database
+        let loadedRecords = (try? db.downloadRecords(serverKey: key)) ?? []
+        let memberships = (try? db.downloadPlaylistMemberships(serverKey: key)) ?? []
+        records = loadedRecords
+        downloadedIDs = Set(loadedRecords.filter { $0.state == "done" }.map(\.songId))
+        playlistMemberships = memberships
         rebuildPlaylistDownloadCounts()
+
+        // JSON-decoding every finished download on the main actor freezes first paint.
+        let doneJSON = loadedRecords.compactMap { record -> (String, String)? in
+            guard record.state == "done" else { return nil }
+            return (record.songId, record.songJSON)
+        }
+        Task(priority: .utility) { [weak self] in
+            let decoded = await Task.detached(priority: .utility) {
+                let decoder = JSONDecoder()
+                var map: [String: Song] = [:]
+                map.reserveCapacity(doneJSON.count)
+                for (id, json) in doneJSON {
+                    if let song = try? decoder.decode(Song.self, from: Data(json.utf8)) {
+                        map[id] = song
+                    }
+                }
+                return map
+            }.value
+            self?.doneSongsById = decoded
+        }
     }
 
     private func rebuildPlaylistDownloadCounts() {

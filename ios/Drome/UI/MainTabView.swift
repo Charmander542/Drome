@@ -42,14 +42,18 @@ struct MainTabView: View {
                 }
             }
 
-            // Hide the mini player while the keyboard is up so it doesn't
-            // sit on top of the keys (especially on Search).
-            if player.current != nil && !keyboardVisible {
+            // Keep the mini player in the hierarchy while the keyboard is up.
+            // Removing it (or animating a move transition) relayouts `.searchable`
+            // mid-presentation and delays the keyboard / first keystroke.
+            if player.current != nil {
                 MiniPlayerBar {
                     showNowPlaying = true
                 }
                 .padding(.bottom, connectivity.isOnline ? 49 : 0)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .opacity(keyboardVisible ? 0 : 1)
+                .allowsHitTesting(!keyboardVisible)
+                .accessibilityHidden(keyboardVisible)
+                .animation(nil, value: keyboardVisible)
                 .animation(.spring(response: 0.35, dampingFraction: 0.85), value: player.current?.id)
             }
         }
