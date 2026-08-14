@@ -725,20 +725,9 @@ type playlistTrack struct {
 }
 
 func (c *spotifyClient) playlistTracks(ctx context.Context, playlistID string) (name string, tracks []playlistTrack, err error) {
-	// Editorial 37i9… lists 404 on the Web API even when public. The embed
-	// page still includes track URIs — scrape that first, same as SpotiFLAC's GUI.
-	pubName, pubTracks, pubErr := c.playlistTracksPublic(ctx, playlistID)
-	if pubName != "" {
-		name = pubName
-	}
-	if pubErr == nil && len(pubTracks) > 0 {
-		return name, pubTracks, nil
-	}
-	if pubErr != nil {
-		logf("playlist public scrape %s: %v", playlistID, pubErr)
-	}
-
-	if c.hasAPICreds() && !strings.HasPrefix(playlistID, "37i9") {
+	// Embed HTML only includes ~100 tracks. Prefer the Web API, which pages
+	// through the whole playlist, then fall back to the public scrape.
+	if c.hasAPICreds() {
 		apiName, apiTracks, apiErr := c.playlistTracksAPI(ctx, playlistID)
 		if apiName != "" {
 			name = apiName
@@ -749,6 +738,20 @@ func (c *spotifyClient) playlistTracks(ctx context.Context, playlistID string) (
 		if apiErr != nil {
 			logf("playlist API %s: %v", playlistID, apiErr)
 		}
+	}
+
+	pubName, pubTracks, pubErr := c.playlistTracksPublic(ctx, playlistID)
+	if pubName != "" {
+		name = pubName
+	}
+	if pubErr == nil && len(pubTracks) > 0 {
+		if len(pubTracks) == 100 {
+			logf("playlist scrape %s: embed returned 100 tracks; remaining songs need the Spotify API", playlistID)
+		}
+		return name, pubTracks, nil
+	}
+	if pubErr != nil {
+		logf("playlist public scrape %s: %v", playlistID, pubErr)
 	}
 
 	if name == "" {
@@ -777,11 +780,11 @@ func (c *spotifyClient) playlistTracksAPI(ctx context.Context, playlistID string
 	}
 
 	queries := []string{
-		"/playlists/" + playlistID + "/tracks?limit=50&additional_types=track&fields=next,items(track(id,name,artists(name),album(name,artists(name),images),external_urls))",
-		"/playlists/" + playlistID + "/tracks?limit=50&additional_types=track",
-		"/playlists/" + playlistID + "/tracks?limit=50&market=" + url.QueryEscape(c.market) +
+		"/playlists/" + playlistID + "/tracks?limit=100&additional_types=track&fields=next,items(track(id,name,artists(name),album(name,artists(name),images),external_urls))",
+		"/playlists/" + playlistID + "/tracks?limit=100&additional_types=track",
+		"/playlists/" + playlistID + "/tracks?limit=100&market=" + url.QueryEscape(c.market) +
 			"&additional_types=track&fields=next,items(track(id,name,artists(name),album(name,artists(name),images),external_urls))",
-		"/playlists/" + playlistID + "/tracks?limit=50",
+		"/playlists/" + playlistID + "/tracks?limit=100",
 	}
 	var lastErr error
 	for _, start := range queries {
@@ -854,6 +857,9 @@ func (c *spotifyClient) fetchPlaylistTrackPages(ctx context.Context, startPath s
 			break
 		}
 		path = *page.Next
+		if len(tracks) >= 10000 {
+			break
+		}
 	}
 	return tracks, nil
 }
@@ -985,40 +991,61 @@ func playlistNameFromNextData(html string) string {
 }
 
 func (c *spotifyClient) playlistTracksPublic(ctx context.Context, playlistID string) (name string, tracks []playlistTrack, err error) {
-	pages := []string{
-		"https://open.spotify.com/embed/playlist/" + playlistID,
-		"https://open.spotify.com/embed/playlist/" + playlistID + "?utm_source=generator",
-		"https://open.spotify.com/playlist/" + playlistID,
-	}
-	var html string
+	seen := map[string]struct{}{}
 	var lastErr error
-	for _, u := range pages {
-		page, fetchErr := c.fetchPublicHTML(ctx, u)
-		if fetchErr != nil {
-			lastErr = fetchErr
-			continue
+	for _, offset := range []int{0, 100, 200, 300, 400, 500} {
+		pages := []string{
+			"https://open.spotify.com/embed/playlist/" + playlistID,
+			"https://open.spotify.com/playlist/" + playlistID,
 		}
-		html += "\n" + page
-		if name == "" {
-			name = playlistNameFromHTML(page)
+		if offset > 0 {
+			off := fmt.Sprintf("?offset=%d", offset)
+			pages = []string{
+				"https://open.spotify.com/embed/playlist/" + playlistID + off,
+				"https://open.spotify.com/playlist/" + playlistID + off,
+			}
 		}
-		if ids := extractSpotifyTrackIDs(page); len(ids) > 0 {
+		gotNew := 0
+		for _, u := range pages {
+			page, fetchErr := c.fetchPublicHTML(ctx, u)
+			if fetchErr != nil {
+				lastErr = fetchErr
+				continue
+			}
+			if name == "" {
+				name = playlistNameFromHTML(page)
+			}
+			batch := extractPlaylistTracksFromHTML(page)
+			for _, t := range batch {
+				if t.SpotifyID == "" {
+					continue
+				}
+				if _, ok := seen[t.SpotifyID]; ok {
+					continue
+				}
+				seen[t.SpotifyID] = struct{}{}
+				tracks = append(tracks, t)
+				gotNew++
+			}
+			if len(batch) > 0 {
+				break
+			}
+		}
+		if offset == 0 && len(tracks) == 0 {
+			break
+		}
+		if offset > 0 && gotNew == 0 {
+			break
+		}
+		if offset == 0 && len(tracks) < 100 {
 			break
 		}
 	}
-	if html == "" {
+	if len(tracks) == 0 {
 		if lastErr != nil {
 			return name, nil, lastErr
 		}
-		return name, nil, fmt.Errorf("could not load public playlist page")
-	}
-
-	tracks = extractPlaylistTracksFromHTML(html)
-	if len(tracks) == 0 {
 		return name, nil, fmt.Errorf("public playlist page has no track ids")
-	}
-	if scraped := playlistNameFromHTML(html); scraped != "" && (name == "" || name == "Spotify playlist") {
-		name = scraped
 	}
 	tracks = c.hydratePlaylistTracks(ctx, tracks)
 	return name, tracks, nil
