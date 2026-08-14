@@ -8,6 +8,9 @@ final class ImageLoader: @unchecked Sendable {
     static let shared = ImageLoader()
 
     private let cache = NSCache<NSString, UIImage>()
+    /// Best decoded bitmap per cover id so a list-size fetch can paint Now Playing
+    /// immediately while a larger decode finishes.
+    private let coverCache = NSCache<NSString, UIImage>()
     private let lock = NSLock()
     private var _session: URLSession = .shared
     /// Dedupes concurrent fetches for the same cover URL.
@@ -27,12 +30,21 @@ final class ImageLoader: @unchecked Sendable {
         cache.countLimit = 1200
         // ~192 MB of decoded bitmaps; prefer evicting by cost over count alone.
         cache.totalCostLimit = 192 * 1024 * 1024
+        coverCache.countLimit = 400
+        coverCache.totalCostLimit = 96 * 1024 * 1024
     }
 
     func image(for url: URL) async -> UIImage? {
         let key = url.absoluteString as NSString
         if let cached = cache.object(forKey: key) {
-            return cached
+            // Older builds decoded local covers at 240px — drop those so
+            // Now Playing / heroes can re-decode at full resolution.
+            if Self.shouldInvalidateStaleLocalDecode(url: url, image: cached) {
+                cache.removeObject(forKey: key)
+            } else {
+                rememberCover(cached, for: url)
+                return cached
+            }
         }
         lock.lock()
         if failed.contains(key) {
@@ -66,9 +78,12 @@ final class ImageLoader: @unchecked Sendable {
             guard started < limit else { break }
             let key = url.absoluteString as NSString
             lock.lock()
-            let skip = cache.object(forKey: key) != nil
-                || failed.contains(key)
-                || inflight[key] != nil
+            if let cached = cache.object(forKey: key) {
+                lock.unlock()
+                rememberCover(cached, for: url)
+                continue
+            }
+            let skip = failed.contains(key) || inflight[key] != nil
             lock.unlock()
             guard !skip else { continue }
             started += 1
@@ -78,13 +93,26 @@ final class ImageLoader: @unchecked Sendable {
 
     /// Synchronous memory lookup so list cells can paint without awaiting.
     func cachedImage(for url: URL) -> UIImage? {
-        cache.object(forKey: url.absoluteString as NSString)
+        let key = url.absoluteString as NSString
+        guard let cached = cache.object(forKey: key) else { return nil }
+        if Self.shouldInvalidateStaleLocalDecode(url: url, image: cached) {
+            cache.removeObject(forKey: key)
+            return nil
+        }
+        return cached
+    }
+
+    private static func shouldInvalidateStaleLocalDecode(url: URL, image: UIImage) -> Bool {
+        guard url.isFileURL else { return false }
+        let pixels = max(image.size.width, image.size.height) * image.scale
+        return pixels < 500
     }
 
     /// Insert a decoded image (e.g. freshly saved offline cover art).
     func cacheImage(_ image: UIImage, for url: URL) {
         let cost = Self.approximateCost(of: image)
         cache.setObject(image, forKey: url.absoluteString as NSString, cost: cost)
+        rememberCover(image, for: url)
         lock.lock()
         failed.remove(url.absoluteString as NSString)
         lock.unlock()
@@ -93,6 +121,9 @@ final class ImageLoader: @unchecked Sendable {
     func removeCached(for url: URL) {
         let key = url.absoluteString as NSString
         cache.removeObject(forKey: key)
+        if let id = Self.coverIdentity(for: url) {
+            coverCache.removeObject(forKey: id as NSString)
+        }
         lock.lock()
         failed.remove(key)
         lock.unlock()
@@ -118,7 +149,40 @@ final class ImageLoader: @unchecked Sendable {
         }
         let cost = Self.approximateCost(of: image)
         cache.setObject(image, forKey: key, cost: cost)
+        rememberCover(image, for: url)
         return image
+    }
+
+    /// Any previously decoded size for this cover — used so the player never
+    /// flashes a placeholder while a larger fetch is in flight.
+    func previewImage(for url: URL) -> UIImage? {
+        if let exact = cachedImage(for: url) { return exact }
+        if let id = Self.coverIdentity(for: url) {
+            return coverCache.object(forKey: id as NSString)
+        }
+        return nil
+    }
+
+    private func rememberCover(_ image: UIImage, for url: URL) {
+        guard let id = Self.coverIdentity(for: url) else { return }
+        let key = id as NSString
+        if let existing = coverCache.object(forKey: key) {
+            let old = max(existing.size.width, existing.size.height) * existing.scale
+            let new = max(image.size.width, image.size.height) * image.scale
+            if new < old { return }
+        }
+        coverCache.setObject(image, forKey: key, cost: Self.approximateCost(of: image))
+    }
+
+    static func coverIdentity(for url: URL) -> String? {
+        if let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+           let id = items.first(where: { $0.name == "id" })?.value, !id.isEmpty {
+            return id
+        }
+        if url.isFileURL {
+            return url.deletingPathExtension().lastPathComponent
+        }
+        return nil
     }
 
     private func markFailed(_ key: NSString) {
@@ -158,14 +222,14 @@ final class ImageLoader: @unchecked Sendable {
         }
     }
 
-    /// Prefer the Subsonic `size=` query (already list-sized). Fallback keeps
-    /// list art small even when the URL omits a size.
+    /// Prefer the Subsonic `size=` query (already list-sized). Local cover
+    /// files have no size query — decode them large enough for Now Playing.
     private static func maxPixelDimension(for url: URL) -> CGFloat {
         guard let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
               let sizeItem = items.first(where: { $0.name == "size" }),
               let value = sizeItem.value, let size = Double(value), size > 0
         else {
-            return 240
+            return url.isFileURL ? 1200 : 600
         }
         // Decode at ~2× for retina list cells without loading full art.
         return CGFloat(min(max(size * 2, 120), 1200))
@@ -235,6 +299,9 @@ final class ImageLoader: @unchecked Sendable {
 struct RemoteImage: View {
     let url: URL?
     var placeholderSymbol: String = "music.note"
+    /// When true, keep the last bitmap until the next cover is ready so the
+    /// player never flashes the music-note placeholder.
+    var holdImageWhileLoading: Bool = false
 
     @State private var image: UIImage?
     @State private var loadedURL: URL?
@@ -247,6 +314,7 @@ struct RemoteImage: View {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             } else {
                 Image(systemName: placeholderSymbol)
                     .font(.title2)
@@ -254,17 +322,24 @@ struct RemoteImage: View {
             }
         }
         .clipped()
+        .contentShape(Rectangle())
         .onAppear { applyURL(url, preferKeepExisting: true) }
         .onChange(of: url) { _, newURL in
-            applyURL(newURL, preferKeepExisting: false)
+            applyURL(newURL, preferKeepExisting: holdImageWhileLoading)
         }
         .task(id: url) {
             guard let url else { return }
             if loadedURL == url, image != nil { return }
+            if let preview = ImageLoader.shared.previewImage(for: url), image == nil || loadedURL != url {
+                image = preview
+                if ImageLoader.shared.cachedImage(for: url) != nil {
+                    loadedURL = url
+                    return
+                }
+            }
             if ImageLoader.shared.cachedImage(for: url) != nil { return }
             if let loaded = await ImageLoader.shared.image(for: url) {
                 guard !Task.isCancelled else { return }
-                // Only replace if we still want this URL.
                 if self.url == url {
                     image = loaded
                     loadedURL = url
@@ -277,20 +352,21 @@ struct RemoteImage: View {
     /// or an empty placeholder for a frame.
     private func applyURL(_ newURL: URL?, preferKeepExisting: Bool) {
         guard let newURL else {
-            image = nil
-            loadedURL = nil
+            if !preferKeepExisting {
+                image = nil
+                loadedURL = nil
+            }
             return
         }
         if loadedURL == newURL, image != nil { return }
-        if let cached = ImageLoader.shared.cachedImage(for: newURL) {
+        if let cached = ImageLoader.shared.previewImage(for: newURL) {
             image = cached
-            loadedURL = newURL
+            if ImageLoader.shared.cachedImage(for: newURL) != nil {
+                loadedURL = newURL
+            }
             return
         }
-        // Async path will fill in; keep current bitmap only when asked (appear).
         if !preferKeepExisting {
-            // Avoid sticking on the previous track's art after a strip rotate.
-            // Prefer a neutral fill over the wrong album for a frame.
             image = nil
             loadedURL = nil
         }

@@ -34,6 +34,9 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /wishlist/{id}/retry", s.requireAuth(s.handleRetry))
 	mux.HandleFunc("POST /wishlist/{id}/share", s.requireAuth(s.handleShareEntry))
 	mux.HandleFunc("POST /wishlist/share", s.requireAuth(s.handleShareList))
+	mux.HandleFunc("POST /share/track", s.requireAuth(s.handleCreateTrackShare))
+	mux.HandleFunc("GET /s/{token}", s.handleTrackSharePage)
+	mux.HandleFunc("GET /s/{token}/cover", s.handleTrackShareCover)
 	return logRequests(mux)
 }
 
@@ -228,14 +231,14 @@ func (s *server) handlePlaylistImport(w http.ResponseWriter, r *http.Request, pl
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"kind":                 "playlistImport",
-		"playlistId":           playlistID,
-		"playlistName":         name,
-		"added":                len(added),
-		"skippedOwned":         skippedOwned,
-		"entries":              added,
-		"sourcePlaylistId":     playlistID,
-		"sourcePlaylistName":   name,
+		"kind":               "playlistImport",
+		"playlistId":         playlistID,
+		"playlistName":       name,
+		"added":              len(added),
+		"skippedOwned":       skippedOwned,
+		"entries":            added,
+		"sourcePlaylistId":   playlistID,
+		"sourcePlaylistName": name,
 	})
 }
 
@@ -264,6 +267,7 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (name 
 			SpotifyURL:         t.SpotifyURL,
 			Title:              t.Title,
 			Artist:             t.Artist,
+			AlbumArtist:        t.AlbumArtist,
 			Album:              t.Album,
 			CoverURL:           t.CoverURL,
 			Status:             status,

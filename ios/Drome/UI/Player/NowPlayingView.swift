@@ -17,6 +17,7 @@ struct NowPlayingView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var ratings: RatingsStore
     @EnvironmentObject private var rotation: RotationManager
+    @EnvironmentObject private var downloads: DownloadManager
     @Environment(\.dismiss) private var dismiss
 
     @State private var tab: Pane = .song
@@ -163,7 +164,7 @@ struct NowPlayingView: View {
             // Prefer the strip's centered cover so the blur doesn't jump ahead
             // of the art swipe animation.
             if let url = artPages.count > 1 ? artPages[1].url : artPages.first?.url {
-                RemoteImage(url: url)
+                RemoteImage(url: url, holdImageWhileLoading: true)
                     .scaledToFill()
                     .blur(radius: 80)
                     .opacity(0.4)
@@ -297,7 +298,7 @@ struct NowPlayingView: View {
     }
 
     private func coverCard(url: URL?, side: CGFloat) -> some View {
-        RemoteImage(url: url)
+        RemoteImage(url: url, holdImageWhileLoading: true)
             .frame(width: side, height: side)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .shadow(color: .black.opacity(0.5), radius: 20, y: 12)
@@ -501,39 +502,53 @@ struct NowPlayingView: View {
     private var metadataBlock: some View {
         let song = player.current?.song
         let title = cleaned(song?.title) ?? "Unknown Title"
+        let isDownloaded = song.map { downloads.isDownloaded($0.id) } ?? false
 
         return HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 // Tap title → album (when we know the album id).
-                if let song, let albumId = song.albumId, !albumId.isEmpty {
-                    NavigationLink {
-                        AlbumDetailView(
-                            albumID: albumId,
-                            placeholder: Album(
-                                id: albumId,
-                                name: song.album ?? title,
-                                artist: song.artist,
-                                artistId: song.artistId,
-                                coverArt: song.coverArt,
-                                songCount: nil, duration: nil, playCount: nil,
-                                created: nil, year: nil, genre: nil, userRating: nil
-                            )
-                        )
-                    } label: {
-                        Text(title)
-                            .font(.title3.weight(.bold))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.85)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .center, spacing: 6) {
+                    Group {
+                        if let song, let albumId = song.albumId, !albumId.isEmpty {
+                            NavigationLink {
+                                AlbumDetailView(
+                                    albumID: albumId,
+                                    placeholder: Album(
+                                        id: albumId,
+                                        name: song.album ?? title,
+                                        artist: song.artist,
+                                        artistId: song.artistId,
+                                        coverArt: song.coverArt,
+                                        songCount: nil, duration: nil, playCount: nil,
+                                        created: nil, year: nil, genre: nil, userRating: nil
+                                    )
+                                )
+                            } label: {
+                                Text(title)
+                                    .font(.title3.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.85)
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Text(title)
+                                .font(.title3.weight(.bold))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.85)
+                        }
                     }
-                    .buttonStyle(.plain)
-                } else {
-                    Text(title)
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
+                    .layoutPriority(1)
+
+                    if isDownloaded {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(DromeTheme.accent)
+                            .accessibilityLabel("Downloaded")
+                    }
+
+                    Spacer(minLength: 0)
                 }
 
                 // Each credited artist name is independently tappable.
@@ -875,13 +890,31 @@ struct NowPlayingMoreSheet: View {
                     }
                     .listRowBackground(DromeTheme.elevated)
 
-                    Button {
-                        downloads.download([song])
-                        isPresented = false
-                    } label: {
-                        Label("Download", systemImage: "arrow.down.circle")
+                    if downloads.isDownloaded(song.id) {
+                        Button(role: .destructive) {
+                            downloads.remove(songId: song.id)
+                            isPresented = false
+                        } label: {
+                            Label("Remove Download", systemImage: "trash")
+                        }
+                        .listRowBackground(DromeTheme.elevated)
+                    } else if downloads.isBusy(song.id) {
+                        Button(role: .destructive) {
+                            downloads.cancel(songId: song.id)
+                            isPresented = false
+                        } label: {
+                            Label("Cancel Download", systemImage: "xmark.circle")
+                        }
+                        .listRowBackground(DromeTheme.elevated)
+                    } else {
+                        Button {
+                            downloads.download([song])
+                            isPresented = false
+                        } label: {
+                            Label("Download", systemImage: "arrow.down.circle")
+                        }
+                        .listRowBackground(DromeTheme.elevated)
                     }
-                    .listRowBackground(DromeTheme.elevated)
 
                     Button {
                         SongShare.present(song: song)

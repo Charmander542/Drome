@@ -322,7 +322,7 @@ struct PlaylistDetailView: View {
 
     private func playlistHeader(_ playlist: PlaylistWithSongs) -> some View {
         VStack(spacing: 14) {
-            ZStack(alignment: .bottomTrailing) {
+            ZStack {
                 RemoteImage(
                     url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 600),
                     placeholderSymbol: "music.note.list"
@@ -338,29 +338,24 @@ struct PlaylistDetailView: View {
                         ProgressView()
                     }
                 }
-
-                if !isSystem {
-                    PhotosPicker(selection: $coverPickerItem, matching: .images) {
-                        Image(systemName: "camera.fill")
-                            .font(.caption.weight(.semibold))
-                            .padding(10)
-                            .background(.ultraThinMaterial, in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(8)
-                    .disabled(isUploadingCover)
-                    .accessibilityLabel("Change cover image")
-                }
             }
 
             VStack(spacing: 6) {
                 if prefersInlineTitle {
                     EmptyView()
                 } else {
-                    Text(playlist.name)
-                        .font(.title2.bold())
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: .infinity)
+                    HStack(spacing: 8) {
+                        Text(playlist.name)
+                            .font(.title2.bold())
+                            .multilineTextAlignment(.center)
+                        if isFullyDownloaded {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(DromeTheme.accent)
+                                .accessibilityLabel("Downloaded")
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
                 }
 
                 Text("\(playlist.songs.count) songs")
@@ -456,12 +451,20 @@ struct PlaylistDetailView: View {
 
     private static func compressCover(_ data: Data) -> Data? {
         guard let image = UIImage(data: data) else { return data }
+        let src = image.size
+        let side = min(src.width, src.height)
+        guard side > 0 else { return data }
+        let origin = CGPoint(x: (src.width - side) / 2, y: (src.height - side) / 2)
         let maxSide: CGFloat = 1600
-        let scale = min(1, maxSide / max(image.size.width, image.size.height))
-        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let resized = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
-        return resized.jpegData(compressionQuality: 0.85)
+        let output = min(side, maxSide)
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: output, height: output))
+        let squared = renderer.image { _ in
+            image.draw(in: CGRect(x: -origin.x * output / side,
+                                  y: -origin.y * output / side,
+                                  width: src.width * output / side,
+                                  height: src.height * output / side))
+        }
+        return squared.jpegData(compressionQuality: 0.85)
     }
 
     private func move(from source: IndexSet, to destination: Int) {

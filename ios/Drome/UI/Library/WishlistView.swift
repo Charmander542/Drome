@@ -95,6 +95,10 @@ struct WishlistView: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
+                            .submitLabel(.go)
+                            .onSubmit {
+                                Task { await addPaste() }
+                            }
 
                         Button {
                             pasteFromClipboard()
@@ -118,7 +122,7 @@ struct WishlistView: View {
                             }
                         }
                         .disabled(isAddingPaste || pasteURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .accessibilityLabel("Import pasted links")
+                        .accessibilityLabel("Add link")
                     }
                 }
                 .listRowBackground(DromeTheme.elevated)

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -250,6 +251,18 @@ func (c *spotifyClient) token(ctx context.Context) (string, error) {
 	return c.accessToken, nil
 }
 
+type spotifyAPIError struct {
+	status int
+	msg    string
+}
+
+func (e *spotifyAPIError) Error() string {
+	if e.msg != "" {
+		return e.msg
+	}
+	return fmt.Sprintf("spotify HTTP %d", e.status)
+}
+
 func (c *spotifyClient) apiGET(ctx context.Context, path string, out any) error {
 	tok, err := c.token(ctx)
 	if err != nil {
@@ -265,18 +278,33 @@ func (c *spotifyClient) apiGET(ctx context.Context, path string, out any) error 
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("spotify resource not found")
-	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		detail := strings.TrimSpace(string(body))
-		if detail == "" {
-			return fmt.Errorf("spotify API error: %s", resp.Status)
+		msg := strings.TrimSpace(string(body))
+		var payload struct {
+			Error struct {
+				Message string `json:"message"`
+				Status  int    `json:"status"`
+			} `json:"error"`
 		}
-		return fmt.Errorf("spotify API error: %s — %s", resp.Status, detail)
+		if json.Unmarshal(body, &payload) == nil && payload.Error.Message != "" {
+			msg = payload.Error.Message
+		}
+		if msg == "" {
+			msg = resp.Status
+		}
+		return &spotifyAPIError{status: resp.StatusCode, msg: msg}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func spotifyUnavailable(err error) bool {
+	var api *spotifyAPIError
+	if errors.As(err, &api) {
+		return api.status == http.StatusNotFound || api.status == http.StatusForbidden
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "not found") || strings.Contains(s, "not available")
 }
 
 type spotifyArtist struct {
@@ -363,9 +391,9 @@ func (c *spotifyClient) resolveAPI(ctx context.Context, e *entry) error {
 		}
 	case "album":
 		var a struct {
-			Name    string          `json:"name"`
-			Artists []spotifyArtist `json:"artists"`
-			Images  []spotifyImage  `json:"images"`
+			Name        string          `json:"name"`
+			Artists     []spotifyArtist `json:"artists"`
+			Images      []spotifyImage  `json:"images"`
 			ExternalIDs struct {
 				UPC string `json:"upc"`
 			} `json:"external_ids"`
@@ -571,12 +599,13 @@ type searchHit struct {
 
 // playlistTrack is one track pulled from a Spotify playlist for wishlist import.
 type playlistTrack struct {
-	SpotifyID  string
-	SpotifyURL string
-	Title      string
-	Artist     string
-	Album      string
-	CoverURL   string
+	SpotifyID   string
+	SpotifyURL  string
+	Title       string
+	Artist      string
+	AlbumArtist string
+	Album       string
+	CoverURL    string
 }
 
 func (c *spotifyClient) playlistTracks(ctx context.Context, playlistID string) (name string, tracks []playlistTrack, err error) {
@@ -586,13 +615,48 @@ func (c *spotifyClient) playlistTracks(ctx context.Context, playlistID string) (
 	var meta struct {
 		Name string `json:"name"`
 	}
-	if err := c.apiGET(ctx, "/playlists/"+playlistID+"?fields=name", &meta); err != nil {
-		return "", nil, err
+	if err := c.apiGET(ctx, "/playlists/"+playlistID, &meta); err != nil {
+		if err2 := c.apiGET(ctx, "/playlists/"+playlistID+"?fields=name", &meta); err2 != nil {
+			logf("playlist metadata %s: %v", playlistID, err)
+		} else {
+			name = meta.Name
+		}
+	} else {
+		name = meta.Name
 	}
-	name = meta.Name
 
-	path := "/playlists/" + playlistID + "/tracks?limit=50&market=" + url.QueryEscape(c.market) +
-		"&fields=next,items(track(id,name,artists(name),album(name,images),external_urls))"
+	queries := []string{
+		"/playlists/" + playlistID + "/tracks?limit=50&additional_types=track&fields=next,items(track(id,name,artists(name),album(name,artists(name),images),external_urls))",
+		"/playlists/" + playlistID + "/tracks?limit=50&additional_types=track",
+		"/playlists/" + playlistID + "/tracks?limit=50&market=" + url.QueryEscape(c.market) +
+			"&additional_types=track&fields=next,items(track(id,name,artists(name),album(name,artists(name),images),external_urls))",
+		"/playlists/" + playlistID + "/tracks?limit=50",
+	}
+	var lastErr error
+	for _, start := range queries {
+		tracks, lastErr = c.fetchPlaylistTrackPages(ctx, start)
+		if lastErr == nil {
+			break
+		}
+		if !spotifyUnavailable(lastErr) {
+			return name, nil, lastErr
+		}
+	}
+	if lastErr != nil {
+		if spotifyUnavailable(lastErr) {
+			return name, nil, fmt.Errorf("this playlist is private, personalized, or not readable with the server Spotify app token — make it public, or use a track/album link")
+		}
+		return name, nil, lastErr
+	}
+	if name == "" {
+		name = "Spotify playlist"
+	}
+	return name, tracks, nil
+}
+
+func (c *spotifyClient) fetchPlaylistTrackPages(ctx context.Context, startPath string) ([]playlistTrack, error) {
+	var tracks []playlistTrack
+	path := startPath
 	for path != "" {
 		var page struct {
 			Next  *string `json:"next"`
@@ -602,8 +666,9 @@ func (c *spotifyClient) playlistTracks(ctx context.Context, playlistID string) (
 					Name    string          `json:"name"`
 					Artists []spotifyArtist `json:"artists"`
 					Album   struct {
-						Name   string         `json:"name"`
-						Images []spotifyImage `json:"images"`
+						Name    string          `json:"name"`
+						Artists []spotifyArtist `json:"artists"`
+						Images  []spotifyImage  `json:"images"`
 					} `json:"album"`
 					ExternalURLs struct {
 						Spotify string `json:"spotify"`
@@ -611,13 +676,12 @@ func (c *spotifyClient) playlistTracks(ctx context.Context, playlistID string) (
 				} `json:"track"`
 			} `json:"items"`
 		}
-		// apiGET expects path under /v1 — absolute next URLs need stripping.
 		apiPath := path
 		if strings.HasPrefix(apiPath, "https://api.spotify.com/v1") {
 			apiPath = strings.TrimPrefix(apiPath, "https://api.spotify.com/v1")
 		}
 		if err := c.apiGET(ctx, apiPath, &page); err != nil {
-			return name, tracks, err
+			return nil, err
 		}
 		for _, item := range page.Items {
 			if item.Track == nil || item.Track.ID == "" {
@@ -629,12 +693,13 @@ func (c *spotifyClient) playlistTracks(ctx context.Context, playlistID string) (
 				u = "https://open.spotify.com/track/" + t.ID
 			}
 			tracks = append(tracks, playlistTrack{
-				SpotifyID:  t.ID,
-				SpotifyURL: u,
-				Title:      t.Name,
-				Artist:     joinArtists(t.Artists),
-				Album:      t.Album.Name,
-				CoverURL:   bestImage(t.Album.Images),
+				SpotifyID:   t.ID,
+				SpotifyURL:  u,
+				Title:       t.Name,
+				Artist:      joinArtists(t.Artists),
+				AlbumArtist: firstArtistName(t.Album.Artists),
+				Album:       t.Album.Name,
+				CoverURL:    bestImage(t.Album.Images),
 			})
 		}
 		if page.Next == nil || *page.Next == "" {
@@ -642,7 +707,7 @@ func (c *spotifyClient) playlistTracks(ctx context.Context, playlistID string) (
 		}
 		path = *page.Next
 	}
-	return name, tracks, nil
+	return tracks, nil
 }
 
 func (c *spotifyClient) artistImageURL(ctx context.Context, name string) (string, error) {
@@ -711,10 +776,10 @@ func (c *spotifyClient) search(ctx context.Context, query, types string, limit i
 		} `json:"tracks"`
 		Albums *struct {
 			Items []struct {
-				ID      string          `json:"id"`
-				Name    string          `json:"name"`
-				Artists []spotifyArtist `json:"artists"`
-				Images  []spotifyImage  `json:"images"`
+				ID           string          `json:"id"`
+				Name         string          `json:"name"`
+				Artists      []spotifyArtist `json:"artists"`
+				Images       []spotifyImage  `json:"images"`
 				ExternalURLs struct {
 					Spotify string `json:"spotify"`
 				} `json:"external_urls"`
@@ -738,9 +803,9 @@ func (c *spotifyClient) search(ctx context.Context, query, types string, limit i
 		} `json:"playlists"`
 		Artists *struct {
 			Items []struct {
-				ID     string         `json:"id"`
-				Name   string         `json:"name"`
-				Images []spotifyImage `json:"images"`
+				ID           string         `json:"id"`
+				Name         string         `json:"name"`
+				Images       []spotifyImage `json:"images"`
 				ExternalURLs struct {
 					Spotify string `json:"spotify"`
 				} `json:"external_urls"`
@@ -914,4 +979,3 @@ func htmlUnescape(s string) string {
 	)
 	return replacer.Replace(s)
 }
-

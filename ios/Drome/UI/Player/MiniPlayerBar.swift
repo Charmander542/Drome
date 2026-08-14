@@ -15,10 +15,10 @@ struct MiniPlayerBar: View {
             HStack(spacing: 12) {
                 Button(action: onOpen) {
                     HStack(spacing: 12) {
-                        RemoteImage(url: session.artworkURL(for: current.song, size: 120))
+                        RemoteImage(url: session.artworkURL(for: current.song, size: 120),
+                                    holdImageWhileLoading: true)
                             .frame(width: 48, height: 48)
                             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            .id("\(current.id)-\(session.downloads.coverRevision)")
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text(title.isEmpty ? "Unknown Title" : title)

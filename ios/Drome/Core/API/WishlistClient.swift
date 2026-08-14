@@ -206,4 +206,30 @@ struct DromeWishlistClient {
         _ = try await send(EmptyWishlistResponse.self, path: "/wishlist/share", method: "POST",
                            body: Body(user: user, remove: remove))
     }
+
+    struct TrackShareResponse: Decodable {
+        var url: String
+        var token: String?
+        var coverUrl: String?
+    }
+
+    func createTrackShare(songId: String, title: String, artist: String, album: String,
+                          accent: String, coverJPEG: Data?) async throws -> URL {
+        struct Body: Encodable {
+            var songId: String
+            var title: String
+            var artist: String
+            var album: String
+            var accent: String
+            var coverJpegBase64: String?
+        }
+        let body = Body(
+            songId: songId, title: title, artist: artist, album: album, accent: accent,
+            coverJpegBase64: coverJPEG?.base64EncodedString())
+        let created = try await send(TrackShareResponse.self, path: "/share/track", method: "POST", body: body)
+        guard let url = URL(string: created.url) else {
+            throw WishlistError.server("Companion server returned an invalid share URL.")
+        }
+        return url
+    }
 }

@@ -5,13 +5,13 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
     case artists = "Artists"
     case albums = "Albums"
     case songs = "Songs"
-    case outOfRotation = "Out of Rotation"
+    case genres = "Genres"
 
     var id: String { rawValue }
 
     /// Tabs shown in the Library filter bar (Downloads lives under Playlists).
     static var topBarCases: [LibraryFilter] {
-        [.playlists, .artists, .albums, .songs, .outOfRotation]
+        [.playlists, .artists, .albums, .songs, .genres]
     }
 
     /// Short label for the compact segmented bar.
@@ -21,7 +21,7 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
         case .artists: return "Artists"
         case .albums: return "Albums"
         case .songs: return "Songs"
-        case .outOfRotation: return "Out of Rotation"
+        case .genres: return "Genres"
         }
     }
 }
@@ -234,8 +234,8 @@ struct LibraryView: View {
                         }
                     }
                 }
-                if filter == .outOfRotation {
-                    outOfRotationContent
+                if filter == .genres {
+                    GenreBrowserView(showsTitle: false)
                 }
             }
             .onAppear { visitedFilters.insert(filter) }
@@ -272,7 +272,7 @@ struct LibraryView: View {
         case .albums: return albums.isEmpty
         case .artists: return artistSectionsCache.isEmpty
         case .songs: return songs.isEmpty
-        case .outOfRotation: return false
+        case .genres: return false
         }
     }
 
@@ -334,9 +334,9 @@ struct LibraryView: View {
                 .listRowBackground(DromeTheme.elevated)
 
                 NavigationLink {
-                    GenreBrowserView()
+                    outOfRotationContent
                 } label: {
-                    Label("Genres", systemImage: "guitars")
+                    Label("Out of Rotation", systemImage: "lock.fill")
                         .font(.body.weight(.semibold))
                 }
                 .listRowBackground(DromeTheme.elevated)
@@ -919,8 +919,7 @@ struct LibraryView: View {
     /// Instant tab switch: if this tab already has rows, do nothing on the
     /// critical path. Network fill / refresh happens only when empty or forced.
     private func ensureActiveTabReady(forceNetwork: Bool) async {
-        if filter == .outOfRotation {
-            await rotation.refresh()
+        if filter == .genres {
             return
         }
 
@@ -966,14 +965,13 @@ struct LibraryView: View {
                     await fillSongsInBackground()
                 }
             }
-        case .artists, .playlists, .outOfRotation:
+        case .artists, .playlists, .genres:
             break
         }
     }
 
     private func load(forceNetwork: Bool = false) async {
-        if filter == .outOfRotation {
-            await rotation.refresh()
+        if filter == .genres {
             return
         }
         let keepVisible = !isEmpty
@@ -1021,7 +1019,7 @@ struct LibraryView: View {
                 try await loadArtistsCatalog(forceNetwork: forceNetwork)
             case .songs:
                 await loadFullSongCatalog(forceNetwork: forceNetwork)
-            case .outOfRotation:
+            case .genres:
                 break
             }
         } catch {
@@ -1689,6 +1687,7 @@ struct LibraryView: View {
 
 /// Lightweight genres browser (moved off the top tab bar).
 struct GenreBrowserView: View {
+    var showsTitle: Bool = true
     @EnvironmentObject private var session: AppSession
     @State private var genreGroups: [NormalizedGenre] = []
     @State private var error: String?
@@ -1724,7 +1723,8 @@ struct GenreBrowserView: View {
                 .dromeMiniPlayerClearance()
             }
         }
-        .navigationTitle("Genres")
+        .navigationTitle(showsTitle ? "Genres" : "")
+        .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
     }
 

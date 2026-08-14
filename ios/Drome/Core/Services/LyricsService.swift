@@ -20,6 +20,11 @@ actor LyricsService {
     private let lrclib: LRCLIBClient
     private let serverKey: String
 
+    /// Bumped when LRCLIB matching rules change so old fuzzy hits
+    /// (e.g. short titles like "2007") are refetched once.
+    private static let lrclibSource = "lrclib.v2"
+    private static let legacyLRCLIBSources: Set<String> = ["lrclib"]
+
     init(database: AppDatabase, client: SubsonicClient, serverKey: String) {
         self.database = database
         self.client = client
@@ -32,7 +37,12 @@ actor LyricsService {
             if cached.source == "none" {
                 return nil
             }
-            return document(from: cached.content, synced: cached.synced, source: cached.source)
+            // Ignore pre-match-fix LRCLIB rows — they may be the wrong song.
+            if Self.legacyLRCLIBSources.contains(cached.source) {
+                // Fall through to refetch.
+            } else {
+                return document(from: cached.content, synced: cached.synced, source: cached.source)
+            }
         }
         guard allowNetwork else { return nil }
         return await fetchAndCache(song: song)
@@ -66,12 +76,12 @@ actor LyricsService {
            let result = try? await lrclib.lyrics(artist: artist, title: song.title,
                                                  album: song.album, duration: song.duration) {
             if let lrc = result.syncedLyrics, !lrc.isEmpty {
-                store(song: song, synced: true, content: lrc, source: "lrclib")
-                return document(from: lrc, synced: true, source: "lrclib")
+                store(song: song, synced: true, content: lrc, source: Self.lrclibSource)
+                return document(from: lrc, synced: true, source: Self.lrclibSource)
             }
             if let plain = result.plainLyrics, !plain.isEmpty {
-                store(song: song, synced: false, content: plain, source: "lrclib")
-                return document(from: plain, synced: false, source: "lrclib")
+                store(song: song, synced: false, content: plain, source: Self.lrclibSource)
+                return document(from: plain, synced: false, source: Self.lrclibSource)
             }
         }
 

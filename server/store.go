@@ -10,23 +10,23 @@ import (
 )
 
 type entry struct {
-	ID         int64     `json:"id"`
-	Owner      string    `json:"owner"`
-	Kind       string    `json:"kind"` // "track" or "album"
-	SpotifyID  string    `json:"spotifyId"`
-	SpotifyURL string    `json:"spotifyUrl"`
-	Title      string    `json:"title"`
-	Artist     string    `json:"artist"`
-	AlbumArtist string   `json:"albumArtist,omitempty"` // primary only — for Navidrome album grouping
-	Album      string    `json:"album"`
-	UPC        string    `json:"upc,omitempty"`
-	CoverURL   string    `json:"coverUrl"`
-	Acquired   bool      `json:"acquired"`
-	Status     string    `json:"status,omitempty"` // queued|downloading|done|failed|skipped
-	StatusMsg  string    `json:"statusMessage,omitempty"`
-	Attempts   int       `json:"attempts,omitempty"`
-	NextRetry  time.Time `json:"nextRetryAt,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
+	ID          int64     `json:"id"`
+	Owner       string    `json:"owner"`
+	Kind        string    `json:"kind"` // "track" or "album"
+	SpotifyID   string    `json:"spotifyId"`
+	SpotifyURL  string    `json:"spotifyUrl"`
+	Title       string    `json:"title"`
+	Artist      string    `json:"artist"`
+	AlbumArtist string    `json:"albumArtist,omitempty"` // primary only — for Navidrome album grouping
+	Album       string    `json:"album"`
+	UPC         string    `json:"upc,omitempty"`
+	CoverURL    string    `json:"coverUrl"`
+	Acquired    bool      `json:"acquired"`
+	Status      string    `json:"status,omitempty"` // queued|downloading|done|failed|skipped
+	StatusMsg   string    `json:"statusMessage,omitempty"`
+	Attempts    int       `json:"attempts,omitempty"`
+	NextRetry   time.Time `json:"nextRetryAt,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
 	// SourcePlaylistID/Name tag tracks imported from a Spotify playlist.
 	SourcePlaylistID   string `json:"sourcePlaylistId,omitempty"`
 	SourcePlaylistName string `json:"sourcePlaylistName,omitempty"`
@@ -96,6 +96,23 @@ CREATE INDEX IF NOT EXISTS entries_status_idx ON entries(status, id);`
 			db.Close()
 			return nil, err
 		}
+	}
+	if _, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS track_shares (
+	token       TEXT PRIMARY KEY,
+	song_id     TEXT NOT NULL,
+	title       TEXT NOT NULL,
+	artist      TEXT NOT NULL DEFAULT '',
+	album       TEXT NOT NULL DEFAULT '',
+	accent      TEXT NOT NULL DEFAULT '',
+	cover       BLOB,
+	cover_type  TEXT NOT NULL DEFAULT 'image/jpeg',
+	created_at  TEXT NOT NULL,
+	UNIQUE (song_id)
+);
+`); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return &wishlistStore{db: db}, nil
 }

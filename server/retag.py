@@ -120,6 +120,16 @@ def read_title(audio) -> str:
     return ""
 
 
+def drop_splitter_tags(audio) -> None:
+    """Provider catalog/ASIN/release-group ids split one album in Navidrome."""
+    for key in ("catalognumber", "asin", "musicbrainz_releasegroupid"):
+        try:
+            if key in audio:
+                del audio[key]
+        except Exception:
+            pass
+
+
 def write_tags(
     path: Path,
     *,
@@ -160,6 +170,8 @@ def write_tags(
 
     if album:
         audio["album"] = [album]
+
+    drop_splitter_tags(audio)
 
     if trackno and trackno > 0:
         try:
@@ -260,6 +272,75 @@ def move_replace(source: Path, dest: Path, music_dir: Path) -> Path:
     return dest
 
 
+def folder_identity(folder: Path) -> tuple[str, str, str]:
+    """Reuse albumartist / UPC / MBID already on disk so new tracks merge."""
+    if not folder.is_dir():
+        return "", "", ""
+    artists: Counter[str] = Counter()
+    upcs: Counter[str] = Counter()
+    mbids: Counter[str] = Counter()
+    for path in folder.iterdir():
+        if path.suffix.lower() not in AUDIO_EXTS:
+            continue
+        try:
+            audio = MutagenFile(path, easy=True)
+        except Exception:
+            continue
+        aa = easy_get(audio, "albumartist")
+        if aa:
+            artists[aa] += 1
+        for key in ("upc", "barcode"):
+            v = easy_get(audio, key)
+            if v:
+                upcs[v] += 1
+        v = easy_get(audio, "musicbrainz_albumid")
+        if v:
+            mbids[v] += 1
+    album_artist = artists.most_common(1)[0][0] if artists else ""
+    upc = upcs.most_common(1)[0][0] if upcs else ""
+    mbid = mbids.most_common(1)[0][0] if len(mbids) == 1 else ""
+    return album_artist, upc, mbid
+
+
+def unify_album_folder(
+    folder: Path, *, album_artist: str, album: str, upc: str, mbid: str
+) -> None:
+    """Force every file in the album folder onto one Navidrome album identity."""
+    if not folder.is_dir():
+        return
+    for path in folder.iterdir():
+        if path.suffix.lower() not in AUDIO_EXTS:
+            continue
+        try:
+            audio = MutagenFile(path, easy=True)
+            if audio is None:
+                continue
+            if album_artist:
+                try:
+                    audio["albumartist"] = [album_artist]
+                except Exception:
+                    pass
+            if album:
+                audio["album"] = [album]
+            if upc:
+                for key in ("upc", "barcode"):
+                    try:
+                        audio[key] = [upc]
+                    except Exception:
+                        pass
+            try:
+                if mbid:
+                    audio["musicbrainz_albumid"] = [mbid]
+                elif "musicbrainz_albumid" in audio:
+                    del audio["musicbrainz_albumid"]
+            except Exception:
+                pass
+            drop_splitter_tags(audio)
+            audio.save()
+        except Exception:
+            continue
+
+
 def process_file(
     path: Path,
     *,
@@ -292,6 +373,23 @@ def process_file(
 
     primary = primary_artist(album_artist) if album_artist else primary_artist(artist)
     new_album = album or (title if kind == "album" else "") or "Unknown Album"
+    new_album = " ".join(new_album.split())
+
+    dest = target_path(
+        music_dir, primary, new_album, new_title, trackno, path.suffix.lower()
+    )
+    inherited_aa, inherited_upc, inherited_mbid = folder_identity(dest.parent)
+    if inherited_aa:
+        primary = inherited_aa
+        dest = target_path(
+            music_dir, primary, new_album, new_title, trackno, path.suffix.lower()
+        )
+    if inherited_upc:
+        upc = inherited_upc
+    if inherited_mbid:
+        mbid = inherited_mbid
+    elif kind == "track":
+        mbid = ""
 
     # Track artist may include features. Prefer embedded multi-artist tags on
     # album downloads; for single-track wishlist jobs use the Spotify string.
@@ -299,10 +397,6 @@ def process_file(
         track_artist: str | list[str] = artist or primary
     else:
         track_artist = existing_artists if existing_artists else (artist or primary)
-
-    dest = target_path(
-        music_dir, primary, new_album, new_title, trackno, path.suffix.lower()
-    )
     action = f"{path} -> {dest} (albumartist={primary!r})"
     if dry_run:
         return action
@@ -329,17 +423,7 @@ def process_file(
             upc=upc,
             mbid=mbid,
         )
-    else:
-        write_tags(
-            path,
-            title=new_title,
-            artist=track_artist,
-            album_artist=primary,
-            album=new_album,
-            trackno=trackno,
-            upc=upc,
-            mbid=mbid,
-        )
+    unify_album_folder(dest.parent, album_artist=primary, album=new_album, upc=upc, mbid=mbid)
     return action
 
 
@@ -415,6 +499,10 @@ def main() -> int:
     files.sort(key=lambda p: p.name.lower())
     upc, mbid = canonical_ids(files, args.upc)
     album_artist = args.album_artist or primary_artist(args.artist)
+    # Single-track wishlist jobs must not keep provider MusicBrainz album IDs —
+    # those differ per file and make Navidrome create a new album every time.
+    if args.kind == "track":
+        mbid = ""
 
     results = []
     for i, path in enumerate(files, start=1):

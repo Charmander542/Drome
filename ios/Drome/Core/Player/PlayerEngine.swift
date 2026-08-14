@@ -221,11 +221,13 @@ final class PlayerEngine: ObservableObject {
         persistSessionSoon()
     }
 
-    /// Restore a previously saved listening session (queue + shuffle + position).
+    /// Restore a previously saved listening session (queue + shuffle).
+    /// Playhead always starts at 0 — recents should replay, not scrub mid-track.
     @discardableResult
     func resumeSession(forKey key: String) -> Bool {
-        guard let snap = sessionStore?.snapshot(forResumeKey: key) else { return false }
-        restore(snap, seeking: true, startPlaying: true, recordPlay: true)
+        guard var snap = sessionStore?.snapshot(forResumeKey: key) else { return false }
+        snap.elapsed = 0
+        restore(snap, seeking: false, startPlaying: true, recordPlay: true)
         return true
     }
 
@@ -257,7 +259,10 @@ final class PlayerEngine: ObservableObject {
         fullContextSongs = snap.fullContextSongs
         history = snap.history.map { QueueItem(song: $0) }
         userQueue = snap.userQueue.map { QueueItem(song: $0) }
-        contextQueue = snap.contextQueue.map { QueueItem(song: $0) }
+        contextQueue = snap.contextQueue.map { song in
+            let isAutoplay = !snap.fullContextSongs.contains(where: { $0.id == song.id })
+            return QueueItem(song: song, isAutoplay: isAutoplay)
+        }
         originalContextOrder = snap.originalContextOrder.map { QueueItem(song: $0) }
         setCurrent(QueueItem(song: snap.currentSong),
                    startPlaying: startPlaying,
@@ -607,6 +612,45 @@ final class PlayerEngine: ObservableObject {
     func moveContextQueueItems(from source: IndexSet, to destination: Int) {
         contextQueue.move(fromOffsets: source, toOffset: destination)
         resyncUpcomingWindow()
+    }
+
+    /// Drag-handle reorder: place `id` immediately before `destID`.
+    func moveQueueItem(id: UUID, before destID: UUID) {
+        guard id != destID else { return }
+        let dragged: QueueItem
+        if let i = userQueue.firstIndex(where: { $0.id == id }) {
+            dragged = userQueue.remove(at: i)
+        } else if let i = contextQueue.firstIndex(where: { $0.id == id }) {
+            dragged = contextQueue.remove(at: i)
+        } else {
+            return
+        }
+        if let j = userQueue.firstIndex(where: { $0.id == destID }) {
+            userQueue.insert(dragged, at: j)
+        } else if let j = contextQueue.firstIndex(where: { $0.id == destID }) {
+            contextQueue.insert(dragged, at: j)
+        } else {
+            userQueue.append(dragged)
+        }
+        resyncUpcomingWindow()
+    }
+
+    /// Live handle drag within one queue section.
+    func moveQueueItem(id: UUID, toIndex dest: Int, inUserQueue: Bool) {
+        if inUserQueue {
+            Self.reposition(&userQueue, id: id, toIndex: dest)
+        } else {
+            Self.reposition(&contextQueue, id: id, toIndex: dest)
+        }
+        resyncUpcomingWindow()
+    }
+
+    private static func reposition(_ items: inout [QueueItem], id: UUID, toIndex dest: Int) {
+        guard let from = items.firstIndex(where: { $0.id == id }) else { return }
+        let dest = min(max(dest, 0), items.count - 1)
+        guard from != dest else { return }
+        let item = items.remove(at: from)
+        items.insert(item, at: min(dest, items.count))
     }
 
     func removeUserQueueItems(at offsets: IndexSet) {
@@ -1001,8 +1045,14 @@ final class PlayerEngine: ObservableObject {
 
     /// Regenerates the algorithmic (autoplay) tail without stopping playback.
     func rerollAutoplayQueue() {
-        guard autoplayEnabled else { return }
-        contextQueue.removeAll(where: \.isAutoplay)
+        if !autoplayEnabled { autoplayEnabled = true }
+        let contextIDs = Set(fullContextSongs.map(\.id))
+        contextQueue.removeAll { item in
+            item.isAutoplay || !contextIDs.contains(item.song.id)
+        }
+        if context?.kind == .mix {
+            contextQueue.removeAll()
+        }
         resyncUpcomingWindow()
         cancelAutoplayWork()
         maybeExtendWithAutoplay(force: true)
@@ -1227,19 +1277,12 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func loadArtwork(for song: Song) {
-        // Clear stale art immediately so CarPlay doesn't keep the previous
-        // track's tile while the next cover loads.
-        nowPlaying.setArtwork(nil, songID: nil)
-        pushNowPlayingInfo()
-
         let candidates = [
             song.coverArt,
             song.albumId,
             song.id,
         ].compactMap { $0 }.filter { !$0.isEmpty }
 
-        // Prefer a local download cover, then a large remote fetch — CarPlay's
-        // foreground album tile needs more than a tiny list thumbnail.
         let localURL: URL? = candidates.lazy
             .compactMap { self.downloads.localCoverURL(coverId: $0) }
             .first
@@ -1248,15 +1291,14 @@ final class PlayerEngine: ObservableObject {
             .first
         guard let url = localURL ?? remoteURL else { return }
 
-        if let cached = ImageLoader.shared.cachedImage(for: url) {
+        if let cached = ImageLoader.shared.previewImage(for: url) {
             nowPlaying.setArtwork(cached, songID: song.id)
             pushNowPlayingInfo()
-            return
+            if ImageLoader.shared.cachedImage(for: url) != nil { return }
         }
 
         Task { [weak self] in
             var image = await ImageLoader.shared.image(for: url)
-            // Fallback: try remaining cover ids if the first URL failed.
             if image == nil {
                 for id in candidates.dropFirst() {
                     guard let alt = self?.client.coverArtURL(id: id, size: 1200) else { continue }
