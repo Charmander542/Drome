@@ -217,6 +217,12 @@ func (s *server) addResolvedEntry(r *http.Request, kind, id string) (*entry, boo
 		return existing, true, nil
 	}
 
+	if entry.Kind == "track" && s.alreadyHave(r, entry.Title, entry.Artist) {
+		entry.Status = statusSkipped
+		entry.StatusMsg = "already in library"
+		return entry, true, nil
+	}
+
 	if err := s.store.insert(entry); err != nil {
 		return nil, false, fmt.Errorf("could not save entry: %w", err)
 	}
@@ -224,6 +230,21 @@ func (s *server) addResolvedEntry(r *http.Request, kind, id string) (*entry, boo
 		s.downloads.kick()
 	}
 	return entry, false, nil
+}
+
+func (s *server) alreadyHave(r *http.Request, title, artist string) bool {
+	if strings.TrimSpace(title) == "" {
+		return false
+	}
+	user, token, salt := requestCreds(r)
+	if s.navidrome != nil && user != "" &&
+		s.navidrome.libraryOwns(r.Context(), user, token, salt, title, artist) {
+		return true
+	}
+	if s.downloads != nil && diskHasTrack(s.downloads.cfg.MusicDir, title, artist) {
+		return true
+	}
+	return false
 }
 
 func (s *server) handlePlaylistImport(w http.ResponseWriter, r *http.Request, playlistID string) {
@@ -257,7 +278,6 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (name 
 		return "", nil, 0, err
 	}
 	owner := requestUser(r)
-	user, token, salt := requestCreds(r)
 	status := statusSkipped
 	if s.downloads != nil && s.downloads.cfg.Enabled {
 		status = statusQueued
@@ -265,8 +285,7 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (name 
 
 	now := time.Now()
 	for _, t := range tracks {
-		if t.Title != "" && t.Artist != "" && s.navidrome != nil &&
-			s.navidrome.libraryOwns(r.Context(), user, token, salt, t.Title, t.Artist) {
+		if s.alreadyHave(r, t.Title, t.Artist) {
 			skippedOwned++
 			continue
 		}

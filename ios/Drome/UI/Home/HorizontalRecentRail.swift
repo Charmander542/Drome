@@ -35,22 +35,29 @@ struct HorizontalRecentRail: View {
     private func card(for entry: RecentPlayEntry) -> some View {
         switch entry {
         case .song(let song):
-            VStack(alignment: .leading, spacing: 8) {
-                RemoteImage(url: session.artworkURL(id: song.coverArt ?? song.albumId ?? song.id, size: 300))
-                    .frame(width: 148, height: 148)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                HStack(spacing: 4) {
-                    Text(song.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    RatingBadge(rating: ratings.rating(for: song), size: 10)
+            Button {
+                resumeOrPlaySong(song)
+            } label: {
+                VStack(alignment: .leading, spacing: 8) {
+                    RemoteImage(url: session.artworkURL(id: song.coverArt ?? song.albumId ?? song.id, size: 300))
+                        .frame(width: 148, height: 148)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    HStack(spacing: 4) {
+                        Text(song.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        RatingBadge(rating: ratings.rating(for: song), size: 10)
+                    }
+                    SongArtistLinks(song: song, font: .caption, color: DromeTheme.muted,
+                                    navigatesOnTap: false)
                 }
-                SongArtistLinks(song: song, font: .caption, color: DromeTheme.muted)
+                .frame(width: 148, alignment: .leading)
+                .clipped()
+                .contentShape(Rectangle())
             }
-            .frame(width: 148, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture { resumeOrPlaySong(song) }
+            .buttonStyle(.plain)
             .hoverEffectDisabled()
 
         case .album(let id, let name, let coverSong):
@@ -63,18 +70,19 @@ struct HorizontalRecentRail: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                    .contentShape(Rectangle())
-                    .highPriorityGesture(TapGesture().onEnded {
-                        songNavigator?.viewAlbum(Album(
-                            id: id, name: name, artist: coverSong.artist, artistId: coverSong.artistId,
-                            coverArt: coverSong.coverArt, songCount: nil, duration: nil, playCount: nil,
-                            created: nil, year: nil, genre: nil, userRating: nil))
-                    })
-                SongArtistLinks(song: coverSong, font: .caption, color: DromeTheme.muted)
+                    .truncationMode(.tail)
+                SongArtistLinks(song: coverSong, font: .caption, color: DromeTheme.muted,
+                                navigatesOnTap: false)
             }
             .frame(width: 148, alignment: .leading)
+            .clipped()
             .contentShape(Rectangle())
-            .onTapGesture { resumeOrPlayAlbum(id: id, name: name, coverSong: coverSong) }
+            .onTapGesture {
+                songNavigator?.viewAlbum(Album(
+                    id: id, name: name, artist: coverSong.artist, artistId: coverSong.artistId,
+                    coverArt: coverSong.coverArt, songCount: nil, duration: nil, playCount: nil,
+                    created: nil, year: nil, genre: nil, userRating: nil))
+            }
             .hoverEffectDisabled()
 
         case .playlist(let id, let name, let coverSong):
@@ -193,21 +201,6 @@ struct HorizontalRecentRail: View {
                     context: PlaybackContext(label: song.title, kind: .search))
     }
 
-    private func resumeOrPlayAlbum(id: String, name: String, coverSong: Song) {
-        if player.resumeSession(forKey: "album:\(id)") { return }
-        Task {
-            if let album = try? await session.client.album(id: id), !album.songs.isEmpty {
-                LibraryDetailCache.store(album: album)
-                let start = album.songs.firstIndex(where: { $0.id == coverSong.id }) ?? 0
-                player.play(album.songs, startAt: start,
-                            context: PlaybackContext(label: name, kind: .album(id: id)))
-            } else {
-                player.play([coverSong], startAt: 0,
-                            context: PlaybackContext(label: name, kind: .album(id: id)))
-            }
-        }
-    }
-
     private func resumeOrPlayPlaylist(id: String, name: String, coverSong: Song) {
         if player.resumeSession(forKey: "playlist:\(id)") { return }
         Task { await playPlaylist(id: id, name: name, startSongId: coverSong.id) }
@@ -272,10 +265,12 @@ struct HorizontalRecentRail: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
+                .truncationMode(.tail)
             Text(collection.subtitle)
                 .font(.caption)
                 .foregroundStyle(DromeTheme.muted)
                 .lineLimit(1)
+                .truncationMode(.tail)
         }
         .frame(width: 148, alignment: .leading)
     }
@@ -290,6 +285,7 @@ struct HorizontalRecentRail: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
+                    .truncationMode(.tail)
                 if let badge, badge > 0 {
                     RatingBadge(rating: badge, size: 10)
                 }
@@ -298,7 +294,9 @@ struct HorizontalRecentRail: View {
                 .font(.caption)
                 .foregroundStyle(DromeTheme.muted)
                 .lineLimit(1)
+                .truncationMode(.tail)
         }
         .frame(width: 148, alignment: .leading)
+        .clipped()
     }
 }

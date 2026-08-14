@@ -7,6 +7,8 @@ struct SongArtistLinks: View {
     var font: Font = .subheadline
     var color: Color = DromeTheme.muted
     var lineLimit: Int? = 1
+    /// When false, names are display-only so the parent song card can play on tap.
+    var navigatesOnTap: Bool = true
 
     /// Optional — never use `@EnvironmentObject` here so a missing injector
     /// cannot fatalError on tap. `SongNavigationStack` sets this key.
@@ -26,34 +28,53 @@ struct SongArtistLinks: View {
                     .font(font)
                     .foregroundStyle(color)
                     .lineLimit(lineLimit)
-            } else {
-                HStack(spacing: 0) {
-                    ForEach(Array(credits.enumerated()), id: \.offset) { index, credit in
-                        if index > 0 {
-                            Text(", ")
-                                .font(font)
-                                .foregroundStyle(color)
-                        }
-                        HStack(spacing: 4) {
-                            if resolvingName == credit.name {
-                                ProgressView()
-                                    .controlSize(.mini)
-                            }
-                            Text(credit.name)
-                                .font(font)
-                                .foregroundStyle(color)
-                        }
-                        .contentShape(Rectangle())
-                        .highPriorityGesture(TapGesture().onEnded {
-                            open(credit)
-                        })
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityLabel("View \(credit.name)")
-                    }
+                    .truncationMode(.tail)
+            } else if navigatesOnTap {
+                ViewThatFits(in: .horizontal) {
+                    artistButtons(truncate: false)
+                    artistButtons(truncate: true)
                 }
-                .lineLimit(lineLimit)
+            } else {
+                Text(credits.map(\.name).joined(separator: ", "))
+                    .font(font)
+                    .foregroundStyle(color)
+                    .lineLimit(lineLimit)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    private func artistButtons(truncate: Bool) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(credits.enumerated()), id: \.offset) { index, credit in
+                if index > 0 {
+                    Text(", ")
+                        .font(font)
+                        .foregroundStyle(color)
+                }
+                Button {
+                    open(credit)
+                } label: {
+                    HStack(spacing: 4) {
+                        if resolvingName == credit.name {
+                            ProgressView()
+                                .controlSize(.mini)
+                        }
+                        Text(credit.name)
+                            .font(font)
+                            .foregroundStyle(color)
+                            .lineLimit(lineLimit)
+                            .truncationMode(.tail)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("View \(credit.name)")
+            }
+        }
+        .lineLimit(lineLimit)
+        .truncationMode(.tail)
+        .fixedSize(horizontal: !truncate, vertical: true)
     }
 
     private func open(_ credit: ArtistCredit) {

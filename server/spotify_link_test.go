@@ -130,3 +130,35 @@ func TestExtractSpotifyTrackIDs(t *testing.T) {
 		t.Fatalf("unicode-escaped ids=%v", got)
 	}
 }
+
+func TestExtractPlaylistTracksFromHTML(t *testing.T) {
+	html := `<script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"state":{"data":{"entity":{"type":"playlist","name":"Today’s Top Hits","trackList":[{"uri":"spotify:track:3ouNEk0tv5TTi8VWMe1xbX","title":"Animal","subtitle":"KATSEYE"},{"uri":"spotify:track:4LfCY65LvojKjWEnU7fNN4","title":"stupid song","subtitle":"Olivia Rodrigo"}]}}}}}}</script>`
+	tracks := extractPlaylistTracksFromHTML(html)
+	if len(tracks) != 2 {
+		t.Fatalf("tracks=%d %#v", len(tracks), tracks)
+	}
+	if tracks[0].Title != "Animal" || tracks[0].Artist != "KATSEYE" {
+		t.Fatalf("first=%+v", tracks[0])
+	}
+	if tracks[0].SpotifyID != "3ouNEk0tv5TTi8VWMe1xbX" {
+		t.Fatalf("id=%s", tracks[0].SpotifyID)
+	}
+	if tracks[1].Title != "stupid song" || tracks[1].Artist != "Olivia Rodrigo" {
+		t.Fatalf("second=%+v", tracks[1])
+	}
+	if name := playlistNameFromHTML(html); name != "Today’s Top Hits" {
+		t.Fatalf("playlist name=%q", name)
+	}
+}
+
+func TestMissingMetaAndCopyFields(t *testing.T) {
+	if !missingMeta("") || !missingMeta("Unknown Album") || missingMeta("The Heist") {
+		t.Fatal("missingMeta")
+	}
+	dst := &entry{Title: "Irish Celebration"}
+	src := &entry{Title: "Other", Artist: "Macklemore", Album: "The Heist", CoverURL: "https://x"}
+	copyMissingEntryFields(dst, src)
+	if dst.Title != "Irish Celebration" || dst.Artist != "Macklemore" || dst.Album != "The Heist" {
+		t.Fatalf("copy=%+v", dst)
+	}
+}

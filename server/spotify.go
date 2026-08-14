@@ -360,6 +360,108 @@ func (c *spotifyClient) resolve(ctx context.Context, kind, id string) (*entry, e
 	return e, nil
 }
 
+func missingMeta(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return true
+	}
+	switch strings.ToLower(s) {
+	case "unknown", "unknown album", "unknown artist", "untitled", "n/a", "none", "null":
+		return true
+	}
+	return false
+}
+
+func copyMissingEntryFields(dst, src *entry) {
+	if src == nil {
+		return
+	}
+	if missingMeta(dst.Title) && !missingMeta(src.Title) {
+		dst.Title = src.Title
+	}
+	if missingMeta(dst.Artist) && !missingMeta(src.Artist) {
+		dst.Artist = src.Artist
+	}
+	if missingMeta(dst.AlbumArtist) && !missingMeta(src.AlbumArtist) {
+		dst.AlbumArtist = src.AlbumArtist
+	}
+	if missingMeta(dst.Album) && !missingMeta(src.Album) {
+		dst.Album = src.Album
+	}
+	if dst.CoverURL == "" && src.CoverURL != "" {
+		dst.CoverURL = src.CoverURL
+	}
+	if dst.UPC == "" && src.UPC != "" {
+		dst.UPC = src.UPC
+	}
+}
+
+// completeEntry fills blank title/artist/album/cover from Spotify (API, public
+// pages, then search) so retag never writes Unknown Album pockets.
+func (c *spotifyClient) completeEntry(ctx context.Context, e *entry) {
+	if c == nil || e == nil || e.Kind == "playlist" {
+		return
+	}
+	kind := e.Kind
+	if kind == "" {
+		kind = "track"
+	}
+	if e.SpotifyID != "" {
+		if resolved, err := c.resolve(ctx, kind, e.SpotifyID); err == nil {
+			copyMissingEntryFields(e, resolved)
+		} else {
+			logf("completeEntry resolve %s/%s: %v", kind, e.SpotifyID, err)
+		}
+	}
+	if !missingMeta(e.Title) && !missingMeta(e.Artist) && !missingMeta(e.Album) && e.CoverURL != "" {
+		return
+	}
+	if !c.hasAPICreds() {
+		return
+	}
+	q := strings.TrimSpace(e.Title)
+	if missingMeta(q) {
+		return
+	}
+	if !missingMeta(e.Artist) {
+		q = fmt.Sprintf("track:%s artist:%s", e.Title, e.Artist)
+	}
+	hits, err := c.search(ctx, q, "track", 5)
+	if err != nil || len(hits) == 0 {
+		return
+	}
+	wantTitle := strings.ToLower(strings.TrimSpace(e.Title))
+	wantArtist := strings.ToLower(strings.TrimSpace(e.Artist))
+	var best *searchHit
+	for i := range hits {
+		h := &hits[i]
+		if h.Kind != "track" {
+			continue
+		}
+		if wantTitle != "" && !strings.EqualFold(strings.TrimSpace(h.Title), e.Title) &&
+			!strings.Contains(strings.ToLower(h.Title), wantTitle) &&
+			!strings.Contains(wantTitle, strings.ToLower(h.Title)) {
+			continue
+		}
+		if wantArtist != "" && h.Artist != "" &&
+			!strings.Contains(strings.ToLower(h.Artist), wantArtist) &&
+			!strings.Contains(wantArtist, strings.ToLower(h.Artist)) {
+			continue
+		}
+		best = h
+		break
+	}
+	if best == nil {
+		return
+	}
+	copyMissingEntryFields(e, &entry{
+		Title:    best.Title,
+		Artist:   best.Artist,
+		Album:    best.Album,
+		CoverURL: best.CoverURL,
+	})
+}
+
 func (c *spotifyClient) resolveAPI(ctx context.Context, e *entry) error {
 	switch e.Kind {
 	case "track":
@@ -829,12 +931,57 @@ func (c *spotifyClient) fetchPublicHTML(ctx context.Context, pageURL string) (st
 }
 
 func playlistNameFromHTML(html string) string {
+	if name := playlistNameFromNextData(html); name != "" {
+		return name
+	}
 	title := htmlUnescape(firstSubmatch(ogTitleRe, html))
 	title = strings.TrimSpace(strings.TrimSuffix(title, "| Spotify"))
 	if i := strings.LastIndex(strings.ToLower(title), " - playlist by "); i > 0 {
 		title = strings.TrimSpace(title[:i])
 	}
 	return title
+}
+
+func playlistNameFromNextData(html string) string {
+	m := nextDataRe.FindStringSubmatch(html)
+	if len(m) < 2 {
+		return ""
+	}
+	var v any
+	if err := json.Unmarshal([]byte(m[1]), &v); err != nil {
+		return ""
+	}
+	var name string
+	var walk func(any)
+	walk = func(node any) {
+		if name != "" {
+			return
+		}
+		obj, ok := node.(map[string]any)
+		if !ok {
+			if arr, ok := node.([]any); ok {
+				for _, child := range arr {
+					walk(child)
+				}
+			}
+			return
+		}
+		if tl, ok := obj["trackList"].([]any); ok && len(tl) > 0 {
+			if n, _ := obj["name"].(string); n != "" {
+				name = n
+				return
+			}
+			if n, _ := obj["title"].(string); n != "" {
+				name = n
+				return
+			}
+		}
+		for _, child := range obj {
+			walk(child)
+		}
+	}
+	walk(v)
+	return strings.TrimSpace(name)
 }
 
 func (c *spotifyClient) playlistTracksPublic(ctx context.Context, playlistID string) (name string, tracks []playlistTrack, err error) {
@@ -866,27 +1013,289 @@ func (c *spotifyClient) playlistTracksPublic(ctx context.Context, playlistID str
 		return name, nil, fmt.Errorf("could not load public playlist page")
 	}
 
-	ids := extractSpotifyTrackIDs(html)
-	if len(ids) == 0 {
+	tracks = extractPlaylistTracksFromHTML(html)
+	if len(tracks) == 0 {
 		return name, nil, fmt.Errorf("public playlist page has no track ids")
 	}
-	if c.hasAPICreds() {
-		hydrated, hydErr := c.tracksByIDs(ctx, ids)
-		if hydErr == nil && len(hydrated) > 0 {
-			return name, hydrated, nil
-		}
-		if hydErr != nil {
-			logf("hydrate scraped playlist tracks: %v", hydErr)
+	if scraped := playlistNameFromHTML(html); scraped != "" && (name == "" || name == "Spotify playlist") {
+		name = scraped
+	}
+	tracks = c.hydratePlaylistTracks(ctx, tracks)
+	return name, tracks, nil
+}
+
+func extractPlaylistTracksFromHTML(html string) []playlistTrack {
+	html = unescapeSpotifyHTML(html)
+	var tracks []playlistTrack
+	collectTracksFromJSONBlobs(html, &tracks)
+	if len(tracks) == 0 {
+		ids := extractSpotifyTrackIDs(html)
+		tracks = make([]playlistTrack, 0, len(ids))
+		for _, id := range ids {
+			tracks = append(tracks, playlistTrack{
+				SpotifyID:  id,
+				SpotifyURL: "https://open.spotify.com/track/" + id,
+			})
 		}
 	}
-	out := make([]playlistTrack, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, playlistTrack{
-			SpotifyID:  id,
-			SpotifyURL: "https://open.spotify.com/track/" + id,
-		})
+	return tracks
+}
+
+var nextDataRe = regexp.MustCompile(`(?s)<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>`)
+var jsonScriptRe = regexp.MustCompile(`(?s)<script[^>]*type="application/json"[^>]*>(.*?)</script>`)
+
+func collectTracksFromJSONBlobs(html string, out *[]playlistTrack) {
+	seen := make(map[string]struct{})
+	addJSON := func(raw string) {
+		raw = strings.TrimSpace(htmlUnescape(raw))
+		if raw == "" {
+			return
+		}
+		var v any
+		if err := json.Unmarshal([]byte(raw), &v); err != nil {
+			return
+		}
+		walkJSONForPlaylistTracks(v, out, seen)
 	}
-	return name, out, nil
+	if m := nextDataRe.FindStringSubmatch(html); len(m) > 1 {
+		addJSON(m[1])
+	}
+	if len(*out) > 0 {
+		return
+	}
+	for _, m := range jsonScriptRe.FindAllStringSubmatch(html, -1) {
+		if len(m) > 1 {
+			addJSON(m[1])
+		}
+		if len(*out) > 0 {
+			return
+		}
+	}
+}
+
+func walkJSONForPlaylistTracks(v any, out *[]playlistTrack, seen map[string]struct{}) {
+	switch t := v.(type) {
+	case map[string]any:
+		if tl, ok := t["trackList"].([]any); ok {
+			for _, item := range tl {
+				if m, ok := item.(map[string]any); ok {
+					if tr, ok := playlistTrackFromEmbedMap(m); ok {
+						if _, dup := seen[tr.SpotifyID]; dup {
+							continue
+						}
+						seen[tr.SpotifyID] = struct{}{}
+						*out = append(*out, tr)
+					}
+				}
+			}
+		}
+		if tr, ok := playlistTrackFromEmbedMap(t); ok && t["trackList"] == nil {
+			if _, dup := seen[tr.SpotifyID]; !dup && tr.Title != "" {
+				seen[tr.SpotifyID] = struct{}{}
+				*out = append(*out, tr)
+			}
+		}
+		for _, child := range t {
+			walkJSONForPlaylistTracks(child, out, seen)
+		}
+	case []any:
+		for _, child := range t {
+			walkJSONForPlaylistTracks(child, out, seen)
+		}
+	}
+}
+
+func playlistTrackFromEmbedMap(m map[string]any) (playlistTrack, bool) {
+	id := ""
+	if uri, _ := m["uri"].(string); strings.HasPrefix(uri, "spotify:track:") {
+		id = strings.TrimPrefix(uri, "spotify:track:")
+	}
+	if id == "" {
+		if s, _ := m["id"].(string); spotifyIDPattern.MatchString(s) {
+			if _, hasType := m["type"]; !hasType || m["type"] == "track" {
+				id = s
+			}
+		}
+	}
+	if id == "" || !spotifyIDPattern.MatchString(id) {
+		return playlistTrack{}, false
+	}
+	title, _ := m["title"].(string)
+	if title == "" {
+		title, _ = m["name"].(string)
+	}
+	artist, _ := m["subtitle"].(string)
+	if artist == "" {
+		if artists, ok := m["artists"].([]any); ok {
+			var names []spotifyArtist
+			for _, a := range artists {
+				if am, ok := a.(map[string]any); ok {
+					if n, _ := am["name"].(string); n != "" {
+						names = append(names, spotifyArtist{Name: n})
+					}
+				}
+			}
+			artist = joinArtists(names)
+		}
+	}
+	cover := embedCoverURL(m)
+	album := ""
+	if am, ok := m["album"].(map[string]any); ok {
+		album, _ = am["name"].(string)
+		if cover == "" {
+			cover = embedCoverURL(am)
+		}
+	}
+	return playlistTrack{
+		SpotifyID:  id,
+		SpotifyURL: "https://open.spotify.com/track/" + id,
+		Title:      strings.TrimSpace(title),
+		Artist:     strings.TrimSpace(artist),
+		Album:      strings.TrimSpace(album),
+		CoverURL:   cover,
+	}, true
+}
+
+func embedCoverURL(m map[string]any) string {
+	if s, _ := m["imageUrl"].(string); s != "" {
+		return s
+	}
+	if cover, ok := m["coverArt"].(map[string]any); ok {
+		if sources, ok := cover["sources"].([]any); ok {
+			return bestEmbedImage(sources)
+		}
+	}
+	if vis, ok := m["visualIdentity"].(map[string]any); ok {
+		if images, ok := vis["image"].([]any); ok {
+			return bestEmbedImage(images)
+		}
+	}
+	if images, ok := m["images"].([]any); ok {
+		return bestEmbedImage(images)
+	}
+	return ""
+}
+
+func bestEmbedImage(images []any) string {
+	best, bestW := "", -1
+	for _, raw := range images {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		u, _ := m["url"].(string)
+		if u == "" {
+			continue
+		}
+		w := 0
+		for _, key := range []string{"width", "maxWidth", "height", "maxHeight"} {
+			switch n := m[key].(type) {
+			case float64:
+				if int(n) > w {
+					w = int(n)
+				}
+			}
+		}
+		if w > bestW {
+			best, bestW = u, w
+		}
+	}
+	return best
+}
+
+func (c *spotifyClient) hydratePlaylistTracks(ctx context.Context, tracks []playlistTrack) []playlistTrack {
+	if len(tracks) == 0 {
+		return tracks
+	}
+	need := make([]string, 0, len(tracks))
+	idx := make(map[string]int, len(tracks))
+	for i, t := range tracks {
+		idx[t.SpotifyID] = i
+		if t.Title == "" || t.CoverURL == "" || t.Album == "" {
+			need = append(need, t.SpotifyID)
+		}
+	}
+	if len(need) > 0 && c.hasAPICreds() {
+		hydrated, err := c.tracksByIDs(ctx, need)
+		if err != nil {
+			logf("hydrate scraped playlist tracks: %v", err)
+		} else {
+			for _, h := range hydrated {
+				i, ok := idx[h.SpotifyID]
+				if !ok {
+					continue
+				}
+				tracks[i] = mergePlaylistTrack(tracks[i], h)
+			}
+		}
+	}
+	var missing []int
+	for i, t := range tracks {
+		if t.Title == "" || t.CoverURL == "" {
+			missing = append(missing, i)
+		}
+	}
+	if len(missing) == 0 {
+		return tracks
+	}
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for _, i := range missing {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			e := &entry{
+				Kind:       "track",
+				SpotifyID:  tracks[i].SpotifyID,
+				SpotifyURL: tracks[i].SpotifyURL,
+			}
+			if err := c.resolvePublic(ctx, e); err != nil {
+				return
+			}
+			h := playlistTrack{
+				SpotifyID:  e.SpotifyID,
+				SpotifyURL: e.SpotifyURL,
+				Title:      e.Title,
+				Artist:     e.Artist,
+				Album:      e.Album,
+				CoverURL:   e.CoverURL,
+			}
+			tracks[i] = mergePlaylistTrack(tracks[i], h)
+		}()
+	}
+	wg.Wait()
+	return tracks
+}
+
+func mergePlaylistTrack(base, extra playlistTrack) playlistTrack {
+	if base.SpotifyID == "" {
+		base.SpotifyID = extra.SpotifyID
+	}
+	if base.SpotifyURL == "" {
+		base.SpotifyURL = extra.SpotifyURL
+	}
+	if base.Title == "" {
+		base.Title = extra.Title
+	}
+	if base.Artist == "" {
+		base.Artist = extra.Artist
+	}
+	if base.AlbumArtist == "" {
+		base.AlbumArtist = extra.AlbumArtist
+	}
+	if base.Album == "" {
+		base.Album = extra.Album
+	}
+	if base.CoverURL == "" {
+		base.CoverURL = extra.CoverURL
+	}
+	if base.SpotifyURL == "" && base.SpotifyID != "" {
+		base.SpotifyURL = "https://open.spotify.com/track/" + base.SpotifyID
+	}
+	return base
 }
 
 func (c *spotifyClient) tracksByIDs(ctx context.Context, ids []string) ([]playlistTrack, error) {

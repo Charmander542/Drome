@@ -26,26 +26,31 @@ struct HorizontalSongRail: View {
     }
 
     private func songCard(_ song: Song, index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            RemoteImage(url: session.client.coverArtURL(
-                id: song.coverArt ?? song.albumId ?? song.id, size: 300))
-                .frame(width: 148, height: 148)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            HStack(spacing: 4) {
-                Text(song.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                RatingBadge(rating: ratings.rating(for: song), size: 10)
-            }
-            SongArtistLinks(song: song, font: .caption, color: DromeTheme.muted)
-        }
-        .frame(width: 148, alignment: .leading)
-        .contentShape(Rectangle())
-        .onTapGesture {
+        Button {
             player.play(songs, startAt: index,
                         context: PlaybackContext(label: song.title, kind: .search))
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                RemoteImage(url: session.client.coverArtURL(
+                    id: song.coverArt ?? song.albumId ?? song.id, size: 300))
+                    .frame(width: 148, height: 148)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                HStack(spacing: 4) {
+                    Text(song.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    RatingBadge(rating: ratings.rating(for: song), size: 10)
+                }
+                SongArtistLinks(song: song, font: .caption, color: DromeTheme.muted,
+                                navigatesOnTap: false)
+            }
+            .frame(width: 148, alignment: .leading)
+            .clipped()
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .hoverEffectDisabled()
     }
 }

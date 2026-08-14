@@ -327,6 +327,16 @@ func (s *wishlistStore) purgeCompleted() (int64, error) {
 	return res.RowsAffected()
 }
 
+func (s *wishlistStore) updateMetadata(e *entry) error {
+	if e == nil || e.ID == 0 {
+		return nil
+	}
+	_, err := s.db.Exec(`
+		UPDATE entries SET title = ?, artist = ?, album = ?, cover_url = ?
+		WHERE id = ?`, e.Title, e.Artist, e.Album, e.CoverURL, e.ID)
+	return err
+}
+
 func (s *wishlistStore) setStatus(id int64, status, msg string) error {
 	_, err := s.db.Exec(`UPDATE entries SET status = ?, status_msg = ? WHERE id = ?`, status, msg, id)
 	return err

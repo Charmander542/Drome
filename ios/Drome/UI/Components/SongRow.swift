@@ -9,7 +9,7 @@ struct SongRow: View {
     var enablesSwipeActions: Bool = true
     /// Cheaper row for huge catalogs (plain artist text, still shows cover).
     var lightweight: Bool = false
-    /// Tap cover / title / empty space to play. Artist and album names still navigate.
+    /// Tap anywhere on the row to play. View Artist / View Album stay in the context menu.
     var playsOnTap: Bool = true
     /// Override the default single-track play (album/playlist context, search queue, etc).
     var onPlay: (() -> Void)? = nil
@@ -50,9 +50,11 @@ struct SongRow: View {
                 lightweight: lightweight
             )
             .equatable()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .contentShape(Rectangle())
+        .accessibilityAddTraits(playsOnTap ? .isButton : [])
         .contextMenu { contextMenu }
         .modifier(ConditionalSongSwipe(enabled: enablesSwipeActions && !lightweight, song: song))
         .sheet(isPresented: $showAddToPlaylist) {
@@ -184,8 +186,6 @@ private struct EquatableSongRowContent: View, Equatable {
     let coverURL: URL?
     let lightweight: Bool
 
-    @Environment(\.songNavigator) private var songNavigator
-
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.song.id == rhs.song.id
             && lhs.song.title == rhs.song.title
@@ -222,6 +222,8 @@ private struct EquatableSongRowContent: View, Equatable {
                         .font(DromeTheme.rowTitle)
                         .foregroundStyle(isCurrent ? DromeTheme.accent : .white)
                         .lineLimit(1)
+                        .truncationMode(.tail)
+                        .layoutPriority(1)
                     RatingBadge(rating: rating)
                     if inRotation {
                         Image(systemName: "lock.fill")
@@ -234,41 +236,13 @@ private struct EquatableSongRowContent: View, Equatable {
                             .foregroundStyle(DromeTheme.accent)
                     }
                 }
-                HStack(spacing: 0) {
-                    if lightweight {
-                        Text(song.displayArtist)
-                            .font(.subheadline)
-                            .foregroundStyle(DromeTheme.muted)
-                            .lineLimit(1)
-                            .contentShape(Rectangle())
-                            .highPriorityGesture(TapGesture().onEnded {
-                                songNavigator?.viewArtist(for: song)
-                            })
-                            .accessibilityAddTraits(.isButton)
-                            .accessibilityLabel("View \(song.displayArtist)")
-                    } else {
-                        SongArtistLinks(song: song, font: .subheadline, color: DromeTheme.muted)
-                    }
-                    if showAlbum, let album = song.album, !album.isEmpty {
-                        Text(" · ")
-                            .font(.subheadline)
-                            .foregroundStyle(DromeTheme.muted)
-                        Text(album)
-                            .font(.subheadline)
-                            .foregroundStyle(DromeTheme.muted)
-                            .lineLimit(1)
-                            .contentShape(Rectangle())
-                            .highPriorityGesture(TapGesture().onEnded {
-                                songNavigator?.viewAlbum(for: song)
-                            })
-                            .accessibilityAddTraits(.isButton)
-                            .accessibilityLabel("View album \(album)")
-                    }
-                }
-                .lineLimit(1)
+                Text(subtitleLine)
+                    .font(.subheadline)
+                    .foregroundStyle(DromeTheme.muted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
-
-            Spacer(minLength: 8)
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 
             if let trailing {
                 trailing
@@ -278,6 +252,16 @@ private struct EquatableSongRowContent: View, Equatable {
                     .foregroundStyle(DromeTheme.muted)
             }
         }
+    }
+
+    private var subtitleLine: String {
+        var parts: [String] = []
+        let artist = song.displayArtist.trimmingCharacters(in: .whitespaces)
+        if !artist.isEmpty { parts.append(artist) }
+        if showAlbum, let album = song.album?.trimmingCharacters(in: .whitespaces), !album.isEmpty {
+            parts.append(album)
+        }
+        return parts.joined(separator: " · ")
     }
 }
 

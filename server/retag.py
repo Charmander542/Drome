@@ -47,6 +47,44 @@ def looks_garbage(value: str | None) -> bool:
     return False
 
 
+PLACEHOLDER_META = {
+    "unknown",
+    "unknown album",
+    "unknown artist",
+    "untitled",
+    "n/a",
+    "none",
+    "null",
+}
+
+
+def is_placeholder(value: str | None) -> bool:
+    if looks_garbage(value):
+        return True
+    return value.strip().lower() in PLACEHOLDER_META
+
+
+def normalize_name(value: str | None) -> str:
+    s = (value or "").lower()
+    s = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", s)
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return " ".join(s.split())
+
+
+def name_score(got: str | None, want: str | None) -> float:
+    g, w = normalize_name(got), normalize_name(want)
+    if not w:
+        return 0.0
+    if g == w:
+        return 1.0
+    if g and (g in w or w in g):
+        return 0.8
+    wt, gt = set(w.split()), set(g.split())
+    if not wt or not gt:
+        return 0.0
+    return len(wt & gt) / len(wt)
+
+
 def sanitize_path(name: str) -> str:
     name = name.strip() or "Unknown"
     for ch in '<>:"/\\|?*':
@@ -155,7 +193,7 @@ def write_tags(
     if arts:
         audio["artist"] = arts
 
-    if album_artist:
+    if album_artist and not is_placeholder(album_artist):
         try:
             audio["albumartist"] = [album_artist]
         except Exception:
@@ -168,7 +206,7 @@ def write_tags(
         except Exception:
             pass
 
-    if album:
+    if album and not is_placeholder(album):
         audio["album"] = [album]
 
     drop_splitter_tags(audio)
@@ -315,12 +353,12 @@ def unify_album_folder(
             audio = MutagenFile(path, easy=True)
             if audio is None:
                 continue
-            if album_artist:
+            if album_artist and not is_placeholder(album_artist):
                 try:
                     audio["albumartist"] = [album_artist]
                 except Exception:
                     pass
-            if album:
+            if album and not is_placeholder(album):
                 audio["album"] = [album]
             if upc:
                 for key in ("upc", "barcode"):
@@ -331,8 +369,6 @@ def unify_album_folder(
             try:
                 if mbid:
                     audio["musicbrainz_albumid"] = [mbid]
-                elif "musicbrainz_albumid" in audio:
-                    del audio["musicbrainz_albumid"]
             except Exception:
                 pass
             drop_splitter_tags(audio)
@@ -369,6 +405,11 @@ def process_file(
         current_title = path.stem
 
     if kind == "track":
+        if title and current_title and not looks_garbage(current_title):
+            if name_score(current_title, title) < 0.45:
+                raise RuntimeError(
+                    f"refusing to retag {path.name!r} titled {current_title!r} as {title!r}"
+                )
         new_title = title or current_title or path.stem
     else:
         new_title = title if looks_garbage(current_title) and title else (current_title or title or path.stem)
@@ -378,14 +419,29 @@ def process_file(
     if kind == "playlist":
         # Keep each file's own album/title — the wishlist row is the playlist, not an album.
         new_title = current_title or path.stem
-        new_album = existing_album or path.parent.name or "Unknown Album"
+        new_album = existing_album if not is_placeholder(existing_album) else ""
+        if is_placeholder(new_album):
+            parent = path.parent.name
+            new_album = parent if not is_placeholder(parent) else ""
         primary = primary_artist(existing_aa or (existing_artists[0] if existing_artists else "") or artist)
-        if looks_garbage(new_album):
-            new_album = path.parent.name or "Unknown Album"
+        if is_placeholder(primary):
+            primary = primary_artist(artist) if artist else ""
     else:
         primary = primary_artist(album_artist) if album_artist else primary_artist(artist)
-        new_album = album or (title if kind == "album" else "") or "Unknown Album"
-    new_album = " ".join(new_album.split())
+        new_album = album if not is_placeholder(album) else ""
+        if is_placeholder(new_album) and not is_placeholder(existing_album):
+            new_album = existing_album
+        if is_placeholder(new_album) and kind == "album" and not is_placeholder(title):
+            new_album = title
+        if is_placeholder(new_album):
+            parent = path.parent.name
+            if not is_placeholder(parent):
+                new_album = parent
+    if is_placeholder(primary):
+        primary = existing_aa if not is_placeholder(existing_aa) else (
+            existing_artists[0] if existing_artists and not is_placeholder(existing_artists[0]) else primary_artist(artist)
+        )
+    new_album = " ".join((new_album or "").split())
 
     dest = target_path(
         music_dir, primary, new_album, new_title, trackno, path.suffix.lower()
@@ -435,7 +491,8 @@ def process_file(
             upc=upc,
             mbid=mbid,
         )
-    unify_album_folder(dest.parent, album_artist=primary, album=new_album, upc=upc, mbid=mbid)
+    if kind == "album" and not is_placeholder(new_album):
+        unify_album_folder(dest.parent, album_artist=primary, album=new_album, upc=upc, mbid=mbid)
     return action
 
 
@@ -463,6 +520,42 @@ def canonical_ids(files: list[Path], preferred_upc: str) -> tuple[str, str]:
     if len(mbids) > 1:
         mbid = ""
     return upc, mbid
+
+
+def select_track_files(files: list[Path], title: str, artist: str) -> list[Path]:
+    """Pick the download that matches the wishlist track, not merely the newest file."""
+    if len(files) <= 1:
+        return files
+    ranked: list[tuple[float, float, Path, str]] = []
+    for path in files:
+        try:
+            audio = MutagenFile(path, easy=True)
+            got_title = easy_get(audio, "title") or path.stem
+            got_artist = easy_get(audio, "artist")
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        except Exception:
+            got_title, got_artist, mtime = path.stem, "", path.stat().st_mtime
+        score = name_score(got_title, title)
+        if artist:
+            score += 0.2 * name_score(got_artist, artist)
+        if looks_garbage(got_title):
+            score += 0.25
+        ranked.append((score, mtime, path, got_title))
+    if not ranked:
+        return files
+    ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    best_score, _, best, best_title = ranked[0]
+    if title and best_score < 0.45 and not looks_garbage(best_title):
+        fresh = [row for row in ranked if looks_garbage(row[3])]
+        if fresh:
+            fresh.sort(key=lambda row: row[1], reverse=True)
+            return [fresh[0][2]]
+        raise RuntimeError(
+            f"downloaded file {best.name!r} is titled {best_title!r}, not {title!r}"
+        )
+    return [best]
 
 
 def main() -> int:
@@ -506,7 +599,7 @@ def main() -> int:
         return 3
 
     if args.kind == "track" and not args.files_json and len(files) > 1:
-        files = [max(files, key=lambda p: p.stat().st_mtime)]
+        files = select_track_files(files, args.title, args.artist)
 
     files.sort(key=lambda p: p.name.lower())
     upc, mbid = canonical_ids(files, args.upc)

@@ -199,6 +199,21 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 	defer cancel()
 
 	started := time.Now()
+	if w.spotify != nil && e.Kind != "playlist" {
+		w.spotify.completeEntry(ctx, e)
+		if err := w.store.updateMetadata(e); err != nil {
+			logf("update metadata id=%d: %v", e.ID, err)
+		}
+	}
+
+	if e.Kind == "track" && w.alreadyHave(ctx, e.Title, e.Artist) {
+		logf("skip download id=%d already have %q — %q", e.ID, e.Artist, e.Title)
+		if err := w.store.delete(e.ID); err != nil {
+			_ = w.store.setStatus(e.ID, statusSkipped, "already in library")
+		}
+		return
+	}
+
 	if err := w.runSpotiflac(ctx, e.SpotifyURL); err != nil {
 		w.fail(e, attempt, err)
 		return
@@ -346,6 +361,25 @@ func (w *downloadWorker) retagRecent(ctx context.Context, e *entry, started time
 	}
 	logf("retag ok id=%d: %s", e.ID, truncate(strings.TrimSpace(stdout.String()), 300))
 	return nil
+}
+
+func (w *downloadWorker) alreadyHave(ctx context.Context, title, artist string) bool {
+	if strings.TrimSpace(title) == "" {
+		return false
+	}
+	if diskHasTrack(w.cfg.MusicDir, title, artist) {
+		return true
+	}
+	if w.navidrome == nil {
+		return false
+	}
+	user := os.Getenv("DROME_NAVIDROME_SCAN_USER")
+	pass := os.Getenv("DROME_NAVIDROME_SCAN_PASSWORD")
+	if user == "" || pass == "" {
+		return false
+	}
+	salt := "drome-owns"
+	return w.navidrome.libraryOwns(ctx, user, md5Hex(pass+salt), salt, title, artist)
 }
 
 // triggerScan asks Navidrome to rescan via the OpenSubsonic startScan endpoint
