@@ -4,5 +4,11 @@
 <dict>
 	<key>com.apple.developer.carplay-audio</key>
 	<true/>
+	<key>com.apple.developer.group-session</key>
+	<true/>
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:*.ts.net</string>
+	</array>
 </dict>
 </plist>

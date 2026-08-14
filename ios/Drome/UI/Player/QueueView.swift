@@ -19,7 +19,7 @@ struct QueueView: View {
                 }
 
                 if !player.userQueue.isEmpty {
-                    Section("Next in queue") {
+                    Section(player.sharePlayActive ? "Shared queue" : "Next in queue") {
                         ForEach(Array(player.userQueue.enumerated()), id: \.element.id) { index, item in
                             queueRow(item, index: index, inUserQueue: true)
                         }
@@ -38,7 +38,9 @@ struct QueueView: View {
 
                 if player.userQueue.isEmpty && player.contextQueue.isEmpty {
                     EmptyStateView(title: "Queue is empty",
-                                   message: "Add songs with Play Next or Add to Queue.")
+                                   message: player.sharePlayActive
+                                   ? "Anyone in the jam can add songs with Play Next."
+                                   : "Add songs with Play Next or Add to Queue.")
                         .listRowBackground(Color.clear)
                 }
             }
@@ -129,6 +131,9 @@ struct QueueView: View {
     }
 
     private var contextHeader: String {
+        if player.sharePlayActive {
+            return "Shared queue"
+        }
         if let label = player.context?.label {
             return "Next from: \(label)"
         }

@@ -227,8 +227,16 @@ struct DromeWishlistClient {
             songId: songId, title: title, artist: artist, album: album, accent: accent,
             coverJpegBase64: coverJPEG?.base64EncodedString())
         let created = try await send(TrackShareResponse.self, path: "/share/track", method: "POST", body: body)
-        guard let url = URL(string: created.url) else {
+        guard var url = URL(string: created.url) else {
             throw WishlistError.server("Companion server returned an invalid share URL.")
+        }
+        if URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.contains(where: { $0.name == "song" }) != true,
+           var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            var items = comps.queryItems ?? []
+            items.append(URLQueryItem(name: "song", value: songId))
+            comps.queryItems = items
+            url = comps.url ?? url
         }
         return url
     }

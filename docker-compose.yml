@@ -21,6 +21,7 @@ services:
       DROME_MUSIC_DIR: /music
       DROME_AUTO_DOWNLOAD: ${DROME_AUTO_DOWNLOAD:-true}
       DROME_SPOTIFLAC_SERVICES: ${DROME_SPOTIFLAC_SERVICES:-tidal,qobuz,amazon,deezer}
+      DROME_PUBLIC_URL: ${DROME_PUBLIC_URL:-}
       # Optional: admin (or any user allowed to scan) so downloads appear immediately.
       DROME_NAVIDROME_SCAN_USER: ${DROME_NAVIDROME_SCAN_USER:-}
       DROME_NAVIDROME_SCAN_PASSWORD: ${DROME_NAVIDROME_SCAN_PASSWORD:-}

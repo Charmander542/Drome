@@ -13,6 +13,7 @@ final class AppEnvironment: ObservableObject {
     let database: AppDatabase
 
     @Published private(set) var session: AppSession?
+    private var pendingDeepLink: URL?
 
     init() {
         accounts = AccountStore()
@@ -29,6 +30,7 @@ final class AppEnvironment: ObservableObject {
         session = AppSession(account: account, password: password, database: database)
         accounts.setActive(account)
         NotificationCenter.default.post(name: .dromeSessionChanged, object: nil)
+        consumePendingDeepLink()
     }
 
     func signIn(account: Account, password: String) {
@@ -41,6 +43,55 @@ final class AppEnvironment: ObservableObject {
         session = nil
         accounts.setActive(nil)
         NotificationCenter.default.post(name: .dromeSessionChanged, object: nil)
+    }
+
+    func handleDeepLink(_ url: URL) {
+        guard session != nil else {
+            pendingDeepLink = url
+            return
+        }
+        Task { await playDeepLink(url) }
+    }
+
+    private func consumePendingDeepLink() {
+        guard let url = pendingDeepLink else { return }
+        pendingDeepLink = nil
+        Task { await playDeepLink(url) }
+    }
+
+    private func playDeepLink(_ url: URL) async {
+        guard let session else { return }
+        var songId = DeepLink.songID(from: url)
+        if songId == nil, DeepLink.isShareCard(url) {
+            songId = await fetchShareSongID(from: url)
+        }
+        guard let songId, !songId.isEmpty else { return }
+        do {
+            let song = try await session.client.song(id: songId)
+            session.player.play(
+                [song], startAt: 0,
+                context: PlaybackContext(label: song.title, kind: .search))
+            NowPlayingPresenter.open()
+        } catch {
+            // Deep-link failures are silent — the user can retry from the library.
+        }
+    }
+
+    private func fetchShareSongID(from url: URL) async -> String? {
+        var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        comps?.query = nil
+        guard var infoURL = comps?.url else { return nil }
+        // Strip /cover if a cover URL was somehow opened.
+        if infoURL.lastPathComponent == "cover" {
+            infoURL.deleteLastPathComponent()
+        }
+        var request = URLRequest(url: infoURL)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 8
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        struct Info: Decodable { var songId: String }
+        return try? JSONDecoder().decode(Info.self, from: data).songId
     }
 
     func remove(_ account: Account) {

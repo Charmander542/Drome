@@ -3,6 +3,7 @@ import AVFoundation
 import Combine
 import MediaPlayer
 import UIKit
+import GroupActivities
 
 /// The playback engine. Owns an AVQueuePlayer used as a sliding window
 /// (current + next two items preloaded) so track transitions are gapless,
@@ -51,6 +52,10 @@ final class PlayerEngine: ObservableObject {
             if autoplayEnabled { maybeExtendWithAutoplay() } else { removeAutoplayTail() }
         }
     }
+    @Published private(set) var sharePlayActive = false
+    @Published private(set) var sharePlayParticipantCount = 0
+    @Published private(set) var isEligibleForSharePlay = false
+    @Published var sharePlayNotice: String?
 
     var autoplayProvider: AutoplayProvider?
     /// Fired when a track becomes current (explicit `setCurrent` or gapless advance).
@@ -79,6 +84,15 @@ final class PlayerEngine: ObservableObject {
     private var lastPublishedElapsed: TimeInterval = -1
     /// Tracks AirPlay so we only rebuild when the route actually flips.
     private var lastAirPlayActive = false
+    private let sharePlayBridge = SharePlayCoordinatorBridge()
+    private let groupStateObserver = GroupStateObserver()
+    private var sharePlaySession: GroupSession<DromeListenTogether>?
+    private var sharePlayMessenger: GroupSessionMessenger?
+    private var sharePlayListenerTask: Task<Void, Never>?
+    private var sharePlaySessionTasks: [Task<Void, Never>] = []
+    private var applyingSharePlay = false
+    private var lastSharePlaySnapshot: SharePlaySnapshot?
+    private var pendingSharePlaySnapshot: SharePlaySnapshot?
 
     private let client: SubsonicClient
     private let ratings: RatingsStore
@@ -110,6 +124,15 @@ final class PlayerEngine: ObservableObject {
         observePlayer()
         observeAppLifecycle()
         lastAirPlayActive = isAirPlayRouteActive
+
+        player.playbackCoordinator.delegate = sharePlayBridge
+        listenForSharePlaySessions()
+        groupStateObserver.$isEligibleForGroupSession
+            .receive(on: RunLoop.main)
+            .sink { [weak self] eligible in
+                self?.isEligibleForSharePlay = eligible
+            }
+            .store(in: &cancellables)
     }
 
     /// Wire per-account persistence for Recently Played + cold-start resume.
@@ -142,6 +165,7 @@ final class PlayerEngine: ObservableObject {
     }
 
     func shutdown() {
+        leaveSharePlay(restartListener: false)
         cancelAutoplayWork()
         prefetchTask?.cancel()
         prefetchTask = nil
@@ -182,6 +206,7 @@ final class PlayerEngine: ObservableObject {
         setCurrent(QueueItem(song: startSong), startPlaying: true, allowLowRated: true)
         ensureAutoplayBuffer()
         persistSessionSoon()
+        broadcastSharePlayIfNeeded()
     }
 
     /// Shuffle-button entry point: enables shuffle (smart by default) and
@@ -706,6 +731,7 @@ final class PlayerEngine: ObservableObject {
             ensureAutoplayBuffer()
         }
         persistSessionSoon()
+        broadcastSharePlayIfNeeded()
     }
 
     private var isAirPlayRouteActive: Bool {
@@ -725,6 +751,7 @@ final class PlayerEngine: ObservableObject {
             ?? URL(fileURLWithPath: "/dev/null")
         let asset = AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)
+        sharePlayBridge.remember(item, identity: Self.sharePlayContentID(for: song))
         // Deep buffer for remote originals (often FLAC) so short network
         // hiccups never starve the decoder. Local files need far less.
         item.preferredForwardBufferDuration = local == nil ? 45 : 8
@@ -749,12 +776,18 @@ final class PlayerEngine: ObservableObject {
     private func rebuildWindow(startPlaying: Bool) {
         isRebuilding = true
         prefetchTask?.cancel()
+        // Don't let a local pause during item swap pause everyone else in the jam.
+        let suspension = sharePlaySession.map { _ in
+            player.playbackCoordinator.beginSuspension(for: .dromeRebuilding)
+        }
+        defer { suspension?.end() }
         // Pause before tearing down HTTP streams so a replaced item cannot
         // keep decoding while the next track starts (audible overlap).
         player.pause()
         player.rate = 0
         player.removeAllItems()
         window.removeAll()
+        sharePlayBridge.reset()
         defer {
             isRebuilding = false
             pushNowPlayingInfo()
@@ -766,6 +799,9 @@ final class PlayerEngine: ObservableObject {
         let playerItem = makePlayerItem(for: current.song)
         window.append((playerItem, current))
         player.insert(playerItem, after: nil)
+        if let session = sharePlaySession {
+            player.playbackCoordinator.coordinateWithSession(session)
+        }
 
         if startPlaying {
             activateAudioSession()
@@ -781,16 +817,19 @@ final class PlayerEngine: ObservableObject {
     /// Keeps the preloaded window in sync after queue edits without touching
     /// the currently playing item (preserving gapless playback).
     private func resyncUpcomingWindow() {
-        guard let first = window.first else { return }
-        isRebuilding = true
-        prefetchTask?.cancel()
-        for entry in window.dropFirst() {
-            player.remove(entry.playerItem)
+        if let first = window.first {
+            isRebuilding = true
+            prefetchTask?.cancel()
+            for entry in window.dropFirst() {
+                player.remove(entry.playerItem)
+            }
+            window = [first]
+            isRebuilding = false
+            // Prefer the playing item; top up lookahead after a beat.
+            schedulePrefetchTopUp(delayNanoseconds: 400_000_000)
         }
-        window = [first]
-        isRebuilding = false
-        // Prefer the playing item; top up lookahead after a beat.
-        schedulePrefetchTopUp(delayNanoseconds: 400_000_000)
+        persistSessionSoon()
+        broadcastSharePlayIfNeeded()
     }
 
     /// Tops up the window after a natural advance or delayed prefetch.
@@ -1000,6 +1039,7 @@ final class PlayerEngine: ObservableObject {
         } else {
             ensureAutoplayBuffer()
         }
+        broadcastSharePlayIfNeeded()
     }
 
     private func handleItemDidEnd(_ item: AVPlayerItem?) {
@@ -1094,7 +1134,7 @@ final class PlayerEngine: ObservableObject {
     /// Call after jumps / play / advances so the last track never leaves an
     /// empty Up Next list.
     private func ensureAutoplayBuffer() {
-        guard autoplayEnabled, repeatMode == .off, current != nil else { return }
+        guard !sharePlayActive, autoplayEnabled, repeatMode == .off, current != nil else { return }
         let upcoming = userQueue.count + contextQueue.count
         // Refill early — never wait until the queue is already empty.
         if upcoming < 8 {
@@ -1111,7 +1151,7 @@ final class PlayerEngine: ObservableObject {
     /// Single serialized entry for empty-queue Infinite Shuffle continuation.
     /// Collapses concurrent `next()` + end-of-queue races into one fetch.
     private func continueWithAutoplayIfNeeded(playImmediately: Bool) {
-        guard autoplayEnabled, repeatMode == .off else {
+        guard !sharePlayActive, autoplayEnabled, repeatMode == .off else {
             if playImmediately {
                 player.pause()
                 player.rate = 0
@@ -1153,7 +1193,7 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func maybeExtendWithAutoplay(force: Bool = false) {
-        guard autoplayEnabled, repeatMode == .off, autoplayTask == nil,
+        guard !sharePlayActive, autoplayEnabled, repeatMode == .off, autoplayTask == nil,
               let provider = autoplayProvider, current != nil else { return }
         if !force {
             guard userQueue.count + contextQueue.count < 8 else { return }
@@ -1253,8 +1293,12 @@ final class PlayerEngine: ObservableObject {
 
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
-        // Exclusive music playback — never duck or mix with other audio.
-        try? session.setCategory(.playback, mode: .default, options: [])
+        if sharePlayActive {
+            // Mix with FaceTime so Drome can play on each phone during the call.
+            try? session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+        } else {
+            try? session.setCategory(.playback, mode: .default, options: [])
+        }
         try? session.setActive(true, options: [])
     }
 
@@ -1318,7 +1362,7 @@ final class PlayerEngine: ObservableObject {
               let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
         switch type {
         case .began:
-            pause()
+            if !sharePlayActive { pause() }
         case .ended:
             if let optionsRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt,
                AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume) {
@@ -1337,5 +1381,204 @@ final class PlayerEngine: ObservableObject {
 
     private func scrobbleSubmission(_ song: Song) {
         Task { try? await client.scrobble(id: song.id, submission: true) }
+    }
+
+    // MARK: - SharePlay
+
+    func startSharePlay() {
+        SharePlayLauncher.start(from: self)
+    }
+
+    func leaveSharePlay() {
+        leaveSharePlay(restartListener: true)
+    }
+
+    private func leaveSharePlay(restartListener: Bool) {
+        sharePlaySessionTasks.forEach { $0.cancel() }
+        sharePlaySessionTasks.removeAll()
+        sharePlayListenerTask?.cancel()
+        sharePlayListenerTask = nil
+        sharePlayMessenger = nil
+        sharePlaySession?.leave()
+        sharePlaySession = nil
+        sharePlayActive = false
+        sharePlayParticipantCount = 0
+        lastSharePlaySnapshot = nil
+        pendingSharePlaySnapshot = nil
+        configureAudioSession()
+        if restartListener {
+            listenForSharePlaySessions()
+        }
+    }
+
+    private func listenForSharePlaySessions() {
+        sharePlayListenerTask?.cancel()
+        sharePlayListenerTask = Task { [weak self] in
+            for await session in DromeListenTogether.sessions() {
+                await self?.joinSharePlay(session)
+            }
+        }
+    }
+
+    private func joinSharePlay(_ session: GroupSession<DromeListenTogether>) {
+        sharePlaySessionTasks.forEach { $0.cancel() }
+        sharePlaySessionTasks.removeAll()
+        sharePlaySession?.leave()
+
+        sharePlaySession = session
+        let messenger = GroupSessionMessenger(session: session)
+        sharePlayMessenger = messenger
+        player.playbackCoordinator.coordinateWithSession(session)
+        session.join()
+        sharePlayActive = true
+        configureAudioSession()
+
+        sharePlaySessionTasks.append(Task { [weak self] in
+            for await (snapshot, _) in messenger.messages(of: SharePlaySnapshot.self) {
+                await self?.applySharePlaySnapshot(snapshot)
+            }
+        })
+        sharePlaySessionTasks.append(Task { [weak self] in
+            for await state in session.$state.values {
+                guard let self else { return }
+                if case .invalidated = state {
+                    self.sharePlaySession = nil
+                    self.sharePlayMessenger = nil
+                    self.sharePlayActive = false
+                    self.sharePlayParticipantCount = 0
+                    self.pendingSharePlaySnapshot = nil
+                    self.configureAudioSession()
+                }
+            }
+        })
+        sharePlaySessionTasks.append(Task { [weak self] in
+            for await participants in session.$activeParticipants.values {
+                guard let self else { return }
+                let count = participants.count
+                let grew = count > self.sharePlayParticipantCount
+                self.sharePlayParticipantCount = count
+                if grew { self.broadcastSharePlayIfNeeded() }
+            }
+        })
+        broadcastSharePlayIfNeeded()
+    }
+
+    private func makeSharePlaySnapshot() -> SharePlaySnapshot? {
+        guard let song = current?.song else { return nil }
+        let upcoming = peekUpcoming(limit: 24).map { SharePlayTrack(song: $0.song) }
+        return SharePlaySnapshot(
+            current: SharePlayTrack(song: song),
+            upcoming: upcoming,
+            isPlaying: wantsToPlay)
+    }
+
+    private func broadcastSharePlayIfNeeded() {
+        guard sharePlayActive, !applyingSharePlay, let messenger = sharePlayMessenger else { return }
+        guard let snapshot = makeSharePlaySnapshot(), snapshot != lastSharePlaySnapshot else { return }
+        lastSharePlaySnapshot = snapshot
+        Task {
+            try? await messenger.send(snapshot)
+        }
+    }
+
+    private func applySharePlaySnapshot(_ snapshot: SharePlaySnapshot) async {
+        if applyingSharePlay {
+            pendingSharePlaySnapshot = snapshot
+            return
+        }
+        if let last = lastSharePlaySnapshot, snapshot.sentAt + 0.05 < last.sentAt {
+            return
+        }
+        if snapshot == lastSharePlaySnapshot {
+            lastSharePlaySnapshot = snapshot
+            return
+        }
+
+        applyingSharePlay = true
+        defer {
+            applyingSharePlay = false
+            if let pending = pendingSharePlaySnapshot {
+                pendingSharePlaySnapshot = nil
+                Task { await applySharePlaySnapshot(pending) }
+            }
+        }
+
+        let currentMatches = current.map {
+            Self.sharePlayContentID(for: $0.song) == Self.sharePlayContentID(for: snapshot.current)
+        } ?? false
+
+        if currentMatches {
+            let upcomingSongs = await resolveSharePlayTracks(snapshot.upcoming)
+            userQueue = upcomingSongs.map { QueueItem(song: $0) }
+            contextQueue.removeAll()
+            lastSharePlaySnapshot = snapshot
+            resyncUpcomingWindow()
+            return
+        }
+
+        var songs: [Song] = []
+        if let currentSong = await resolveSharePlayTrack(snapshot.current) {
+            songs.append(currentSong)
+        }
+        let upcomingSongs = await resolveSharePlayTracks(snapshot.upcoming)
+        for song in upcomingSongs where !songs.contains(where: { $0.id == song.id }) {
+            songs.append(song)
+        }
+        guard !songs.isEmpty else {
+            sharePlayNotice = "“\(snapshot.current.title)” isn’t in your library."
+            return
+        }
+        if songs.first.map({ Self.sharePlayContentID(for: $0) }) != Self.sharePlayContentID(for: snapshot.current) {
+            sharePlayNotice = "“\(snapshot.current.title)” isn’t in your library — playing the next shared track."
+        }
+        lastSharePlaySnapshot = snapshot
+        cancelAutoplayWork()
+        context = PlaybackContext(label: "Jam", kind: .mix)
+        fullContextSongs = songs
+        originalContextOrder = Array(songs.dropFirst()).map { QueueItem(song: $0) }
+        contextQueue = originalContextOrder
+        userQueue.removeAll()
+        history.removeAll()
+        setCurrent(QueueItem(song: songs[0]), startPlaying: snapshot.isPlaying, allowLowRated: true)
+    }
+
+    private func resolveSharePlayTracks(_ tracks: [SharePlayTrack]) async -> [Song] {
+        var songs: [Song] = []
+        var seen = Set<String>()
+        for track in tracks {
+            guard let song = await resolveSharePlayTrack(track) else { continue }
+            let key = Self.sharePlayContentID(for: song)
+            if seen.insert(key).inserted {
+                songs.append(song)
+            }
+        }
+        return songs
+    }
+
+    private func resolveSharePlayTrack(_ track: SharePlayTrack) async -> Song? {
+        if let song = try? await client.song(id: track.id) { return song }
+        let query = [track.title, track.artist].filter { !$0.isEmpty }.joined(separator: " ")
+        guard !query.isEmpty else { return nil }
+        let result = try? await client.search(query, artistCount: 0, albumCount: 0, songCount: 12)
+        let titleKey = LibraryMatcher.normalize(track.title)
+        let artistKey = LibraryMatcher.normalize(track.artist)
+        return result?.songs.first { song in
+            LibraryMatcher.normalize(song.title) == titleKey
+                && (artistKey.isEmpty
+                    || LibraryMatcher.normalize(song.displayArtist).contains(artistKey)
+                    || artistKey.contains(LibraryMatcher.normalize(song.displayArtist)))
+        }
+    }
+
+    static func sharePlayContentID(for song: Song) -> String {
+        sharePlayContentID(title: song.title, artist: song.displayArtist)
+    }
+
+    static func sharePlayContentID(for track: SharePlayTrack) -> String {
+        sharePlayContentID(title: track.title, artist: track.artist)
+    }
+
+    static func sharePlayContentID(title: String, artist: String) -> String {
+        "\(LibraryMatcher.normalize(title))|\(LibraryMatcher.normalize(artist))"
     }
 }

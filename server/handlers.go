@@ -37,6 +37,8 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /share/track", s.requireAuth(s.handleCreateTrackShare))
 	mux.HandleFunc("GET /s/{token}", s.handleTrackSharePage)
 	mux.HandleFunc("GET /s/{token}/cover", s.handleTrackShareCover)
+	mux.HandleFunc("GET /.well-known/apple-app-site-association", s.handleAppleAppSiteAssociation)
+	mux.HandleFunc("GET /apple-app-site-association", s.handleAppleAppSiteAssociation)
 	return logRequests(mux)
 }
 

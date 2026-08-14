@@ -623,16 +623,8 @@ type playlistTrack struct {
 }
 
 func (c *spotifyClient) playlistTracks(ctx context.Context, playlistID string) (name string, tracks []playlistTrack, err error) {
-	if c.hasAPICreds() {
-		name, tracks, err = c.playlistTracksAPI(ctx, playlistID)
-		if err == nil && len(tracks) > 0 {
-			return name, tracks, nil
-		}
-		if err != nil {
-			logf("playlist API %s: %v — trying public page", playlistID, err)
-		}
-	}
-
+	// Editorial 37i9… lists 404 on the Web API even when public. The embed
+	// page still includes track URIs — scrape that first, same as SpotiFLAC's GUI.
 	pubName, pubTracks, pubErr := c.playlistTracksPublic(ctx, playlistID)
 	if pubName != "" {
 		name = pubName
@@ -643,11 +635,23 @@ func (c *spotifyClient) playlistTracks(ctx context.Context, playlistID string) (
 	if pubErr != nil {
 		logf("playlist public scrape %s: %v", playlistID, pubErr)
 	}
+
+	if c.hasAPICreds() && !strings.HasPrefix(playlistID, "37i9") {
+		apiName, apiTracks, apiErr := c.playlistTracksAPI(ctx, playlistID)
+		if apiName != "" {
+			name = apiName
+		}
+		if apiErr == nil && len(apiTracks) > 0 {
+			return name, apiTracks, nil
+		}
+		if apiErr != nil {
+			logf("playlist API %s: %v", playlistID, apiErr)
+		}
+	}
+
 	if name == "" {
 		name = "Spotify playlist"
 	}
-	// Editorial 37i9… playlists 404 on the Web API even when public. SpotiFLAC
-	// can still fetch the playlist URL directly, same as its GUI.
 	return name, nil, errPlaylistDirectDownload
 }
 
@@ -688,9 +692,6 @@ func (c *spotifyClient) playlistTracksAPI(ctx context.Context, playlistID string
 		}
 	}
 	if lastErr != nil {
-		if spotifyUnavailable(lastErr) {
-			return name, nil, fmt.Errorf("this playlist is private, personalized, or not readable with the server Spotify app token — make it public, or use a track/album link")
-		}
 		return name, nil, lastErr
 	}
 	if name == "" {
@@ -760,11 +761,24 @@ var (
 	spotifyTrackPathRe = regexp.MustCompile(`(?i)(?:open\.spotify\.com/(?:embed/)?(?:intl-[a-z]{2}/)?track/|/track/)([0-9A-Za-z]{22})`)
 )
 
+func unescapeSpotifyHTML(s string) string {
+	replacer := strings.NewReplacer(
+		`\u003a`, ":",
+		`\u003A`, ":",
+		`\u002f`, "/",
+		`\u002F`, "/",
+		`\/`, "/",
+		`\\u003a`, ":",
+	)
+	return replacer.Replace(s)
+}
+
 func extractSpotifyTrackIDs(html string) []string {
+	html = unescapeSpotifyHTML(html)
 	seen := make(map[string]struct{})
 	var ids []string
 	add := func(id string) {
-		if !spotifyIDPattern.MatchString(id) {
+		if len(id) != 22 || !spotifyIDPattern.MatchString(id) {
 			return
 		}
 		if _, ok := seen[id]; ok {
@@ -790,6 +804,8 @@ func (c *spotifyClient) fetchPublicHTML(ctx context.Context, pageURL string) (st
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
 	req.Header.Set("Accept-Language", "en")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Referer", "https://open.spotify.com/")
+	req.Header.Set("Cache-Control", "no-cache")
 	client := c.http
 	if client == nil || client.Timeout < 25*time.Second {
 		client = &http.Client{Timeout: 25 * time.Second}
@@ -823,8 +839,9 @@ func playlistNameFromHTML(html string) string {
 
 func (c *spotifyClient) playlistTracksPublic(ctx context.Context, playlistID string) (name string, tracks []playlistTrack, err error) {
 	pages := []string{
-		"https://open.spotify.com/playlist/" + playlistID,
 		"https://open.spotify.com/embed/playlist/" + playlistID,
+		"https://open.spotify.com/embed/playlist/" + playlistID + "?utm_source=generator",
+		"https://open.spotify.com/playlist/" + playlistID,
 	}
 	var html string
 	var lastErr error
@@ -837,6 +854,9 @@ func (c *spotifyClient) playlistTracksPublic(ctx context.Context, playlistID str
 		html += "\n" + page
 		if name == "" {
 			name = playlistNameFromHTML(page)
+		}
+		if ids := extractSpotifyTrackIDs(page); len(ids) > 0 {
+			break
 		}
 	}
 	if html == "" {

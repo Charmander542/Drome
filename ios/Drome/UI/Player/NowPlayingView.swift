@@ -55,6 +55,11 @@ struct NowPlayingView: View {
                 VStack(spacing: 0) {
                     grabber
 
+                    if player.sharePlayActive {
+                        sharePlayBanner
+                            .padding(.bottom, 8)
+                    }
+
                     panePicker
                         .frame(maxWidth: min(280, width - 48))
                         .padding(.bottom, 8)
@@ -125,6 +130,11 @@ struct NowPlayingView: View {
                     .transition(.opacity)
             }
         }
+        .onChange(of: player.sharePlayNotice) { _, message in
+            guard let message, !message.isEmpty else { return }
+            flash(message)
+            player.sharePlayNotice = nil
+        }
         .animation(.easeInOut(duration: 0.2), value: flashMessage)
         .preferredColorScheme(.dark)
     }
@@ -149,6 +159,27 @@ struct NowPlayingView: View {
         .contentShape(Rectangle())
         // Always allow dismiss from the grabber, including on the Lyrics pane.
         .simultaneousGesture(dismissGesture)
+    }
+
+    private var sharePlayBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "shareplay")
+                .font(.caption.weight(.bold))
+            Text(player.sharePlayParticipantCount > 1
+                 ? "Jam on each phone · \(player.sharePlayParticipantCount)"
+                 : "Waiting for them to open Drome")
+                .font(.caption.weight(.semibold))
+            Spacer(minLength: 0)
+            Button("Leave") {
+                player.leaveSharePlay()
+            }
+            .font(.caption.weight(.bold))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(DromeTheme.accent.opacity(0.85), in: Capsule())
+        .padding(.horizontal, 20)
     }
 
     private var panePicker: some View {
@@ -920,6 +951,20 @@ struct NowPlayingMoreSheet: View {
                         SongShare.present(song: song)
                     } label: {
                         Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                    .listRowBackground(DromeTheme.elevated)
+
+                    Button {
+                        if player.sharePlayActive {
+                            player.leaveSharePlay()
+                        } else {
+                            player.startSharePlay()
+                        }
+                        isPresented = false
+                    } label: {
+                        Label(
+                            player.sharePlayActive ? "Leave Jam" : "Start a Jam (SharePlay)",
+                            systemImage: "shareplay")
                     }
                     .listRowBackground(DromeTheme.elevated)
 

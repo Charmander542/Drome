@@ -8,6 +8,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -134,9 +135,10 @@ func (s *server) handleCreateTrackShare(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	base := publicBaseURL(r)
+	shareURL := base + "/s/" + sh.Token + "?song=" + url.QueryEscape(sh.SongID)
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"token":    sh.Token,
-		"url":      base + "/s/" + sh.Token,
+		"url":      shareURL,
 		"coverUrl": base + "/s/" + sh.Token + "/cover",
 		"songId":   sh.SongID,
 	})
@@ -149,9 +151,20 @@ func (s *server) handleTrackSharePage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if wantsJSON(r) {
+		writeJSON(w, http.StatusOK, map[string]string{
+			"songId": sh.SongID,
+			"title":  sh.Title,
+			"artist": sh.Artist,
+			"album":  sh.Album,
+			"token":  sh.Token,
+		})
+		return
+	}
 	base := publicBaseURL(r)
-	pageURL := base + "/s/" + sh.Token
-	coverURL := pageURL + "/cover"
+	deep := "drome://track/" + sh.SongID
+	pageURL := base + "/s/" + sh.Token + "?song=" + url.QueryEscape(sh.SongID)
+	coverURL := base + "/s/" + sh.Token + "/cover"
 	headline := sh.Title
 	if sh.Artist != "" {
 		headline = sh.Title + " — " + sh.Artist
@@ -168,7 +181,6 @@ func (s *server) handleTrackSharePage(w http.ResponseWriter, r *http.Request) {
 			desc = sh.Album
 		}
 	}
-	deep := "drome://track/" + sh.SongID
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	_, _ = io.WriteString(w, sharePageHTML(
@@ -224,6 +236,9 @@ func sharePageHTML(headline, title, artist, album, desc, pageURL, coverURL, deep
 <meta property="og:description" content="` + desc + `">
 <meta property="og:url" content="` + pageURL + `">
 <meta property="og:site_name" content="Drome">
+<meta property="al:ios:url" content="` + deep + `">
+<meta property="al:ios:app_name" content="Drome">
+<meta name="apple-itunes-app" content="app-argument=` + deep + `">
 ` + ogImage + `
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="` + headline + `">
@@ -265,6 +280,13 @@ func sharePageHTML(headline, title, artist, album, desc, pageURL, coverURL, deep
   }
   .hint { margin-top: 18px; color: rgba(255,255,255,.38); font-size: .8rem; }
 </style>
+<script>
+(function () {
+  var ua = navigator.userAgent || "";
+  if (/bot|crawler|spider|preview|facebookexternalhit|Twitterbot|Slackbot|Discordbot|WhatsApp|LinkedInBot|Applebot|Googlebot|Bingbot/i.test(ua)) return;
+  window.location.replace("` + deep + `");
+})();
+</script>
 </head>
 <body>
   <main class="card">
@@ -277,6 +299,37 @@ func sharePageHTML(headline, title, artist, album, desc, pageURL, coverURL, deep
   </main>
 </body>
 </html>`
+}
+
+func wantsJSON(r *http.Request) bool {
+	accept := strings.ToLower(r.Header.Get("Accept"))
+	return strings.Contains(accept, "application/json") && !strings.Contains(accept, "text/html")
+}
+
+func (s *server) handleAppleAppSiteAssociation(w http.ResponseWriter, r *http.Request) {
+	appID := os.Getenv("DROME_AASA_APP_ID")
+	if appID == "" {
+		appID = "LURJ69YS93.drome.app"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	_, _ = io.WriteString(w, `{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "`+appID+`",
+        "appIDs": ["`+appID+`"],
+        "paths": ["/s/*"],
+        "components": [
+          {"/": "/s/*/cover", "exclude": true},
+          {"/": "/.well-known/*", "exclude": true},
+          {"/": "/s/*"}
+        ]
+      }
+    ]
+  }
+}`)
 }
 
 func albumLine(album string) string {

@@ -3,10 +3,10 @@ import LinkPresentation
 
 /// Builds share payloads that work in Messages, Discord, Mail, etc.
 ///
-/// iMessage only builds a large album-art card when the activity item is a
-/// real `URL` (not a string) and `LPLinkMetadata` includes an image. Recipients
-/// re-fetch that URL, so we publish a public HTTPS card on the companion
-/// server whenever one is configured.
+/// Messages opens whatever URL is in the bubble. We put `drome://track/{id}`
+/// there so a tap goes straight into the app (album art comes from local
+/// `LPLinkMetadata`, not the companion webpage). Discord / Slack / Mail still
+/// get an HTTPS card when the companion is configured.
 enum SongShare {
     static func url(songId: String) -> URL {
         URL(string: "drome://track/\(songId)")!
@@ -42,18 +42,17 @@ enum SongShare {
             }
         }
 
-        var link = url(songId: song.id)
+        let appURL = url(songId: song.id)
+        var webURL: URL?
         if let client = AppEnvironment.shared?.session?.wishlist {
             let jpeg = cover.flatMap { $0.jpegData(compressionQuality: 0.82) }
             let accent = cover.map(Self.accentHex(from:)) ?? "#3D7EFF"
-            if let hosted = try? await client.createTrackShare(
+            webURL = try? await client.createTrackShare(
                 songId: song.id, title: title, artist: artist, album: album,
-                accent: accent, coverJPEG: jpeg) {
-                link = hosted
-            }
+                accent: accent, coverJPEG: jpeg)
         }
 
-        let item = ShareItem(headline: headline, url: link, image: cover)
+        let item = ShareItem(headline: headline, appURL: appURL, webURL: webURL, image: cover)
         let activity = UIActivityViewController(activityItems: [item], applicationActivities: nil)
         activity.excludedActivityTypes = [
             .assignToContact,
@@ -115,21 +114,21 @@ enum SongShare {
         return String(format: "#%02X%02X%02X", min(r / n, 255), min(g / n, 255), min(b / n, 255))
     }
 
-    /// Provides a URL (so Messages builds a rich card) plus metadata. Discord /
-    /// Slack still get a pasteable title + link string.
     private final class ShareItem: NSObject, UIActivityItemSource {
         let headline: String
-        let url: URL
+        let appURL: URL
+        let webURL: URL?
         let image: UIImage?
 
-        init(headline: String, url: URL, image: UIImage? = nil) {
+        init(headline: String, appURL: URL, webURL: URL?, image: UIImage? = nil) {
             self.headline = headline
-            self.url = url
+            self.appURL = appURL
+            self.webURL = webURL
             self.image = image
         }
 
         func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
-            url
+            appURL
         }
 
         func activityViewController(
@@ -140,11 +139,11 @@ enum SongShare {
             if activityType == .mail
                 || raw.localizedCaseInsensitiveContains("discord")
                 || raw.localizedCaseInsensitiveContains("Slack") {
-                return "\(headline)\n\(url.absoluteString)"
+                let link = webURL ?? appURL
+                return "\(headline)\n\(link.absoluteString)"
             }
-            // Messages / copy / Safari: the URL itself, so iMessage can attach
-            // LPLinkMetadata as a native rich card instead of a text bubble.
-            return url
+            // Messages, copy, AirDrop: open Drome directly.
+            return appURL
         }
 
         func activityViewController(
@@ -159,8 +158,8 @@ enum SongShare {
         ) -> LPLinkMetadata? {
             let meta = LPLinkMetadata()
             meta.title = headline
-            meta.originalURL = url
-            meta.url = url
+            meta.originalURL = appURL
+            meta.url = appURL
             if let image {
                 meta.imageProvider = NSItemProvider(object: image)
                 meta.iconProvider = NSItemProvider(object: image)

@@ -123,4 +123,10 @@ func TestExtractSpotifyTrackIDs(t *testing.T) {
 	if got[0] != "11dFghVXANMlKmJXsNCbNl" || got[1] != "7ouMYWpwJ422jRcKU4soBa" {
 		t.Fatalf("ids=%v", got)
 	}
+
+	escaped := `{"uri":"spotify\u003atrack:7ouMYWpwJ422jRcKU4soBa"}`
+	got = extractSpotifyTrackIDs(escaped)
+	if len(got) != 1 || got[0] != "7ouMYWpwJ422jRcKU4soBa" {
+		t.Fatalf("unicode-escaped ids=%v", got)
+	}
 }

@@ -20,6 +20,12 @@ struct DromeApp: App {
                     .zIndex(1)
                 }
             }
+            .onOpenURL { DeepLink.open($0, env: env) }
+            .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                if let url = activity.webpageURL {
+                    DeepLink.open(url, env: env)
+                }
+            }
         }
     }
 }
