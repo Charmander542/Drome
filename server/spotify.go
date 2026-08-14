@@ -447,6 +447,9 @@ func (c *spotifyClient) albumUPC(ctx context.Context, albumID string) (string, e
 // albumIdentity returns primary album artist + UPC for retagging downloads so
 // Navidrome groups an album as one release even when tracks have guest artists.
 func (c *spotifyClient) albumIdentity(ctx context.Context, e *entry) (albumArtist, upc string) {
+	if e.Kind == "playlist" {
+		return "", ""
+	}
 	if e.AlbumArtist != "" {
 		albumArtist = e.AlbumArtist
 		upc = e.UPC
@@ -544,6 +547,17 @@ func (c *spotifyClient) resolveOpenGraph(ctx context.Context, e *entry) error {
 			e.Artist = parts[0]
 			e.AlbumArtist = parts[0]
 		}
+	case "playlist":
+		e.Title = strings.TrimSpace(strings.TrimSuffix(title, "| Spotify"))
+		if i := strings.LastIndex(e.Title, " - playlist by "); i > 0 {
+			e.Title = strings.TrimSpace(e.Title[:i])
+		}
+		e.Album = e.Title
+		parts := splitSpotifyDesc(desc)
+		if len(parts) >= 1 {
+			e.Artist = parts[0]
+			e.AlbumArtist = parts[0]
+		}
 	}
 	if e.Title == "" {
 		return fmt.Errorf("could not parse title from public metadata")
@@ -609,6 +623,37 @@ type playlistTrack struct {
 }
 
 func (c *spotifyClient) playlistTracks(ctx context.Context, playlistID string) (name string, tracks []playlistTrack, err error) {
+	if c.hasAPICreds() {
+		name, tracks, err = c.playlistTracksAPI(ctx, playlistID)
+		if err == nil && len(tracks) > 0 {
+			return name, tracks, nil
+		}
+		if err != nil {
+			logf("playlist API %s: %v — trying public page", playlistID, err)
+		}
+	}
+
+	pubName, pubTracks, pubErr := c.playlistTracksPublic(ctx, playlistID)
+	if pubName != "" {
+		name = pubName
+	}
+	if pubErr == nil && len(pubTracks) > 0 {
+		return name, pubTracks, nil
+	}
+	if pubErr != nil {
+		logf("playlist public scrape %s: %v", playlistID, pubErr)
+	}
+	if name == "" {
+		name = "Spotify playlist"
+	}
+	// Editorial 37i9… playlists 404 on the Web API even when public. SpotiFLAC
+	// can still fetch the playlist URL directly, same as its GUI.
+	return name, nil, errPlaylistDirectDownload
+}
+
+var errPlaylistDirectDownload = fmt.Errorf("playlist is not enumerable; download the playlist URL directly")
+
+func (c *spotifyClient) playlistTracksAPI(ctx context.Context, playlistID string) (name string, tracks []playlistTrack, err error) {
 	if !c.hasAPICreds() {
 		return "", nil, fmt.Errorf("spotify playlist import requires API credentials")
 	}
@@ -706,6 +751,175 @@ func (c *spotifyClient) fetchPlaylistTrackPages(ctx context.Context, startPath s
 			break
 		}
 		path = *page.Next
+	}
+	return tracks, nil
+}
+
+var (
+	spotifyTrackURIRe  = regexp.MustCompile(`spotify:track:([0-9A-Za-z]{22})`)
+	spotifyTrackPathRe = regexp.MustCompile(`(?i)(?:open\.spotify\.com/(?:embed/)?(?:intl-[a-z]{2}/)?track/|/track/)([0-9A-Za-z]{22})`)
+)
+
+func extractSpotifyTrackIDs(html string) []string {
+	seen := make(map[string]struct{})
+	var ids []string
+	add := func(id string) {
+		if !spotifyIDPattern.MatchString(id) {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	for _, m := range spotifyTrackURIRe.FindAllStringSubmatch(html, -1) {
+		add(m[1])
+	}
+	for _, m := range spotifyTrackPathRe.FindAllStringSubmatch(html, -1) {
+		add(m[1])
+	}
+	return ids
+}
+
+func (c *spotifyClient) fetchPublicHTML(ctx context.Context, pageURL string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+	req.Header.Set("Accept-Language", "en")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	client := c.http
+	if client == nil || client.Timeout < 25*time.Second {
+		client = &http.Client{Timeout: 25 * time.Second}
+		if c.http != nil {
+			client.Transport = c.http.Transport
+		}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("spotify page %s: %s", pageURL, resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+func playlistNameFromHTML(html string) string {
+	title := htmlUnescape(firstSubmatch(ogTitleRe, html))
+	title = strings.TrimSpace(strings.TrimSuffix(title, "| Spotify"))
+	if i := strings.LastIndex(strings.ToLower(title), " - playlist by "); i > 0 {
+		title = strings.TrimSpace(title[:i])
+	}
+	return title
+}
+
+func (c *spotifyClient) playlistTracksPublic(ctx context.Context, playlistID string) (name string, tracks []playlistTrack, err error) {
+	pages := []string{
+		"https://open.spotify.com/playlist/" + playlistID,
+		"https://open.spotify.com/embed/playlist/" + playlistID,
+	}
+	var html string
+	var lastErr error
+	for _, u := range pages {
+		page, fetchErr := c.fetchPublicHTML(ctx, u)
+		if fetchErr != nil {
+			lastErr = fetchErr
+			continue
+		}
+		html += "\n" + page
+		if name == "" {
+			name = playlistNameFromHTML(page)
+		}
+	}
+	if html == "" {
+		if lastErr != nil {
+			return name, nil, lastErr
+		}
+		return name, nil, fmt.Errorf("could not load public playlist page")
+	}
+
+	ids := extractSpotifyTrackIDs(html)
+	if len(ids) == 0 {
+		return name, nil, fmt.Errorf("public playlist page has no track ids")
+	}
+	if c.hasAPICreds() {
+		hydrated, hydErr := c.tracksByIDs(ctx, ids)
+		if hydErr == nil && len(hydrated) > 0 {
+			return name, hydrated, nil
+		}
+		if hydErr != nil {
+			logf("hydrate scraped playlist tracks: %v", hydErr)
+		}
+	}
+	out := make([]playlistTrack, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, playlistTrack{
+			SpotifyID:  id,
+			SpotifyURL: "https://open.spotify.com/track/" + id,
+		})
+	}
+	return name, out, nil
+}
+
+func (c *spotifyClient) tracksByIDs(ctx context.Context, ids []string) ([]playlistTrack, error) {
+	if !c.hasAPICreds() {
+		return nil, fmt.Errorf("spotify tracks lookup requires API credentials")
+	}
+	var tracks []playlistTrack
+	for i := 0; i < len(ids); i += 50 {
+		end := i + 50
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[i:end]
+		path := "/tracks?ids=" + url.QueryEscape(strings.Join(chunk, ","))
+		if c.market != "" {
+			path += "&market=" + url.QueryEscape(c.market)
+		}
+		var body struct {
+			Tracks []*struct {
+				ID      string          `json:"id"`
+				Name    string          `json:"name"`
+				Artists []spotifyArtist `json:"artists"`
+				Album   struct {
+					Name    string          `json:"name"`
+					Artists []spotifyArtist `json:"artists"`
+					Images  []spotifyImage  `json:"images"`
+				} `json:"album"`
+				ExternalURLs struct {
+					Spotify string `json:"spotify"`
+				} `json:"external_urls"`
+			} `json:"tracks"`
+		}
+		if err := c.apiGET(ctx, path, &body); err != nil {
+			return nil, err
+		}
+		for _, t := range body.Tracks {
+			if t == nil || t.ID == "" {
+				continue
+			}
+			u := t.ExternalURLs.Spotify
+			if u == "" {
+				u = "https://open.spotify.com/track/" + t.ID
+			}
+			tracks = append(tracks, playlistTrack{
+				SpotifyID:   t.ID,
+				SpotifyURL:  u,
+				Title:       t.Name,
+				Artist:      joinArtists(t.Artists),
+				AlbumArtist: firstArtistName(t.Album.Artists),
+				Album:       t.Album.Name,
+				CoverURL:    bestImage(t.Album.Images),
+			})
+		}
 	}
 	return tracks, nil
 }

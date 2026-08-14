@@ -136,13 +136,10 @@ struct RatedCollectionDetailView: View {
             } else {
                 List {
                     ForEach(Array(songs.enumerated()), id: \.element.id) { index, song in
-                        Button {
+                        SongRow(song: song, showAlbum: true) {
                             player.play(songs, startAt: index,
                                         context: PlaybackContext(label: collection.rawValue, kind: .mix))
-                        } label: {
-                            SongRow(song: song, showAlbum: true)
                         }
-                        .buttonStyle(.plain)
                         .listRowBackground(DromeTheme.background)
                     }
                 }
@@ -171,12 +168,7 @@ struct RatedCollectionDetailView: View {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 14)], spacing: 18) {
                         ForEach(albums) { album in
-                            NavigationLink {
-                                AlbumDetailView(albumID: album.id, placeholder: album)
-                            } label: {
-                                AlbumCard(album: album)
-                            }
-                            .buttonStyle(.plain)
+                            AlbumCard(album: album)
                         }
                     }
                     .padding(16)

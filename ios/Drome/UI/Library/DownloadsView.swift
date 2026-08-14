@@ -103,14 +103,13 @@ struct DownloadsView: View {
                                     Image(systemName: "trash")
                                 }
                                 .buttonStyle(.plain)
-                            )
+                            ),
+                            onPlay: {
+                                player.play(
+                                    section.songs, startAt: index,
+                                    context: PlaybackContext(label: section.name, kind: .mix))
+                            }
                         )
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            player.play(
-                                section.songs, startAt: index,
-                                context: PlaybackContext(label: section.name, kind: .mix))
-                        }
                         .listRowBackground(DromeTheme.background)
                         .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                     }

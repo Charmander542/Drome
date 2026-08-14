@@ -34,22 +34,20 @@ struct SongArtistLinks: View {
                                 .font(font)
                                 .foregroundStyle(color)
                         }
-                        Button {
-                            open(credit)
-                        } label: {
-                            HStack(spacing: 4) {
-                                if resolvingName == credit.name {
-                                    ProgressView()
-                                        .controlSize(.mini)
-                                }
-                                Text(credit.name)
-                                    .font(font)
-                                    .foregroundStyle(color)
+                        HStack(spacing: 4) {
+                            if resolvingName == credit.name {
+                                ProgressView()
+                                    .controlSize(.mini)
                             }
-                            .contentShape(Rectangle())
+                            Text(credit.name)
+                                .font(font)
+                                .foregroundStyle(color)
                         }
-                        .buttonStyle(.borderless)
-                        .disabled(resolvingName != nil)
+                        .contentShape(Rectangle())
+                        .highPriorityGesture(TapGesture().onEnded {
+                            open(credit)
+                        })
+                        .accessibilityAddTraits(.isButton)
                         .accessibilityLabel("View \(credit.name)")
                     }
                 }
@@ -59,6 +57,7 @@ struct SongArtistLinks: View {
     }
 
     private func open(_ credit: ArtistCredit) {
+        guard resolvingName == nil else { return }
         if let id = credit.artistId, !id.isEmpty {
             navigate(id: id, name: credit.name)
             return

@@ -45,9 +45,7 @@ struct ArtistDetailView: View {
             if !topSongs.isEmpty {
                 Section("Popular") {
                     ForEach(Array(topSongs.prefix(5).enumerated()), id: \.element.id) { index, song in
-                        SongRow(song: song, index: index + 1, showAlbum: true)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
+                        SongRow(song: song, index: index + 1, showAlbum: true) {
                                 player.play(topSongs, startAt: index,
                                             context: PlaybackContext(label: artist.name, kind: .artist(id: artist.id)))
                             }
@@ -59,21 +57,11 @@ struct ArtistDetailView: View {
 
             Section("Albums") {
                 ForEach(artist.albums) { album in
-                    NavigationLink {
-                        AlbumDetailView(albumID: album.id, placeholder: album)
-                    } label: {
-                        HStack(spacing: 12) {
-                            RemoteImage(url: session.client.coverArtURL(id: album.coverArt ?? album.id, size: 120))
-                                .frame(width: 56, height: 56)
-                                .clipShape(RoundedRectangle(cornerRadius: 4))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(album.name).font(DromeTheme.rowTitle)
-                                Text(album.year.map(String.init) ?? "")
-                                    .font(.caption)
-                                    .foregroundStyle(DromeTheme.muted)
-                            }
-                        }
-                    }
+                    AlbumMediaRow(
+                        album: album,
+                        subtitle: album.year.map(String.init),
+                        artistTappable: false
+                    )
                     .listRowBackground(DromeTheme.background)
                 }
             }

@@ -12,7 +12,7 @@ struct QueueView: View {
             List {
                 if let current = player.current {
                     Section("Now playing") {
-                        SongRow(song: current.song, showAlbum: true, enablesSwipeActions: false)
+                        SongRow(song: current.song, showAlbum: true, enablesSwipeActions: false, playsOnTap: false)
                             .listRowBackground(DromeTheme.elevated)
                             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                     }
@@ -79,21 +79,18 @@ struct QueueView: View {
     private func queueRow(_ item: QueueItem, index: Int, inUserQueue: Bool,
                           showsAutoplay: Bool = false) -> some View {
         HStack(spacing: 4) {
-            Button {
+            SongRow(
+                song: item.song,
+                showAlbum: true,
+                trailing: showsAutoplay && item.isAutoplay
+                    ? AnyView(Image(systemName: "infinity")
+                        .font(.caption)
+                        .foregroundStyle(DromeTheme.muted))
+                    : nil,
+                enablesSwipeActions: false
+            ) {
                 player.jump(to: item)
-            } label: {
-                SongRow(
-                    song: item.song,
-                    showAlbum: true,
-                    trailing: showsAutoplay && item.isAutoplay
-                        ? AnyView(Image(systemName: "infinity")
-                            .font(.caption)
-                            .foregroundStyle(DromeTheme.muted))
-                        : nil,
-                    enablesSwipeActions: false
-                )
             }
-            .buttonStyle(.plain)
 
             ZStack {
                 Image(systemName: "line.3.horizontal")

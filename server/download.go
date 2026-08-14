@@ -298,15 +298,16 @@ func (w *downloadWorker) retagRecent(ctx context.Context, e *entry, started time
 	}
 
 	kind := e.Kind
-	if kind != "album" {
+	if kind != "album" && kind != "playlist" {
 		kind = "track"
 	}
 	album := e.Album
 	if album == "" && kind == "album" {
 		album = e.Title
 	}
+	title, artist := e.Title, e.Artist
 	albumArtist, upc := "", ""
-	if w.spotify != nil {
+	if kind != "playlist" && w.spotify != nil {
 		albumArtist, upc = w.spotify.albumIdentity(ctx, e)
 	}
 	if albumArtist == "" {
@@ -315,12 +316,16 @@ func (w *downloadWorker) retagRecent(ctx context.Context, e *entry, started time
 	if albumArtist == "" {
 		albumArtist = e.Artist
 	}
+	if kind == "playlist" {
+		// SpotiFLAC pulled many albums; never stamp the playlist name on them.
+		title, artist, album, albumArtist, upc = "", "", "", "", ""
+	}
 
 	args := []string{
 		"--music-dir", w.cfg.MusicDir,
 		"--kind", kind,
-		"--title", e.Title,
-		"--artist", e.Artist,
+		"--title", title,
+		"--artist", artist,
 		"--album-artist", albumArtist,
 		"--album", album,
 		"--upc", upc,

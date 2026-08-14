@@ -108,3 +108,19 @@ func TestExtractSpotifyLinks(t *testing.T) {
 		t.Fatalf("dedup failed: %#v", dup)
 	}
 }
+
+func TestExtractSpotifyTrackIDs(t *testing.T) {
+	html := `
+		{"uri":"spotify:track:11dFghVXANMlKmJXsNCbNl"}
+		https://open.spotify.com/track/7ouMYWpwJ422jRcKU4soBa
+		spotify:playlist:37i9dQZF1DWSqmBTGDYngZ
+		spotify:track:11dFghVXANMlKmJXsNCbNl
+	`
+	got := extractSpotifyTrackIDs(html)
+	if len(got) != 2 {
+		t.Fatalf("ids=%v want 2 unique tracks", got)
+	}
+	if got[0] != "11dFghVXANMlKmJXsNCbNl" || got[1] != "7ouMYWpwJ422jRcKU4soBa" {
+		t.Fatalf("ids=%v", got)
+	}
+}

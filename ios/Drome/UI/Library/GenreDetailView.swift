@@ -50,9 +50,7 @@ struct GenreDetailView: View {
 
                         Section("Songs") {
                             ForEach(Array(songs.prefix(40).enumerated()), id: \.element.id) { _, song in
-                                SongRow(song: song, showAlbum: true)
-                                    .contentShape(Rectangle())
-                                    .onTapGesture {
+                                SongRow(song: song, showAlbum: true) {
                                         let start = songs.firstIndex(where: { $0.id == song.id }) ?? 0
                                         player.play(songs, startAt: start,
                                                     context: PlaybackContext(label: genre.displayName, kind: .genre))
@@ -66,22 +64,8 @@ struct GenreDetailView: View {
                     if !albums.isEmpty {
                         Section("Albums") {
                             ForEach(albums) { album in
-                                NavigationLink {
-                                    AlbumDetailView(albumID: album.id, placeholder: album)
-                                } label: {
-                                    HStack(spacing: 12) {
-                                        RemoteImage(url: session.client.coverArtURL(id: album.coverArt ?? album.id, size: 120))
-                                            .frame(width: 48, height: 48)
-                                            .clipShape(RoundedRectangle(cornerRadius: 4))
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(album.name).font(DromeTheme.rowTitle)
-                                            Text(album.artist ?? "")
-                                                .font(.caption)
-                                                .foregroundStyle(DromeTheme.muted)
-                                        }
-                                    }
-                                }
-                                .listRowBackground(DromeTheme.background)
+                                AlbumMediaRow(album: album, coverSize: 48)
+                                    .listRowBackground(DromeTheme.background)
                             }
                         }
                     }

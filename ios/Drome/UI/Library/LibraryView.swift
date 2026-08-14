@@ -441,34 +441,13 @@ struct LibraryView: View {
                     ForEach(albumSectionsCache, id: \.letter) { section in
                         Section {
                             ForEach(section.albums) { album in
-                                NavigationLink {
-                                    AlbumDetailView(albumID: album.id, placeholder: album)
-                                } label: {
-                                    HStack(spacing: 12) {
-                                        RemoteImage(url: session.artworkURL(id: album.coverArt ?? album.id, size: 96))
-                                            .frame(width: 56, height: 56)
-                                            .clipShape(RoundedRectangle(cornerRadius: 4))
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(album.name).font(DromeTheme.rowTitle)
-                                                .foregroundStyle(.white)
-                                            Text(album.artist ?? "Unknown Artist")
-                                                .font(.caption)
-                                                .foregroundStyle(DromeTheme.muted)
-                                        }
-                                        Spacer(minLength: 0)
-                                        Image(systemName: "chevron.right")
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(DromeTheme.muted.opacity(0.6))
-                                    }
+                                AlbumMediaRow(album: album, showsChevron: true)
                                     .padding(.horizontal, 16)
                                     .padding(.vertical, 8)
                                     .frame(minHeight: 56)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .onAppear {
-                                    prefetchAlbumCovers(around: album.id)
-                                }
+                                    .onAppear {
+                                        prefetchAlbumCovers(around: album.id)
+                                    }
 
                                 Divider()
                                     .background(Color.white.opacity(0.06))
@@ -655,14 +634,12 @@ struct LibraryView: View {
                     ForEach(songSectionsCache, id: \.letter) { section in
                         Section {
                             ForEach(section.songs, id: \.id) { song in
-                                SongRow(song: song, showAlbum: true, lightweight: true)
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 4)
-                                    .contentShape(Rectangle())
-                                    .onTapGesture {
+                                SongRow(song: song, showAlbum: true, lightweight: true) {
                                         let start = songIndexByID[song.id] ?? 0
                                         playerPlay(flatSongsCache, startAt: start)
                                     }
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 4)
                                     .onAppear {
                                         prefetchSongCovers(around: song.id)
                                     }

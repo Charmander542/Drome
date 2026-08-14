@@ -357,10 +357,14 @@ def process_file(
 ) -> str:
     current_title = ""
     existing_artists: list[str] = []
+    existing_album = ""
+    existing_aa = ""
     try:
         audio = MutagenFile(path, easy=True)
         current_title = read_title(MutagenFile(path)) if audio is None else easy_get(audio, "title") or read_title(audio)
         existing_artists = easy_get_all(audio, "artist")
+        existing_album = easy_get(audio, "album")
+        existing_aa = easy_get(audio, "albumartist")
     except Exception:
         current_title = path.stem
 
@@ -371,8 +375,16 @@ def process_file(
         if looks_garbage(new_title) and title:
             new_title = title
 
-    primary = primary_artist(album_artist) if album_artist else primary_artist(artist)
-    new_album = album or (title if kind == "album" else "") or "Unknown Album"
+    if kind == "playlist":
+        # Keep each file's own album/title — the wishlist row is the playlist, not an album.
+        new_title = current_title or path.stem
+        new_album = existing_album or path.parent.name or "Unknown Album"
+        primary = primary_artist(existing_aa or (existing_artists[0] if existing_artists else "") or artist)
+        if looks_garbage(new_album):
+            new_album = path.parent.name or "Unknown Album"
+    else:
+        primary = primary_artist(album_artist) if album_artist else primary_artist(artist)
+        new_album = album or (title if kind == "album" else "") or "Unknown Album"
     new_album = " ".join(new_album.split())
 
     dest = target_path(
@@ -456,7 +468,7 @@ def canonical_ids(files: list[Path], preferred_upc: str) -> tuple[str, str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--music-dir", required=True)
-    ap.add_argument("--kind", choices=("track", "album"), required=True)
+    ap.add_argument("--kind", choices=("track", "album", "playlist"), required=True)
     ap.add_argument("--title", default="")
     ap.add_argument("--artist", default="", help="Track artists; may include features")
     ap.add_argument("--album-artist", default="", help="Primary only — used for path + albumartist tag")
@@ -503,6 +515,9 @@ def main() -> int:
     # those differ per file and make Navidrome create a new album every time.
     if args.kind == "track":
         mbid = ""
+    if args.kind == "playlist":
+        # Mixed albums in one job — don't share one identity across files.
+        upc, mbid, album_artist = "", "", ""
 
     results = []
     for i, path in enumerate(files, start=1):

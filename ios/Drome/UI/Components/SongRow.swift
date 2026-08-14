@@ -9,6 +9,10 @@ struct SongRow: View {
     var enablesSwipeActions: Bool = true
     /// Cheaper row for huge catalogs (plain artist text, still shows cover).
     var lightweight: Bool = false
+    /// Tap cover / title / empty space to play. Artist and album names still navigate.
+    var playsOnTap: Bool = true
+    /// Override the default single-track play (album/playlist context, search queue, etc).
+    var onPlay: (() -> Void)? = nil
 
     @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject private var ratings: RatingsStore
@@ -24,19 +28,30 @@ struct SongRow: View {
         // Equatable content skips heavy row rebuilds when global stores tick
         // (play/pause, download progress, rating ingest) but this song's
         // visible state is unchanged.
-        EquatableSongRowContent(
-            song: song,
-            index: index,
-            showAlbum: showAlbum,
-            trailing: trailing,
-            isCurrent: player.current?.song.id == song.id,
-            rating: ratings.rating(for: song),
-            inRotation: rotation.contains(song.id),
-            isDownloaded: downloads.isDownloaded(song.id),
-            coverURL: session?.artworkURL(for: song, size: 96),
-            lightweight: lightweight
-        )
-        .equatable()
+        Button {
+            guard playsOnTap else { return }
+            if let onPlay {
+                onPlay()
+            } else {
+                player.play([song], startAt: 0,
+                            context: PlaybackContext(label: song.title, kind: .search))
+            }
+        } label: {
+            EquatableSongRowContent(
+                song: song,
+                index: index,
+                showAlbum: showAlbum,
+                trailing: trailing,
+                isCurrent: player.current?.song.id == song.id,
+                rating: ratings.rating(for: song),
+                inRotation: rotation.contains(song.id),
+                isDownloaded: downloads.isDownloaded(song.id),
+                coverURL: session?.artworkURL(for: song, size: 96),
+                lightweight: lightweight
+            )
+            .equatable()
+        }
+        .buttonStyle(.plain)
         .contentShape(Rectangle())
         .contextMenu { contextMenu }
         .modifier(ConditionalSongSwipe(enabled: enablesSwipeActions && !lightweight, song: song))
@@ -169,6 +184,8 @@ private struct EquatableSongRowContent: View, Equatable {
     let coverURL: URL?
     let lightweight: Bool
 
+    @Environment(\.songNavigator) private var songNavigator
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.song.id == rhs.song.id
             && lhs.song.title == rhs.song.title
@@ -223,14 +240,29 @@ private struct EquatableSongRowContent: View, Equatable {
                             .font(.subheadline)
                             .foregroundStyle(DromeTheme.muted)
                             .lineLimit(1)
+                            .contentShape(Rectangle())
+                            .highPriorityGesture(TapGesture().onEnded {
+                                songNavigator?.viewArtist(for: song)
+                            })
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityLabel("View \(song.displayArtist)")
                     } else {
                         SongArtistLinks(song: song, font: .subheadline, color: DromeTheme.muted)
                     }
                     if showAlbum, let album = song.album, !album.isEmpty {
-                        Text(" · \(album)")
+                        Text(" · ")
+                            .font(.subheadline)
+                            .foregroundStyle(DromeTheme.muted)
+                        Text(album)
                             .font(.subheadline)
                             .foregroundStyle(DromeTheme.muted)
                             .lineLimit(1)
+                            .contentShape(Rectangle())
+                            .highPriorityGesture(TapGesture().onEnded {
+                                songNavigator?.viewAlbum(for: song)
+                            })
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityLabel("View album \(album)")
                     }
                 }
                 .lineLimit(1)

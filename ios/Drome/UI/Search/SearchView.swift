@@ -8,7 +8,6 @@ struct SearchView: View {
     }
 
     @EnvironmentObject private var session: AppSession
-    @Environment(\.songNavigator) private var songNavigator
 
     @State private var source: Source = .library
     @State private var query = ""
@@ -384,6 +383,16 @@ struct SearchView: View {
 
             spotifyTrailing(hit)
         }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if hit.kind == "album", let album = matchedAlbums[hit.spotifyId] {
+                LibraryPlayback.play(album: album, session: session)
+            } else if let song = matchedSongs[hit.spotifyId] {
+                session.player.play([song], startAt: 0,
+                            context: PlaybackContext(label: "Library", kind: .search))
+                NowPlayingPresenter.open()
+            }
+        }
     }
 
     private func spotifySubtitle(_ hit: SpotifySearchHit) -> String {
@@ -485,51 +494,35 @@ struct SearchView: View {
             }
         case .album:
             if let album = hit.album {
-                NavigationLink {
-                    AlbumDetailView(albumID: album.id, placeholder: album)
-                } label: {
-                    hitLabel(hit, shape: .rounded)
-                }
+                AlbumMediaRow(
+                    album: album,
+                    trailing: AnyView(
+                        Text("ALBUM")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(DromeTheme.muted)
+                    )
+                )
                 .simultaneousGesture(TapGesture().onEnded {
                     rememberHit(hit)
                 })
             }
         case .song:
             if let song = hit.song {
-                Button {
+                SongRow(
+                    song: song,
+                    showAlbum: true,
+                    trailing: AnyView(
+                        Text("SONG")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(DromeTheme.muted)
+                    )
+                ) {
                     rememberHit(hit)
                     let songs = hits.compactMap(\.song)
                     let start = songs.firstIndex(where: { $0.id == song.id }) ?? 0
                     session.player.play(songs.isEmpty ? [song] : songs, startAt: start,
                                 context: PlaybackContext(label: "Search", kind: .search))
                     NowPlayingPresenter.open()
-                } label: {
-                    hitLabel(hit, shape: .rounded)
-                }
-                .buttonStyle(.plain)
-                .songSwipeActions(for: song)
-                .contextMenu {
-                    Button { session.player.playNext(song) } label: {
-                        Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
-                    }
-                    Button { session.player.addToQueue(song) } label: {
-                        Label("Add to Queue", systemImage: "text.append")
-                    }
-                    if SongNavigation.albumRoute(for: song) != nil {
-                        Button { songNavigator?.viewAlbum(for: song) } label: {
-                            Label("View Album", systemImage: "square.stack")
-                        }
-                    }
-                    if SongNavigation.artistRoute(for: song) != nil {
-                        Button { songNavigator?.viewArtist(for: song) } label: {
-                            Label("View Artist", systemImage: "person.wave.2")
-                        }
-                    }
-                    Button {
-                        SongShare.present(song: song)
-                    } label: {
-                        Label("Share", systemImage: "square.and.arrow.up")
-                    }
                 }
             }
         case .lyrics:

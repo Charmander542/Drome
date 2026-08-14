@@ -80,9 +80,7 @@ struct AlbumDetailView: View {
                 }
 
                 ForEach(Array(visible.enumerated()), id: \.element.id) { index, song in
-                    SongRow(song: song, index: index + 1)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
+                    SongRow(song: song, index: index + 1) {
                             player.play(allSongs, startAt: index,
                                         context: PlaybackContext(label: album.name, kind: .album(id: album.id)))
                         }

@@ -286,9 +286,7 @@ struct PlaylistDetailView: View {
                 }
 
                 ForEach(Array(visible.enumerated()), id: \.element.id) { index, song in
-                    SongRow(song: song, showAlbum: true)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
+                    SongRow(song: song, showAlbum: true) {
                             guard !isEditing else { return }
                             player.play(allSongs, startAt: index,
                                         context: PlaybackContext(label: playlist.name, kind: contextKind))

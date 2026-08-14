@@ -297,8 +297,8 @@ struct WishlistView: View {
                 }
             }
             Spacer()
-            if entry.kind == "album" {
-                Text("ALBUM")
+            if entry.kind == "album" || entry.kind == "playlist" {
+                Text(entry.kind == "album" ? "ALBUM" : "PLAYLIST")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(DromeTheme.muted)
             }
@@ -483,20 +483,28 @@ struct WishlistView: View {
                 }
             }
             let name = imported.playlistName ?? imported.sourcePlaylistName
-            var parts: [String] = []
-            if let name, !name.isEmpty {
-                parts.append("Imported “\(name)”")
+            if imported.added == 1, imported.entries.first?.kind == "playlist" {
+                if let name, !name.isEmpty {
+                    importBanner = "Queued “\(name)” — downloading via SpotiFLAC (editorial playlists aren’t listable with the app token)"
+                } else {
+                    importBanner = "Queued playlist — downloading via SpotiFLAC (editorial playlists aren’t listable with the app token)"
+                }
             } else {
-                parts.append("Imported links")
+                var parts: [String] = []
+                if let name, !name.isEmpty {
+                    parts.append("Imported “\(name)”")
+                } else {
+                    parts.append("Imported links")
+                }
+                parts.append("added \(imported.added)")
+                if imported.skippedOwned > 0 {
+                    parts.append("skipped \(imported.skippedOwned) already owned")
+                }
+                if let failed = imported.failed, !failed.isEmpty {
+                    parts.append("\(failed.count) failed")
+                }
+                importBanner = parts.joined(separator: " · ")
             }
-            parts.append("added \(imported.added)")
-            if imported.skippedOwned > 0 {
-                parts.append("skipped \(imported.skippedOwned) already owned")
-            }
-            if let failed = imported.failed, !failed.isEmpty {
-                parts.append("\(failed.count) failed")
-            }
-            importBanner = parts.joined(separator: " · ")
 
             if imported.added == 0 && imported.skippedOwned > 0 {
                 error = "All \(imported.skippedOwned) tracks already look like they’re in your library."

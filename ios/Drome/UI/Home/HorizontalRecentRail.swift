@@ -11,6 +11,7 @@ struct HorizontalRecentRail: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var ratings: RatingsStore
     @EnvironmentObject private var rotation: RotationManager
+    @Environment(\.songNavigator) private var songNavigator
 
     @State private var spinningVibe: MoodVibe?
 
@@ -34,31 +35,46 @@ struct HorizontalRecentRail: View {
     private func card(for entry: RecentPlayEntry) -> some View {
         switch entry {
         case .song(let song):
-            Button {
-                resumeOrPlaySong(song)
-            } label: {
-                coverCard(
-                    coverID: song.coverArt ?? song.albumId ?? song.id,
-                    title: song.title,
-                    subtitle: song.displayArtist,
-                    badge: ratings.rating(for: song)
-                )
+            VStack(alignment: .leading, spacing: 8) {
+                RemoteImage(url: session.artworkURL(id: song.coverArt ?? song.albumId ?? song.id, size: 300))
+                    .frame(width: 148, height: 148)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                HStack(spacing: 4) {
+                    Text(song.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    RatingBadge(rating: ratings.rating(for: song), size: 10)
+                }
+                SongArtistLinks(song: song, font: .caption, color: DromeTheme.muted)
             }
-            .buttonStyle(.plain)
+            .frame(width: 148, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { resumeOrPlaySong(song) }
             .hoverEffectDisabled()
 
         case .album(let id, let name, let coverSong):
-            Button {
-                resumeOrPlayAlbum(id: id, name: name, coverSong: coverSong)
-            } label: {
-                coverCard(
-                    coverID: coverSong.coverArt ?? coverSong.albumId ?? id,
-                    title: name,
-                    subtitle: coverSong.displayArtist,
-                    badge: nil
-                )
+            VStack(alignment: .leading, spacing: 8) {
+                RemoteImage(url: session.artworkURL(
+                    id: coverSong.coverArt ?? coverSong.albumId ?? id, size: 300))
+                    .frame(width: 148, height: 148)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                Text(name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .contentShape(Rectangle())
+                    .highPriorityGesture(TapGesture().onEnded {
+                        songNavigator?.viewAlbum(Album(
+                            id: id, name: name, artist: coverSong.artist, artistId: coverSong.artistId,
+                            coverArt: coverSong.coverArt, songCount: nil, duration: nil, playCount: nil,
+                            created: nil, year: nil, genre: nil, userRating: nil))
+                    })
+                SongArtistLinks(song: coverSong, font: .caption, color: DromeTheme.muted)
             }
-            .buttonStyle(.plain)
+            .frame(width: 148, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { resumeOrPlayAlbum(id: id, name: name, coverSong: coverSong) }
             .hoverEffectDisabled()
 
         case .playlist(let id, let name, let coverSong):

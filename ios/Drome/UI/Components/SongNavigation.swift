@@ -18,6 +18,14 @@ enum SongNavigation {
             coverArt = song.coverArt
         }
 
+        init(album: Album) {
+            albumId = album.id
+            name = album.name
+            artist = album.artist
+            artistId = album.artistId
+            coverArt = album.coverArt
+        }
+
         var album: Album {
             Album(
                 id: albumId,
@@ -83,7 +91,22 @@ final class SongNavigator: ObservableObject {
     @Published var artistRoute: SongNavigation.ArtistRoute?
 
     func viewAlbum(for song: Song) {
-        albumRoute = SongNavigation.albumRoute(for: song)
+        guard let route = SongNavigation.albumRoute(for: song) else { return }
+        presentAlbum(route)
+    }
+
+    func viewAlbum(_ album: Album) {
+        guard !album.id.isEmpty else { return }
+        presentAlbum(SongNavigation.AlbumRoute(album: album))
+    }
+
+    private func presentAlbum(_ route: SongNavigation.AlbumRoute) {
+        if albumRoute?.albumId == route.albumId {
+            albumRoute = nil
+            DispatchQueue.main.async { self.albumRoute = route }
+        } else {
+            albumRoute = route
+        }
     }
 
     func viewArtist(for song: Song) {

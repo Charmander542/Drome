@@ -244,6 +244,13 @@ func (s *server) handlePlaylistImport(w http.ResponseWriter, r *http.Request, pl
 
 func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (name string, added []entry, skippedOwned int, err error) {
 	name, tracks, err := s.spotify.playlistTracks(r.Context(), playlistID)
+	if errors.Is(err, errPlaylistDirectDownload) {
+		e, qerr := s.enqueueWholePlaylist(r, playlistID, name)
+		if qerr != nil {
+			return "", nil, 0, qerr
+		}
+		return e.Title, []entry{*e}, 0, nil
+	}
 	if err != nil {
 		return "", nil, 0, err
 	}
@@ -256,7 +263,8 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (name 
 
 	now := time.Now()
 	for _, t := range tracks {
-		if s.navidrome.libraryOwns(r.Context(), user, token, salt, t.Title, t.Artist) {
+		if t.Title != "" && t.Artist != "" && s.navidrome != nil &&
+			s.navidrome.libraryOwns(r.Context(), user, token, salt, t.Title, t.Artist) {
 			skippedOwned++
 			continue
 		}
@@ -287,6 +295,43 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (name 
 		added = []entry{}
 	}
 	return name, added, skippedOwned, nil
+}
+
+func (s *server) enqueueWholePlaylist(r *http.Request, playlistID, fallbackName string) (*entry, error) {
+	e, err := s.spotify.resolve(r.Context(), "playlist", playlistID)
+	if err != nil {
+		e = &entry{
+			Kind:       "playlist",
+			SpotifyID:  playlistID,
+			SpotifyURL: "https://open.spotify.com/playlist/" + playlistID,
+			Title:      fallbackName,
+		}
+	}
+	if e.Title == "" {
+		e.Title = fallbackName
+	}
+	if e.Title == "" {
+		e.Title = "Spotify playlist"
+	}
+	e.Owner = requestUser(r)
+	e.CreatedAt = time.Now()
+	e.SourcePlaylistID = playlistID
+	e.SourcePlaylistName = e.Title
+	if s.downloads != nil && s.downloads.cfg.Enabled {
+		e.Status = statusQueued
+	} else {
+		e.Status = statusSkipped
+	}
+	if existing, err := s.store.findActiveByTitleArtist(e.Owner, e.Kind, e.Title, e.Artist); err == nil && existing != nil {
+		return existing, nil
+	}
+	if err := s.store.insert(e); err != nil {
+		return nil, fmt.Errorf("could not save playlist: %w", err)
+	}
+	if e.Status == statusQueued && s.downloads != nil {
+		s.downloads.kick()
+	}
+	return e, nil
 }
 
 func (s *server) handleArtistImage(w http.ResponseWriter, r *http.Request) {

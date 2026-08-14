@@ -12,7 +12,7 @@ import (
 type entry struct {
 	ID          int64     `json:"id"`
 	Owner       string    `json:"owner"`
-	Kind        string    `json:"kind"` // "track" or "album"
+	Kind        string    `json:"kind"` // "track", "album", or "playlist"
 	SpotifyID   string    `json:"spotifyId"`
 	SpotifyURL  string    `json:"spotifyUrl"`
 	Title       string    `json:"title"`
