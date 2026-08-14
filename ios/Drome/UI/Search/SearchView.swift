@@ -325,13 +325,6 @@ struct SearchView: View {
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 12).onChanged { _ in
-                searchFocused = false
-                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
-                                                to: nil, from: nil, for: nil)
-            }
-        )
     }
 
     private var spotifyList: some View {
@@ -346,13 +339,6 @@ struct SearchView: View {
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 12).onChanged { _ in
-                searchFocused = false
-                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
-                                                to: nil, from: nil, for: nil)
-            }
-        )
     }
 
     private func spotifyRow(_ hit: SpotifySearchHit) -> some View {

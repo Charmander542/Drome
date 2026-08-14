@@ -20,7 +20,9 @@ struct AlbumCard: View {
     @Environment(\.songNavigator) private var songNavigator
 
     var body: some View {
-        Button(action: play) {
+        Button {
+            songNavigator?.viewAlbum(album)
+        } label: {
             VStack(alignment: .leading, spacing: 8) {
                 RemoteImage(url: session?.client.coverArtURL(id: album.coverArt ?? album.id, size: 300))
                     .aspectRatio(1, contentMode: .fit)
@@ -56,12 +58,7 @@ struct AlbumCard: View {
         .buttonStyle(.plain)
         .hoverEffectDisabled()
         .transaction { $0.animation = nil }
-        .accessibilityHint("Plays the album. Album and artist names open their pages.")
-    }
-
-    private func play() {
-        guard let session else { return }
-        LibraryPlayback.play(album: album, session: session)
+        .accessibilityHint("Opens the album. Artist name opens the artist page.")
     }
 
     private func openArtist() {

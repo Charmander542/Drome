@@ -1133,7 +1133,7 @@ final class PlayerEngine: ObservableObject {
     /// Call after jumps / play / advances so the last track never leaves an
     /// empty Up Next list.
     private func ensureAutoplayBuffer() {
-        guard !sharePlayActive, autoplayEnabled, repeatMode == .off, current != nil else { return }
+        guard !applyingSharePlay, autoplayEnabled, repeatMode == .off, current != nil else { return }
         let upcoming = userQueue.count + contextQueue.count
         // Refill early — never wait until the queue is already empty.
         if upcoming < 8 {
@@ -1150,7 +1150,7 @@ final class PlayerEngine: ObservableObject {
     /// Single serialized entry for empty-queue Infinite Shuffle continuation.
     /// Collapses concurrent `next()` + end-of-queue races into one fetch.
     private func continueWithAutoplayIfNeeded(playImmediately: Bool) {
-        guard !sharePlayActive, autoplayEnabled, repeatMode == .off else {
+        guard autoplayEnabled, repeatMode == .off else {
             if playImmediately {
                 player.pause()
                 player.rate = 0
@@ -1192,7 +1192,7 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func maybeExtendWithAutoplay(force: Bool = false) {
-        guard !sharePlayActive, autoplayEnabled, repeatMode == .off, autoplayTask == nil,
+        guard !applyingSharePlay, autoplayEnabled, repeatMode == .off, autoplayTask == nil,
               let provider = autoplayProvider, current != nil else { return }
         if !force {
             guard userQueue.count + contextQueue.count < 8 else { return }
@@ -1218,6 +1218,7 @@ final class PlayerEngine: ObservableObject {
                 self.context = PlaybackContext(label: "Autoplay", kind: .mix)
             }
             self.topUpWindow()
+            self.broadcastSharePlayIfNeeded()
             // Keep topping up until the buffer is healthy.
             self.ensureAutoplayBuffer()
         }
@@ -1268,6 +1269,7 @@ final class PlayerEngine: ObservableObject {
         } else {
             topUpWindow()
         }
+        broadcastSharePlayIfNeeded()
     }
 
     private func drainLowRatedFromQueues() {
@@ -1454,6 +1456,7 @@ final class PlayerEngine: ObservableObject {
         configureAudioSession()
         broadcastSharePlay(force: true)
         requestSharePlayCatchUp()
+        ensureAutoplayBuffer()
 
         sharePlaySessionTasks.append(Task { [weak self] in
             for delay in [400_000_000, 1_200_000_000, 3_000_000_000] as [UInt64] {
@@ -1517,6 +1520,8 @@ final class PlayerEngine: ObservableObject {
             if let pending = pendingSharePlaySnapshot {
                 pendingSharePlaySnapshot = nil
                 Task { await applySharePlaySnapshot(pending) }
+            } else {
+                ensureAutoplayBuffer()
             }
         }
 

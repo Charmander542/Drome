@@ -46,6 +46,7 @@ struct NowPlayingView: View {
         GeometryReader { geo in
             let width = geo.size.width
             let height = geo.size.height
+            let headerGap: CGFloat = 28
 
             ZStack {
                 background
@@ -55,9 +56,6 @@ struct NowPlayingView: View {
                 VStack(spacing: 0) {
                     grabber
 
-                    sharePlayBanner
-                        .padding(.bottom, 8)
-
                     panePicker
                         .frame(maxWidth: min(280, width - 48))
                         .padding(.bottom, 8)
@@ -65,12 +63,12 @@ struct NowPlayingView: View {
                     Group {
                         switch tab {
                         case .song:
-                            songPane(width: width, height: height - 72)
+                            songPane(width: width, height: height - 72 - headerGap)
                         case .lyrics:
                             lyricsPane
                                 // Match song pane's remaining height so the
                                 // Lyrics tab doesn't sit lower than Song.
-                                .frame(width: width, height: height - 72, alignment: .top)
+                                .frame(width: width, height: height - 72 - headerGap, alignment: .top)
                         }
                     }
                     .frame(width: width)
@@ -140,10 +138,26 @@ struct NowPlayingView: View {
     // MARK: - Chrome
 
     private var grabber: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 0) {
             Capsule()
                 .fill(Color.white.opacity(0.45))
                 .frame(width: 36, height: 5)
+                .padding(.top, 8)
+            headerSubtitle
+                .padding(.top, 28)
+        }
+        .padding(.bottom, 4)
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        // Always allow dismiss from the grabber, including on the Lyrics pane.
+        .simultaneousGesture(dismissGesture)
+    }
+
+    @ViewBuilder
+    private var headerSubtitle: some View {
+        if player.sharePlayActive || player.isEligibleForSharePlay {
+            sharePlayBanner
+        } else {
             Text(player.context.map { "Playing from \($0.label)" } ?? " ")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(Color.white.opacity(0.7))
@@ -151,12 +165,6 @@ struct NowPlayingView: View {
                 .frame(height: 16)
                 .opacity(player.context == nil ? 0 : 1)
         }
-        .padding(.top, 12)
-        .padding(.bottom, 4)
-        .frame(maxWidth: .infinity)
-        .contentShape(Rectangle())
-        // Always allow dismiss from the grabber, including on the Lyrics pane.
-        .simultaneousGesture(dismissGesture)
     }
 
     private var sharePlayBanner: some View {
@@ -178,8 +186,8 @@ struct NowPlayingView: View {
             }
         }
         .foregroundStyle(.white)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
         .background(
             (player.sharePlayActive || player.isEligibleForSharePlay
              ? DromeTheme.accent.opacity(0.85)

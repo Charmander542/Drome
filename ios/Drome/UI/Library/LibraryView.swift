@@ -110,6 +110,7 @@ struct LibraryView: View {
         .task {
             await hydrateAllTabsFromCache()
             await ensureActiveTabReady(forceNetwork: false)
+            visitedFilters.formUnion([.artists, .albums, .songs])
         }
         .task(id: filter) {
             await ensureActiveTabReady(forceNetwork: false)
@@ -155,9 +156,7 @@ struct LibraryView: View {
         HStack(spacing: 0) {
             ForEach(LibraryFilter.topBarCases) { item in
                 Button {
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-                        filter = item
-                    }
+                    filter = item
                 } label: {
                     VStack(spacing: 6) {
                         Text(item.shortTitle)
@@ -189,6 +188,7 @@ struct LibraryView: View {
         .padding(.horizontal, 4)
         .frame(height: 44)
         .background(DromeTheme.background)
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: filter)
     }
 
     @ViewBuilder
@@ -238,6 +238,7 @@ struct LibraryView: View {
                     GenreBrowserView(showsTitle: false)
                 }
             }
+            .animation(nil, value: filter)
             .onAppear { visitedFilters.insert(filter) }
             .onChange(of: filter) { _, newValue in
                 visitedFilters.insert(newValue)
@@ -264,6 +265,7 @@ struct LibraryView: View {
             .allowsHitTesting(filter == tab)
             .accessibilityHidden(filter != tab)
             .zIndex(filter == tab ? 1 : 0)
+            .transaction { $0.animation = nil }
     }
 
     private var isEmpty: Bool {
@@ -445,9 +447,6 @@ struct LibraryView: View {
                                     .padding(.horizontal, 16)
                                     .padding(.vertical, 8)
                                     .frame(minHeight: 56)
-                                    .onAppear {
-                                        prefetchAlbumCovers(around: album.id)
-                                    }
 
                                 Divider()
                                     .background(Color.white.opacity(0.06))
@@ -474,18 +473,17 @@ struct LibraryView: View {
                 .padding(.bottom, 72)
             }
             .overlay(alignment: .trailing) {
-                AlphabetScrubber(letters: LibrarySortLetter.scrubberLetters) { letter in
-                    jumpAlbums(to: letter, proxy: proxy)
-                }
+                AlphabetScrubber(
+                    letters: LibrarySortLetter.scrubberLetters,
+                    onSelect: { jumpAlbums(to: $0, proxy: proxy, dragging: true) },
+                    onEnded: { jumpAlbums(to: $0, proxy: proxy, dragging: false) }
+                )
                 .padding(.vertical, 8)
                 .padding(.trailing, 1)
             }
-            .overlay {
-                letterJumpOverlay(pendingAlbumLetter)
-            }
             .onChange(of: albumScrollTarget) { _, letter in
                 guard let letter else { return }
-                proxy.scrollTo(letter, anchor: .top)
+                snapScroll(proxy, to: letter)
                 albumScrollTarget = nil
             }
             .onChange(of: albumSectionsCache.map(\.letter)) { _, letters in
@@ -550,9 +548,6 @@ struct LibraryView: View {
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
-                                .onAppear {
-                                    prefetchArtistCovers(around: artist.id)
-                                }
 
                                 Divider()
                                     .background(Color.white.opacity(0.06))
@@ -573,18 +568,17 @@ struct LibraryView: View {
                 .padding(.bottom, 72)
             }
             .overlay(alignment: .trailing) {
-                AlphabetScrubber(letters: LibrarySortLetter.scrubberLetters) { letter in
-                    jumpArtists(to: letter, proxy: proxy)
-                }
+                AlphabetScrubber(
+                    letters: LibrarySortLetter.scrubberLetters,
+                    onSelect: { jumpArtists(to: $0, proxy: proxy, dragging: true) },
+                    onEnded: { jumpArtists(to: $0, proxy: proxy, dragging: false) }
+                )
                 .padding(.vertical, 8)
                 .padding(.trailing, 1)
             }
-            .overlay {
-                letterJumpOverlay(pendingArtistLetter)
-            }
             .onChange(of: artistScrollTarget) { _, letter in
                 guard let letter else { return }
-                proxy.scrollTo(letter, anchor: .top)
+                snapScroll(proxy, to: letter)
                 artistScrollTarget = nil
             }
             .onChange(of: artistSectionsCache.map(\.letter)) { _, letters in
@@ -640,9 +634,6 @@ struct LibraryView: View {
                                     }
                                     .padding(.horizontal, 16)
                                     .padding(.vertical, 4)
-                                    .onAppear {
-                                        prefetchSongCovers(around: song.id)
-                                    }
 
                                 Divider()
                                     .background(Color.white.opacity(0.06))
@@ -669,18 +660,17 @@ struct LibraryView: View {
                 .padding(.bottom, 72)
             }
             .overlay(alignment: .trailing) {
-                AlphabetScrubber(letters: LibrarySortLetter.scrubberLetters) { letter in
-                    jumpSongs(to: letter, proxy: proxy)
-                }
+                AlphabetScrubber(
+                    letters: LibrarySortLetter.scrubberLetters,
+                    onSelect: { jumpSongs(to: $0, proxy: proxy, dragging: true) },
+                    onEnded: { jumpSongs(to: $0, proxy: proxy, dragging: false) }
+                )
                 .padding(.vertical, 8)
                 .padding(.trailing, 1)
             }
-            .overlay {
-                letterJumpOverlay(pendingSongLetter)
-            }
             .onChange(of: songScrollTarget) { _, letter in
                 guard let letter else { return }
-                proxy.scrollTo(letter, anchor: .top)
+                snapScroll(proxy, to: letter)
                 songScrollTarget = nil
             }
             .onChange(of: songSectionsCache.map(\.letter)) { _, letters in
@@ -689,26 +679,6 @@ struct LibraryView: View {
                 pendingSongLetter = nil
                 songScrollTarget = pending
             }
-        }
-    }
-
-    @ViewBuilder
-    private func letterJumpOverlay(_ pending: String?) -> some View {
-        if let pending {
-            VStack {
-                Spacer()
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Jumping to \(pending)…")
-                        .font(.caption.weight(.semibold))
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(.ultraThinMaterial, in: Capsule())
-                .padding(.bottom, 88)
-            }
-            .allowsHitTesting(false)
         }
     }
 
@@ -770,17 +740,6 @@ struct LibraryView: View {
     /// Shared list thumbnail size — small & sharp enough for 48pt rows.
     private static let listArtSize = 96
 
-    private func prefetchArtistCovers(around artistId: String) {
-        let flat = artistSectionsCache.flatMap(\.artists)
-        guard let center = flat.firstIndex(where: { $0.id == artistId }) else { return }
-        let lo = max(0, center - 12)
-        let hi = min(flat.count, center + 36)
-        let urls = flat[lo..<hi].compactMap {
-            session.client.coverArtURL(id: $0.coverArt ?? $0.id, size: Self.listArtSize)
-        }
-        ImageLoader.shared.prefetch(urls, limit: 36)
-    }
-
     private func applyAlbumCatalog(_ albums: [Album]) async {
         let shouldWarm = self.albums.isEmpty
         let sections = await Task.detached(priority: .userInitiated) {
@@ -798,27 +757,6 @@ struct LibraryView: View {
 
     private func playerPlay(_ songs: [Song], startAt: Int) {
         player.play(songs, startAt: startAt, context: PlaybackContext(label: "Songs", kind: .mix))
-    }
-
-    private func prefetchSongCovers(around songId: String) {
-        guard let center = songIndexByID[songId] else { return }
-        let lo = max(0, center - 12)
-        let hi = min(flatSongsCache.count, center + 36)
-        let urls = flatSongsCache[lo..<hi].compactMap {
-            session.artworkURL(for: $0, size: Self.listArtSize)
-        }
-        ImageLoader.shared.prefetch(urls, limit: 36)
-    }
-
-    private func prefetchAlbumCovers(around albumId: String) {
-        let flat = albumSectionsCache.flatMap(\.albums)
-        guard let center = flat.firstIndex(where: { $0.id == albumId }) else { return }
-        let lo = max(0, center - 8)
-        let hi = min(flat.count, center + 28)
-        let urls = flat[lo..<hi].compactMap {
-            session.artworkURL(id: $0.coverArt ?? $0.id, size: Self.listArtSize)
-        }
-        ImageLoader.shared.prefetch(urls, limit: 28)
     }
 
     private func warmAlbumCovers(_ albums: [Album]) {
@@ -1005,7 +943,7 @@ struct LibraryView: View {
     }
 
     // MARK: - Shared catalog UX (Albums / Artists / Songs)
-    // Instant cache → first chunk → background fill → letter jump overlay.
+    // Instant cache → first chunk → background fill → snap scrubber jumps.
 
     private func loadAlbumsCatalog(forceNetwork: Bool = false) async {
         albumsFillTask?.cancel()
@@ -1102,10 +1040,25 @@ struct LibraryView: View {
             albums, serverKey: session.account.serverKey, isComplete: complete)
     }
 
-    private func jumpAlbums(to letter: String, proxy: ScrollViewProxy) {
-        if albumSectionsCache.contains(where: { $0.letter == letter }) {
-            pendingAlbumLetter = nil
+    private func snapScroll(_ proxy: ScrollViewProxy, to letter: String) {
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
             proxy.scrollTo(letter, anchor: .top)
+        }
+    }
+
+    private func jumpAlbums(to letter: String, proxy: ScrollViewProxy, dragging: Bool) {
+        let letters = albumSectionsCache.map(\.letter)
+        let target = letters.contains(letter)
+            ? letter
+            : LibrarySortLetter.nearestSectionLetter(letter, in: letters)
+        if let target {
+            snapScroll(proxy, to: target)
+        }
+        guard !dragging else { return }
+        if letters.contains(letter) {
+            pendingAlbumLetter = nil
             return
         }
         pendingAlbumLetter = letter
@@ -1245,19 +1198,18 @@ struct LibraryView: View {
         }
     }
 
-    private func jumpArtists(to letter: String, proxy: ScrollViewProxy) {
+    private func jumpArtists(to letter: String, proxy: ScrollViewProxy, dragging: Bool) {
         let letters = artistSectionsCache.map(\.letter)
 
-        // Catalog ready — never show “Jumping to…”. Snap to nearest section.
         if let target = LibrarySortLetter.nearestSectionLetter(letter, in: letters) {
+            snapScroll(proxy, to: target)
+            if dragging { return }
             pendingArtistLetter = nil
             prefetchArtistSection(target)
-            // LazyVStack may not have mounted the header yet — scroll now and
-            // again via artistScrollTarget on the next frame.
-            proxy.scrollTo(target, anchor: .top)
-            artistScrollTarget = target
             return
         }
+
+        if dragging { return }
 
         if !artistSectionsRemaining.isEmpty {
             artistSectionsCache.append(contentsOf: artistSectionsRemaining)
@@ -1274,7 +1226,6 @@ struct LibraryView: View {
             }
         }
 
-        // Only while getArtists hasn't returned anything yet.
         pendingArtistLetter = letter
     }
 
@@ -1388,10 +1339,17 @@ struct LibraryView: View {
         pending = nil
     }
 
-    private func jumpSongs(to letter: String, proxy: ScrollViewProxy) {
-        if songSectionsCache.contains(where: { $0.letter == letter }) {
+    private func jumpSongs(to letter: String, proxy: ScrollViewProxy, dragging: Bool) {
+        let letters = songSectionsCache.map(\.letter)
+        let target = letters.contains(letter)
+            ? letter
+            : LibrarySortLetter.nearestSectionLetter(letter, in: letters)
+        if let target {
+            snapScroll(proxy, to: target)
+        }
+        guard !dragging else { return }
+        if letters.contains(letter) {
             pendingSongLetter = nil
-            proxy.scrollTo(letter, anchor: .top)
             return
         }
         pendingSongLetter = letter
