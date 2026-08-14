@@ -88,7 +88,6 @@ final class PlayerEngine: ObservableObject {
     private let groupStateObserver = GroupStateObserver()
     private var sharePlaySession: GroupSession<DromeListenTogether>?
     private var sharePlayMessenger: GroupSessionMessenger?
-    private var sharePlayListenerTask: Task<Void, Never>?
     private var sharePlaySessionTasks: [Task<Void, Never>] = []
     private var applyingSharePlay = false
     private var lastSharePlaySnapshot: SharePlaySnapshot?
@@ -126,7 +125,6 @@ final class PlayerEngine: ObservableObject {
         lastAirPlayActive = isAirPlayRouteActive
 
         player.playbackCoordinator.delegate = sharePlayBridge
-        listenForSharePlaySessions()
         groupStateObserver.$isEligibleForGroupSession
             .receive(on: RunLoop.main)
             .sink { [weak self] eligible in
@@ -165,7 +163,8 @@ final class PlayerEngine: ObservableObject {
     }
 
     func shutdown() {
-        leaveSharePlay(restartListener: false)
+        SharePlayRuntime.shared.bind(nil)
+        leaveSharePlay()
         cancelAutoplayWork()
         prefetchTask?.cancel()
         prefetchTask = nil
@@ -1389,15 +1388,13 @@ final class PlayerEngine: ObservableObject {
         SharePlayLauncher.start(from: self)
     }
 
-    func leaveSharePlay() {
-        leaveSharePlay(restartListener: true)
+    func attachSharePlaySession(_ session: GroupSession<DromeListenTogether>) {
+        joinSharePlay(session)
     }
 
-    private func leaveSharePlay(restartListener: Bool) {
+    func leaveSharePlay() {
         sharePlaySessionTasks.forEach { $0.cancel() }
         sharePlaySessionTasks.removeAll()
-        sharePlayListenerTask?.cancel()
-        sharePlayListenerTask = nil
         sharePlayMessenger = nil
         sharePlaySession?.leave()
         sharePlaySession = nil
@@ -1406,18 +1403,6 @@ final class PlayerEngine: ObservableObject {
         lastSharePlaySnapshot = nil
         pendingSharePlaySnapshot = nil
         configureAudioSession()
-        if restartListener {
-            listenForSharePlaySessions()
-        }
-    }
-
-    private func listenForSharePlaySessions() {
-        sharePlayListenerTask?.cancel()
-        sharePlayListenerTask = Task { [weak self] in
-            for await session in DromeListenTogether.sessions() {
-                await self?.joinSharePlay(session)
-            }
-        }
     }
 
     private func joinSharePlay(_ session: GroupSession<DromeListenTogether>) {
@@ -1428,14 +1413,16 @@ final class PlayerEngine: ObservableObject {
         sharePlaySession = session
         let messenger = GroupSessionMessenger(session: session)
         sharePlayMessenger = messenger
-        player.playbackCoordinator.coordinateWithSession(session)
-        session.join()
-        sharePlayActive = true
-        configureAudioSession()
 
+        // Listen before join() so the first catch-up / snapshot is not dropped.
         sharePlaySessionTasks.append(Task { [weak self] in
             for await (snapshot, _) in messenger.messages(of: SharePlaySnapshot.self) {
                 await self?.applySharePlaySnapshot(snapshot)
+            }
+        })
+        sharePlaySessionTasks.append(Task { [weak self] in
+            for await (_, _) in messenger.messages(of: SharePlayCatchUp.self) {
+                await MainActor.run { self?.broadcastSharePlay(force: true) }
             }
         })
         sharePlaySessionTasks.append(Task { [weak self] in
@@ -1457,10 +1444,27 @@ final class PlayerEngine: ObservableObject {
                 let count = participants.count
                 let grew = count > self.sharePlayParticipantCount
                 self.sharePlayParticipantCount = count
-                if grew { self.broadcastSharePlayIfNeeded() }
+                if grew { self.broadcastSharePlay(force: true) }
             }
         })
-        broadcastSharePlayIfNeeded()
+
+        player.playbackCoordinator.coordinateWithSession(session)
+        session.join()
+        sharePlayActive = true
+        configureAudioSession()
+        broadcastSharePlay(force: true)
+        requestSharePlayCatchUp()
+
+        sharePlaySessionTasks.append(Task { [weak self] in
+            for delay in [400_000_000, 1_200_000_000, 3_000_000_000] as [UInt64] {
+                try? await Task.sleep(nanoseconds: delay)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self?.broadcastSharePlay(force: true)
+                    self?.requestSharePlayCatchUp()
+                }
+            }
+        })
     }
 
     private func makeSharePlaySnapshot() -> SharePlaySnapshot? {
@@ -1473,11 +1477,24 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func broadcastSharePlayIfNeeded() {
+        broadcastSharePlay(force: false)
+    }
+
+    private func broadcastSharePlay(force: Bool) {
         guard sharePlayActive, !applyingSharePlay, let messenger = sharePlayMessenger else { return }
-        guard let snapshot = makeSharePlaySnapshot(), snapshot != lastSharePlaySnapshot else { return }
+        guard let snapshot = makeSharePlaySnapshot() else { return }
+        if !force, snapshot == lastSharePlaySnapshot { return }
         lastSharePlaySnapshot = snapshot
         Task {
             try? await messenger.send(snapshot)
+        }
+    }
+
+    private func requestSharePlayCatchUp() {
+        guard sharePlayActive, let messenger = sharePlayMessenger else { return }
+        let ping = SharePlayCatchUp(token: UUID().uuidString)
+        Task {
+            try? await messenger.send(ping)
         }
     }
 
@@ -1540,6 +1557,8 @@ final class PlayerEngine: ObservableObject {
         userQueue.removeAll()
         history.removeAll()
         setCurrent(QueueItem(song: songs[0]), startPlaying: snapshot.isPlaying, allowLowRated: true)
+        NowPlayingPresenter.open()
+        sharePlayNotice = nil
     }
 
     private func resolveSharePlayTracks(_ tracks: [SharePlayTrack]) async -> [Song] {

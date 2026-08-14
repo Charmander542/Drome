@@ -19,6 +19,7 @@ final class AppEnvironment: ObservableObject {
         accounts = AccountStore()
         database = AppDatabase.makeShared()
         AppEnvironment.shared = self
+        SharePlayRuntime.shared.startListening()
         if let account = accounts.activeAccount {
             activate(account)
         }
@@ -28,6 +29,7 @@ final class AppEnvironment: ObservableObject {
         guard let password = accounts.password(for: account) else { return }
         session?.teardown()
         session = AppSession(account: account, password: password, database: database)
+        SharePlayRuntime.shared.bind(session?.player)
         accounts.setActive(account)
         NotificationCenter.default.post(name: .dromeSessionChanged, object: nil)
         consumePendingDeepLink()
@@ -39,6 +41,7 @@ final class AppEnvironment: ObservableObject {
     }
 
     func signOut() {
+        SharePlayRuntime.shared.bind(nil)
         session?.teardown()
         session = nil
         accounts.setActive(nil)

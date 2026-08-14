@@ -15,6 +15,7 @@ struct RootView: View {
         }
         .animation(.easeInOut(duration: 0.25), value: env.session?.id)
         .dromeScreen()
+        .task { SharePlayRuntime.shared.startListening() }
     }
 }
 

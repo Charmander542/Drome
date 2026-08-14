@@ -3,22 +3,24 @@ import Foundation
 import GroupActivities
 import UIKit
 
-/// FaceTime / Messages SharePlay activity. Each device plays from its own
-/// Navidrome login. Playback time stays in sync via AVPlayer; queue changes
-/// (play, skip, add, reorder) are broadcast so anyone can drive the jam.
+/// FaceTime SharePlay activity. Keep this payload empty and stable so both
+/// phones always subscribe to the same `sessions()` stream.
 struct DromeListenTogether: GroupActivity {
-    static var activityIdentifier: String { "drome.app.listenTogether" }
-
-    var title: String
-    var subtitle: String
+    static let activityIdentifier = "drome.app.listenTogether"
 
     var metadata: GroupActivityMetadata {
         var meta = GroupActivityMetadata()
-        meta.title = title.isEmpty ? "Jam" : title
-        meta.subtitle = subtitle.isEmpty ? "Listen together" : subtitle
-        meta.type = .listenTogether
+        meta.title = "Drome Jam"
+        meta.subtitle = "Listen together in Drome"
+        meta.type = .generic
         return meta
     }
+}
+
+/// Guest asks the host to send the current queue. GroupSessionMessenger does
+/// not replay earlier messages to late joiners.
+struct SharePlayCatchUp: Codable, Equatable {
+    var token: String
 }
 
 struct SharePlayTrack: Codable, Equatable, Hashable {
@@ -61,12 +63,12 @@ struct SharePlaySnapshot: Codable, Equatable {
     }
 }
 
-/// Maps each `AVPlayerItem` to a title|artist identity so participants can
-/// coordinate even when Navidrome stream URLs (and song ids) differ.
 extension AVCoordinatedPlaybackSuspension.Reason {
     static let dromeRebuilding = AVCoordinatedPlaybackSuspension.Reason(rawValue: "drome.app.rebuilding")
 }
 
+/// Maps each `AVPlayerItem` to a title|artist identity so participants can
+/// coordinate even when Navidrome stream URLs (and song ids) differ.
 final class SharePlayCoordinatorBridge: NSObject, AVPlayerPlaybackCoordinatorDelegate {
     private let lock = NSLock()
     private var ids: [ObjectIdentifier: String] = [:]
@@ -93,24 +95,66 @@ final class SharePlayCoordinatorBridge: NSObject, AVPlayerPlaybackCoordinatorDel
     }
 }
 
+/// Single app-wide `sessions()` subscriber. Cancelling that loop (or starting
+/// a second one) drops FaceTime sessions on the floor.
+@MainActor
+final class SharePlayRuntime {
+    static let shared = SharePlayRuntime()
+
+    private var listenTask: Task<Void, Never>?
+    private weak var engine: PlayerEngine?
+    private var pendingSession: GroupSession<DromeListenTogether>?
+
+    func startListening() {
+        guard listenTask == nil else { return }
+        listenTask = Task { [weak self] in
+            for await session in DromeListenTogether.sessions() {
+                self?.deliver(session)
+            }
+        }
+    }
+
+    func bind(_ engine: PlayerEngine?) {
+        self.engine = engine
+        if let pendingSession, let engine {
+            self.pendingSession = nil
+            engine.attachSharePlaySession(pendingSession)
+        }
+    }
+
+    private func deliver(_ session: GroupSession<DromeListenTogether>) {
+        if let engine {
+            engine.attachSharePlaySession(session)
+        } else {
+            pendingSession = session
+        }
+    }
+}
+
 enum SharePlayLauncher {
     @MainActor
     static func start(from engine: PlayerEngine) {
-        guard engine.current?.song != nil else { return }
-        let activity = DromeListenTogether(
-            title: engine.current?.song.title ?? "Jam",
-            subtitle: engine.current?.song.displayArtist ?? "Listen together")
+        SharePlayRuntime.shared.startListening()
+        let activity = DromeListenTogether()
         Task { @MainActor in
             if engine.isEligibleForSharePlay {
                 await activateInFaceTime(activity, engine: engine)
-            } else {
-                do {
-                    let picker = try await GroupActivitySharingController(activity)
-                    topViewController()?.present(picker, animated: true)
-                    engine.sharePlayNotice = Self.jamExplainer
-                } catch {
+                return
+            }
+            if engine.current?.song == nil {
+                engine.sharePlayNotice = "Play a song, start a FaceTime call, then tap Start on both phones."
+                return
+            }
+            do {
+                let picker = try await GroupActivitySharingController(activity)
+                guard let host = topViewController() else {
                     await activateInFaceTime(activity, engine: engine)
+                    return
                 }
+                host.present(picker, animated: true)
+                engine.sharePlayNotice = "Pick the FaceTime call, then they tap Join in Drome."
+            } catch {
+                await activateInFaceTime(activity, engine: engine)
             }
         }
     }
@@ -120,17 +164,19 @@ enum SharePlayLauncher {
         switch await activity.prepareForActivation() {
         case .activationPreferred:
             do {
-                _ = try await activity.activate()
-                engine.sharePlayNotice = Self.jamExplainer
+                let started = try await activity.activate()
+                if started {
+                    engine.sharePlayNotice = "They have to tap Start / Join in Drome on this FaceTime — just opening the app isn’t enough."
+                } else {
+                    engine.sharePlayNotice = "FaceTime didn’t start SharePlay. Try Start again, or share Drome from the FaceTime SharePlay button."
+                }
             } catch {
-                engine.sharePlayNotice = "Couldn’t start the jam. Ask the other person to open Drome, or use FaceTime Share Screen to send audio into the call."
+                engine.sharePlayNotice = "Couldn’t join the jam. Both of you: FaceTime + Drome open, then tap Start."
             }
         default:
-            engine.sharePlayNotice = "Start a FaceTime call first. Jam plays in Drome on each phone — it doesn’t send audio through the call. Use Share Screen for that."
+            engine.sharePlayNotice = "Start FaceTime first. Then both of you tap Start on Now Playing."
         }
     }
-
-    static let jamExplainer = "Jam plays on each phone in Drome (both need the app). FaceTime won’t carry the music — use Share Screen if you want the call to hear your speaker."
 
     @MainActor
     private static func topViewController() -> UIViewController? {

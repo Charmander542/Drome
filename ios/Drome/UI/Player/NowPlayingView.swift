@@ -55,10 +55,8 @@ struct NowPlayingView: View {
                 VStack(spacing: 0) {
                     grabber
 
-                    if player.sharePlayActive {
-                        sharePlayBanner
-                            .padding(.bottom, 8)
-                    }
+                    sharePlayBanner
+                        .padding(.bottom, 8)
 
                     panePicker
                         .frame(maxWidth: min(280, width - 48))
@@ -165,21 +163,59 @@ struct NowPlayingView: View {
         HStack(spacing: 8) {
             Image(systemName: "shareplay")
                 .font(.caption.weight(.bold))
-            Text(player.sharePlayParticipantCount > 1
-                 ? "Jam on each phone · \(player.sharePlayParticipantCount)"
-                 : "Waiting for them to open Drome")
+            Text(sharePlayBannerTitle)
                 .font(.caption.weight(.semibold))
+                .lineLimit(1)
             Spacer(minLength: 0)
-            Button("Leave") {
-                player.leaveSharePlay()
+            if player.sharePlayActive {
+                Button("Leave") {
+                    player.leaveSharePlay()
+                }
+                .font(.caption.weight(.bold))
+            } else {
+                Text(player.isEligibleForSharePlay ? "Join" : "Start")
+                    .font(.caption.weight(.bold))
             }
-            .font(.caption.weight(.bold))
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(DromeTheme.accent.opacity(0.85), in: Capsule())
+        .background(
+            (player.sharePlayActive || player.isEligibleForSharePlay
+             ? DromeTheme.accent.opacity(0.85)
+             : Color.white.opacity(0.16)),
+            in: Capsule()
+        )
         .padding(.horizontal, 20)
+        .opacity(player.current == nil && !player.isEligibleForSharePlay && !player.sharePlayActive ? 0.45 : 1)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard !player.sharePlayActive else { return }
+            player.startSharePlay()
+        }
+        .disabled(player.current == nil && !player.isEligibleForSharePlay && !player.sharePlayActive)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(player.sharePlayActive ? [] : .isButton)
+        .accessibilityLabel(player.sharePlayActive ? "Jam" : (player.isEligibleForSharePlay ? "Join Jam" : "Start Jam"))
+        .accessibilityAction {
+            if player.sharePlayActive {
+                player.leaveSharePlay()
+            } else {
+                player.startSharePlay()
+            }
+        }
+    }
+
+    private var sharePlayBannerTitle: String {
+        if player.sharePlayActive {
+            return player.sharePlayParticipantCount > 1
+                ? "Jam on each phone · \(player.sharePlayParticipantCount)"
+                : "Waiting — they tap Join in Drome"
+        }
+        if player.isEligibleForSharePlay {
+            return "On FaceTime · tap Join"
+        }
+        return "Start a Jam on FaceTime"
     }
 
     private var panePicker: some View {
