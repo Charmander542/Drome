@@ -208,6 +208,7 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 
 	if e.Kind == "track" && w.alreadyHave(ctx, e.Title, e.Artist) {
 		logf("skip download id=%d already have %q — %q", e.ID, e.Artist, e.Title)
+		w.addEntryToNavidromePlaylist(ctx, e, false)
 		if err := w.store.delete(e.ID); err != nil {
 			_ = w.store.setStatus(e.ID, statusSkipped, "already in library")
 		}
@@ -229,6 +230,11 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 	logf("download done id=%d — removing from wishlist", e.ID)
 	if err := w.triggerScan(parent); err != nil {
 		logf("navidrome scan trigger: %v (library will pick up on next scheduled scan)", err)
+	}
+	if e.Kind == "playlist" {
+		w.syncWholePlaylist(parent, e)
+	} else {
+		w.addEntryToNavidromePlaylist(parent, e, true)
 	}
 	if err := w.store.delete(e.ID); err != nil {
 		logf("delete completed wishlist entry id=%d: %v", e.ID, err)
@@ -380,6 +386,130 @@ func (w *downloadWorker) alreadyHave(ctx context.Context, title, artist string) 
 	}
 	salt := "drome-owns"
 	return w.navidrome.libraryOwns(ctx, user, md5Hex(pass+salt), salt, title, artist)
+}
+
+func (w *downloadWorker) scanCreds() (subsonicCreds, bool) {
+	user := os.Getenv("DROME_NAVIDROME_SCAN_USER")
+	pass := os.Getenv("DROME_NAVIDROME_SCAN_PASSWORD")
+	if user == "" || pass == "" {
+		return subsonicCreds{}, false
+	}
+	salt := "drome-playlist"
+	return subsonicCreds{user: user, token: md5Hex(pass + salt), salt: salt}, true
+}
+
+func (w *downloadWorker) addEntryToNavidromePlaylist(ctx context.Context, e *entry, waitForScan bool) {
+	if w.navidrome == nil || e == nil || e.SourcePlaylistID == "" || strings.TrimSpace(e.Title) == "" {
+		return
+	}
+	creds, ok := w.scanCreds()
+	if !ok {
+		return
+	}
+	plID, name, err := w.store.playlistMirror(e.Owner, e.SourcePlaylistID)
+	if err != nil {
+		logf("playlist mirror lookup: %v", err)
+		return
+	}
+	if plID == "" {
+		name = e.SourcePlaylistName
+		if strings.TrimSpace(name) == "" {
+			name = "Spotify playlist"
+		}
+		id, perr := w.navidrome.ensureNamedPlaylist(ctx, creds, name, e.Owner, true)
+		if perr != nil {
+			logf("ensure navidrome playlist %q: %v", name, perr)
+			return
+		}
+		plID = id
+		_ = w.store.upsertPlaylistMirror(e.Owner, e.SourcePlaylistID, plID, name)
+	}
+	attempts := 1
+	if waitForScan {
+		attempts = 8
+	}
+	var last error
+	for i := 0; i < attempts; i++ {
+		last = w.navidrome.addTrackToNamedPlaylist(ctx, creds, plID, e.Title, e.Artist)
+		if last == nil {
+			return
+		}
+		if i+1 == attempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+	logf("add %q to playlist: %v", e.Title, last)
+}
+
+func (w *downloadWorker) syncWholePlaylist(ctx context.Context, e *entry) {
+	if w.navidrome == nil || w.spotify == nil || e == nil {
+		return
+	}
+	creds, ok := w.scanCreds()
+	if !ok {
+		return
+	}
+	name := e.SourcePlaylistName
+	if name == "" {
+		name = e.Title
+	}
+	spotifyID := e.SourcePlaylistID
+	if spotifyID == "" {
+		spotifyID = e.SpotifyID
+	}
+	_, tracks, err := w.spotify.playlistTracks(ctx, spotifyID)
+	if err != nil || len(tracks) == 0 {
+		logf("sync playlist %s: %v (%d tracks)", spotifyID, err, len(tracks))
+		return
+	}
+	plID, _, merr := w.store.playlistMirror(e.Owner, spotifyID)
+	if merr != nil {
+		logf("playlist mirror lookup: %v", merr)
+		return
+	}
+	if plID == "" {
+		id, perr := w.navidrome.ensureNamedPlaylist(ctx, creds, name, e.Owner, true)
+		if perr != nil {
+			logf("ensure navidrome playlist %q: %v", name, perr)
+			return
+		}
+		plID = id
+		_ = w.store.upsertPlaylistMirror(e.Owner, spotifyID, plID, name)
+	}
+	have, _ := w.navidrome.playlistSongIDs(ctx, creds, plID)
+	var toAdd []string
+	for i := 0; i < 6; i++ {
+		toAdd = toAdd[:0]
+		for _, t := range tracks {
+			sid := w.navidrome.findSongID(ctx, creds.user, creds.token, creds.salt, t.Title, t.Artist)
+			if sid == "" {
+				continue
+			}
+			if _, ok := have[sid]; ok {
+				continue
+			}
+			toAdd = append(toAdd, sid)
+			have[sid] = struct{}{}
+		}
+		if len(toAdd) > 0 || i == 5 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+	if err := w.navidrome.addSongsToPlaylist(ctx, creds, plID, toAdd); err != nil {
+		logf("sync playlist %q add: %v", name, err)
+		return
+	}
+	logf("synced %d tracks into navidrome playlist %q", len(have), name)
 }
 
 // triggerScan asks Navidrome to rescan via the OpenSubsonic startScan endpoint

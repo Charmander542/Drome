@@ -254,20 +254,28 @@ struct SearchView: View {
             })
 
         case .song:
-            Button {
-                bumpRecent(item)
+            Group {
                 if let song = item.decodedSong() {
-                    session.player.play([song], startAt: 0,
-                                context: PlaybackContext(label: "Search", kind: .search))
-                    NowPlayingPresenter.open()
+                    SongRow(
+                        song: song,
+                        showAlbum: true,
+                        trailing: AnyView(
+                            Text("SONG")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(DromeTheme.muted)
+                        )
+                    ) {
+                        playRecentSongItem(item, song: song)
+                    }
                 } else {
-                    Task { await playRecentSong(id: item.entityId) }
+                    recentItemLabel(item, shape: .rounded)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(TapGesture().onEnded {
+                            playRecentSongItem(item, song: nil)
+                        })
                 }
-            } label: {
-                recentItemLabel(item, shape: .rounded)
             }
-            .buttonStyle(.plain)
-        }
     }
 
     private func recentItemLabel(_ item: RecentSearchItem, shape: CoverShape) -> some View {
@@ -293,6 +301,18 @@ struct SearchView: View {
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(DromeTheme.muted)
         }
+    }
+
+    private func playRecentSongItem(_ item: RecentSearchItem, song: Song?) {
+        searchFocused = false
+        bumpRecent(item)
+        if let song {
+            session.player.play([song], startAt: 0,
+                        context: PlaybackContext(label: "Search", kind: .search))
+            NowPlayingPresenter.open()
+            return
+        }
+        Task { await playRecentSong(id: item.entityId) }
     }
 
     private func bumpRecent(_ item: RecentSearchItem) {
@@ -503,6 +523,7 @@ struct SearchView: View {
                             .foregroundStyle(DromeTheme.muted)
                     )
                 ) {
+                    searchFocused = false
                     rememberHit(hit)
                     let songs = hits.compactMap(\.song)
                     let start = songs.firstIndex(where: { $0.id == song.id }) ?? 0

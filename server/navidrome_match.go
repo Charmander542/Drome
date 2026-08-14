@@ -61,11 +61,15 @@ func titlesMatch(a, b string) bool {
 // libraryOwns reports whether the user's Navidrome library already has a close
 // title+artist match for the given track (via search3).
 func (v *navidromeVerifier) libraryOwns(ctx context.Context, user, token, salt, title, artist string) bool {
+	return v.findSongID(ctx, user, token, salt, title, artist) != ""
+}
+
+func (v *navidromeVerifier) findSongID(ctx context.Context, user, token, salt, title, artist string) string {
 	if v == nil {
-		return false
+		return ""
 	}
 	if normalizeMatchKey(title) == "" {
-		return false
+		return ""
 	}
 
 	queries := []string{strings.TrimSpace(title)}
@@ -79,14 +83,14 @@ func (v *navidromeVerifier) libraryOwns(ctx context.Context, user, token, salt, 
 			continue
 		}
 		seen[query] = true
-		if v.searchOwns(ctx, user, token, salt, query, title, artist) {
-			return true
+		if id := v.searchSongID(ctx, user, token, salt, query, title, artist); id != "" {
+			return id
 		}
 	}
-	return false
+	return ""
 }
 
-func (v *navidromeVerifier) searchOwns(ctx context.Context, user, token, salt, query, title, artist string) bool {
+func (v *navidromeVerifier) searchSongID(ctx context.Context, user, token, salt, query, title, artist string) string {
 	q := url.Values{}
 	q.Set("u", user)
 	q.Set("t", token)
@@ -101,11 +105,11 @@ func (v *navidromeVerifier) searchOwns(ctx context.Context, user, token, salt, q
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.baseURL+"/rest/search3.view?"+q.Encode(), nil)
 	if err != nil {
-		return false
+		return ""
 	}
 	resp, err := v.client.Do(req)
 	if err != nil {
-		return false
+		return ""
 	}
 	defer resp.Body.Close()
 
@@ -114,6 +118,7 @@ func (v *navidromeVerifier) searchOwns(ctx context.Context, user, token, salt, q
 			Status        string `json:"status"`
 			SearchResult3 *struct {
 				Song []struct {
+					ID     string `json:"id"`
 					Title  string `json:"title"`
 					Artist string `json:"artist"`
 				} `json:"song"`
@@ -121,20 +126,20 @@ func (v *navidromeVerifier) searchOwns(ctx context.Context, user, token, salt, q
 		} `json:"subsonic-response"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return false
+		return ""
 	}
 	if body.SubsonicResponse.Status != "ok" || body.SubsonicResponse.SearchResult3 == nil {
-		return false
+		return ""
 	}
 	for _, song := range body.SubsonicResponse.SearchResult3.Song {
-		if !titlesMatch(song.Title, title) {
+		if song.ID == "" || !titlesMatch(song.Title, title) {
 			continue
 		}
 		if strings.TrimSpace(artist) == "" || artistsMatch(song.Artist, artist) {
-			return true
+			return song.ID
 		}
 	}
-	return false
+	return ""
 }
 
 func requestCreds(r *http.Request) (user, token, salt string) {

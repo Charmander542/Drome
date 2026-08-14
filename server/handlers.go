@@ -283,10 +283,31 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (name 
 		status = statusQueued
 	}
 
+	user, token, salt := requestCreds(r)
+	creds := subsonicCreds{user: user, token: token, salt: salt}
+	ndPlaylistID := ""
+	if s.navidrome != nil && user != "" && token != "" {
+		id, perr := s.navidrome.ensureNamedPlaylist(r.Context(), creds, name, owner, false)
+		if perr != nil {
+			logf("navidrome playlist %q: %v", name, perr)
+		} else {
+			ndPlaylistID = id
+			if err := s.store.upsertPlaylistMirror(owner, playlistID, id, name); err != nil {
+				logf("save playlist mirror: %v", err)
+			}
+		}
+	}
+
 	now := time.Now()
+	var ownedSongIDs []string
 	for _, t := range tracks {
 		if s.alreadyHave(r, t.Title, t.Artist) {
 			skippedOwned++
+			if ndPlaylistID != "" && s.navidrome != nil {
+				if sid := s.navidrome.findSongID(r.Context(), user, token, salt, t.Title, t.Artist); sid != "" {
+					ownedSongIDs = append(ownedSongIDs, sid)
+				}
+			}
 			continue
 		}
 		e := entry{
@@ -308,6 +329,20 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (name 
 			continue
 		}
 		added = append(added, e)
+	}
+	if ndPlaylistID != "" && s.navidrome != nil && len(ownedSongIDs) > 0 {
+		have, _ := s.navidrome.playlistSongIDs(r.Context(), creds, ndPlaylistID)
+		var toAdd []string
+		for _, id := range ownedSongIDs {
+			if _, ok := have[id]; ok {
+				continue
+			}
+			toAdd = append(toAdd, id)
+			have[id] = struct{}{}
+		}
+		if err := s.navidrome.addSongsToPlaylist(r.Context(), creds, ndPlaylistID, toAdd); err != nil {
+			logf("add owned songs to %q: %v", name, err)
+		}
 	}
 	if status == statusQueued && s.downloads != nil && len(added) > 0 {
 		s.downloads.kick()
@@ -345,6 +380,16 @@ func (s *server) enqueueWholePlaylist(r *http.Request, playlistID, fallbackName 
 	}
 	if existing, err := s.store.findActiveByTitleArtist(e.Owner, e.Kind, e.Title, e.Artist); err == nil && existing != nil {
 		return existing, nil
+	}
+	user, token, salt := requestCreds(r)
+	if s.navidrome != nil && user != "" && token != "" {
+		id, perr := s.navidrome.ensureNamedPlaylist(r.Context(),
+			subsonicCreds{user: user, token: token, salt: salt}, e.Title, e.Owner, false)
+		if perr != nil {
+			logf("navidrome playlist %q: %v", e.Title, perr)
+		} else if err := s.store.upsertPlaylistMirror(e.Owner, playlistID, id, e.Title); err != nil {
+			logf("save playlist mirror: %v", err)
+		}
 	}
 	if err := s.store.insert(e); err != nil {
 		return nil, fmt.Errorf("could not save playlist: %w", err)

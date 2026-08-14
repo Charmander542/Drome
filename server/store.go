@@ -114,6 +114,18 @@ CREATE TABLE IF NOT EXISTS track_shares (
 		db.Close()
 		return nil, err
 	}
+	if _, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS playlist_mirrors (
+	owner         TEXT NOT NULL,
+	spotify_id    TEXT NOT NULL,
+	navidrome_id  TEXT NOT NULL,
+	name          TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (owner, spotify_id)
+);
+`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &wishlistStore{db: db}, nil
 }
 
@@ -419,4 +431,26 @@ func (s *wishlistStore) shareList(owner, username string) error {
 func (s *wishlistStore) unshareList(owner, username string) error {
 	_, err := s.db.Exec(`DELETE FROM list_shares WHERE owner = ? AND username = ?`, owner, username)
 	return err
+}
+
+func (s *wishlistStore) upsertPlaylistMirror(owner, spotifyID, navidromeID, name string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO playlist_mirrors (owner, spotify_id, navidrome_id, name)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT (owner, spotify_id) DO UPDATE SET
+			navidrome_id = excluded.navidrome_id,
+			name = excluded.name`,
+		owner, spotifyID, navidromeID, name)
+	return err
+}
+
+func (s *wishlistStore) playlistMirror(owner, spotifyID string) (navidromeID, name string, err error) {
+	err = s.db.QueryRow(
+		`SELECT navidrome_id, name FROM playlist_mirrors WHERE owner = ? AND spotify_id = ?`,
+		owner, spotifyID,
+	).Scan(&navidromeID, &name)
+	if err == sql.ErrNoRows {
+		return "", "", nil
+	}
+	return navidromeID, name, err
 }

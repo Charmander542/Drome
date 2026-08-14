@@ -28,33 +28,29 @@ struct SongRow: View {
         // Equatable content skips heavy row rebuilds when global stores tick
         // (play/pause, download progress, rating ingest) but this song's
         // visible state is unchanged.
-        Button {
-            guard playsOnTap else { return }
-            if let onPlay {
-                onPlay()
-            } else {
-                player.play([song], startAt: 0,
-                            context: PlaybackContext(label: song.title, kind: .search))
-            }
-        } label: {
-            EquatableSongRowContent(
-                song: song,
-                index: index,
-                showAlbum: showAlbum,
-                trailing: trailing,
-                isCurrent: player.current?.song.id == song.id,
-                rating: ratings.rating(for: song),
-                inRotation: rotation.contains(song.id),
-                isDownloaded: downloads.isDownloaded(song.id),
-                coverURL: session?.artworkURL(for: song, size: 96),
-                lightweight: lightweight
-            )
-            .equatable()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
+        //
+        // List (Search, albums, playlists) swallows nested Buttons — tap the
+        // row itself so play always fires.
+        EquatableSongRowContent(
+            song: song,
+            index: index,
+            showAlbum: showAlbum,
+            trailing: trailing,
+            isCurrent: player.current?.song.id == song.id,
+            rating: ratings.rating(for: song),
+            inRotation: rotation.contains(song.id),
+            isDownloaded: downloads.isDownloaded(song.id),
+            coverURL: session?.artworkURL(for: song, size: 96),
+            lightweight: lightweight
+        )
+        .equatable()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded {
+            playTapped()
+        })
         .accessibilityAddTraits(playsOnTap ? .isButton : [])
+        .accessibilityHint(playsOnTap ? "Plays this song" : "")
         .contextMenu { contextMenu }
         .modifier(ConditionalSongSwipe(enabled: enablesSwipeActions && !lightweight, song: song))
         .sheet(isPresented: $showAddToPlaylist) {
@@ -70,6 +66,16 @@ struct SongRow: View {
                 }
                 .preferredColorScheme(.dark)
             }
+        }
+    }
+
+    private func playTapped() {
+        guard playsOnTap else { return }
+        if let onPlay {
+            onPlay()
+        } else {
+            player.play([song], startAt: 0,
+                        context: PlaybackContext(label: song.title, kind: .search))
         }
     }
 

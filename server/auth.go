@@ -30,7 +30,7 @@ func newNavidromeVerifier(baseURL string, ttl time.Duration) *navidromeVerifier 
 	return &navidromeVerifier{
 		baseURL: baseURL,
 		ttl:     ttl,
-		client:  &http.Client{Timeout: 10 * time.Second},
+		client:  &http.Client{Timeout: 25 * time.Second},
 		cache:   map[string]time.Time{},
 	}
 }
