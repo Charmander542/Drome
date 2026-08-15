@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"html"
 	"io"
 	"net/http"
@@ -60,16 +61,30 @@ func (s *wishlistStore) upsertTrackShare(in *trackShare) error {
 
 func (s *wishlistStore) trackShare(token string) (*trackShare, error) {
 	row := s.db.QueryRow(`
-		SELECT token, song_id, title, artist, album, accent, cover, cover_type, created_at
+		SELECT token, song_id, title, artist, album, accent,
+		       CASE WHEN cover IS NOT NULL AND length(cover) > 0 THEN 1 ELSE 0 END,
+		       created_at
 		FROM track_shares WHERE token = ?`, token)
 	var sh trackShare
 	var created string
+	var hasCover int
 	if err := row.Scan(&sh.Token, &sh.SongID, &sh.Title, &sh.Artist, &sh.Album, &sh.Accent,
-		&sh.Cover, &sh.CoverType, &created); err != nil {
+		&hasCover, &created); err != nil {
 		return nil, err
 	}
 	sh.CreatedAt, _ = time.Parse(time.RFC3339, created)
+	if hasCover == 1 {
+		sh.CoverType = "has"
+	}
 	return &sh, nil
+}
+
+func (s *wishlistStore) trackShareCoverBytes(token string) (data []byte, ctype string, err error) {
+	row := s.db.QueryRow(`SELECT cover, cover_type FROM track_shares WHERE token = ?`, token)
+	if err = row.Scan(&data, &ctype); err != nil {
+		return nil, "", err
+	}
+	return data, ctype, nil
 }
 
 func publicBaseURL(r *http.Request) string {
@@ -193,112 +208,31 @@ func (s *server) handleTrackSharePage(w http.ResponseWriter, r *http.Request) {
 		html.EscapeString(coverURL),
 		html.EscapeString(deep),
 		html.EscapeString(accent),
-		len(sh.Cover) > 0,
+		contrastText(accent),
+		sh.CoverType == "has",
 	))
 }
 
 func (s *server) handleTrackShareCover(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
-	sh, err := s.store.trackShare(token)
-	if err != nil || len(sh.Cover) == 0 {
+	data, ctype, err := s.store.trackShareCoverBytes(token)
+	if err != nil || len(data) == 0 {
 		http.NotFound(w, r)
 		return
 	}
-	ctype := sh.CoverType
 	if ctype == "" {
 		ctype = "image/jpeg"
 	}
 	w.Header().Set("Content-Type", ctype)
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(sh.Cover)
-}
-
-func sharePageHTML(headline, title, artist, album, desc, pageURL, coverURL, deep, accent string, hasCover bool) string {
-	ogImage := ""
-	hero := `<div class="art fallback">♪</div>`
-	if hasCover {
-		ogImage = `<meta property="og:image" content="` + coverURL + `">
-<meta property="og:image:width" content="800">
-<meta property="og:image:height" content="800">
-<meta name="twitter:image" content="` + coverURL + `">`
-		hero = `<img class="art" src="` + coverURL + `" alt="">`
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("ETag", `"`+token+`-`+fmt.Sprintf("%d", len(data))+`"`)
+	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, token) {
+		w.WriteHeader(http.StatusNotModified)
+		return
 	}
-	return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>` + headline + `</title>
-<meta name="description" content="` + desc + `">
-<meta property="og:type" content="music.song">
-<meta property="og:title" content="` + headline + `">
-<meta property="og:description" content="` + desc + `">
-<meta property="og:url" content="` + pageURL + `">
-<meta property="og:site_name" content="Drome">
-<meta property="al:ios:url" content="` + deep + `">
-<meta property="al:ios:app_name" content="Drome">
-<meta name="apple-itunes-app" content="app-argument=` + deep + `">
-` + ogImage + `
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="` + headline + `">
-<meta name="twitter:description" content="` + desc + `">
-<meta name="theme-color" content="` + accent + `">
-<style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; min-height: 100vh;
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
-    color: #fff;
-    background: radial-gradient(1200px 800px at 50% -10%, ` + accent + `55, #07070a 55%);
-    display: flex; align-items: center; justify-content: center;
-    padding: 32px 20px;
-  }
-  .card {
-    width: min(420px, 100%);
-    text-align: center;
-  }
-  .art, .art.fallback {
-    width: min(320px, 80vw); height: min(320px, 80vw);
-    border-radius: 12px; object-fit: cover;
-    box-shadow: 0 24px 60px rgba(0,0,0,.55);
-    margin: 0 auto 22px;
-  }
-  .art.fallback {
-    display: grid; place-items: center;
-    background: #1c1c22; font-size: 64px; color: #8a8a96;
-  }
-  h1 { font-size: 1.45rem; margin: 0 0 6px; letter-spacing: -.02em; }
-  .artist { margin: 0; color: rgba(255,255,255,.72); font-size: 1.02rem; }
-  .album { margin: 8px 0 0; color: rgba(255,255,255,.45); font-size: .9rem; }
-  .play {
-    display: inline-flex; align-items: center; gap: 10px;
-    margin-top: 28px; padding: 14px 28px; border-radius: 999px;
-    background: ` + accent + `; color: #fff; text-decoration: none;
-    font-weight: 650; font-size: 1.02rem;
-  }
-  .hint { margin-top: 18px; color: rgba(255,255,255,.38); font-size: .8rem; }
-</style>
-<script>
-(function () {
-  var ua = navigator.userAgent || "";
-  if (/bot|crawler|spider|preview|facebookexternalhit|Twitterbot|Slackbot|Discordbot|WhatsApp|LinkedInBot|Applebot|Googlebot|Bingbot/i.test(ua)) return;
-  window.location.replace("` + deep + `");
-})();
-</script>
-</head>
-<body>
-  <main class="card">
-    ` + hero + `
-    <h1>` + title + `</h1>
-    <p class="artist">` + artist + `</p>
-    ` + albumLine(album) + `
-    <a class="play" href="` + deep + `">Play in Drome</a>
-    <p class="hint">Opens in Drome if you have the app.</p>
-  </main>
-</body>
-</html>`
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func wantsJSON(r *http.Request) bool {

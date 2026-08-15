@@ -163,6 +163,16 @@ final class ImageLoader: @unchecked Sendable {
         return nil
     }
 
+    /// Instant cover lookup by Navidrome ids (no network).
+    func previewCover(ids: [String]) -> UIImage? {
+        for id in ids where !id.isEmpty {
+            if let image = coverCache.object(forKey: id as NSString) {
+                return image
+            }
+        }
+        return nil
+    }
+
     private func rememberCover(_ image: UIImage, for url: URL) {
         guard let id = Self.coverIdentity(for: url) else { return }
         let key = id as NSString

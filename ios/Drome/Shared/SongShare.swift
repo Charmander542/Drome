@@ -3,10 +3,10 @@ import LinkPresentation
 
 /// Builds share payloads that work in Messages, Discord, Mail, etc.
 ///
-/// Messages opens whatever URL is in the bubble. We put `drome://track/{id}`
-/// there so a tap goes straight into the app (album art comes from local
-/// `LPLinkMetadata`, not the companion webpage). Discord / Slack / Mail still
-/// get an HTTPS card when the companion is configured.
+/// The bubble always prefers the HTTPS Drome card (`/s/{token}`) so messengers
+/// can unfurl album art + title. Tapping that URL still opens the app
+/// (universal links / `drome://` on the page). Falls back to `drome://track/{id}`
+/// when the companion is not configured.
 enum SongShare {
     static func url(songId: String) -> URL {
         URL(string: "drome://track/\(songId)")!
@@ -29,27 +29,29 @@ enum SongShare {
 
         var cover: UIImage?
         let coverIDs = [song.coverArt, song.albumId, song.id].compactMap { $0 }.filter { !$0.isEmpty }
-        if let env = AppEnvironment.shared?.session {
+        cover = ImageLoader.shared.previewCover(ids: coverIDs)
+        if cover == nil, let env = AppEnvironment.shared?.session {
             for id in coverIDs {
-                if let url = env.artworkURL(id: id, size: 800),
-                   let image = ImageLoader.shared.previewImage(for: url) {
-                    cover = image
-                    break
+                if let url = env.artworkURL(id: id, size: 300) {
+                    cover = ImageLoader.shared.previewImage(for: url)
+                    if cover != nil { break }
                 }
             }
-            if cover == nil, let url = env.artworkURL(for: song, size: 800) {
-                cover = await ImageLoader.shared.image(for: url)
+            if cover == nil, let url = env.artworkURL(for: song, size: 120) {
+                cover = ImageLoader.shared.previewImage(for: url)
             }
         }
 
         let appURL = url(songId: song.id)
         var webURL: URL?
         if let client = AppEnvironment.shared?.session?.wishlist {
-            let jpeg = cover.flatMap { $0.jpegData(compressionQuality: 0.82) }
+            let jpeg = cover.flatMap(Self.shareJPEG(from:))
             let accent = cover.map(Self.accentHex(from:)) ?? "#3D7EFF"
-            webURL = try? await client.createTrackShare(
-                songId: song.id, title: title, artist: artist, album: album,
-                accent: accent, coverJPEG: jpeg)
+            webURL = await withTimeout(seconds: 2.0) {
+                try? await client.createTrackShare(
+                    songId: song.id, title: title, artist: artist, album: album,
+                    accent: accent, coverJPEG: jpeg)
+            }
         }
 
         let item = ShareItem(headline: headline, appURL: appURL, webURL: webURL, image: cover)
@@ -94,6 +96,45 @@ enum SongShare {
         return top
     }
 
+    /// Small enough to upload quickly; sharp enough for OG / the share card.
+    private static func shareJPEG(from image: UIImage) -> Data? {
+        let maxEdge: CGFloat = 400
+        let longest = max(image.size.width, image.size.height)
+        let source: UIImage
+        if longest > maxEdge {
+            let scale = maxEdge / longest
+            let size = CGSize(width: (image.size.width * scale).rounded(),
+                              height: (image.size.height * scale).rounded())
+            source = image.preparingThumbnail(of: size) ?? image
+        } else {
+            source = image
+        }
+        return source.jpegData(compressionQuality: 0.62)
+    }
+
+    @MainActor
+    private static func withTimeout(seconds: TimeInterval, _ work: @escaping () async -> URL?) async -> URL? {
+        await withTaskGroup(of: (Bool, URL?).self) { group in
+            group.addTask { (true, await work()) }
+            group.addTask {
+                let ns = UInt64(max(seconds, 0.2) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: ns)
+                return (false, nil)
+            }
+            var result: URL?
+            while let (finished, url) = await group.next() {
+                if finished {
+                    result = url
+                    group.cancelAll()
+                    break
+                }
+                group.cancelAll()
+                break
+            }
+            return result
+        }
+    }
+
     private static func accentHex(from image: UIImage) -> String {
         guard let sample = image.preparingThumbnail(of: CGSize(width: 16, height: 16)),
               let cg = sample.cgImage else { return "#3D7EFF" }
@@ -128,22 +169,22 @@ enum SongShare {
         }
 
         func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
-            appURL
+            webURL ?? appURL
         }
 
         func activityViewController(
             _ activityViewController: UIActivityViewController,
             itemForActivityType activityType: UIActivity.ActivityType?
         ) -> Any? {
+            let link = webURL ?? appURL
             let raw = activityType?.rawValue ?? ""
             if activityType == .mail
+                || activityType == .copyToPasteboard
                 || raw.localizedCaseInsensitiveContains("discord")
                 || raw.localizedCaseInsensitiveContains("Slack") {
-                let link = webURL ?? appURL
                 return "\(headline)\n\(link.absoluteString)"
             }
-            // Messages, copy, AirDrop: open Drome directly.
-            return appURL
+            return link
         }
 
         func activityViewController(
@@ -158,8 +199,8 @@ enum SongShare {
         ) -> LPLinkMetadata? {
             let meta = LPLinkMetadata()
             meta.title = headline
-            meta.originalURL = appURL
-            meta.url = appURL
+            meta.originalURL = webURL ?? appURL
+            meta.url = webURL ?? appURL
             if let image {
                 meta.imageProvider = NSItemProvider(object: image)
                 meta.iconProvider = NSItemProvider(object: image)
