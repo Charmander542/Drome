@@ -3,10 +3,9 @@ import LinkPresentation
 
 /// Builds share payloads that work in Messages, Discord, Mail, etc.
 ///
-/// The bubble always prefers the HTTPS Drome card (`/s/{token}`) so messengers
-/// can unfurl album art + title. Tapping that URL still opens the app
-/// (universal links / `drome://` on the page). Falls back to `drome://track/{id}`
-/// when the companion is not configured.
+/// Messages gets `drome://track/{id}` so a tap opens the app. The bubble still
+/// *looks* like the HTTPS card via `LPLinkMetadata` (title, art, originalURL).
+/// Discord / Mail / copy get the HTTPS page so they can unfurl Open Graph.
 enum SongShare {
     static func url(songId: String) -> URL {
         URL(string: "drome://track/\(songId)")!
@@ -169,22 +168,23 @@ enum SongShare {
         }
 
         func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
-            webURL ?? appURL
+            appURL
         }
 
         func activityViewController(
             _ activityViewController: UIActivityViewController,
             itemForActivityType activityType: UIActivity.ActivityType?
         ) -> Any? {
-            let link = webURL ?? appURL
             let raw = activityType?.rawValue ?? ""
             if activityType == .mail
                 || activityType == .copyToPasteboard
                 || raw.localizedCaseInsensitiveContains("discord")
                 || raw.localizedCaseInsensitiveContains("Slack") {
+                let link = webURL ?? appURL
                 return "\(headline)\n\(link.absoluteString)"
             }
-            return link
+            // Messages / AirDrop: open Drome directly.
+            return appURL
         }
 
         func activityViewController(
@@ -199,8 +199,9 @@ enum SongShare {
         ) -> LPLinkMetadata? {
             let meta = LPLinkMetadata()
             meta.title = headline
+            // Preview fetches/looks like the webpage; tap target is drome://.
             meta.originalURL = webURL ?? appURL
-            meta.url = webURL ?? appURL
+            meta.url = appURL
             if let image {
                 meta.imageProvider = NSItemProvider(object: image)
                 meta.iconProvider = NSItemProvider(object: image)

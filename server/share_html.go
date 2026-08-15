@@ -44,6 +44,13 @@ func sharePageHTML(headline, title, artist, album, desc, pageURL, coverURL, deep
 <meta name="twitter:title" content="` + title + `">
 <meta name="twitter:description" content="` + desc + `">
 <meta name="theme-color" content="` + accent + `">
+<script>
+(function () {
+  var ua = navigator.userAgent || "";
+  if (/bot|crawler|spider|preview|facebookexternalhit|Twitterbot|Slackbot|Discordbot|WhatsApp|LinkedInBot|Applebot|Googlebot|Bingbot|SkypeUriPreview|Iframely|Embedly/i.test(ua)) return;
+  window.location.replace("` + deep + `");
+})();
+</script>
 <style>
   :root { color-scheme: dark; --accent: ` + accent + `; --on-accent: ` + onAccent + `; }
   * { box-sizing: border-box; }
@@ -55,7 +62,11 @@ func sharePageHTML(headline, title, artist, album, desc, pageURL, coverURL, deep
     background: #050507;
     overflow-x: hidden;
   }
-  .scene { position: relative; min-height: 100dvh; isolation: isolate; }
+  .scene {
+    position: relative; min-height: 100dvh; isolation: isolate;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: calc(20px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom));
+  }
   .blur, .wash {
     position: fixed; inset: -48px;
     width: calc(100% + 96px); height: calc(100% + 96px);
@@ -67,63 +78,70 @@ func sharePageHTML(headline, title, artist, album, desc, pageURL, coverURL, deep
   .wash { filter: none; background: var(--accent); opacity: .5; }
   .scrim {
     position: fixed; inset: 0; z-index: 1; pointer-events: none;
-    background: linear-gradient(180deg, rgba(0,0,0,.28) 0%, rgba(0,0,0,.52) 42%, rgba(0,0,0,.82) 100%);
+    background: rgba(0,0,0,.45);
   }
   .top {
     position: relative; z-index: 2;
-    display: flex; align-items: center; gap: 10px;
-    padding: calc(18px + env(safe-area-inset-top)) 24px 0;
+    display: flex; align-items: center; gap: 8px;
+    align-self: stretch;
+    max-width: 640px; width: min(640px, 100%);
+    margin: 0 auto 16px;
   }
   .mark {
-    width: 22px; height: 22px; border-radius: 6px;
+    width: 20px; height: 20px; border-radius: 5px;
     background: var(--accent); color: var(--on-accent);
     display: grid; place-items: center;
-    font-size: 11px; font-weight: 800; letter-spacing: -.04em;
+    font-size: 10px; font-weight: 800; letter-spacing: -.04em;
   }
-  .brand { font-size: 15px; font-weight: 650; letter-spacing: -.02em; opacity: .92; }
-  .stage {
+  .brand { font-size: 14px; font-weight: 650; letter-spacing: -.02em; opacity: .92; }
+  .card {
     position: relative; z-index: 2;
-    display: flex; flex-direction: column; align-items: center;
-    gap: 28px;
-    width: min(920px, 100%);
-    margin: 0 auto;
-    padding: 48px 24px calc(40px + env(safe-area-inset-bottom));
+    display: flex; flex-direction: row; align-items: stretch;
+    width: min(640px, 100%);
+    aspect-ratio: 1.91 / 1;
+    max-height: 336px;
+    border-radius: 14px;
+    overflow: hidden;
+    background: rgba(12,12,16,.72);
+    box-shadow: 0 18px 50px rgba(0,0,0,.45);
+    color: inherit; text-decoration: none;
   }
   .art, .art.fallback {
-    width: min(340px, 78vw); aspect-ratio: 1;
-    border-radius: 8px; object-fit: cover;
-    box-shadow: 0 28px 80px rgba(0,0,0,.62);
+    height: 100%; width: auto; aspect-ratio: 1;
+    flex: 0 0 auto;
+    object-fit: cover;
+    border-radius: 0;
   }
   .art.fallback { background: color-mix(in srgb, var(--accent) 38%, #14141a); }
-  .copy { text-align: center; max-width: 520px; }
+  .copy {
+    flex: 1 1 auto; min-width: 0;
+    display: flex; flex-direction: column; justify-content: center;
+    text-align: left;
+    padding: 16px 18px 16px 20px;
+  }
   .kind {
-    margin: 0 0 10px; font-size: 11px; font-weight: 700;
+    margin: 0 0 6px; font-size: 10px; font-weight: 700;
     letter-spacing: .14em; text-transform: uppercase;
     color: rgba(255,255,255,.48);
   }
   h1 {
-    margin: 0; font-size: clamp(1.6rem, 4vw, 2.4rem);
-    line-height: 1.12; letter-spacing: -.03em; font-weight: 750;
+    margin: 0; font-size: clamp(1.05rem, 3.2vw, 1.55rem);
+    line-height: 1.15; letter-spacing: -.03em; font-weight: 750;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
   }
-  .artist { margin: 10px 0 0; font-size: 1.15rem; font-weight: 550; color: rgba(255,255,255,.86); }
-  .album { margin: 8px 0 0; font-size: .95rem; color: rgba(255,255,255,.5); }
-  .actions { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 22px; }
+  .artist { margin: 6px 0 0; font-size: .95rem; font-weight: 550; color: rgba(255,255,255,.86);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .album { margin: 4px 0 0; font-size: .82rem; color: rgba(255,255,255,.5);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .actions { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 14px; }
   .play {
     display: inline-flex; align-items: center; justify-content: center;
-    min-width: 200px; padding: 14px 28px; border-radius: 999px;
+    padding: 9px 16px; border-radius: 999px;
     background: var(--accent); color: var(--on-accent);
-    text-decoration: none; font-weight: 700; font-size: 1.02rem;
+    text-decoration: none; font-weight: 700; font-size: .88rem;
   }
-  .hint { margin: 0; color: rgba(255,255,255,.38); font-size: .78rem; }
-  @media (min-width: 760px) {
-    .stage {
-      flex-direction: row; align-items: center; justify-content: center;
-      padding-top: 72px; gap: 48px;
-    }
-    .art, .art.fallback { width: 320px; flex: 0 0 320px; }
-    .copy { text-align: left; }
-    .actions { align-items: flex-start; }
-  }
+  .hint { margin: 0; color: rgba(255,255,255,.38); font-size: .7rem; }
 </style>
 </head>
 <body>
@@ -134,7 +152,7 @@ func sharePageHTML(headline, title, artist, album, desc, pageURL, coverURL, deep
       <span class="mark">D</span>
       <span class="brand">Drome</span>
     </header>
-    <main class="stage">
+    <a class="card" href="` + deep + `">
       ` + hero + `
       <div class="copy">
         <p class="kind">Song</p>
@@ -142,11 +160,11 @@ func sharePageHTML(headline, title, artist, album, desc, pageURL, coverURL, deep
         ` + artistHTML + `
         ` + albumLine(album) + `
         <div class="actions">
-          <a class="play" href="` + deep + `">Play in Drome</a>
+          <span class="play">Play in Drome</span>
           <p class="hint">Opens the Drome app if it’s installed.</p>
         </div>
       </div>
-    </main>
+    </a>
   </div>
 </body>
 </html>`

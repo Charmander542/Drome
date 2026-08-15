@@ -30,13 +30,12 @@ func TestSharePageHTMLUsesCoverAndDeepLink(t *testing.T) {
 		`class="artist">Artist</p>`,
 		`href="drome://track/1"`,
 		`Play in Drome`,
-		`fetchpriority="high"`,
+		`<a class="card" href="drome://track/1">`,
+		`location.replace("drome://track/1")`,
+		`aspect-ratio: 1.91 / 1`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("share HTML missing %q", want)
 		}
-	}
-	if strings.Contains(html, "location.replace") {
-		t.Fatal("share HTML should not auto-redirect away from the card")
 	}
 }
