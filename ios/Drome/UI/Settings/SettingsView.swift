@@ -13,6 +13,7 @@ struct SettingsView: View {
     @State private var isScanning = false
     @State private var scanMessage: String?
     @State private var scanFailed = false
+    @AppStorage(LaunchIntroPreference.hapticKey) private var hapticIntro = false
 
     var body: some View {
         List {
@@ -46,6 +47,15 @@ struct SettingsView: View {
                 Text("Wishlist companion")
             } footer: {
                 Text("Optional Go service for Spotify search + wishlist downloads into your Navidrome library. Set URL to http://host:4534")
+            }
+            .listRowBackground(DromeTheme.elevated)
+
+            Section {
+                Toggle("Haptic intro", isOn: $hapticIntro)
+            } header: {
+                Text("Launch")
+            } footer: {
+                Text("Replaces the boot sound with a vibration timed to the same drum hits.")
             }
             .listRowBackground(DromeTheme.elevated)
 
