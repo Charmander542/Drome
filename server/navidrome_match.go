@@ -101,7 +101,7 @@ func (v *navidromeVerifier) searchSongID(ctx context.Context, user, token, salt,
 	q.Set("query", query)
 	q.Set("artistCount", "0")
 	q.Set("albumCount", "0")
-	q.Set("songCount", "50")
+	q.Set("songCount", "100")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.baseURL+"/rest/search3.view?"+q.Encode(), nil)
 	if err != nil {
@@ -163,9 +163,68 @@ func fileTitleKey(filename string) string {
 	return stem
 }
 
+func indexMusicDir(musicDir string) []diskTrackHit {
+	if musicDir == "" {
+		return nil
+	}
+	var out []diskTrackHit
+	_ = filepath.WalkDir(musicDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if strings.HasPrefix(name, ".") || strings.EqualFold(name, "Playlists") {
+				if path != musicDir {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(d.Name())) {
+		case ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".aiff":
+		default:
+			return nil
+		}
+		rel, err := filepath.Rel(musicDir, path)
+		if err != nil {
+			return nil
+		}
+		parts := strings.Split(rel, string(filepath.Separator))
+		dirArtist := ""
+		if len(parts) >= 2 {
+			dirArtist = parts[0]
+		}
+		out = append(out, diskTrackHit{
+			Rel:       filepath.ToSlash(rel),
+			Stem:      fileTitleKey(d.Name()),
+			DirArtist: dirArtist,
+		})
+		return nil
+	})
+	return out
+}
+
+type diskTrackHit struct {
+	Rel, Stem, DirArtist string
+}
+
+func matchIndexedTrack(index []diskTrackHit, title, artist string) *diskTrackHit {
+	for i := range index {
+		hit := &index[i]
+		if !titlesMatch(hit.Stem, title) {
+			continue
+		}
+		if artist == "" || hit.DirArtist == "" || artistsMatch(hit.DirArtist, artist) {
+			return hit
+		}
+	}
+	return nil
+}
+
 func diskHasTrack(musicDir, title, artist string) bool {
-	p, _ := diskFindTrack(musicDir, title, artist)
-	return p != ""
+	_, rel := diskFindTrack(musicDir, title, artist)
+	return rel != ""
 }
 
 func diskFindTrack(musicDir, title, artist string) (string, string) {

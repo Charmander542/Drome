@@ -20,15 +20,17 @@ RUN apt-get update \
 COPY --from=build /out/drome-server /usr/local/bin/drome-server
 COPY download-entry.sh /usr/local/bin/drome-download
 COPY retag.py /usr/local/bin/drome-retag
+COPY list-playlist.py /usr/local/bin/drome-list-playlist
 COPY scripts/cleanup_library.py /usr/local/bin/drome-cleanup-library
-RUN chmod 755 /usr/local/bin/drome-download /usr/local/bin/drome-retag /usr/local/bin/drome-cleanup-library \
- && sed -i '1s|^#!.*|#!/usr/bin/env python3|' /usr/local/bin/drome-retag /usr/local/bin/drome-cleanup-library
+RUN chmod 755 /usr/local/bin/drome-download /usr/local/bin/drome-retag /usr/local/bin/drome-list-playlist /usr/local/bin/drome-cleanup-library \
+ && sed -i '1s|^#!.*|#!/usr/bin/env python3|' /usr/local/bin/drome-retag /usr/local/bin/drome-list-playlist /usr/local/bin/drome-cleanup-library
 
 USER drome
 ENV DROME_DB_PATH=/data/drome.db \
     DROME_LISTEN_ADDR=:4534 \
     DROME_MUSIC_DIR=/music \
     DROME_SPOTIFLAC_BIN=/usr/local/bin/drome-download \
+    DROME_SPOTIFLAC_LIST_BIN=/usr/local/bin/drome-list-playlist \
     DROME_RETAG_BIN=/usr/local/bin/drome-retag \
     DROME_AUTO_DOWNLOAD=true \
     DROME_DOWNLOAD_MAX_ATTEMPTS=5 \

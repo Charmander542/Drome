@@ -29,7 +29,8 @@ final class SubsonicClient {
             .joined()
 
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForRequest = 180
+        config.timeoutIntervalForResource = 300
         config.urlCache = URLCache(memoryCapacity: 32 * 1024 * 1024,
                                    diskCapacity: 256 * 1024 * 1024)
         let delegate = account.allowSelfSigned

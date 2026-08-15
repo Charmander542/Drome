@@ -91,6 +91,33 @@ func (v *navidromeVerifier) subsonicGET(ctx context.Context, endpoint string, cr
 		return nil, err
 	}
 	defer resp.Body.Close()
+	return v.parseSubsonicBody(resp)
+}
+
+func (v *navidromeVerifier) subsonicPOST(ctx context.Context, endpoint string, creds subsonicCreds, extra url.Values) (json.RawMessage, error) {
+	q := v.subsonicQuery(creds)
+	for k, vs := range extra {
+		for _, val := range vs {
+			q.Add(k, val)
+		}
+	}
+	if !strings.HasSuffix(endpoint, ".view") && !strings.Contains(endpoint, ".") {
+		endpoint += ".view"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, v.baseURL+"/rest/"+endpoint, strings.NewReader(q.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := v.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return v.parseSubsonicBody(resp)
+}
+
+func (v *navidromeVerifier) parseSubsonicBody(resp *http.Response) (json.RawMessage, error) {
 	var envelope struct {
 		SubsonicResponse json.RawMessage `json:"subsonic-response"`
 	}
@@ -164,32 +191,55 @@ func (v *navidromeVerifier) playlistSongIDs(ctx context.Context, creds subsonicC
 	return out, nil
 }
 
-func (v *navidromeVerifier) createPlaylist(ctx context.Context, creds subsonicCreds, name string) (string, error) {
+func (v *navidromeVerifier) createPlaylist(ctx context.Context, creds subsonicCreds, name string, songIDs []string) (string, error) {
 	extra := url.Values{}
 	extra.Set("name", name)
-	raw, err := v.subsonicGET(ctx, "createPlaylist", creds, extra)
+	const maxCreate = 40
+	for i, id := range songIDs {
+		if i >= maxCreate {
+			break
+		}
+		extra.Add("songId", id)
+	}
+	raw, err := v.subsonicPOST(ctx, "createPlaylist", creds, extra)
+	if err != nil {
+		raw, err = v.subsonicGET(ctx, "createPlaylist", creds, extra)
+	}
 	if err != nil {
 		return "", err
 	}
-	var body struct {
-		Playlist ndPlaylist `json:"playlist"`
-	}
-	if err := json.Unmarshal(raw, &body); err != nil {
-		return "", err
-	}
-	if body.Playlist.ID.String() == "" {
-		// Some servers omit the id on create; look it up by name.
+	id := playlistIDFromCreateResponse(raw)
+	if id == "" {
 		if lists, lerr := v.listPlaylists(ctx, creds); lerr == nil {
-			want := strings.ToLower(strings.TrimSpace(name))
-			for _, p := range lists {
-				if strings.ToLower(strings.TrimSpace(p.Name)) == want && p.ID.String() != "" {
-					return p.ID.String(), nil
-				}
-			}
+			id = v.findPlaylistID(lists, name, "")
 		}
+	}
+	if id == "" {
+		logf("createPlaylist %q raw: %s", name, truncate(string(raw), 400))
 		return "", fmt.Errorf("createPlaylist returned no id")
 	}
-	return body.Playlist.ID.String(), nil
+	if len(songIDs) > maxCreate {
+		if err := v.addSongsToPlaylist(ctx, creds, id, songIDs[maxCreate:]); err != nil {
+			logf("add remaining songs to new playlist %q: %v", name, err)
+		}
+	}
+	return id, nil
+}
+
+func playlistIDFromCreateResponse(raw json.RawMessage) string {
+	var body struct {
+		Playlist ndPlaylist `json:"playlist"`
+		ID       flexString `json:"id"`
+	}
+	if json.Unmarshal(raw, &body) == nil {
+		if id := body.Playlist.ID.String(); id != "" {
+			return id
+		}
+		if id := body.ID.String(); id != "" {
+			return id
+		}
+	}
+	return ""
 }
 
 func (v *navidromeVerifier) addSongsToPlaylist(ctx context.Context, creds subsonicCreds, playlistID string, songIDs []string) error {
@@ -207,8 +257,10 @@ func (v *navidromeVerifier) addSongsToPlaylist(ctx context.Context, creds subson
 		for _, id := range songIDs[i:end] {
 			extra.Add("songIdToAdd", id)
 		}
-		if _, err := v.subsonicGET(ctx, "updatePlaylist", creds, extra); err != nil {
-			return err
+		if _, err := v.subsonicPOST(ctx, "updatePlaylist", creds, extra); err != nil {
+			if _, err2 := v.subsonicGET(ctx, "updatePlaylist", creds, extra); err2 != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -249,7 +301,12 @@ func (v *navidromeVerifier) ensureNamedPlaylist(ctx context.Context, creds subso
 	if existing := v.findPlaylistID(lists, name, owner); existing != "" {
 		return existing, false, nil
 	}
-	id, err = v.createPlaylist(ctx, creds, name)
+	if owner != "" {
+		if existing := v.findPlaylistID(lists, name, ""); existing != "" {
+			return existing, false, nil
+		}
+	}
+	id, err = v.createPlaylist(ctx, creds, name, nil)
 	if err != nil {
 		return "", false, err
 	}

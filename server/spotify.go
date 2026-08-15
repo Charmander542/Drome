@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
@@ -24,9 +26,11 @@ type spotifyClient struct {
 	market       string
 	http         *http.Client
 
-	mu          sync.Mutex
-	accessToken string
-	tokenExpiry time.Time
+	mu             sync.Mutex
+	accessToken    string
+	tokenExpiry    time.Time
+	webToken       string
+	webTokenExpiry time.Time
 }
 
 func newSpotifyClient(id, secret, market string) *spotifyClient {
@@ -37,7 +41,7 @@ func newSpotifyClient(id, secret, market string) *spotifyClient {
 		clientID:     id,
 		clientSecret: secret,
 		market:       market,
-		http:         &http.Client{Timeout: 15 * time.Second},
+		http:         &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -278,16 +282,16 @@ func spotifyAPIPath(path string) string {
 	return path
 }
 
-func (c *spotifyClient) apiGET(ctx context.Context, path string, out any) error {
-	tok, err := c.token(ctx)
-	if err != nil {
-		return err
+func (c *spotifyClient) apiGETBearer(ctx context.Context, bearer, path string, out any) error {
+	if bearer == "" {
+		return fmt.Errorf("missing spotify token")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.spotify.com/v1"+spotifyAPIPath(path), nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -311,6 +315,14 @@ func (c *spotifyClient) apiGET(ctx context.Context, path string, out any) error 
 		return &spotifyAPIError{status: resp.StatusCode, msg: msg}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *spotifyClient) apiGET(ctx context.Context, path string, out any) error {
+	tok, err := c.token(ctx)
+	if err != nil {
+		return err
+	}
+	return c.apiGETBearer(ctx, tok, path, out)
 }
 
 func spotifyUnavailable(err error) bool {
@@ -740,52 +752,119 @@ type playlistTrack struct {
 }
 
 func (c *spotifyClient) playlistTracks(ctx context.Context, playlistID string) (name string, tracks []playlistTrack, err error) {
-	// Embed HTML only includes ~100 tracks. Prefer the Web API, which pages
-	// through the whole playlist, then fall back to the public scrape.
-	if c.hasAPICreds() {
-		apiName, apiTracks, apiErr := c.playlistTracksAPI(ctx, playlistID)
-		if apiName != "" {
-			name = apiName
+	var best []playlistTrack
+	consider := func(src, n string, t []playlistTrack, e error) {
+		if n != "" && name == "" {
+			name = n
 		}
-		if apiErr == nil && len(apiTracks) > 0 {
-			return name, apiTracks, nil
+		if e != nil {
+			logf("playlist %s via %s: %v (%d tracks)", playlistID, src, e, len(t))
+		} else {
+			logf("playlist %s via %s: %d tracks", playlistID, src, len(t))
 		}
-		if apiErr != nil {
-			logf("playlist API %s: %v", playlistID, apiErr)
+		if len(t) > len(best) {
+			best = t
+			if n != "" {
+				name = n
+			}
 		}
 	}
 
-	pubName, pubTracks, pubErr := c.playlistTracksPublic(ctx, playlistID)
-	if pubName != "" {
-		name = pubName
+	// Same GraphQL fetchPlaylist path as SpotiFLAC's GUI (1000 tracks per page).
+	n, t, e := c.playlistTracksSpotiFLAC(ctx, playlistID)
+	consider("spotiflac-gui", n, t, e)
+	if e == nil && len(t) > 0 {
+		if name == "" {
+			name = "Spotify playlist"
+		}
+		return name, best, nil
 	}
-	if pubErr == nil && len(pubTracks) > 0 {
-		if len(pubTracks) == 100 {
-			logf("playlist scrape %s: embed returned 100 tracks; trying offset pages and API for the rest", playlistID)
-		}
-		if len(pubTracks) != 100 {
-			return name, pubTracks, nil
-		}
-		// Embed caps at ~100. Prefer whatever the API managed to page, even if
-		// it was a partial failure earlier in this call.
-		if c.hasAPICreds() {
-			if _, apiTracks, apiErr := c.playlistTracksAPI(ctx, playlistID); apiErr == nil && len(apiTracks) > len(pubTracks) {
-				return name, apiTracks, nil
-			}
-		}
-		return name, pubTracks, nil
+
+	if c.hasAPICreds() {
+		n, t, e := c.playlistTracksAPI(ctx, playlistID)
+		consider("client-credentials", n, t, e)
 	}
-	if pubErr != nil {
-		logf("playlist public scrape %s: %v", playlistID, pubErr)
+
+	n, t, e = c.playlistTracksWebToken(ctx, playlistID)
+	consider("web-token", n, t, e)
+
+	if len(best) < 101 {
+		n, t, e := c.playlistTracksPublic(ctx, playlistID)
+		consider("public-scrape", n, t, e)
 	}
 
 	if name == "" {
 		name = "Spotify playlist"
 	}
-	return name, nil, errPlaylistDirectDownload
+	if len(best) == 0 {
+		return name, nil, errPlaylistDirectDownload
+	}
+	return name, best, nil
 }
 
 var errPlaylistDirectDownload = fmt.Errorf("playlist is not enumerable; download the playlist URL directly")
+
+func spotiflacListBin() string {
+	if v := strings.TrimSpace(os.Getenv("DROME_SPOTIFLAC_LIST_BIN")); v != "" {
+		return v
+	}
+	return "drome-list-playlist"
+}
+
+func (c *spotifyClient) playlistTracksSpotiFLAC(ctx context.Context, playlistID string) (string, []playlistTrack, error) {
+	bin := spotiflacListBin()
+	if _, err := exec.LookPath(bin); err != nil {
+		return "", nil, err
+	}
+	playlistURL := "https://open.spotify.com/playlist/" + playlistID
+	cmd := exec.CommandContext(ctx, bin, playlistURL)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return "", nil, fmt.Errorf("%s: %s", err, msg)
+		}
+		return "", nil, err
+	}
+	var parsed struct {
+		Name   string `json:"name"`
+		Tracks []struct {
+			ID          string `json:"id"`
+			URL         string `json:"url"`
+			Title       string `json:"title"`
+			Artist      string `json:"artist"`
+			AlbumArtist string `json:"albumArtist"`
+			Album       string `json:"album"`
+			Cover       string `json:"cover"`
+		} `json:"tracks"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return "", nil, err
+	}
+	tracks := make([]playlistTrack, 0, len(parsed.Tracks))
+	for _, t := range parsed.Tracks {
+		id := strings.TrimSpace(t.ID)
+		if id == "" {
+			continue
+		}
+		u := strings.TrimSpace(t.URL)
+		if u == "" {
+			u = "https://open.spotify.com/track/" + id
+		}
+		tracks = append(tracks, playlistTrack{
+			SpotifyID:   id,
+			SpotifyURL:  u,
+			Title:       t.Title,
+			Artist:      t.Artist,
+			AlbumArtist: t.AlbumArtist,
+			Album:       t.Album,
+			CoverURL:    t.Cover,
+		})
+	}
+	return parsed.Name, tracks, nil
+}
 
 func (c *spotifyClient) playlistTracksAPI(ctx context.Context, playlistID string) (name string, tracks []playlistTrack, err error) {
 	if !c.hasAPICreds() {
@@ -804,7 +883,22 @@ func (c *spotifyClient) playlistTracksAPI(ctx context.Context, playlistID string
 	}
 	name = meta.Name
 
-	tracks, err = c.fetchPlaylistTrackPages(ctx, playlistID, meta.Tracks.Total)
+	tracks, err = c.fetchPlaylistTrackPages(ctx, playlistID, meta.Tracks.Total, func(offset int) (playlistTracksPage, error) {
+		var page playlistTracksPage
+		path := fmt.Sprintf("/playlists/%s/tracks?limit=100&offset=%d&additional_types=track&market=%s",
+			playlistID, offset, url.QueryEscape(c.market))
+		if err := c.apiGET(ctx, path, &page); err != nil {
+			path = fmt.Sprintf("/playlists/%s/tracks?limit=100&offset=%d&market=%s",
+				playlistID, offset, url.QueryEscape(c.market))
+			if err2 := c.apiGET(ctx, path, &page); err2 != nil {
+				path = fmt.Sprintf("/playlists/%s/tracks?limit=100&offset=%d", playlistID, offset)
+				if err3 := c.apiGET(ctx, path, &page); err3 != nil {
+					return playlistTracksPage{}, err
+				}
+			}
+		}
+		return page, nil
+	})
 	if err != nil {
 		return name, nil, err
 	}
@@ -861,26 +955,122 @@ func playlistTracksFromPage(page playlistTracksPage) []playlistTrack {
 	return tracks
 }
 
-func (c *spotifyClient) fetchPlaylistTrackPages(ctx context.Context, playlistID string, knownTotal int) ([]playlistTrack, error) {
+func (c *spotifyClient) playlistTracksWebToken(ctx context.Context, playlistID string) (name string, tracks []playlistTrack, err error) {
+	tok, err := c.anonymousWebToken(ctx, playlistID)
+	if err != nil {
+		return "", nil, err
+	}
+	var meta struct {
+		Name   string `json:"name"`
+		Tracks struct {
+			Total int `json:"total"`
+		} `json:"tracks"`
+	}
+	_ = c.apiGETBearer(ctx, tok, "/playlists/"+playlistID+"?fields=name,tracks.total", &meta)
+	name = meta.Name
+	tracks, err = c.fetchPlaylistTrackPages(ctx, playlistID, meta.Tracks.Total, func(offset int) (playlistTracksPage, error) {
+		var page playlistTracksPage
+		path := fmt.Sprintf("/playlists/%s/tracks?limit=100&offset=%d&additional_types=track", playlistID, offset)
+		if err := c.apiGETBearer(ctx, tok, path, &page); err != nil {
+			path = fmt.Sprintf("/playlists/%s/tracks?limit=100&offset=%d", playlistID, offset)
+			if err2 := c.apiGETBearer(ctx, tok, path, &page); err2 != nil {
+				return playlistTracksPage{}, err
+			}
+		}
+		return page, nil
+	})
+	if err != nil {
+		return name, nil, err
+	}
+	if name == "" {
+		name = "Spotify playlist"
+	}
+	return name, tracks, nil
+}
+
+func (c *spotifyClient) anonymousWebToken(ctx context.Context, playlistID string) (string, error) {
+	c.mu.Lock()
+	if c.webToken != "" && time.Now().Before(c.webTokenExpiry) {
+		tok := c.webToken
+		c.mu.Unlock()
+		return tok, nil
+	}
+	c.mu.Unlock()
+
+	tryHTML := func(pageURL string) string {
+		page, err := c.fetchPublicHTML(ctx, pageURL)
+		if err != nil {
+			return ""
+		}
+		return extractSpotifyAccessToken(page)
+	}
+
+	tok := ""
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://open.spotify.com/get_access_token?reason=transport&productType=web_player", nil)
+	if err == nil {
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+		req.Header.Set("Accept", "application/json")
+		if resp, err := c.http.Do(req); err == nil {
+			var body struct {
+				AccessToken string `json:"accessToken"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&body)
+			resp.Body.Close()
+			tok = body.AccessToken
+		}
+	}
+	if tok == "" {
+		tok = tryHTML("https://open.spotify.com/playlist/" + playlistID)
+	}
+	if tok == "" {
+		tok = tryHTML("https://open.spotify.com/embed/playlist/" + playlistID)
+	}
+	if tok == "" {
+		tok = tryHTML("https://open.spotify.com/")
+	}
+	if tok == "" {
+		return "", fmt.Errorf("could not get a Spotify web access token")
+	}
+	c.mu.Lock()
+	c.webToken = tok
+	c.webTokenExpiry = time.Now().Add(30 * time.Minute)
+	c.mu.Unlock()
+	return tok, nil
+}
+
+var (
+	accessTokenJSONRe = regexp.MustCompile(`"accessToken"\s*:\s*"([^"]+)"`)
+	sessionScriptRe   = regexp.MustCompile(`(?s)<script[^>]*id="session"[^>]*>(.*?)</script>`)
+)
+
+func extractSpotifyAccessToken(html string) string {
+	if m := sessionScriptRe.FindStringSubmatch(html); len(m) > 1 {
+		var s struct {
+			AccessToken string `json:"accessToken"`
+		}
+		if json.Unmarshal([]byte(m[1]), &s) == nil && s.AccessToken != "" {
+			return s.AccessToken
+		}
+	}
+	if m := accessTokenJSONRe.FindStringSubmatch(html); len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
+func (c *spotifyClient) fetchPlaylistTrackPages(ctx context.Context, playlistID string, knownTotal int, getPage func(offset int) (playlistTracksPage, error)) ([]playlistTrack, error) {
 	var tracks []playlistTrack
 	seen := map[string]struct{}{}
 	total := knownTotal
-	extra := "&additional_types=track"
 	for offset := 0; offset <= 10000; offset += 100 {
-		path := fmt.Sprintf("/playlists/%s/tracks?limit=100&offset=%d%s", playlistID, offset, extra)
-		var page playlistTracksPage
-		if err := c.apiGET(ctx, path, &page); err != nil {
-			if offset == 0 && extra != "" {
-				extra = ""
-				path = fmt.Sprintf("/playlists/%s/tracks?limit=100&offset=%d", playlistID, offset)
-				if err2 := c.apiGET(ctx, path, &page); err2 != nil {
-					return nil, err
-				}
-			} else if offset == 0 {
+		page, err := getPage(offset)
+		if err != nil {
+			if offset == 0 {
 				return nil, err
-			} else {
-				return tracks, nil
 			}
+			logf("playlist %s page offset %d: %v (keeping %d tracks)", playlistID, offset, err, len(tracks))
+			break
 		}
 		if page.Total > total {
 			total = page.Total
@@ -897,10 +1087,20 @@ func (c *spotifyClient) fetchPlaylistTrackPages(ctx context.Context, playlistID 
 			tracks = append(tracks, t)
 			newOnPage++
 		}
+		logf("playlist %s offset %d: +%d (have %d / total %d)", playlistID, offset, newOnPage, len(tracks), total)
 		if total > 0 && len(tracks) >= total {
 			break
 		}
-		if len(page.Items) < 100 || newOnPage == 0 {
+		if len(page.Items) == 0 {
+			break
+		}
+		if newOnPage == 0 && offset > 0 {
+			break
+		}
+		if len(page.Items) < 100 && (total <= 0 || len(tracks) >= total || total-len(tracks) < 1) {
+			break
+		}
+		if len(page.Items) < 100 && newOnPage == 0 {
 			break
 		}
 	}

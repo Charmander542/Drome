@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -306,7 +307,6 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (playl
 	}
 
 	user, token, salt := requestCreds(r)
-	creds := subsonicCreds{user: user, token: token, salt: salt}
 	musicDir := ""
 	if s.downloads != nil {
 		musicDir = s.downloads.cfg.MusicDir
@@ -318,21 +318,43 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (playl
 		skippedOwned int
 		ownedSongIDs []string
 		fileTracks   []playlistFileTrack
+		diskIndex    []diskTrackHit
+		indexed      bool
 	)
+	ensureIndex := func() {
+		if indexed {
+			return
+		}
+		indexed = true
+		diskIndex = indexMusicDir(musicDir)
+	}
+
 	for _, t := range tracks {
 		sid := ""
 		if s.navidrome != nil && user != "" {
 			sid = s.navidrome.findSongID(r.Context(), user, token, salt, t.Title, t.Artist)
 		}
-		_, rel := diskFindTrack(musicDir, t.Title, t.Artist)
-		if sid != "" || rel != "" {
+		rel := ""
+		if sid == "" && musicDir != "" {
+			ensureIndex()
+			if hit := matchIndexedTrack(diskIndex, t.Title, t.Artist); hit != nil {
+				rel = hit.Rel
+				fileTracks = append(fileTracks, playlistFileTrack{Title: t.Title, Artist: t.Artist, Rel: hit.Rel})
+				if s.navidrome != nil && user != "" {
+					sid = s.navidrome.findSongID(r.Context(), user, token, salt, hit.Stem, hit.DirArtist)
+					if sid == "" {
+						sid = s.navidrome.findSongID(r.Context(), user, token, salt, hit.Stem, t.Artist)
+					}
+				}
+			}
+		}
+		if sid != "" {
 			skippedOwned++
-			if sid != "" {
-				ownedSongIDs = append(ownedSongIDs, sid)
-			}
-			if rel != "" {
-				fileTracks = append(fileTracks, playlistFileTrack{Title: t.Title, Artist: t.Artist, Rel: rel})
-			}
+			ownedSongIDs = append(ownedSongIDs, sid)
+			continue
+		}
+		if rel != "" {
+			skippedOwned++
 			continue
 		}
 		e := entry{
@@ -361,33 +383,21 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (playl
 		res.Added = []entry{}
 	}
 
-	if len(ownedSongIDs) > 0 && s.navidrome != nil && user != "" && token != "" {
-		id, created, perr := s.navidrome.ensureNamedPlaylist(r.Context(), creds, name, owner, false)
-		if perr != nil {
-			logf("navidrome playlist %q: %v", name, perr)
-		} else {
-			res.NavidromeID = id
-			res.NavidromeCreated = created
-			if err := s.store.upsertPlaylistMirror(owner, playlistID, id, name); err != nil {
-				logf("save playlist mirror: %v", err)
-			}
-			have, _ := s.navidrome.playlistSongIDs(r.Context(), creds, id)
-			var toAdd []string
-			seenAdd := map[string]struct{}{}
-			for _, sid := range ownedSongIDs {
-				if _, ok := have[sid]; ok {
-					continue
+	if s.navidrome != nil && len(tracks) > 0 {
+		plCreds, ok := s.playlistCreds(r)
+		if !ok {
+			logf("navidrome playlist %q: no credentials", name)
+		} else if err := s.syncImportedPlaylist(r.Context(), plCreds, owner, playlistID, name, ownedSongIDs, &res); err != nil {
+			if s.downloads != nil {
+				if scan, scanOK := s.downloads.scanCreds(); scanOK && (scan.user != plCreds.user || scan.token != plCreds.token) {
+					if err2 := s.syncImportedPlaylist(r.Context(), scan, owner, playlistID, name, ownedSongIDs, &res); err2 != nil {
+						logf("navidrome playlist %q: %v; scan user: %v", name, err, err2)
+					}
+				} else {
+					logf("navidrome playlist %q: %v", name, err)
 				}
-				if _, ok := seenAdd[sid]; ok {
-					continue
-				}
-				seenAdd[sid] = struct{}{}
-				toAdd = append(toAdd, sid)
-			}
-			if err := s.navidrome.addSongsToPlaylist(r.Context(), creds, id, toAdd); err != nil {
-				logf("add owned songs to %q: %v", name, err)
 			} else {
-				res.NavidromeSongs = len(toAdd)
+				logf("navidrome playlist %q: %v", name, err)
 			}
 		}
 	}
@@ -404,6 +414,86 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (playl
 		s.downloads.kick()
 	}
 	return res, nil
+}
+
+func (s *server) playlistCreds(r *http.Request) (subsonicCreds, bool) {
+	user, token, salt := requestCreds(r)
+	if user != "" && token != "" {
+		return subsonicCreds{user: user, token: token, salt: salt}, true
+	}
+	if s.downloads != nil {
+		return s.downloads.scanCreds()
+	}
+	return subsonicCreds{}, false
+}
+
+func (s *server) syncImportedPlaylist(ctx context.Context, creds subsonicCreds, owner, spotifyID, name string, songIDs []string, res *playlistImportResult) error {
+	if s.navidrome == nil {
+		return fmt.Errorf("navidrome is not configured")
+	}
+	lists, err := s.navidrome.listPlaylists(ctx, creds)
+	if err != nil {
+		return err
+	}
+	existing := s.navidrome.findPlaylistID(lists, name, owner)
+	if existing == "" {
+		existing = s.navidrome.findPlaylistID(lists, name, "")
+	}
+	if existing != "" {
+		res.NavidromeID = existing
+		res.NavidromeCreated = false
+		if err := s.store.upsertPlaylistMirror(owner, spotifyID, existing, name); err != nil {
+			logf("save playlist mirror: %v", err)
+		}
+		return s.appendSongsToPlaylist(ctx, creds, existing, songIDs, res)
+	}
+	if len(songIDs) == 0 {
+		id, created, err := s.navidrome.ensureNamedPlaylist(ctx, creds, name, owner, false)
+		if err != nil {
+			return err
+		}
+		res.NavidromeID = id
+		res.NavidromeCreated = created
+		_ = s.store.upsertPlaylistMirror(owner, spotifyID, id, name)
+		return nil
+	}
+	id, err := s.navidrome.createPlaylist(ctx, creds, name, songIDs)
+	if err != nil {
+		return err
+	}
+	res.NavidromeID = id
+	res.NavidromeCreated = true
+	res.NavidromeSongs = len(songIDs)
+	_ = s.store.upsertPlaylistMirror(owner, spotifyID, id, name)
+	logf("created navidrome playlist %q id=%s songs=%d", name, id, len(songIDs))
+	return nil
+}
+
+func (s *server) appendSongsToPlaylist(ctx context.Context, creds subsonicCreds, playlistID string, songIDs []string, res *playlistImportResult) error {
+	if len(songIDs) == 0 {
+		return nil
+	}
+	have, err := s.navidrome.playlistSongIDs(ctx, creds, playlistID)
+	if err != nil {
+		have = map[string]struct{}{}
+	}
+	var toAdd []string
+	seen := map[string]struct{}{}
+	for _, sid := range songIDs {
+		if _, ok := have[sid]; ok {
+			continue
+		}
+		if _, ok := seen[sid]; ok {
+			continue
+		}
+		seen[sid] = struct{}{}
+		toAdd = append(toAdd, sid)
+	}
+	if err := s.navidrome.addSongsToPlaylist(ctx, creds, playlistID, toAdd); err != nil {
+		return err
+	}
+	res.NavidromeSongs = len(toAdd)
+	return nil
 }
 
 func (s *server) enqueueWholePlaylist(r *http.Request, playlistID, fallbackName string) (*entry, error) {

@@ -164,6 +164,27 @@ func TestMissingMetaAndCopyFields(t *testing.T) {
 	}
 }
 
+func TestExtractSpotifyAccessToken(t *testing.T) {
+	html := `<html><script id="session" type="application/json">{"accessToken":"BQC_test_token","expire":1}</script></html>`
+	if got := extractSpotifyAccessToken(html); got != "BQC_test_token" {
+		t.Fatalf("session script token = %q", got)
+	}
+	html = `{"accessToken":"from_json"}`
+	if got := extractSpotifyAccessToken(html); got != "from_json" {
+		t.Fatalf("json token = %q", got)
+	}
+}
+
+func TestPlaylistIDFromCreateResponse(t *testing.T) {
+	raw := json.RawMessage(`{"status":"ok","playlist":{"id":42,"name":"Hits"}}`)
+	if got := playlistIDFromCreateResponse(raw); got != "42" {
+		t.Fatalf("numeric id = %q", got)
+	}
+	raw = json.RawMessage(`{"status":"ok","playlist":{"id":"abc-uuid","name":"Hits"}}`)
+	if got := playlistIDFromCreateResponse(raw); got != "abc-uuid" {
+		t.Fatalf("string id = %q", got)
+	}
+}
 func TestSpotifyAPIPath(t *testing.T) {
 	cases := []struct {
 		in, want string
