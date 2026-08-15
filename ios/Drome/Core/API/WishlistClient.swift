@@ -43,6 +43,10 @@ struct WishlistPlaylistImport: Codable {
     var sourcePlaylistId: String?
     var sourcePlaylistName: String?
     var failed: [String]?
+    var navidromePlaylistId: String?
+    var navidromePlaylistCreated: Bool?
+    var navidromeSongsAdded: Int?
+    var playlistFile: String?
 }
 
 enum WishlistAddResult {

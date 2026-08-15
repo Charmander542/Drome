@@ -263,12 +263,27 @@ func (e *spotifyAPIError) Error() string {
 	return fmt.Sprintf("spotify HTTP %d", e.status)
 }
 
+func spotifyAPIPath(path string) string {
+	const root = "https://api.spotify.com/v1"
+	path = strings.TrimSpace(path)
+	if strings.HasPrefix(path, root) {
+		path = strings.TrimPrefix(path, root)
+	}
+	if path == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return path
+}
+
 func (c *spotifyClient) apiGET(ctx context.Context, path string, out any) error {
 	tok, err := c.token(ctx)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.spotify.com/v1"+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.spotify.com/v1"+spotifyAPIPath(path), nil)
 	if err != nil {
 		return err
 	}
@@ -746,7 +761,17 @@ func (c *spotifyClient) playlistTracks(ctx context.Context, playlistID string) (
 	}
 	if pubErr == nil && len(pubTracks) > 0 {
 		if len(pubTracks) == 100 {
-			logf("playlist scrape %s: embed returned 100 tracks; remaining songs need the Spotify API", playlistID)
+			logf("playlist scrape %s: embed returned 100 tracks; trying offset pages and API for the rest", playlistID)
+		}
+		if len(pubTracks) != 100 {
+			return name, pubTracks, nil
+		}
+		// Embed caps at ~100. Prefer whatever the API managed to page, even if
+		// it was a partial failure earlier in this call.
+		if c.hasAPICreds() {
+			if _, apiTracks, apiErr := c.playlistTracksAPI(ctx, playlistID); apiErr == nil && len(apiTracks) > len(pubTracks) {
+				return name, apiTracks, nil
+			}
 		}
 		return name, pubTracks, nil
 	}
@@ -767,97 +792,115 @@ func (c *spotifyClient) playlistTracksAPI(ctx context.Context, playlistID string
 		return "", nil, fmt.Errorf("spotify playlist import requires API credentials")
 	}
 	var meta struct {
-		Name string `json:"name"`
+		Name   string `json:"name"`
+		Tracks struct {
+			Total int `json:"total"`
+		} `json:"tracks"`
 	}
-	if err := c.apiGET(ctx, "/playlists/"+playlistID, &meta); err != nil {
-		if err2 := c.apiGET(ctx, "/playlists/"+playlistID+"?fields=name", &meta); err2 != nil {
+	if err := c.apiGET(ctx, "/playlists/"+playlistID+"?fields=name,tracks.total", &meta); err != nil {
+		if err2 := c.apiGET(ctx, "/playlists/"+playlistID, &meta); err2 != nil {
 			logf("playlist metadata %s: %v", playlistID, err)
-		} else {
-			name = meta.Name
 		}
-	} else {
-		name = meta.Name
 	}
+	name = meta.Name
 
-	queries := []string{
-		"/playlists/" + playlistID + "/tracks?limit=100&additional_types=track&fields=next,items(track(id,name,artists(name),album(name,artists(name),images),external_urls))",
-		"/playlists/" + playlistID + "/tracks?limit=100&additional_types=track",
-		"/playlists/" + playlistID + "/tracks?limit=100&market=" + url.QueryEscape(c.market) +
-			"&additional_types=track&fields=next,items(track(id,name,artists(name),album(name,artists(name),images),external_urls))",
-		"/playlists/" + playlistID + "/tracks?limit=100",
-	}
-	var lastErr error
-	for _, start := range queries {
-		tracks, lastErr = c.fetchPlaylistTrackPages(ctx, start)
-		if lastErr == nil {
-			break
-		}
-		if !spotifyUnavailable(lastErr) {
-			return name, nil, lastErr
-		}
-	}
-	if lastErr != nil {
-		return name, nil, lastErr
+	tracks, err = c.fetchPlaylistTrackPages(ctx, playlistID, meta.Tracks.Total)
+	if err != nil {
+		return name, nil, err
 	}
 	if name == "" {
 		name = "Spotify playlist"
 	}
+	if meta.Tracks.Total > len(tracks) {
+		logf("playlist API %s: got %d of %d tracks", playlistID, len(tracks), meta.Tracks.Total)
+	}
 	return name, tracks, nil
 }
 
-func (c *spotifyClient) fetchPlaylistTrackPages(ctx context.Context, startPath string) ([]playlistTrack, error) {
+type playlistTracksPage struct {
+	Total int     `json:"total"`
+	Next  *string `json:"next"`
+	Items []struct {
+		Track *struct {
+			ID      string          `json:"id"`
+			Name    string          `json:"name"`
+			Artists []spotifyArtist `json:"artists"`
+			Album   struct {
+				Name    string          `json:"name"`
+				Artists []spotifyArtist `json:"artists"`
+				Images  []spotifyImage  `json:"images"`
+			} `json:"album"`
+			ExternalURLs struct {
+				Spotify string `json:"spotify"`
+			} `json:"external_urls"`
+		} `json:"track"`
+	} `json:"items"`
+}
+
+func playlistTracksFromPage(page playlistTracksPage) []playlistTrack {
 	var tracks []playlistTrack
-	path := startPath
-	for path != "" {
-		var page struct {
-			Next  *string `json:"next"`
-			Items []struct {
-				Track *struct {
-					ID      string          `json:"id"`
-					Name    string          `json:"name"`
-					Artists []spotifyArtist `json:"artists"`
-					Album   struct {
-						Name    string          `json:"name"`
-						Artists []spotifyArtist `json:"artists"`
-						Images  []spotifyImage  `json:"images"`
-					} `json:"album"`
-					ExternalURLs struct {
-						Spotify string `json:"spotify"`
-					} `json:"external_urls"`
-				} `json:"track"`
-			} `json:"items"`
+	for _, item := range page.Items {
+		if item.Track == nil || item.Track.ID == "" {
+			continue
 		}
-		apiPath := path
-		if strings.HasPrefix(apiPath, "https://api.spotify.com/v1") {
-			apiPath = strings.TrimPrefix(apiPath, "https://api.spotify.com/v1")
+		t := item.Track
+		u := t.ExternalURLs.Spotify
+		if u == "" {
+			u = "https://open.spotify.com/track/" + t.ID
 		}
-		if err := c.apiGET(ctx, apiPath, &page); err != nil {
-			return nil, err
+		tracks = append(tracks, playlistTrack{
+			SpotifyID:   t.ID,
+			SpotifyURL:  u,
+			Title:       t.Name,
+			Artist:      joinArtists(t.Artists),
+			AlbumArtist: firstArtistName(t.Album.Artists),
+			Album:       t.Album.Name,
+			CoverURL:    bestImage(t.Album.Images),
+		})
+	}
+	return tracks
+}
+
+func (c *spotifyClient) fetchPlaylistTrackPages(ctx context.Context, playlistID string, knownTotal int) ([]playlistTrack, error) {
+	var tracks []playlistTrack
+	seen := map[string]struct{}{}
+	total := knownTotal
+	extra := "&additional_types=track"
+	for offset := 0; offset <= 10000; offset += 100 {
+		path := fmt.Sprintf("/playlists/%s/tracks?limit=100&offset=%d%s", playlistID, offset, extra)
+		var page playlistTracksPage
+		if err := c.apiGET(ctx, path, &page); err != nil {
+			if offset == 0 && extra != "" {
+				extra = ""
+				path = fmt.Sprintf("/playlists/%s/tracks?limit=100&offset=%d", playlistID, offset)
+				if err2 := c.apiGET(ctx, path, &page); err2 != nil {
+					return nil, err
+				}
+			} else if offset == 0 {
+				return nil, err
+			} else {
+				return tracks, nil
+			}
 		}
-		for _, item := range page.Items {
-			if item.Track == nil || item.Track.ID == "" {
+		if page.Total > total {
+			total = page.Total
+		}
+		newOnPage := 0
+		for _, t := range playlistTracksFromPage(page) {
+			if t.SpotifyID == "" {
 				continue
 			}
-			t := item.Track
-			u := t.ExternalURLs.Spotify
-			if u == "" {
-				u = "https://open.spotify.com/track/" + t.ID
+			if _, ok := seen[t.SpotifyID]; ok {
+				continue
 			}
-			tracks = append(tracks, playlistTrack{
-				SpotifyID:   t.ID,
-				SpotifyURL:  u,
-				Title:       t.Name,
-				Artist:      joinArtists(t.Artists),
-				AlbumArtist: firstArtistName(t.Album.Artists),
-				Album:       t.Album.Name,
-				CoverURL:    bestImage(t.Album.Images),
-			})
+			seen[t.SpotifyID] = struct{}{}
+			tracks = append(tracks, t)
+			newOnPage++
 		}
-		if page.Next == nil || *page.Next == "" {
+		if total > 0 && len(tracks) >= total {
 			break
 		}
-		path = *page.Next
-		if len(tracks) >= 10000 {
+		if len(page.Items) < 100 || newOnPage == 0 {
 			break
 		}
 	}

@@ -43,22 +43,23 @@ struct AlbumCard: View {
                         RatingBadge(rating: rating, size: 10)
                     }
                 }
-                Text(album.artist ?? "Unknown Artist")
+                    Text(album.artist ?? "Unknown Artist")
                     .font(.caption)
                     .foregroundStyle(DromeTheme.muted)
                     .lineLimit(1)
-                    .contentShape(Rectangle())
-                    .highPriorityGesture(TapGesture().onEnded {
-                        openArtist()
-                    })
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityLabel("View \(album.artist ?? "artist")")
             }
         }
         .buttonStyle(.plain)
         .hoverEffectDisabled()
         .transaction { $0.animation = nil }
-        .accessibilityHint("Opens the album. Artist name opens the artist page.")
+        .accessibilityHint("Opens the album")
+        .contextMenu {
+            if album.artist?.isEmpty == false {
+                Button(action: openArtist) {
+                    Label("View Artist", systemImage: "person.wave.2")
+                }
+            }
+        }
     }
 
     private func openArtist() {
@@ -75,7 +76,7 @@ struct AlbumCard: View {
     }
 }
 
-/// List/search album row: cover & empty space play; album/artist names navigate.
+/// List/search album row: tap anywhere opens the album (List swallows nested Buttons).
 struct AlbumMediaRow: View {
     let album: Album
     var subtitle: String? = nil
@@ -83,59 +84,67 @@ struct AlbumMediaRow: View {
     var showsChevron: Bool = false
     var coverSize: CGFloat = 56
     var trailing: AnyView? = nil
+    /// Extra work before navigation (e.g. remember a search hit).
+    var onOpen: (() -> Void)? = nil
 
     @Environment(\.session) private var session
     @Environment(\.songNavigator) private var songNavigator
 
     var body: some View {
-        Button(action: play) {
-            HStack(spacing: 12) {
-                RemoteImage(url: session?.client.coverArtURL(id: album.coverArt ?? album.id, size: 120))
-                    .frame(width: coverSize, height: coverSize)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+        HStack(spacing: 12) {
+            RemoteImage(url: session?.client.coverArtURL(id: album.coverArt ?? album.id, size: 120))
+                .frame(width: coverSize, height: coverSize)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(album.name)
-                        .font(DromeTheme.rowTitle)
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .contentShape(Rectangle())
-                        .highPriorityGesture(TapGesture().onEnded {
-                            songNavigator?.viewAlbum(album)
-                        })
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityLabel("View album \(album.name)")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(album.name)
+                    .font(DromeTheme.rowTitle)
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
 
-                    Text(subtitle ?? album.artist ?? "Unknown Artist")
-                        .font(.caption)
-                        .foregroundStyle(DromeTheme.muted)
-                        .lineLimit(1)
-                        .contentShape(Rectangle())
-                        .highPriorityGesture(TapGesture().onEnded {
-                            guard artistTappable else { return }
-                            openArtist()
-                        })
-                        .accessibilityAddTraits(artistTappable ? .isButton : [])
-                }
+                Text(subtitle ?? album.artist ?? "Unknown Artist")
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.muted)
+                    .lineLimit(1)
+            }
 
-                Spacer(minLength: 0)
+            Spacer(minLength: 0)
 
-                if let trailing {
-                    trailing
-                } else if showsChevron {
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(DromeTheme.muted.opacity(0.6))
-                }
+            if let trailing {
+                trailing
+            } else if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(DromeTheme.muted.opacity(0.6))
             }
         }
-        .buttonStyle(.plain)
-        .accessibilityHint("Plays the album. Album and artist names open their pages.")
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded { openAlbum() })
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("View album \(album.name)")
+        .accessibilityHint("Opens the album")
+        .contextMenu { contextMenu }
     }
 
-    private func play() {
-        guard let session else { return }
-        LibraryPlayback.play(album: album, session: session)
+    @ViewBuilder
+    private var contextMenu: some View {
+        Button {
+            guard let session else { return }
+            LibraryPlayback.play(album: album, session: session)
+        } label: {
+            Label("Play", systemImage: "play.fill")
+        }
+        if artistTappable, album.artist?.isEmpty == false {
+            Button(action: openArtist) {
+                Label("View Artist", systemImage: "person.wave.2")
+            }
+        }
+    }
+
+    private func openAlbum() {
+        onOpen?()
+        songNavigator?.viewAlbum(album)
     }
 
     private func openArtist() {

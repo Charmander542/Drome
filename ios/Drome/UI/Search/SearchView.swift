@@ -8,6 +8,7 @@ struct SearchView: View {
     }
 
     @EnvironmentObject private var session: AppSession
+    @Environment(\.songNavigator) private var songNavigator
 
     @State private var source: Source = .library
     @State private var query = ""
@@ -238,20 +239,22 @@ struct SearchView: View {
             })
 
         case .album:
-            NavigationLink {
-                AlbumDetailView(
-                    albumID: item.entityId,
-                    placeholder: item.decodedAlbum() ?? Album(
-                        id: item.entityId, name: item.title,
-                        artist: nil, artistId: nil, coverArt: item.coverArt,
-                        songCount: nil, duration: nil, playCount: nil,
-                        created: nil, year: nil, genre: nil, userRating: nil))
-            } label: {
-                recentItemLabel(item, shape: .rounded)
-            }
-            .simultaneousGesture(TapGesture().onEnded {
+            AlbumMediaRow(
+                album: item.decodedAlbum() ?? Album(
+                    id: item.entityId, name: item.title,
+                    artist: item.subtitle.isEmpty ? nil : item.subtitle,
+                    artistId: nil, coverArt: item.coverArt,
+                    songCount: nil, duration: nil, playCount: nil,
+                    created: nil, year: nil, genre: nil, userRating: nil),
+                trailing: AnyView(
+                    Text("ALBUM")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(DromeTheme.muted)
+                )
+            ) {
+                searchFocused = false
                 bumpRecent(item)
-            })
+            }
 
         case .song:
             Group {
@@ -276,6 +279,7 @@ struct SearchView: View {
                         })
                 }
             }
+        }
     }
 
     private func recentItemLabel(_ item: RecentSearchItem, shape: CoverShape) -> some View {
@@ -390,15 +394,17 @@ struct SearchView: View {
             spotifyTrailing(hit)
         }
         .contentShape(Rectangle())
-        .onTapGesture {
+        .simultaneousGesture(TapGesture().onEnded {
             if hit.kind == "album", let album = matchedAlbums[hit.spotifyId] {
-                LibraryPlayback.play(album: album, session: session)
+                searchFocused = false
+                songNavigator?.viewAlbum(album)
             } else if let song = matchedSongs[hit.spotifyId] {
+                searchFocused = false
                 session.player.play([song], startAt: 0,
                             context: PlaybackContext(label: "Library", kind: .search))
                 NowPlayingPresenter.open()
             }
-        }
+        })
     }
 
     private func spotifySubtitle(_ hit: SpotifySearchHit) -> String {
@@ -431,8 +437,8 @@ struct SearchView: View {
             .buttonStyle(.plain)
         case "album":
             if let album = matchedAlbums[hit.spotifyId] {
-                NavigationLink {
-                    AlbumDetailView(albumID: album.id, placeholder: album)
+                Button {
+                    LibraryPlayback.play(album: album, session: session)
                 } label: {
                     Image(systemName: "play.circle.fill")
                         .font(.title2)
@@ -507,10 +513,10 @@ struct SearchView: View {
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(DromeTheme.muted)
                     )
-                )
-                .simultaneousGesture(TapGesture().onEnded {
+                ) {
+                    searchFocused = false
                     rememberHit(hit)
-                })
+                }
             }
         case .song:
             if let song = hit.song {

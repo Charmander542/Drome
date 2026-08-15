@@ -83,6 +83,8 @@ struct HorizontalRecentRail: View {
                     coverArt: coverSong.coverArt, songCount: nil, duration: nil, playCount: nil,
                     created: nil, year: nil, genre: nil, userRating: nil))
             }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("View album \(name)")
             .hoverEffectDisabled()
 
         case .playlist(let id, let name, let coverSong):

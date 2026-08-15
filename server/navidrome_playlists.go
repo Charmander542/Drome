@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,53 @@ import (
 
 type subsonicCreds struct {
 	user, token, salt string
+}
+
+// flexString accepts JSON strings or numbers (Navidrome ids are sometimes numeric).
+type flexString string
+
+func (s *flexString) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*s = ""
+		return nil
+	}
+	if b[0] == '"' {
+		var v string
+		if err := json.Unmarshal(b, &v); err != nil {
+			return err
+		}
+		*s = flexString(v)
+		return nil
+	}
+	*s = flexString(b)
+	return nil
+}
+
+func (s flexString) String() string { return string(s) }
+
+type playlistList []ndPlaylist
+
+func (p *playlistList) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*p = nil
+		return nil
+	}
+	if b[0] == '{' {
+		var one ndPlaylist
+		if err := json.Unmarshal(b, &one); err != nil {
+			return err
+		}
+		*p = []ndPlaylist{one}
+		return nil
+	}
+	var many []ndPlaylist
+	if err := json.Unmarshal(b, &many); err != nil {
+		return err
+	}
+	*p = many
+	return nil
 }
 
 func (v *navidromeVerifier) subsonicQuery(creds subsonicCreds) url.Values {
@@ -69,9 +117,9 @@ func (v *navidromeVerifier) subsonicGET(ctx context.Context, endpoint string, cr
 }
 
 type ndPlaylist struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Owner string `json:"owner"`
+	ID    flexString `json:"id"`
+	Name  string     `json:"name"`
+	Owner string     `json:"owner"`
 }
 
 func (v *navidromeVerifier) listPlaylists(ctx context.Context, creds subsonicCreds) ([]ndPlaylist, error) {
@@ -81,7 +129,7 @@ func (v *navidromeVerifier) listPlaylists(ctx context.Context, creds subsonicCre
 	}
 	var body struct {
 		Playlists struct {
-			Playlist []ndPlaylist `json:"playlist"`
+			Playlist playlistList `json:"playlist"`
 		} `json:"playlists"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
@@ -100,7 +148,7 @@ func (v *navidromeVerifier) playlistSongIDs(ctx context.Context, creds subsonicC
 	var body struct {
 		Playlist struct {
 			Entry []struct {
-				ID string `json:"id"`
+				ID flexString `json:"id"`
 			} `json:"entry"`
 		} `json:"playlist"`
 	}
@@ -109,8 +157,8 @@ func (v *navidromeVerifier) playlistSongIDs(ctx context.Context, creds subsonicC
 	}
 	out := map[string]struct{}{}
 	for _, e := range body.Playlist.Entry {
-		if e.ID != "" {
-			out[e.ID] = struct{}{}
+		if id := e.ID.String(); id != "" {
+			out[id] = struct{}{}
 		}
 	}
 	return out, nil
@@ -129,10 +177,19 @@ func (v *navidromeVerifier) createPlaylist(ctx context.Context, creds subsonicCr
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return "", err
 	}
-	if body.Playlist.ID == "" {
+	if body.Playlist.ID.String() == "" {
+		// Some servers omit the id on create; look it up by name.
+		if lists, lerr := v.listPlaylists(ctx, creds); lerr == nil {
+			want := strings.ToLower(strings.TrimSpace(name))
+			for _, p := range lists {
+				if strings.ToLower(strings.TrimSpace(p.Name)) == want && p.ID.String() != "" {
+					return p.ID.String(), nil
+				}
+			}
+		}
 		return "", fmt.Errorf("createPlaylist returned no id")
 	}
-	return body.Playlist.ID, nil
+	return body.Playlist.ID.String(), nil
 }
 
 func (v *navidromeVerifier) addSongsToPlaylist(ctx context.Context, creds subsonicCreds, playlistID string, songIDs []string) error {
@@ -164,16 +221,8 @@ func (v *navidromeVerifier) setPlaylistPublic(ctx context.Context, creds subsoni
 	_, _ = v.subsonicGET(ctx, "updatePlaylist", creds, extra)
 }
 
-func (v *navidromeVerifier) ensureNamedPlaylist(ctx context.Context, creds subsonicCreds, name, owner string, makePublic bool) (string, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		name = "Spotify playlist"
-	}
-	lists, err := v.listPlaylists(ctx, creds)
-	if err != nil {
-		return "", err
-	}
-	want := strings.ToLower(name)
+func (v *navidromeVerifier) findPlaylistID(lists []ndPlaylist, name, owner string) string {
+	want := strings.ToLower(strings.TrimSpace(name))
 	for _, p := range lists {
 		if strings.ToLower(strings.TrimSpace(p.Name)) != want {
 			continue
@@ -181,16 +230,33 @@ func (v *navidromeVerifier) ensureNamedPlaylist(ctx context.Context, creds subso
 		if owner != "" && p.Owner != "" && !strings.EqualFold(p.Owner, owner) {
 			continue
 		}
-		return p.ID, nil
+		if id := p.ID.String(); id != "" {
+			return id
+		}
 	}
-	id, err := v.createPlaylist(ctx, creds, name)
+	return ""
+}
+
+func (v *navidromeVerifier) ensureNamedPlaylist(ctx context.Context, creds subsonicCreds, name, owner string, makePublic bool) (id string, created bool, err error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "Spotify playlist"
+	}
+	lists, err := v.listPlaylists(ctx, creds)
 	if err != nil {
-		return "", err
+		return "", false, err
+	}
+	if existing := v.findPlaylistID(lists, name, owner); existing != "" {
+		return existing, false, nil
+	}
+	id, err = v.createPlaylist(ctx, creds, name)
+	if err != nil {
+		return "", false, err
 	}
 	if makePublic {
 		v.setPlaylistPublic(ctx, creds, id)
 	}
-	return id, nil
+	return id, true, nil
 }
 
 func (v *navidromeVerifier) addTrackToNamedPlaylist(ctx context.Context, creds subsonicCreds, playlistID, title, artist string) error {

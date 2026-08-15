@@ -157,18 +157,18 @@ func (s *server) handleCreateBatch(w http.ResponseWriter, r *http.Request, rawLi
 			continue
 		}
 		if kind == "playlist" {
-			name, imported, owned, err := s.importPlaylistTracks(r, id)
+			res, err := s.importPlaylistTracks(r, id)
 			if err != nil {
 				failed = append(failed, raw+": "+err.Error())
 				continue
 			}
 			if playlistName == "" {
-				playlistName = name
+				playlistName = res.Name
 				playlistID = id
 			}
-			entries = append(entries, imported...)
-			added += len(imported)
-			skippedOwned += owned
+			entries = append(entries, res.Added...)
+			added += len(res.Added)
+			skippedOwned += res.SkippedOwned
 			continue
 		}
 		e, _, err := s.addResolvedEntry(r, kind, id)
@@ -248,34 +248,56 @@ func (s *server) alreadyHave(r *http.Request, title, artist string) bool {
 }
 
 func (s *server) handlePlaylistImport(w http.ResponseWriter, r *http.Request, playlistID string) {
-	name, added, skippedOwned, err := s.importPlaylistTracks(r, playlistID)
+	res, err := s.importPlaylistTracks(r, playlistID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "could not load playlist: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"kind":               "playlistImport",
-		"playlistId":         playlistID,
-		"playlistName":       name,
-		"added":              len(added),
-		"skippedOwned":       skippedOwned,
-		"entries":            added,
-		"sourcePlaylistId":   playlistID,
-		"sourcePlaylistName": name,
-	})
+	writeJSON(w, http.StatusCreated, playlistImportJSON(playlistID, res, nil))
 }
 
-func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (name string, added []entry, skippedOwned int, err error) {
+type playlistImportResult struct {
+	Name             string
+	Added            []entry
+	SkippedOwned     int
+	NavidromeID      string
+	NavidromeCreated bool
+	NavidromeSongs   int
+	PlaylistFile     string
+}
+
+func playlistImportJSON(spotifyID string, res playlistImportResult, failed []string) map[string]any {
+	if res.Added == nil {
+		res.Added = []entry{}
+	}
+	return map[string]any{
+		"kind":                     "playlistImport",
+		"playlistId":               spotifyID,
+		"playlistName":             res.Name,
+		"added":                    len(res.Added),
+		"skippedOwned":             res.SkippedOwned,
+		"entries":                  res.Added,
+		"sourcePlaylistId":         spotifyID,
+		"sourcePlaylistName":       res.Name,
+		"failed":                   failed,
+		"navidromePlaylistId":      res.NavidromeID,
+		"navidromePlaylistCreated": res.NavidromeCreated,
+		"navidromeSongsAdded":      res.NavidromeSongs,
+		"playlistFile":             res.PlaylistFile,
+	}
+}
+
+func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (playlistImportResult, error) {
 	name, tracks, err := s.spotify.playlistTracks(r.Context(), playlistID)
 	if errors.Is(err, errPlaylistDirectDownload) {
 		e, qerr := s.enqueueWholePlaylist(r, playlistID, name)
 		if qerr != nil {
-			return "", nil, 0, qerr
+			return playlistImportResult{}, qerr
 		}
-		return e.Title, []entry{*e}, 0, nil
+		return playlistImportResult{Name: e.Title, Added: []entry{*e}}, nil
 	}
 	if err != nil {
-		return "", nil, 0, err
+		return playlistImportResult{}, err
 	}
 	owner := requestUser(r)
 	status := statusSkipped
@@ -285,28 +307,31 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (name 
 
 	user, token, salt := requestCreds(r)
 	creds := subsonicCreds{user: user, token: token, salt: salt}
-	ndPlaylistID := ""
-	if s.navidrome != nil && user != "" && token != "" {
-		id, perr := s.navidrome.ensureNamedPlaylist(r.Context(), creds, name, owner, false)
-		if perr != nil {
-			logf("navidrome playlist %q: %v", name, perr)
-		} else {
-			ndPlaylistID = id
-			if err := s.store.upsertPlaylistMirror(owner, playlistID, id, name); err != nil {
-				logf("save playlist mirror: %v", err)
-			}
-		}
+	musicDir := ""
+	if s.downloads != nil {
+		musicDir = s.downloads.cfg.MusicDir
 	}
 
 	now := time.Now()
-	var ownedSongIDs []string
+	var (
+		added        []entry
+		skippedOwned int
+		ownedSongIDs []string
+		fileTracks   []playlistFileTrack
+	)
 	for _, t := range tracks {
-		if s.alreadyHave(r, t.Title, t.Artist) {
+		sid := ""
+		if s.navidrome != nil && user != "" {
+			sid = s.navidrome.findSongID(r.Context(), user, token, salt, t.Title, t.Artist)
+		}
+		_, rel := diskFindTrack(musicDir, t.Title, t.Artist)
+		if sid != "" || rel != "" {
 			skippedOwned++
-			if ndPlaylistID != "" && s.navidrome != nil {
-				if sid := s.navidrome.findSongID(r.Context(), user, token, salt, t.Title, t.Artist); sid != "" {
-					ownedSongIDs = append(ownedSongIDs, sid)
-				}
+			if sid != "" {
+				ownedSongIDs = append(ownedSongIDs, sid)
+			}
+			if rel != "" {
+				fileTracks = append(fileTracks, playlistFileTrack{Title: t.Title, Artist: t.Artist, Rel: rel})
 			}
 			continue
 		}
@@ -330,27 +355,55 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (name 
 		}
 		added = append(added, e)
 	}
-	if ndPlaylistID != "" && s.navidrome != nil && len(ownedSongIDs) > 0 {
-		have, _ := s.navidrome.playlistSongIDs(r.Context(), creds, ndPlaylistID)
-		var toAdd []string
-		for _, id := range ownedSongIDs {
-			if _, ok := have[id]; ok {
-				continue
+
+	res := playlistImportResult{Name: name, Added: added, SkippedOwned: skippedOwned}
+	if added == nil {
+		res.Added = []entry{}
+	}
+
+	if len(ownedSongIDs) > 0 && s.navidrome != nil && user != "" && token != "" {
+		id, created, perr := s.navidrome.ensureNamedPlaylist(r.Context(), creds, name, owner, false)
+		if perr != nil {
+			logf("navidrome playlist %q: %v", name, perr)
+		} else {
+			res.NavidromeID = id
+			res.NavidromeCreated = created
+			if err := s.store.upsertPlaylistMirror(owner, playlistID, id, name); err != nil {
+				logf("save playlist mirror: %v", err)
 			}
-			toAdd = append(toAdd, id)
-			have[id] = struct{}{}
-		}
-		if err := s.navidrome.addSongsToPlaylist(r.Context(), creds, ndPlaylistID, toAdd); err != nil {
-			logf("add owned songs to %q: %v", name, err)
+			have, _ := s.navidrome.playlistSongIDs(r.Context(), creds, id)
+			var toAdd []string
+			seenAdd := map[string]struct{}{}
+			for _, sid := range ownedSongIDs {
+				if _, ok := have[sid]; ok {
+					continue
+				}
+				if _, ok := seenAdd[sid]; ok {
+					continue
+				}
+				seenAdd[sid] = struct{}{}
+				toAdd = append(toAdd, sid)
+			}
+			if err := s.navidrome.addSongsToPlaylist(r.Context(), creds, id, toAdd); err != nil {
+				logf("add owned songs to %q: %v", name, err)
+			} else {
+				res.NavidromeSongs = len(toAdd)
+			}
 		}
 	}
+
+	if len(fileTracks) > 0 && musicDir != "" && res.NavidromeID == "" {
+		if path, err := writeLibraryPlaylist(musicDir, name, fileTracks); err != nil {
+			logf("write playlist file %q: %v", name, err)
+		} else {
+			res.PlaylistFile = path
+		}
+	}
+
 	if status == statusQueued && s.downloads != nil && len(added) > 0 {
 		s.downloads.kick()
 	}
-	if added == nil {
-		added = []entry{}
-	}
-	return name, added, skippedOwned, nil
+	return res, nil
 }
 
 func (s *server) enqueueWholePlaylist(r *http.Request, playlistID, fallbackName string) (*entry, error) {
@@ -383,7 +436,7 @@ func (s *server) enqueueWholePlaylist(r *http.Request, playlistID, fallbackName 
 	}
 	user, token, salt := requestCreds(r)
 	if s.navidrome != nil && user != "" && token != "" {
-		id, perr := s.navidrome.ensureNamedPlaylist(r.Context(),
+		id, _, perr := s.navidrome.ensureNamedPlaylist(r.Context(),
 			subsonicCreds{user: user, token: token, salt: salt}, e.Title, e.Owner, false)
 		if perr != nil {
 			logf("navidrome playlist %q: %v", e.Title, perr)

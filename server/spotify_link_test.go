@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -160,5 +161,35 @@ func TestMissingMetaAndCopyFields(t *testing.T) {
 	copyMissingEntryFields(dst, src)
 	if dst.Title != "Irish Celebration" || dst.Artist != "Macklemore" || dst.Album != "The Heist" {
 		t.Fatalf("copy=%+v", dst)
+	}
+}
+
+func TestSpotifyAPIPath(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"/playlists/abc/tracks?offset=100", "/playlists/abc/tracks?offset=100"},
+		{"https://api.spotify.com/v1/playlists/abc/tracks?offset=100&limit=100", "/playlists/abc/tracks?offset=100&limit=100"},
+		{"playlists/abc/tracks", "/playlists/abc/tracks"},
+	}
+	for _, tc := range cases {
+		if got := spotifyAPIPath(tc.in); got != tc.want {
+			t.Fatalf("spotifyAPIPath(%q)=%q want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestPlaylistTracksFromPageSkipsNullTracks(t *testing.T) {
+	raw := []byte(`{"total":2,"items":[
+		{"track":null},
+		{"track":{"id":"11dFghVXANMlKmJXsNCbNl","name":"Cut","artists":[{"name":"A"}],"album":{"name":"B"},"external_urls":{"spotify":"https://open.spotify.com/track/11dFghVXANMlKmJXsNCbNl"}}}
+	]}`)
+	var page playlistTracksPage
+	if err := json.Unmarshal(raw, &page); err != nil {
+		t.Fatal(err)
+	}
+	got := playlistTracksFromPage(page)
+	if len(got) != 1 || got[0].Title != "Cut" || got[0].Artist != "A" {
+		t.Fatalf("got %#v", got)
 	}
 }

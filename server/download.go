@@ -416,7 +416,7 @@ func (w *downloadWorker) addEntryToNavidromePlaylist(ctx context.Context, e *ent
 		if strings.TrimSpace(name) == "" {
 			name = "Spotify playlist"
 		}
-		id, perr := w.navidrome.ensureNamedPlaylist(ctx, creds, name, e.Owner, true)
+		id, _, perr := w.navidrome.ensureNamedPlaylist(ctx, creds, name, e.Owner, true)
 		if perr != nil {
 			logf("ensure navidrome playlist %q: %v", name, perr)
 			return
@@ -473,7 +473,7 @@ func (w *downloadWorker) syncWholePlaylist(ctx context.Context, e *entry) {
 		return
 	}
 	if plID == "" {
-		id, perr := w.navidrome.ensureNamedPlaylist(ctx, creds, name, e.Owner, true)
+		id, _, perr := w.navidrome.ensureNamedPlaylist(ctx, creds, name, e.Owner, true)
 		if perr != nil {
 			logf("ensure navidrome playlist %q: %v", name, perr)
 			return

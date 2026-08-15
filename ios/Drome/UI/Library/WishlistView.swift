@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 struct WishlistView: View {
     @EnvironmentObject private var session: AppSession
@@ -76,7 +75,7 @@ struct WishlistView: View {
                 }
                 .listRowBackground(DromeTheme.elevated)
             } footer: {
-                Text("Search tracks, albums, or artists — or paste any Spotify link below to download.")
+                Text("Search tracks, albums, or artists — or add a Spotify link below.")
             }
 
             if !searchResults.isEmpty {
@@ -90,28 +89,18 @@ struct WishlistView: View {
             Section {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
-                        TextField("Paste any Spotify link", text: $pasteURL, axis: .vertical)
+                        TextField("Spotify link", text: $pasteURL, axis: .vertical)
                             .lineLimit(2...5)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
                             .submitLabel(.go)
                             .onSubmit {
-                                Task { await addPaste() }
+                                Task { await submitTypedLink() }
                             }
 
                         Button {
-                            pasteFromClipboard()
-                        } label: {
-                            Image(systemName: "doc.on.clipboard")
-                                .font(.body.weight(.semibold))
-                                .foregroundStyle(DromeTheme.accent)
-                        }
-                        .accessibilityLabel("Paste from clipboard")
-                        .disabled(isAddingPaste)
-
-                        Button {
-                            Task { await addPaste() }
+                            Task { await submitTypedLink() }
                         } label: {
                             if isAddingPaste {
                                 ProgressView()
@@ -127,9 +116,9 @@ struct WishlistView: View {
                 }
                 .listRowBackground(DromeTheme.elevated)
             } header: {
-                Text("Paste to download")
+                Text("Add a Spotify link")
             } footer: {
-                Text("Paste any Spotify link to download the songs from it. Tracks you already own are skipped; the rest queue for download into Navidrome.")
+                Text("Type or paste a Spotify link, then tap + or Go. Plus only submits the field — it never reads the clipboard. Tracks you already own are skipped; the rest queue for download.")
             }
 
             if let importBanner {
@@ -407,6 +396,11 @@ struct WishlistView: View {
         }
     }
 
+    /// Submit the text field only. Never reads the clipboard.
+    private func submitTypedLink() async {
+        await addPaste()
+    }
+
     private func addPaste() async {
         guard let client = session.wishlist else { return }
         let raw = pasteURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -430,18 +424,7 @@ struct WishlistView: View {
         }
     }
 
-    private func pasteFromClipboard() {
-        guard let text = UIPasteboard.general.string?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !text.isEmpty else {
-            error = "Clipboard is empty."
-            return
-        }
-        pasteURL = text
-        error = nil
-    }
-
-    /// Pull Spotify URLs/URIs out of a clipboard dump (mirrors server extractor).
+    /// Pull Spotify URLs/URIs out of pasted text (mirrors server extractor).
     private static func extractSpotifyLinks(from raw: String) -> [String] {
         let pattern = #"(?i)(?:https?://(?:open|play)\.spotify\.com/[^\s<>"']+|https?://spotify\.link/[^\s<>"']+|spotify:(?:track|album|playlist):[0-9A-Za-z]{15,40})"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
@@ -500,6 +483,11 @@ struct WishlistView: View {
                 if imported.skippedOwned > 0 {
                     parts.append("skipped \(imported.skippedOwned) already owned")
                 }
+                if imported.navidromePlaylistCreated == true, let name, !name.isEmpty {
+                    parts.append("created playlist “\(name)”")
+                } else if imported.navidromeSongsAdded ?? 0 > 0, let name, !name.isEmpty {
+                    parts.append("updated playlist “\(name)”")
+                }
                 if let failed = imported.failed, !failed.isEmpty {
                     parts.append("\(failed.count) failed")
                 }
@@ -507,7 +495,19 @@ struct WishlistView: View {
             }
 
             if imported.added == 0 && imported.skippedOwned > 0 {
-                error = "All \(imported.skippedOwned) tracks already look like they’re in your library."
+                let name = imported.playlistName ?? imported.sourcePlaylistName
+                if imported.navidromePlaylistCreated == true {
+                    importBanner = "All \(imported.skippedOwned) tracks were already in your library · created playlist “\(name ?? "Spotify playlist")”"
+                    error = nil
+                } else if imported.navidromePlaylistId?.isEmpty == false {
+                    importBanner = "All \(imported.skippedOwned) tracks were already in your library · playlist “\(name ?? "Spotify playlist")” is up to date"
+                    error = nil
+                } else if imported.playlistFile?.isEmpty == false {
+                    importBanner = "All \(imported.skippedOwned) tracks were already in your library · wrote playlist file “\(name ?? "Spotify playlist")”"
+                    error = nil
+                } else {
+                    error = "All \(imported.skippedOwned) tracks already look like they’re in your library."
+                }
             } else {
                 error = nil
             }

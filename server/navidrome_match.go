@@ -164,12 +164,17 @@ func fileTitleKey(filename string) string {
 }
 
 func diskHasTrack(musicDir, title, artist string) bool {
+	p, _ := diskFindTrack(musicDir, title, artist)
+	return p != ""
+}
+
+func diskFindTrack(musicDir, title, artist string) (string, string) {
 	if musicDir == "" || normalizeMatchKey(title) == "" {
-		return false
+		return "", ""
 	}
-	found := false
+	var abs, rel string
 	_ = filepath.WalkDir(musicDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || found {
+		if err != nil || abs != "" {
 			return nil
 		}
 		if d.IsDir() {
@@ -186,20 +191,21 @@ func diskHasTrack(musicDir, title, artist string) bool {
 		if !titlesMatch(fileTitleKey(d.Name()), title) {
 			return nil
 		}
-		rel, err := filepath.Rel(musicDir, path)
+		r, err := filepath.Rel(musicDir, path)
 		if err != nil {
 			return nil
 		}
-		parts := strings.Split(rel, string(filepath.Separator))
+		parts := strings.Split(r, string(filepath.Separator))
 		dirArtist := ""
 		if len(parts) >= 2 {
 			dirArtist = parts[0]
 		}
 		if artist == "" || dirArtist == "" || artistsMatch(dirArtist, artist) {
-			found = true
+			abs = path
+			rel = filepath.ToSlash(r)
 			return fs.SkipAll
 		}
 		return nil
 	})
-	return found
+	return abs, rel
 }
