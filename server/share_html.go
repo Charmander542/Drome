@@ -88,10 +88,7 @@ func sharePageHTML(headline, title, artist, album, desc, pageURL, coverURL, deep
     margin: 0 auto 16px;
   }
   .mark {
-    width: 20px; height: 20px; border-radius: 5px;
-    background: var(--accent); color: var(--on-accent);
-    display: grid; place-items: center;
-    font-size: 10px; font-weight: 800; letter-spacing: -.04em;
+    display: block; width: 22px; height: 19px; flex: none;
   }
   .brand { font-size: 15px; font-weight: 650; letter-spacing: -.02em; opacity: .92; }
   .card {
@@ -141,7 +138,14 @@ func sharePageHTML(headline, title, artist, album, desc, pageURL, coverURL, deep
     ` + backdrop + `
     <div class="scrim"></div>
     <header class="top">
-      <span class="mark">D</span>
+      <svg class="mark" viewBox="0 0 137 120" aria-hidden="true">
+        <rect x="0" y="30" width="17" height="60" rx="8.5" fill="#fff"/>
+        <circle cx="32.5" cy="60" r="13.5" fill="#fff"/>
+        <rect x="48" y="10" width="17" height="100" rx="8.5" fill="#fff"/>
+        <rect x="72" y="0" width="17" height="120" rx="8.5" fill="#fff"/>
+        <rect x="96" y="30" width="17" height="60" rx="8.5" fill="#fff"/>
+        <circle cx="128.5" cy="60" r="11.5" fill="#fff"/>
+      </svg>
       <span class="brand">Drome</span>
     </header>
     <a class="card" href="` + deep + `">
