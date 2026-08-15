@@ -32,7 +32,7 @@ func TestSharePageHTMLUsesCoverAndDeepLink(t *testing.T) {
 		`Play in Drome`,
 		`<a class="card" href="drome://track/1">`,
 		`location.replace("drome://track/1")`,
-		`aspect-ratio: 1.91 / 1`,
+		`aspect-ratio: 1`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("share HTML missing %q", want)

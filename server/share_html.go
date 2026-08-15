@@ -84,7 +84,7 @@ func sharePageHTML(headline, title, artist, album, desc, pageURL, coverURL, deep
     position: relative; z-index: 2;
     display: flex; align-items: center; gap: 8px;
     align-self: stretch;
-    max-width: 640px; width: min(640px, 100%);
+    max-width: 380px; width: min(380px, 100%);
     margin: 0 auto 16px;
   }
   .mark {
@@ -93,55 +93,47 @@ func sharePageHTML(headline, title, artist, album, desc, pageURL, coverURL, deep
     display: grid; place-items: center;
     font-size: 10px; font-weight: 800; letter-spacing: -.04em;
   }
-  .brand { font-size: 14px; font-weight: 650; letter-spacing: -.02em; opacity: .92; }
+  .brand { font-size: 15px; font-weight: 650; letter-spacing: -.02em; opacity: .92; }
   .card {
     position: relative; z-index: 2;
-    display: flex; flex-direction: row; align-items: stretch;
-    width: min(640px, 100%);
-    aspect-ratio: 1.91 / 1;
-    max-height: 336px;
-    border-radius: 14px;
+    display: flex; flex-direction: column; align-items: stretch;
+    width: min(380px, 100%);
+    border-radius: 16px;
     overflow: hidden;
-    background: rgba(12,12,16,.72);
+    background: rgba(12,12,16,.78);
     box-shadow: 0 18px 50px rgba(0,0,0,.45);
     color: inherit; text-decoration: none;
   }
   .art, .art.fallback {
-    height: 100%; width: auto; aspect-ratio: 1;
-    flex: 0 0 auto;
+    width: 100%; aspect-ratio: 1;
     object-fit: cover;
     border-radius: 0;
   }
-  .art.fallback { background: color-mix(in srgb, var(--accent) 38%, #14141a); }
+  .art.fallback { background: color-mix(in srgb, var(--accent) 38%, #14141a); min-height: 220px; }
   .copy {
-    flex: 1 1 auto; min-width: 0;
-    display: flex; flex-direction: column; justify-content: center;
+    display: flex; flex-direction: column;
     text-align: left;
-    padding: 16px 18px 16px 20px;
+    padding: 18px 18px 20px;
   }
   .kind {
-    margin: 0 0 6px; font-size: 10px; font-weight: 700;
+    margin: 0 0 8px; font-size: 11px; font-weight: 700;
     letter-spacing: .14em; text-transform: uppercase;
     color: rgba(255,255,255,.48);
   }
   h1 {
-    margin: 0; font-size: clamp(1.05rem, 3.2vw, 1.55rem);
+    margin: 0; font-size: clamp(1.25rem, 4vw, 1.7rem);
     line-height: 1.15; letter-spacing: -.03em; font-weight: 750;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-    overflow: hidden;
   }
-  .artist { margin: 6px 0 0; font-size: .95rem; font-weight: 550; color: rgba(255,255,255,.86);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .album { margin: 4px 0 0; font-size: .82rem; color: rgba(255,255,255,.5);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .actions { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 14px; }
+  .artist { margin: 8px 0 0; font-size: 1.02rem; font-weight: 550; color: rgba(255,255,255,.86); }
+  .album { margin: 6px 0 0; font-size: .9rem; color: rgba(255,255,255,.5); }
+  .actions { display: flex; flex-direction: column; align-items: stretch; gap: 10px; margin-top: 18px; }
   .play {
-    display: inline-flex; align-items: center; justify-content: center;
-    padding: 9px 16px; border-radius: 999px;
+    display: flex; align-items: center; justify-content: center;
+    width: 100%; padding: 14px 16px; border-radius: 10px;
     background: var(--accent); color: var(--on-accent);
-    text-decoration: none; font-weight: 700; font-size: .88rem;
+    font-weight: 700; font-size: 1rem;
   }
-  .hint { margin: 0; color: rgba(255,255,255,.38); font-size: .7rem; }
+  .hint { margin: 0; color: rgba(255,255,255,.38); font-size: .75rem; text-align: center; }
 </style>
 </head>
 <body>

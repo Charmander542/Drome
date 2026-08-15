@@ -1,11 +1,12 @@
 import UIKit
 import LinkPresentation
+import UniformTypeIdentifiers
 
 /// Builds share payloads that work in Messages, Discord, Mail, etc.
 ///
-/// Messages gets `drome://track/{id}` so a tap opens the app. The bubble still
-/// *looks* like the HTTPS card via `LPLinkMetadata` (title, art, originalURL).
-/// Discord / Mail / copy get the HTTPS page so they can unfurl Open Graph.
+/// `drome://` cannot be crawled for Open Graph, so album art has to be attached
+/// on the share itself (`LPLinkMetadata` + the image). Messages still opens
+/// Drome; Discord / Mail / copy get the HTTPS page.
 enum SongShare {
     static func url(songId: String) -> URL {
         URL(string: "drome://track/\(songId)")!
@@ -26,9 +27,8 @@ enum SongShare {
             return "\(title) — \(artist)"
         }()
 
-        var cover: UIImage?
         let coverIDs = [song.coverArt, song.albumId, song.id].compactMap { $0 }.filter { !$0.isEmpty }
-        cover = ImageLoader.shared.previewCover(ids: coverIDs)
+        var cover = ImageLoader.shared.previewCover(ids: coverIDs)
         if cover == nil, let env = AppEnvironment.shared?.session {
             for id in coverIDs {
                 if let url = env.artworkURL(id: id, size: 300) {
@@ -36,8 +36,8 @@ enum SongShare {
                     if cover != nil { break }
                 }
             }
-            if cover == nil, let url = env.artworkURL(for: song, size: 120) {
-                cover = ImageLoader.shared.previewImage(for: url)
+            if cover == nil, let url = env.artworkURL(for: song, size: 300) {
+                cover = await ImageLoader.shared.image(for: url)
             }
         }
 
@@ -53,8 +53,13 @@ enum SongShare {
             }
         }
 
-        let item = ShareItem(headline: headline, appURL: appURL, webURL: webURL, image: cover)
-        let activity = UIActivityViewController(activityItems: [item], applicationActivities: nil)
+        let metadata = linkMetadata(headline: headline, appURL: appURL, image: cover)
+        let item = ShareItem(headline: headline, appURL: appURL, webURL: webURL, image: cover, metadata: metadata)
+        var items: [Any] = [item]
+        if let cover {
+            items.append(CoverItem(image: cover))
+        }
+        let activity = UIActivityViewController(activityItems: items, applicationActivities: nil)
         activity.excludedActivityTypes = [
             .assignToContact,
             .addToReadingList,
@@ -95,6 +100,23 @@ enum SongShare {
         return top
     }
 
+    private static func linkMetadata(headline: String, appURL: URL, image: UIImage?) -> LPLinkMetadata {
+        let meta = LPLinkMetadata()
+        meta.title = headline
+        meta.originalURL = appURL
+        meta.url = appURL
+        if let image, let jpeg = shareJPEG(from: image) {
+            let provider = NSItemProvider()
+            provider.registerDataRepresentation(forTypeIdentifier: UTType.jpeg.identifier, visibility: .all) { completion in
+                completion(jpeg, nil)
+                return Progress(totalUnitCount: 0)
+            }
+            meta.imageProvider = provider
+            meta.iconProvider = provider
+        }
+        return meta
+    }
+
     /// Small enough to upload quickly; sharp enough for OG / the share card.
     private static func shareJPEG(from image: UIImage) -> Data? {
         let maxEdge: CGFloat = 400
@@ -108,7 +130,7 @@ enum SongShare {
         } else {
             source = image
         }
-        return source.jpegData(compressionQuality: 0.62)
+        return source.jpegData(compressionQuality: 0.72)
     }
 
     @MainActor
@@ -159,16 +181,18 @@ enum SongShare {
         let appURL: URL
         let webURL: URL?
         let image: UIImage?
+        let metadata: LPLinkMetadata
 
-        init(headline: String, appURL: URL, webURL: URL?, image: UIImage? = nil) {
+        init(headline: String, appURL: URL, webURL: URL?, image: UIImage?, metadata: LPLinkMetadata) {
             self.headline = headline
             self.appURL = appURL
             self.webURL = webURL
             self.image = image
+            self.metadata = metadata
         }
 
         func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
-            appURL
+            image ?? appURL
         }
 
         func activityViewController(
@@ -183,8 +207,7 @@ enum SongShare {
                 let link = webURL ?? appURL
                 return "\(headline)\n\(link.absoluteString)"
             }
-            // Messages / AirDrop: open Drome directly.
-            return appURL
+            return metadata
         }
 
         func activityViewController(
@@ -197,16 +220,32 @@ enum SongShare {
         func activityViewControllerLinkMetadata(
             _ activityViewController: UIActivityViewController
         ) -> LPLinkMetadata? {
-            let meta = LPLinkMetadata()
-            meta.title = headline
-            // Preview fetches/looks like the webpage; tap target is drome://.
-            meta.originalURL = webURL ?? appURL
-            meta.url = appURL
-            if let image {
-                meta.imageProvider = NSItemProvider(object: image)
-                meta.iconProvider = NSItemProvider(object: image)
+            metadata
+        }
+    }
+
+    /// iMessage cannot fetch art from `drome://`, so attach the JPEG as well.
+    private final class CoverItem: NSObject, UIActivityItemSource {
+        let image: UIImage
+
+        init(image: UIImage) {
+            self.image = image
+        }
+
+        func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
+            image
+        }
+
+        func activityViewController(
+            _ activityViewController: UIActivityViewController,
+            itemForActivityType activityType: UIActivity.ActivityType?
+        ) -> Any? {
+            if activityType == .copyToPasteboard
+                || activityType == .mail
+                || activityType == .print {
+                return nil
             }
-            return meta
+            return image
         }
     }
 }
