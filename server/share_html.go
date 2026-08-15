@@ -80,17 +80,6 @@ func sharePageHTML(headline, title, artist, album, desc, pageURL, coverURL, deep
     position: fixed; inset: 0; z-index: 1; pointer-events: none;
     background: rgba(0,0,0,.45);
   }
-  .top {
-    position: relative; z-index: 2;
-    display: flex; align-items: center; gap: 8px;
-    align-self: stretch;
-    max-width: 380px; width: min(380px, 100%);
-    margin: 0 auto 16px;
-  }
-  .mark {
-    display: block; width: 22px; height: 19px; flex: none;
-  }
-  .brand { font-size: 15px; font-weight: 650; letter-spacing: -.02em; opacity: .92; }
   .card {
     position: relative; z-index: 2;
     display: flex; flex-direction: column; align-items: stretch;
@@ -137,17 +126,6 @@ func sharePageHTML(headline, title, artist, album, desc, pageURL, coverURL, deep
   <div class="scene">
     ` + backdrop + `
     <div class="scrim"></div>
-    <header class="top">
-      <svg class="mark" viewBox="0 0 137 120" aria-hidden="true">
-        <rect x="0" y="30" width="17" height="60" rx="8.5" fill="#fff"/>
-        <circle cx="32.5" cy="60" r="13.5" fill="#fff"/>
-        <rect x="48" y="10" width="17" height="100" rx="8.5" fill="#fff"/>
-        <rect x="72" y="0" width="17" height="120" rx="8.5" fill="#fff"/>
-        <rect x="96" y="30" width="17" height="60" rx="8.5" fill="#fff"/>
-        <circle cx="128.5" cy="60" r="11.5" fill="#fff"/>
-      </svg>
-      <span class="brand">Drome</span>
-    </header>
     <a class="card" href="` + deep + `">
       ` + hero + `
       <div class="copy">
