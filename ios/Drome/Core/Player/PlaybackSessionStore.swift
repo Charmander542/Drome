@@ -107,6 +107,13 @@ final class PlaybackSessionStore {
             byKey = Dictionary(uniqueKeysWithValues: ordered.prefix(40).map { ($0.resumeKey, $0) })
         }
         persist()
+        let song = snap.currentSong
+        MessagesShareBridge.pushRecent(
+            id: song.id,
+            title: song.title,
+            artist: song.displayArtist,
+            album: song.album ?? "",
+            coverArt: song.coverArt ?? song.albumId)
     }
 
     func snapshot(forResumeKey key: String) -> PlaybackSessionSnapshot? {

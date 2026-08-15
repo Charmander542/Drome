@@ -1,12 +1,14 @@
 import UIKit
 import LinkPresentation
 import UniformTypeIdentifiers
+import MessageUI
+import Messages
 
 /// Builds share payloads that work in Messages, Discord, Mail, etc.
 ///
-/// `drome://` cannot be crawled for Open Graph, so album art has to be attached
-/// on the share itself (`LPLinkMetadata` + the image). Messages still opens
-/// Drome; Discord / Mail / copy get the HTTPS page.
+/// The system Messages tile stays in its usual slot. Tapping it opens
+/// `MFMessageComposeViewController` with the live Drome card. Discord / Mail /
+/// copy still get the HTTPS `/s/{token}` page.
 enum SongShare {
     static func url(songId: String) -> URL {
         URL(string: "drome://track/\(songId)")!
@@ -41,25 +43,34 @@ enum SongShare {
             }
         }
 
+        MessagesShareBridge.pushRecent(
+            id: song.id,
+            title: title,
+            artist: artist,
+            album: album,
+            coverArt: song.coverArt ?? song.albumId)
+
         let appURL = url(songId: song.id)
         var webURL: URL?
         if let client = AppEnvironment.shared?.session?.wishlist {
             let jpeg = cover.flatMap(Self.shareJPEG(from:))
             let accent = cover.map(Self.accentHex(from:)) ?? "#3D7EFF"
-            webURL = await withTimeout(seconds: 2.0) {
+            webURL = await withTimeout(seconds: 4.0) {
                 try? await client.createTrackShare(
                     songId: song.id, title: title, artist: artist, album: album,
                     accent: accent, coverJPEG: jpeg)
             }
         }
 
-        let metadata = linkMetadata(headline: headline, appURL: appURL, image: cover)
-        let item = ShareItem(headline: headline, appURL: appURL, webURL: webURL, image: cover, metadata: metadata)
-        var items: [Any] = [item]
-        if let cover {
-            items.append(CoverItem(image: cover))
-        }
-        let activity = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        let metadata = linkMetadata(headline: headline, openURL: webURL ?? appURL, image: cover)
+        let iMessage = SongIMessage.make(
+            song: song, title: title, artist: artist, album: album,
+            cover: cover, webURL: webURL,
+            serverHost: AppEnvironment.shared?.session?.account.serverURL.host)
+        let item = ShareItem(
+            headline: headline, appURL: appURL, webURL: webURL,
+            metadata: metadata, iMessage: iMessage)
+        let activity = UIActivityViewController(activityItems: [item], applicationActivities: nil)
         activity.excludedActivityTypes = [
             .assignToContact,
             .addToReadingList,
@@ -87,7 +98,7 @@ enum SongShare {
     }
 
     @MainActor
-    private static func topViewController() -> UIViewController? {
+    static func topViewController() -> UIViewController? {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         let root = scenes
             .flatMap(\.windows)
@@ -100,11 +111,11 @@ enum SongShare {
         return top
     }
 
-    private static func linkMetadata(headline: String, appURL: URL, image: UIImage?) -> LPLinkMetadata {
+    private static func linkMetadata(headline: String, openURL: URL, image: UIImage?) -> LPLinkMetadata {
         let meta = LPLinkMetadata()
         meta.title = headline
-        meta.originalURL = appURL
-        meta.url = appURL
+        meta.originalURL = openURL
+        meta.url = openURL
         if let image, let jpeg = shareJPEG(from: image) {
             let provider = NSItemProvider()
             provider.registerDataRepresentation(forTypeIdentifier: UTType.jpeg.identifier, visibility: .all) { completion in
@@ -180,19 +191,19 @@ enum SongShare {
         let headline: String
         let appURL: URL
         let webURL: URL?
-        let image: UIImage?
         let metadata: LPLinkMetadata
+        let iMessage: MSMessage
 
-        init(headline: String, appURL: URL, webURL: URL?, image: UIImage?, metadata: LPLinkMetadata) {
+        init(headline: String, appURL: URL, webURL: URL?, metadata: LPLinkMetadata, iMessage: MSMessage) {
             self.headline = headline
             self.appURL = appURL
             self.webURL = webURL
-            self.image = image
             self.metadata = metadata
+            self.iMessage = iMessage
         }
 
         func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
-            image ?? appURL
+            webURL ?? appURL
         }
 
         func activityViewController(
@@ -200,14 +211,33 @@ enum SongShare {
             itemForActivityType activityType: UIActivity.ActivityType?
         ) -> Any? {
             let raw = activityType?.rawValue ?? ""
+            let link = webURL ?? appURL
+            if isMessagesActivity(activityType),
+               MFMessageComposeViewController.canSendText(),
+               activityViewController.viewIfLoaded?.window != nil {
+                let bubble = iMessage
+                DispatchQueue.main.async {
+                    activityViewController.dismiss(animated: true) {
+                        MessageComposeCoordinator.shared.present(message: bubble)
+                    }
+                }
+                return nil
+            }
             if activityType == .mail
                 || activityType == .copyToPasteboard
                 || raw.localizedCaseInsensitiveContains("discord")
                 || raw.localizedCaseInsensitiveContains("Slack") {
-                let link = webURL ?? appURL
                 return "\(headline)\n\(link.absoluteString)"
             }
-            return metadata
+            return link
+        }
+
+        private func isMessagesActivity(_ activityType: UIActivity.ActivityType?) -> Bool {
+            guard let activityType else { return false }
+            if activityType == .message { return true }
+            let raw = activityType.rawValue
+            return raw == "com.apple.UIKit.activity.Message"
+                || raw.localizedCaseInsensitiveContains("MobileSMS")
         }
 
         func activityViewController(
@@ -221,31 +251,6 @@ enum SongShare {
             _ activityViewController: UIActivityViewController
         ) -> LPLinkMetadata? {
             metadata
-        }
-    }
-
-    /// iMessage cannot fetch art from `drome://`, so attach the JPEG as well.
-    private final class CoverItem: NSObject, UIActivityItemSource {
-        let image: UIImage
-
-        init(image: UIImage) {
-            self.image = image
-        }
-
-        func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
-            image
-        }
-
-        func activityViewController(
-            _ activityViewController: UIActivityViewController,
-            itemForActivityType activityType: UIActivity.ActivityType?
-        ) -> Any? {
-            if activityType == .copyToPasteboard
-                || activityType == .mail
-                || activityType == .print {
-                return nil
-            }
-            return image
         }
     }
 }

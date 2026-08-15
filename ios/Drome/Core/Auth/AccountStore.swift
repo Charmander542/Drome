@@ -16,6 +16,12 @@ final class AccountStore: ObservableObject {
 
     init() {
         load()
+        for account in accounts {
+            if let password = password(for: account) {
+                Keychain.set(password, for: passwordKey(account))
+            }
+        }
+        MessagesShareBridge.syncAccounts(accounts, activeID: activeAccountID)
     }
 
     private func load() {
@@ -33,6 +39,7 @@ final class AccountStore: ObservableObject {
             UserDefaults.standard.set(data, forKey: Self.accountsKey)
         }
         UserDefaults.standard.set(activeAccountID?.uuidString, forKey: Self.activeKey)
+        MessagesShareBridge.syncAccounts(accounts, activeID: activeAccountID)
     }
 
     func add(_ account: Account, password: String) {
