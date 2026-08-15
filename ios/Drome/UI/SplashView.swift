@@ -30,7 +30,7 @@ struct SplashScreenView: View {
     private let angularSpeed: Double = 2.4
     private let phaseStep: Double = 1.6
     private let minScale: CGFloat = 0.35
-    private let totalDuration: Double = 1.6
+    private let totalDuration: Double = 2.05
     private let stillHold: Double = 0.04
     private let stillFade: Double = 0.22
     private let exitFade: Double = 0.55
