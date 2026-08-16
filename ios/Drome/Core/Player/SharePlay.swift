@@ -146,6 +146,7 @@ enum SharePlayLauncher {
                 return
             }
             do {
+                #if os(iOS)
                 let picker = try await GroupActivitySharingController(activity)
                 guard let host = topViewController() else {
                     await activateInFaceTime(activity, engine: engine)
@@ -153,6 +154,9 @@ enum SharePlayLauncher {
                 }
                 host.present(picker, animated: true)
                 engine.sharePlayNotice = "Pick the FaceTime call, then they tap Join in Drome."
+                #else
+                await activateInFaceTime(activity, engine: engine)
+                #endif
             } catch {
                 await activateInFaceTime(activity, engine: engine)
             }

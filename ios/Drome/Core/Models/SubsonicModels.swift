@@ -195,6 +195,59 @@ struct Playlist: Codable, Identifiable, Hashable {
         case id, name, comment, owner, songCount, duration, created, changed, coverArt
         case isPublic = "public"
     }
+
+    init(id: String, name: String, comment: String? = nil, owner: String? = nil,
+         isPublic: Bool? = nil, songCount: Int? = nil, duration: Int? = nil,
+         created: String? = nil, changed: String? = nil, coverArt: String? = nil) {
+        self.id = id
+        self.name = name
+        self.comment = comment
+        self.owner = owner
+        self.isPublic = isPublic
+        self.songCount = songCount
+        self.duration = duration
+        self.created = created
+        self.changed = changed
+        self.coverArt = coverArt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        comment = try c.decodeIfPresent(String.self, forKey: .comment)
+        owner = try c.decodeIfPresent(String.self, forKey: .owner)
+        isPublic = try c.decodeIfPresent(Bool.self, forKey: .isPublic)
+        songCount = SubsonicJSON.int(c, .songCount)
+        duration = SubsonicJSON.int(c, .duration)
+        created = try c.decodeIfPresent(String.self, forKey: .created)
+        changed = try c.decodeIfPresent(String.self, forKey: .changed)
+        coverArt = try c.decodeIfPresent(String.self, forKey: .coverArt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encodeIfPresent(comment, forKey: .comment)
+        try c.encodeIfPresent(owner, forKey: .owner)
+        try c.encodeIfPresent(isPublic, forKey: .isPublic)
+        try c.encodeIfPresent(songCount, forKey: .songCount)
+        try c.encodeIfPresent(duration, forKey: .duration)
+        try c.encodeIfPresent(created, forKey: .created)
+        try c.encodeIfPresent(changed, forKey: .changed)
+        try c.encodeIfPresent(coverArt, forKey: .coverArt)
+    }
+
+    /// `12 songs`, `1 song`, or `Playlist` when the server omitted a count.
+    var songCountLabel: String {
+        Self.songCountLabel(songCount)
+    }
+
+    static func songCountLabel(_ count: Int?) -> String {
+        guard let count else { return "Playlist" }
+        return count == 1 ? "1 song" : "\(count) songs"
+    }
 }
 
 struct PlaylistWithSongs: Decodable {
@@ -217,7 +270,34 @@ struct PlaylistWithSongs: Decodable {
 
     var asPlaylist: Playlist {
         Playlist(id: id, name: name, comment: comment, owner: owner, isPublic: isPublic,
-                 songCount: songCount, duration: duration, created: nil, changed: nil, coverArt: coverArt)
+                 songCount: songCount ?? songs.count, duration: duration, created: nil, changed: nil, coverArt: coverArt)
+    }
+
+    init(id: String, name: String, comment: String? = nil, owner: String? = nil,
+         isPublic: Bool? = nil, songCount: Int? = nil, duration: Int? = nil,
+         coverArt: String? = nil, entry: [Song]? = nil) {
+        self.id = id
+        self.name = name
+        self.comment = comment
+        self.owner = owner
+        self.isPublic = isPublic
+        self.songCount = songCount
+        self.duration = duration
+        self.coverArt = coverArt
+        self.entry = entry
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        comment = try c.decodeIfPresent(String.self, forKey: .comment)
+        owner = try c.decodeIfPresent(String.self, forKey: .owner)
+        isPublic = try c.decodeIfPresent(Bool.self, forKey: .isPublic)
+        songCount = SubsonicJSON.int(c, .songCount)
+        duration = SubsonicJSON.int(c, .duration)
+        coverArt = try c.decodeIfPresent(String.self, forKey: .coverArt)
+        entry = try c.decodeIfPresent([Song].self, forKey: .entry)
     }
 }
 
@@ -294,7 +374,14 @@ struct Starred2Payload: Decodable {
 }
 struct Search3Payload: Decodable { var searchResult3: SearchResult3 }
 struct PlaylistsPayload: Decodable {
-    struct List: Decodable { var playlist: [Playlist]? }
+    struct List: Decodable {
+        var playlist: [Playlist]?
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            playlist = (try? c.decode(SubsonicJSON.OneOrMany<Playlist>.self, forKey: .playlist))?.values
+        }
+        enum CodingKeys: String, CodingKey { case playlist }
+    }
     var playlists: List
 }
 struct PlaylistPayload: Decodable { var playlist: PlaylistWithSongs }

@@ -1,5 +1,6 @@
 import UIKit
 import CarPlay
+import Intents
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
     /// Stored so the background download session can tell the system when all
@@ -34,5 +35,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             DeepLink.open(url, env: AppEnvironment.shared)
         }
         return true
+    }
+
+    func application(_ application: UIApplication, handlerFor intent: INIntent) -> Any? {
+        if intent is INPlayMediaIntent {
+            return PlayMediaIntentHandler()
+        }
+        return nil
     }
 }

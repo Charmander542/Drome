@@ -209,7 +209,7 @@ struct PlaylistCard: View {
                         .foregroundStyle(DromeTheme.accent)
                 }
             }
-            Text(playlist.songCount.map { "\($0) songs" } ?? "Playlist")
+            Text(playlist.songCountLabel)
                 .font(.caption)
                 .foregroundStyle(DromeTheme.muted)
                 .lineLimit(1)

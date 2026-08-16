@@ -1,7 +1,5 @@
 import CarPlay
 import Foundation
-import Speech
-import AVFoundation
 import UIKit
 
 /// CarPlay entry point (`CPTemplateApplicationSceneSessionRoleApplication`).
@@ -32,14 +30,8 @@ final class CarPlaySceneDelegate: UIResponder,
     private var searchSongs: [String: Song] = [:]
     private var searchAlbums: [String: Album] = [:]
     private var searchArtists: [String: Artist] = [:]
-    private var speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-    private var speechRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var audioEngine: AVAudioEngine?
-    private var voiceSearchTimeout: Task<Void, Never>?
     /// Cached after first probe — system keyboard search is entitlement/OS gated.
     private var systemSearchSupported: Bool?
-    /// Hard voice failures (mic/permissions/simulator) grey out “Ask for a song”.
-    private var voiceSearchDisabled = false
     private var mirrorQueryObserver: NSObjectProtocol?
     private let customKeyboard = CarPlayKeyboard()
 
@@ -62,12 +54,9 @@ final class CarPlaySceneDelegate: UIResponder,
                                   didDisconnectInterfaceController interfaceController: CPInterfaceController) {
         CPNowPlayingTemplate.shared.remove(self)
         searchTask?.cancel()
-        voiceSearchTimeout?.cancel()
-        stopSpeechRecognition()
         stopMirrorSearch()
         searchTemplate = nil
         systemSearchSupported = nil
-        voiceSearchDisabled = false
         searchTabTemplate = nil
         mirroredResultsTemplate = nil
         sessionConfiguration = nil
@@ -119,7 +108,7 @@ final class CarPlaySceneDelegate: UIResponder,
     }
 
     func tabBarTemplate(_ tabBarTemplate: CPTabBarTemplate, didSelect selectedTemplate: CPTemplate) {
-        // Search tab shows Type on iPhone / Ask by voice / Letter pad — don't auto-push.
+        // Search tab shows Type on iPhone / Siri dictation / Letter pad — don't auto-push.
         _ = selectedTemplate
     }
 
@@ -150,8 +139,12 @@ final class CarPlaySceneDelegate: UIResponder,
             player.autoplayEnabled.toggle()
             self?.refreshNowPlayingButtons()
         }
+        let artistImage = UIImage(systemName: "person.fill") ?? UIImage()
+        let artist = CPNowPlayingImageButton(image: artistImage) { [weak self] _ in
+            Task { await self?.openNowPlayingArtist() }
+        }
 
-        np.updateNowPlayingButtons([rate, shuffle, repeatButton, autoplay])
+        np.updateNowPlayingButtons([rate, shuffle, repeatButton, autoplay, artist])
         refreshNowPlayingButtons()
     }
 
@@ -160,20 +153,16 @@ final class CarPlaySceneDelegate: UIResponder,
         let player = session.player
         let rating = player.current.map { session.ratings.rating(for: $0.song) } ?? 0
         let buttons = CPNowPlayingTemplate.shared.nowPlayingButtons
-        for (index, button) in buttons.enumerated() {
+        for button in buttons {
             if button is CPNowPlayingShuffleButton {
                 button.isSelected = player.shuffleMode != .off
             } else if button is CPNowPlayingRepeatButton {
                 button.isSelected = player.repeatMode != .off
-            } else if button is CPNowPlayingImageButton {
-                // Buttons: [rate, shuffle, repeat, autoplay]
-                if index == 0 {
-                    button.isSelected = rating > 0
-                } else {
-                    button.isSelected = player.autoplayEnabled
-                }
             }
         }
+        let images = buttons.compactMap { $0 as? CPNowPlayingImageButton }
+        if images.count >= 1 { images[0].isSelected = rating > 0 }
+        if images.count >= 2 { images[1].isSelected = player.autoplayEnabled }
     }
 
     func nowPlayingTemplateUpNextButtonTapped(_ nowPlayingTemplate: CPNowPlayingTemplate) {
@@ -181,7 +170,7 @@ final class CarPlaySceneDelegate: UIResponder,
     }
 
     func nowPlayingTemplateAlbumArtistButtonTapped(_ nowPlayingTemplate: CPNowPlayingTemplate) {
-        showAlbumArtistOptions()
+        Task { await openNowPlayingAlbum() }
     }
 
     private func showRatingPicker() {
@@ -298,67 +287,28 @@ final class CarPlaySceneDelegate: UIResponder,
         interfaceController.pushTemplate(list, animated: true, completion: nil)
     }
 
-    private func showAlbumArtistOptions() {
-        guard let interfaceController,
-              let session = AppEnvironment.shared?.session,
+    private func openNowPlayingAlbum() async {
+        guard let session = AppEnvironment.shared?.session,
               let song = session.player.current?.song else { return }
-
-        var items: [CPListItem] = []
-
         if let albumId = song.albumId, !albumId.isEmpty {
-            let albumName = song.album ?? "Album"
-            let albumItem = listItem(
-                text: "Go to Album",
-                detail: albumName,
+            await showAlbum(
+                id: albumId,
+                name: song.album ?? "Album",
+                session: session,
                 coverArt: song.coverArt,
-                fallbackId: albumId,
-                session: session)
-            albumItem.accessoryType = .disclosureIndicator
-            albumItem.handler = { [weak self] _, completion in
-                Task {
-                    await self?.showAlbum(
-                        id: albumId,
-                        name: albumName,
-                        session: session,
-                        coverArt: song.coverArt,
-                        artist: song.artist)
-                    completion()
-                }
-            }
-            items.append(albumItem)
-        }
-
-        let artistRoutes = SongNavigation.artistRoutes(for: song)
-        if artistRoutes.isEmpty, let fallback = SongNavigation.artistRoute(for: song) {
-            let artistItem = CPListItem(text: "Go to Artist", detailText: fallback.name)
-            artistItem.accessoryType = .disclosureIndicator
-            artistItem.handler = { [weak self] _, completion in
-                Task {
-                    await self?.showArtist(id: fallback.artistId, name: fallback.name, session: session)
-                    completion()
-                }
-            }
-            items.append(artistItem)
+                artist: song.artist)
         } else {
-            for route in artistRoutes {
-                let artistItem = CPListItem(text: "Go to Artist", detailText: route.name)
-                artistItem.accessoryType = .disclosureIndicator
-                artistItem.handler = { [weak self] _, completion in
-                    Task {
-                        await self?.showArtist(id: route.artistId, name: route.name, session: session)
-                        completion()
-                    }
-                }
-                items.append(artistItem)
-            }
+            await openNowPlayingArtist()
         }
+    }
 
-        if items.isEmpty {
-            items = [CPListItem(text: "No album or artist link", detailText: nil)]
-        }
-
-        let list = CPListTemplate(title: "Browse", sections: [CPListSection(items: items)])
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+    private func openNowPlayingArtist() async {
+        guard let session = AppEnvironment.shared?.session,
+              let song = session.player.current?.song else { return }
+        let route = SongNavigation.artistRoutes(for: song).first
+            ?? SongNavigation.artistRoute(for: song)
+        guard let route else { return }
+        await showArtist(id: route.artistId, name: route.name, session: session)
     }
 
     // MARK: - Home
@@ -518,7 +468,7 @@ final class CarPlaySceneDelegate: UIResponder,
 
     private func makeSearchTab(session: AppSession) -> CPListTemplate {
         // Prefer system CPSearchTemplate when the OS allows it (audio: iOS 27+).
-        // Otherwise: type on iPhone (mirrored results), ask by voice, or letter pad.
+        // Voice uses the system search field’s Siri dictation, not in-app recognition.
         let phone = CPListItem(
             text: "Type on iPhone",
             detailText: "Keyboard opens on your phone — results show here")
@@ -531,18 +481,14 @@ final class CarPlaySceneDelegate: UIResponder,
         }
 
         let voice = CPListItem(
-            text: "Ask for a song",
-            detailText: voiceSearchDisabled
-                ? "Unavailable — use Type on iPhone"
-                : "Say an artist, album, or track name")
+            text: "Search by voice",
+            detailText: "Opens search — tap the mic for Siri dictation")
         if let image = UIImage(systemName: "mic.fill") {
             voice.setImage(image)
         }
-        voice.isEnabled = !voiceSearchDisabled
         voice.handler = { [weak self] _, completion in
-            defer { completion() }
-            guard let self, !self.voiceSearchDisabled else { return }
-            self.startVoiceSearch(session: session)
+            self?.openSearch(session: session)
+            completion()
         }
 
         let keys = CPListItem(
@@ -562,41 +508,6 @@ final class CarPlaySceneDelegate: UIResponder,
         template.tabTitle = "Search"
         template.tabImage = UIImage(systemName: "magnifyingglass")
         return template
-    }
-
-    /// Rebuild the Search tab in place (e.g. after greying out voice).
-    private func refreshSearchTab(session: AppSession) {
-        guard let tabBar else {
-            rebuildRoot()
-            return
-        }
-        let templates = tabBar.templates
-        guard templates.count >= 3 else {
-            rebuildRoot()
-            return
-        }
-        let search = makeSearchTab(session: session)
-        searchTabTemplate = search
-        tabBar.updateTemplates([templates[0], search, templates[2]])
-        tabBar.select(search)
-    }
-
-    /// Dismiss alerts / voice UI and land on the Search options list.
-    private func returnToSearchTab(session: AppSession) {
-        guard let interfaceController else { return }
-        let finish = { [weak self] in
-            guard let self else { return }
-            interfaceController.popToRootTemplate(animated: true) { [weak self] _, _ in
-                self?.refreshSearchTab(session: session)
-            }
-        }
-        if interfaceController.presentedTemplate != nil {
-            interfaceController.dismissTemplate(animated: true) { _, _ in
-                finish()
-            }
-        } else {
-            finish()
-        }
     }
 
     /// Prefer Apple’s `CPSearchTemplate`; otherwise mirror the iPhone QWERTY.
@@ -649,20 +560,14 @@ final class CarPlaySceneDelegate: UIResponder,
         let list = CPListTemplate(
             title: "Search",
             sections: [CPListSection(items: [placeholder])])
-        list.trailingNavigationBarButtons = voiceSearchDisabled
-            ? [
-                CPBarButton(title: "Keys") { [weak self] _ in
-                    self?.openCustomKeyboard(session: session)
-                }
-            ]
-            : [
-                CPBarButton(title: "Voice") { [weak self] _ in
-                    self?.startVoiceSearch(session: session)
-                },
-                CPBarButton(title: "Keys") { [weak self] _ in
-                    self?.openCustomKeyboard(session: session)
-                }
-            ]
+        list.trailingNavigationBarButtons = [
+            CPBarButton(title: "Voice") { [weak self] _ in
+                self?.openSearch(session: session)
+            },
+            CPBarButton(title: "Keys") { [weak self] _ in
+                self?.openCustomKeyboard(session: session)
+            }
+        ]
         mirroredResultsTemplate = list
         interfaceController.pushTemplate(list, animated: true, completion: nil)
 
@@ -972,229 +877,6 @@ final class CarPlaySceneDelegate: UIResponder,
         // Live results already refresh while typing / dictating.
     }
 
-    private func startVoiceSearch(session: AppSession) {
-        guard interfaceController != nil, !voiceSearchDisabled else { return }
-
-        SFSpeechRecognizer.requestAuthorization { [weak self] status in
-            Task { @MainActor in
-                guard let self else { return }
-                guard status == .authorized else {
-                    self.presentVoiceFailure(
-                        session: session,
-                        title: "Speech recognition unavailable",
-                        message: "Enable Speech Recognition for Drome in Settings.",
-                        disableVoice: true)
-                    return
-                }
-                AVAudioApplication.requestRecordPermission { allowed in
-                    Task { @MainActor in
-                        guard allowed else {
-                            self.presentVoiceFailure(
-                                session: session,
-                                title: "Microphone needed",
-                                message: "Allow microphone access to use Voice Search.",
-                                disableVoice: true)
-                            return
-                        }
-                        self.presentVoiceSearch(session: session)
-                    }
-                }
-            }
-        }
-    }
-
-    private func presentVoiceSearch(session: AppSession) {
-        guard let interfaceController else { return }
-
-        let listening = CPVoiceControlState(
-            identifier: "listening",
-            titleVariants: ["Listening…", "Say a song, artist, or album"],
-            image: UIImage(systemName: "mic.fill"),
-            repeats: true)
-        let working = CPVoiceControlState(
-            identifier: "working",
-            titleVariants: ["Searching…"],
-            image: UIImage(systemName: "magnifyingglass"),
-            repeats: true)
-        let voice = CPVoiceControlTemplate(voiceControlStates: [listening, working])
-
-        interfaceController.presentTemplate(voice, animated: true) { [weak self] success, _ in
-            guard success else {
-                self?.presentVoiceFailure(
-                    session: session,
-                    title: "Voice Search failed",
-                    message: "Could not open voice search. Try Type on iPhone.",
-                    disableVoice: true)
-                return
-            }
-            self?.beginSpeechRecognition(session: session, voiceTemplate: voice)
-        }
-    }
-
-    private func beginSpeechRecognition(session: AppSession, voiceTemplate: CPVoiceControlTemplate) {
-        stopSpeechRecognition()
-        voiceSearchTimeout?.cancel()
-
-        // Activate the session *before* reading the input format / installing a
-        // tap. On Simulator (and some CarPlay routes) the mic reports 0 Hz
-        // until playAndRecord is active — installing a tap then crashes with
-        // IsFormatSampleRateAndChannelCountValid.
-        do {
-            try AVAudioSession.sharedInstance().setCategory(
-                .playAndRecord, mode: .measurement,
-                options: [.duckOthers, .allowBluetoothA2DP, .defaultToSpeaker])
-            try AVAudioSession.sharedInstance().setActive(true, options: [])
-        } catch {
-            presentVoiceFailure(
-                session: session,
-                title: "Voice Search failed",
-                message: "Could not start the microphone. Try Type on iPhone.",
-                disableVoice: true)
-            return
-        }
-
-        let engine = AVAudioEngine()
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        request.taskHint = .search
-
-        let input = engine.inputNode
-        // Prefer the hardware format after activation; fall back to nil so
-        // AVAudioEngine picks a valid format. Never pass a 0 Hz / 0-channel format.
-        let hardware = input.outputFormat(forBus: 0)
-        let format: AVAudioFormat? =
-            (hardware.sampleRate > 0 && hardware.channelCount > 0) ? hardware : nil
-
-        let tapInstalled = DromeExceptionCatcher.perform {
-            // format: nil asks the engine to use the bus’s native format.
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-                request.append(buffer)
-            }
-        }
-        guard tapInstalled else {
-            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
-            presentVoiceFailure(
-                session: session,
-                title: "Voice Search unavailable",
-                message: "Mic isn’t ready (common in Simulator). Try Type on iPhone.",
-                disableVoice: true)
-            return
-        }
-
-        do {
-            engine.prepare()
-            try engine.start()
-        } catch {
-            input.removeTap(onBus: 0)
-            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
-            presentVoiceFailure(
-                session: session,
-                title: "Voice Search failed",
-                message: "Could not start listening. Try Type on iPhone.",
-                disableVoice: true)
-            return
-        }
-
-        audioEngine = engine
-        speechRequest = request
-
-        var finished = false
-        speechRecognizer?.recognitionTask(with: request) { [weak self] result, error in
-            Task { @MainActor in
-                guard let self, !finished else { return }
-                if let result, result.isFinal {
-                    finished = true
-                    let query = result.bestTranscription.formattedString
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    voiceTemplate.activateVoiceControlState(withIdentifier: "working")
-                    self.stopSpeechRecognition()
-                    self.dismissVoiceTemplate { [weak self] in
-                        guard let self else { return }
-                        guard !query.isEmpty else {
-                            self.presentVoiceFailure(
-                                session: session,
-                                title: "Try again",
-                                message: "I didn’t catch that.",
-                                disableVoice: false)
-                            return
-                        }
-                        Task { await self.showSearchResults(query: query, session: session, title: "“\(query)”") }
-                    }
-                    return
-                }
-                if error != nil {
-                    finished = true
-                    self.stopSpeechRecognition()
-                    self.presentVoiceFailure(
-                        session: session,
-                        title: "Voice Search failed",
-                        message: "Try Type on iPhone.",
-                        disableVoice: true)
-                }
-            }
-        }
-
-        // Auto-stop if the user never finishes a phrase.
-        voiceSearchTimeout = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
-            guard !Task.isCancelled, let self else { return }
-            self.stopSpeechRecognition()
-            self.dismissVoiceTemplate()
-        }
-    }
-
-    private func stopSpeechRecognition() {
-        speechRequest?.endAudio()
-        speechRequest = nil
-        if let engine = audioEngine {
-            _ = DromeExceptionCatcher.perform {
-                engine.inputNode.removeTap(onBus: 0)
-            }
-            engine.stop()
-        }
-        audioEngine = nil
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
-        try? AVAudioSession.sharedInstance().setActive(true, options: [])
-    }
-
-    private func dismissVoiceTemplate(completion: (() -> Void)? = nil) {
-        guard let interfaceController else {
-            completion?()
-            return
-        }
-        if interfaceController.presentedTemplate != nil {
-            interfaceController.dismissTemplate(animated: true) { _, _ in
-                completion?()
-            }
-        } else {
-            completion?()
-        }
-    }
-
-    /// Voice failure: dismiss voice UI, show alert; OK returns to Search and
-    /// optionally greys out Ask for a song.
-    private func presentVoiceFailure(
-        session: AppSession,
-        title: String,
-        message: String,
-        disableVoice: Bool
-    ) {
-        stopSpeechRecognition()
-        if disableVoice {
-            voiceSearchDisabled = true
-        }
-        dismissVoiceTemplate { [weak self] in
-            guard let self, let interfaceController = self.interfaceController else { return }
-            let ok = CPAlertAction(title: "OK", style: .default) { [weak self] _ in
-                self?.returnToSearchTab(session: session)
-            }
-            let alert = CPAlertTemplate(
-                titleVariants: ["\(title). \(message)"],
-                actions: [ok])
-            interfaceController.presentTemplate(alert, animated: true, completion: nil)
-        }
-    }
-
     private func presentSimpleAlert(title: String, message: String) {
         guard let interfaceController else { return }
         let ok = CPAlertAction(title: "OK", style: .default) { [weak self] _ in
@@ -1479,7 +1161,7 @@ final class CarPlaySceneDelegate: UIResponder,
         playlists.map { playlist in
             let item = listItem(
                 text: playlist.name,
-                detail: playlist.songCount.map { "\($0) songs" } ?? "Playlist",
+                detail: playlist.songCountLabel,
                 coverArt: playlist.coverArt,
                 fallbackId: playlist.id,
                 session: session,
@@ -2209,16 +1891,8 @@ final class CarPlaySceneDelegate: UIResponder,
 }
 
 extension Notification.Name {
-    static let dromeSessionChanged = Notification.Name("drome.sessionChanged")
-    static let dromeOpenNowPlaying = Notification.Name("drome.openNowPlaying")
     /// Focus the iPhone Search field so CarPlay can mirror a real QWERTY keyboard.
     static let dromeFocusCarPlaySearch = Notification.Name("drome.focusCarPlaySearch")
     /// CarPlay observes this while mirroring; `userInfo["query"]` is a String.
     static let dromeCarPlaySearchQuery = Notification.Name("drome.carPlaySearchQuery")
-}
-
-enum NowPlayingPresenter {
-    static func open() {
-        NotificationCenter.default.post(name: .dromeOpenNowPlaying, object: nil)
-    }
 }

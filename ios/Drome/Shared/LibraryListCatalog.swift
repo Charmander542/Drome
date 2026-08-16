@@ -207,11 +207,18 @@ enum LibraryListCatalog {
     }
 
     private static func directory(for serverKey: String) -> URL {
+        #if os(tvOS)
+        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Drome/LibraryCatalog", isDirectory: true)
+        #else
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("DromeLibraryCatalog", isDirectory: true)
+        #endif
         let safe = serverKey
             .addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_")))
             ?? "server"
-        return root.appendingPathComponent(safe, isDirectory: true)
+        let dir = root.appendingPathComponent(safe, isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
     }
 }

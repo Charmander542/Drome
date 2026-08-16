@@ -33,7 +33,9 @@ final class AppEnvironment: ObservableObject {
         SharePlayRuntime.shared.bind(session?.player)
         accounts.setActive(account)
         NotificationCenter.default.post(name: .dromeSessionChanged, object: nil)
+        #if os(iOS)
         consumePendingDeepLink()
+        #endif
     }
 
     func signIn(account: Account, password: String) {
@@ -49,6 +51,7 @@ final class AppEnvironment: ObservableObject {
         NotificationCenter.default.post(name: .dromeSessionChanged, object: nil)
     }
 
+    #if os(iOS)
     func handleDeepLink(_ url: URL) {
         pendingDeepLink = url
         isHandlingDeepLink = true
@@ -137,6 +140,7 @@ final class AppEnvironment: ObservableObject {
         struct Info: Decodable { var songId: String }
         return try? JSONDecoder().decode(Info.self, from: data).songId
     }
+    #endif
 
     func remove(_ account: Account) {
         if session?.account.id == account.id {

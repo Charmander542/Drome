@@ -56,9 +56,18 @@ final class AppDatabase {
     }
 
     static func makeShared() -> AppDatabase {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let url = support.appendingPathComponent("Drome/drome.sqlite")
+        let root: URL = {
+            #if os(tvOS)
+            FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Drome", isDirectory: true)
+            #else
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Drome", isDirectory: true)
+            #endif
+        }()
+        let url = root.appendingPathComponent("drome.sqlite")
         do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             return try AppDatabase(url: url)
         } catch {
             fatalError("Could not open database: \(error)")

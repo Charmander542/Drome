@@ -81,6 +81,16 @@ final class PlayerEngine: ObservableObject {
     private var timeObserver: Any?
     /// Delayed lookahead insert so the current stream wins bandwidth first.
     private var prefetchTask: Task<Void, Never>?
+    /// Wait for `readyToPlay` / a short buffer before `play()` so skips don't
+    /// underrun the HDMI HAL (grain + FigFilePlayer -12864).
+    private var itemReadyCancellable: AnyCancellable?
+    private var itemReadyTimeout: Task<Void, Never>?
+    #if os(tvOS)
+    private let tvCache: TVPlaybackCache
+    private let tvAudio = TVNowPlayingAudio()
+    private var tvUsingAudioPlayer = false
+    private var tvRebuildGeneration = 0
+    #endif
     private var lastPublishedElapsed: TimeInterval = -1
     /// Tracks AirPlay so we only rebuild when the route actually flips.
     private var lastAirPlayActive = false
@@ -113,10 +123,21 @@ final class PlayerEngine: ObservableObject {
         self.ratings = ratings
         self.rotation = rotation
         self.downloads = downloads
+        #if os(tvOS)
+        self.tvCache = TVPlaybackCache(client: client)
+        #endif
 
         // Prefer stalling briefly over underrunning / glitching on hiccups.
         player.automaticallyWaitsToMinimizeStalling = true
+        #if os(tvOS)
+        player.allowsExternalPlayback = false
+        player.actionAtItemEnd = .pause
+        tvAudio.onFinished = { [weak self] in
+            self?.playNextAfterCurrentEnds()
+        }
+        #else
         player.actionAtItemEnd = .advance
+        #endif
 
         configureAudioSession()
         configureRemoteCommands()
@@ -124,6 +145,7 @@ final class PlayerEngine: ObservableObject {
         observeAppLifecycle()
         lastAirPlayActive = isAirPlayRouteActive
 
+        #if os(iOS)
         player.playbackCoordinator.delegate = sharePlayBridge
         groupStateObserver.$isEligibleForGroupSession
             .receive(on: RunLoop.main)
@@ -131,6 +153,7 @@ final class PlayerEngine: ObservableObject {
                 self?.isEligibleForSharePlay = eligible
             }
             .store(in: &cancellables)
+        #endif
     }
 
     /// Wire per-account persistence for Recently Played + cold-start resume.
@@ -168,6 +191,15 @@ final class PlayerEngine: ObservableObject {
         cancelAutoplayWork()
         prefetchTask?.cancel()
         prefetchTask = nil
+        itemReadyCancellable?.cancel()
+        itemReadyCancellable = nil
+        itemReadyTimeout?.cancel()
+        itemReadyTimeout = nil
+        #if os(tvOS)
+        tvRebuildGeneration += 1
+        tvAudio.stop()
+        tvUsingAudioPlayer = false
+        #endif
         player.pause()
         player.rate = 0
         player.removeAllItems()
@@ -324,12 +356,22 @@ final class PlayerEngine: ObservableObject {
     func resume() {
         setPlaybackIntent(true)
         activateAudioSession()
-        player.play()
+        #if os(tvOS)
+        if tvUsingAudioPlayer {
+            tvAudio.play()
+            persistSessionSoon()
+            return
+        }
+        #endif
+        playCurrentWhenReady()
         persistSessionSoon()
     }
 
     func pause() {
         setPlaybackIntent(false)
+        #if os(tvOS)
+        tvAudio.pause()
+        #endif
         player.pause()
         persistSessionNow()
     }
@@ -355,6 +397,9 @@ final class PlayerEngine: ObservableObject {
         }
         // Prefer advancing the preloaded AVQueuePlayer window so bookkeeping
         // stays in `handleCurrentItemChange` (one code path for skip + gapless).
+        // tvOS plays one HTTP stream at a time — skip rebuilds instead of
+        // advancing into a prefetched item FigFilePlayer may already have failed.
+        #if !os(tvOS)
         if window.count > 1 {
             player.advanceToNextItem()
             if let item = player.currentItem {
@@ -364,6 +409,7 @@ final class PlayerEngine: ObservableObject {
             ensureAutoplayBuffer()
             return
         }
+        #endif
         guard let upNext = peekUpcoming(limit: 1).first else { return }
         if let current {
             history.append(current)
@@ -421,12 +467,109 @@ final class PlayerEngine: ObservableObject {
         setPlaybackIntent(playing)
         if playing {
             activateAudioSession()
-            player.play()
+            playCurrentWhenReady()
         } else {
+            #if os(tvOS)
+            tvAudio.pause()
+            #endif
             player.pause()
         }
         pushNowPlayingInfo()
     }
+
+    private func playCurrentWhenReady() {
+        #if os(tvOS)
+        if tvUsingAudioPlayer {
+            tvAudio.play()
+            return
+        }
+        guard let item = player.currentItem else { return }
+        if item.status == .failed {
+            retryCurrentAfterDecodeFailure()
+            return
+        }
+        if itemIsSafeToStart(item) {
+            itemReadyCancellable = nil
+            itemReadyTimeout?.cancel()
+            player.play()
+            return
+        }
+        waitUntilItemReady(item) { [weak self] in
+            self?.playCurrentWhenReady()
+        }
+        #else
+        player.play()
+        #endif
+    }
+
+    #if os(tvOS)
+    private func itemIsSafeToStart(_ item: AVPlayerItem) -> Bool {
+        item.status == .readyToPlay
+    }
+
+    private func waitUntilItemReady(_ item: AVPlayerItem, onReady: @escaping () -> Void) {
+        if item.status == .failed {
+            retryCurrentAfterDecodeFailure()
+            return
+        }
+        if itemIsSafeToStart(item) {
+            onReady()
+            return
+        }
+        itemReadyCancellable?.cancel()
+        itemReadyTimeout?.cancel()
+        itemReadyTimeout = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_500_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self else { return }
+                self.itemReadyCancellable = nil
+                if item.status == .failed {
+                    if item === self.player.currentItem {
+                        self.retryCurrentAfterDecodeFailure()
+                    }
+                } else {
+                    onReady()
+                }
+            }
+        }
+        itemReadyCancellable = item.publisher(for: \.status)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in
+                guard let self else { return }
+                if status == .readyToPlay {
+                    self.itemReadyTimeout?.cancel()
+                    self.itemReadyCancellable = nil
+                    onReady()
+                } else if status == .failed {
+                    self.itemReadyTimeout?.cancel()
+                    self.itemReadyCancellable = nil
+                    if item === self.player.currentItem {
+                        self.retryCurrentAfterDecodeFailure()
+                    }
+                }
+            }
+    }
+
+    private func retryCurrentAfterDecodeFailure() {
+        guard let song = current?.song else { return }
+        let queueItem = current
+        Task { @MainActor in
+            guard let url = try? await self.tvCache.fileURL(for: song) else { return }
+            guard self.current?.id == queueItem?.id else { return }
+            do {
+                self.player.pause()
+                self.player.removeAllItems()
+                self.window.removeAll()
+                try self.tvAudio.start(url: url)
+                self.tvUsingAudioPlayer = true
+                self.setPlaybackIntent(true)
+            } catch {
+                self.playNextAfterCurrentEnds()
+            }
+        }
+    }
+    #endif
 
     /// Song behind the current cover (in-queue history, else undone session).
     var artSwipePreviousSong: Song? {
@@ -497,6 +640,18 @@ final class PlayerEngine: ObservableObject {
     }
 
     func seek(to time: TimeInterval) {
+        #if os(tvOS)
+        if tvUsingAudioPlayer {
+            let seconds = max(0, time)
+            tvAudio.seek(to: seconds)
+            setPlayhead(elapsed: seconds, duration: tvAudio.duration > 0 ? tvAudio.duration : duration)
+            seekEpoch += 1
+            appliedSeekEpoch = seekEpoch
+            if wantsToPlay { tvAudio.play() }
+            pushNowPlayingInfo()
+            return
+        }
+        #endif
         guard let item = player.currentItem else {
             setPlayhead(elapsed: max(0, time))
             pushNowPlayingInfo()
@@ -529,8 +684,15 @@ final class PlayerEngine: ObservableObject {
             || player.rate > 0
             || isPlaying
 
-        // Zero-tolerance seeks frequently no-op on Navidrome HTTP streams.
-        let slack = CMTime(seconds: 1.0, preferredTimescale: 600)
+        // HTTP streams on the phone need slack or the seek no-ops. Apple TV
+        // playing a local file needs an exact seek — a 1s window plus another
+        // seek (scrub) is what made HDMI audio fall apart (HLS-FASB).
+        let slack: CMTime
+        if let url = (item.asset as? AVURLAsset)?.url, url.isFileURL {
+            slack = .zero
+        } else {
+            slack = CMTime(seconds: 1.0, preferredTimescale: 600)
+        }
         player.seek(to: target, toleranceBefore: slack, toleranceAfter: slack) { [weak self] finished in
             Task { @MainActor [weak self] in
                 guard let self, self.seekEpoch == epoch else { return }
@@ -546,7 +708,11 @@ final class PlayerEngine: ObservableObject {
                 self.pushNowPlayingInfo()
                 if finished, shouldResume {
                     self.activateAudioSession()
+                    #if os(tvOS)
+                    self.playCurrentWhenReady()
+                    #else
                     self.player.play()
+                    #endif
                 }
             }
         }
@@ -558,6 +724,11 @@ final class PlayerEngine: ObservableObject {
     /// High-resolution playhead for karaoke / scrubber UIs. Prefer this over
     /// the throttled `elapsed` publish when you need frame-smooth updates.
     func accurateElapsed() -> TimeInterval {
+        #if os(tvOS)
+        if tvUsingAudioPlayer {
+            return tvAudio.currentTime
+        }
+        #endif
         let seconds = player.currentTime().seconds
         guard seconds.isFinite, seconds >= 0 else { return elapsed }
         return seconds
@@ -734,28 +905,56 @@ final class PlayerEngine: ObservableObject {
     }
 
     private var isAirPlayRouteActive: Bool {
+        #if os(tvOS)
+        // Apple TV cannot decode FLAC over HDMI (FigFilePlayer -12864), including
+        // local files. Never treat the TV output as an AirPlay transcode trigger
+        // for the iPhone player, but also never feed it lossless originals.
+        return false
+        #else
         AVAudioSession.sharedInstance().currentRoute.outputs.contains {
             $0.portType == .airPlay
         }
+        #endif
     }
 
     private func makePlayerItem(for song: Song) -> AVPlayerItem {
-        // AirPlay receivers often cannot decode FLAC. Prefer a server-side
-        // MP3 transcoder stream while AirPlay is active; keep local/raw lossless
-        // for phone/Bluetooth/wired output.
+        makePlayerItem(for: song, url: playbackURL(for: song))
+    }
+
+    private func playbackURL(for song: Song) -> URL {
+        #if os(tvOS)
+        tvHTTPStreamURL(for: song) ?? URL(fileURLWithPath: "/dev/null")
+        #else
         let airPlay = isAirPlayRouteActive
-        let local = airPlay ? nil : downloads.localURL(songId: song.id)
-        let url = local
-            ?? client.streamURL(songId: song.id, compatibleWithAirPlay: airPlay)
+        if !airPlay, let local = downloads.localURL(songId: song.id) { return local }
+        return client.streamURL(songId: song.id, compatibleWithAirPlay: airPlay)
             ?? URL(fileURLWithPath: "/dev/null")
-        let asset = AVURLAsset(url: url)
+        #endif
+    }
+
+    #if os(tvOS)
+    private func tvHTTPStreamURL(for song: Song) -> URL? {
+        let suffix = (song.suffix ?? "").lowercased()
+        let type = (song.contentType ?? "").lowercased()
+        if suffix == "mp3" || type.contains("mpeg") {
+            return client.streamURL(songId: song.id, format: "raw", maxBitRate: nil,
+                                    estimateContentLength: true)
+                ?? client.downloadURL(songId: song.id)
+        }
+        return client.streamURL(songId: song.id, format: "mp3", maxBitRate: 320,
+                                estimateContentLength: true)
+    }
+    #endif
+
+    private func makePlayerItem(for song: Song, url: URL) -> AVPlayerItem {
+        let isFile = url.isFileURL
+        let asset = AVURLAsset(url: url, options: [
+            AVURLAssetPreferPreciseDurationAndTimingKey: isFile,
+        ])
         let item = AVPlayerItem(asset: asset)
         sharePlayBridge.remember(item, identity: Self.sharePlayContentID(for: song))
-        // Deep buffer for remote originals (often FLAC) so short network
-        // hiccups never starve the decoder. Local files need far less.
-        item.preferredForwardBufferDuration = local == nil ? 45 : 8
+        item.preferredForwardBufferDuration = isFile ? 4 : 45
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
-        // Do not cap bitrate — never trade quality for smoothness.
         item.preferredPeakBitRate = 0
         return item
     }
@@ -764,24 +963,105 @@ final class PlayerEngine: ObservableObject {
     /// Remote lossless streams are bandwidth-heavy; only preload one ahead so
     /// the current track keeps the pipe. Local files can preload two.
     private func upcomingPrefetchCount() -> Int {
+        #if os(tvOS)
+        // A second live HTTP/transcode stream is what FigFilePlayer probes and
+        // fails while the current track is still playing.
+        return 0
+        #else
         let currentIsLocal = current.map { downloads.localURL(songId: $0.song.id) != nil } ?? false
         let upcoming = peekUpcoming(limit: 2)
         let upcomingAllLocal = !upcoming.isEmpty
             && upcoming.allSatisfy { downloads.localURL(songId: $0.song.id) != nil }
         if currentIsLocal && upcomingAllLocal { return 2 }
         return 1
+        #endif
     }
 
     private func rebuildWindow(startPlaying: Bool) {
+        #if os(tvOS)
+        rebuildWindowFromFile(startPlaying: startPlaying)
+        #else
+        rebuildWindowStreaming(startPlaying: startPlaying)
+        #endif
+    }
+
+    #if os(tvOS)
+    private func rebuildWindowFromFile(startPlaying: Bool) {
         isRebuilding = true
         prefetchTask?.cancel()
-        // Don't let a local pause during item swap pause everyone else in the jam.
+        itemReadyCancellable?.cancel()
+        itemReadyCancellable = nil
+        itemReadyTimeout?.cancel()
+        itemReadyTimeout = nil
+        tvRebuildGeneration += 1
+        tvAudio.stop()
+        tvUsingAudioPlayer = false
+        player.pause()
+        player.rate = 0
+        player.removeAllItems()
+        window.removeAll()
+        sharePlayBridge.reset()
+        guard let current else {
+            isRebuilding = false
+            return
+        }
+        let song = current.song
+        let queueItem = current
+        setPlaybackIntent(startPlaying)
+        activateAudioSession()
+
+        // Cached complete MP3 → Audio Queue (no FigFilePlayer).
+        if let cached = tvCache.cachedURL(for: song) {
+            do {
+                try tvAudio.start(url: cached)
+                if !startPlaying { tvAudio.pause() }
+                tvUsingAudioPlayer = true
+                isRebuilding = false
+                let duration = tvAudio.duration > 0 ? tvAudio.duration : TimeInterval(song.duration ?? 0)
+                setPlayhead(elapsed: 0, duration: duration)
+                pushNowPlayingInfo()
+                if let next = peekUpcoming(limit: 1).first {
+                    tvCache.prefetch(next.song)
+                }
+                return
+            } catch {
+                tvAudio.stop()
+                tvUsingAudioPlayer = false
+            }
+        }
+
+        // Start MP3 HTTP immediately so we aren't silent while a full file copies.
+        guard let url = tvHTTPStreamURL(for: song) else {
+            isRebuilding = false
+            return
+        }
+        let playerItem = makePlayerItem(for: song, url: url)
+        window.append((playerItem, queueItem))
+        player.insert(playerItem, after: nil)
+        isRebuilding = false
+        pushNowPlayingInfo()
+        if startPlaying {
+            playCurrentWhenReady()
+        }
+        tvCache.prefetch(song)
+        if let next = peekUpcoming(limit: 1).first {
+            tvCache.prefetch(next.song)
+        }
+    }
+    #endif
+
+    #if !os(tvOS)
+    private func rebuildWindowStreaming(startPlaying: Bool) {
+        isRebuilding = true
+        prefetchTask?.cancel()
+        itemReadyCancellable?.cancel()
+        itemReadyCancellable = nil
+        itemReadyTimeout?.cancel()
+        itemReadyTimeout = nil
         let suspension = sharePlaySession.map { _ in
             player.playbackCoordinator.beginSuspension(for: .dromeRebuilding)
         }
         defer { suspension?.end() }
-        // Pause before tearing down HTTP streams so a replaced item cannot
-        // keep decoding while the next track starts (audible overlap).
         player.pause()
         player.rate = 0
         player.removeAllItems()
@@ -793,8 +1073,6 @@ final class PlayerEngine: ObservableObject {
         }
         guard let current else { return }
 
-        // Insert the current item alone first so its buffer claims bandwidth
-        // before any lookahead streams open.
         let playerItem = makePlayerItem(for: current.song)
         window.append((playerItem, current))
         player.insert(playerItem, after: nil)
@@ -805,13 +1083,14 @@ final class PlayerEngine: ObservableObject {
         if startPlaying {
             activateAudioSession()
             setPlaybackIntent(true)
-            player.play()
+            playCurrentWhenReady()
         } else {
             setPlaybackIntent(false)
         }
 
         schedulePrefetchTopUp(delayNanoseconds: 1_200_000_000)
     }
+    #endif
 
     /// Keeps the preloaded window in sync after queue edits without touching
     /// the currently playing item (preserving gapless playback).
@@ -930,6 +1209,9 @@ final class PlayerEngine: ObservableObject {
         ) { [weak self] time in
             Task { @MainActor [weak self] in
                 guard let self, !self.isRebuilding else { return }
+                #if os(tvOS)
+                if self.tvUsingAudioPlayer { return }
+                #endif
                 guard self.seekEpoch == self.appliedSeekEpoch else { return }
                 let seconds = time.seconds
                 guard seconds.isFinite, seconds >= 0 else { return }
@@ -948,10 +1230,35 @@ final class PlayerEngine: ObservableObject {
             }
         }
 
+        #if os(tvOS)
+        Timer.publish(every: 0.25, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                guard let self, self.tvUsingAudioPlayer, !self.isRebuilding else { return }
+                let seconds = self.tvAudio.currentTime
+                guard seconds.isFinite, seconds >= 0 else { return }
+                let duration = self.tvAudio.duration > 0 ? self.tvAudio.duration : self.duration
+                self.setPlayhead(elapsed: seconds, duration: duration)
+            }
+            .store(in: &cancellables)
+        #endif
+
         NotificationCenter.default.publisher(for: AVPlayerItem.didPlayToEndTimeNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
                 self?.handleItemDidEnd(notification.object as? AVPlayerItem)
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: AVPlayerItem.failedToPlayToEndTimeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self else { return }
+                guard let failed = notification.object as? AVPlayerItem,
+                      failed === self.player.currentItem else { return }
+                #if os(tvOS)
+                self.retryCurrentAfterDecodeFailure()
+                #endif
             }
             .store(in: &cancellables)
 
@@ -986,7 +1293,7 @@ final class PlayerEngine: ObservableObject {
                 self?.configureAudioSession()
                 self?.activateAudioSession()
                 if self?.wantsToPlay == true {
-                    self?.player.play()
+                    self?.playCurrentWhenReady()
                 }
             }
             .store(in: &cancellables)
@@ -1000,10 +1307,14 @@ final class PlayerEngine: ObservableObject {
             // Gapless handoffs often emit a transient `nil` currentItem while
             // the next buffer is already playing. Treating that as "exhausted"
             // cleared our window and left the UI stuck on the previous track.
+            #if os(tvOS)
+            return
+            #else
             if player.items().isEmpty {
                 handleQueueExhausted()
             }
             return
+            #endif
         }
         guard let index = window.firstIndex(where: { $0.playerItem === item }) else {
             return
@@ -1045,10 +1356,33 @@ final class PlayerEngine: ObservableObject {
         guard let item, item === window.first?.playerItem else { return }
         if repeatMode == .one {
             player.seek(to: .zero)
-            player.play()
+            playCurrentWhenReady()
             if let song = current?.song { scrobbleSubmission(song) }
+            return
         }
+        #if os(tvOS)
+        playNextAfterCurrentEnds()
+        #endif
     }
+
+    #if os(tvOS)
+    /// Natural end / Infinite Shuffle: start the next queued song on a fresh
+    /// HTTP stream instead of advancing a prefetched AVQueuePlayer item.
+    private func playNextAfterCurrentEnds() {
+        drainLowRatedFromQueues()
+        if let upNext = peekUpcoming(limit: 1).first {
+            if let current {
+                history.append(current)
+                scrobbleSubmission(current.song)
+            }
+            consumeFromQueues(upNext)
+            setCurrent(upNext, startPlaying: true)
+            ensureAutoplayBuffer()
+            return
+        }
+        handleQueueExhausted()
+    }
+    #endif
 
     private func handleQueueExhausted() {
         guard let finished = current else { return }
@@ -1298,7 +1632,11 @@ final class PlayerEngine: ObservableObject {
             // Mix with FaceTime so Drome can play on each phone during the call.
             try? session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
         } else {
+            #if os(tvOS)
+            try? session.setCategory(.playback, mode: .moviePlayback, options: [])
+            #else
             try? session.setCategory(.playback, mode: .default, options: [])
+            #endif
         }
         try? session.setActive(true, options: [])
     }

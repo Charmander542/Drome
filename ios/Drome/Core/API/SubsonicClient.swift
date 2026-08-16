@@ -296,21 +296,27 @@ final class SubsonicClient {
     // MARK: - Media URLs
 
     /// Streaming URL. Default `format=raw` is the original (lossless) file.
-    /// When `compatibleWithAirPlay` is true, request a 320kbps MP3 so AirPlay
-    /// receivers that cannot play FLAC still work — local/direct playback
-    /// should keep using raw / downloaded originals.
+    /// `mp3` / `aac` request a server-side transcode at `maxBitRate` kbps.
     func streamURL(songId: String, compatibleWithAirPlay: Bool = false) -> URL? {
         if compatibleWithAirPlay {
-            return endpointURL("stream", parameters: [
-                URLQueryItem(name: "id", value: songId),
-                URLQueryItem(name: "format", value: "mp3"),
-                URLQueryItem(name: "maxBitRate", value: "320"),
-            ], stableMediaAuth: true)
+            return streamURL(songId: songId, format: "mp3", maxBitRate: 320)
         }
-        return endpointURL("stream", parameters: [
+        return streamURL(songId: songId, format: "raw", maxBitRate: nil)
+    }
+
+    func streamURL(songId: String, format: String, maxBitRate: Int?,
+                   estimateContentLength: Bool = false) -> URL? {
+        var parameters = [
             URLQueryItem(name: "id", value: songId),
-            URLQueryItem(name: "format", value: "raw"),
-        ], stableMediaAuth: true)
+            URLQueryItem(name: "format", value: format),
+        ]
+        if let maxBitRate {
+            parameters.append(URLQueryItem(name: "maxBitRate", value: String(maxBitRate)))
+        }
+        if estimateContentLength {
+            parameters.append(URLQueryItem(name: "estimateContentLength", value: "true"))
+        }
+        return endpointURL("stream", parameters: parameters, stableMediaAuth: true)
     }
 
     /// Original-file download URL (no transcoding ever happens on this one).

@@ -20,6 +20,11 @@ struct SettingsView: View {
             Section("Account") {
                 LabeledContent("User", value: session.account.username)
                 LabeledContent("Server", value: session.account.serverURL.absoluteString)
+                NavigationLink {
+                    TVPairingView()
+                } label: {
+                    Label("Send to Apple TV", systemImage: "appletv")
+                }
                 Toggle("Allow self-signed cert", isOn: Binding(
                     get: { session.account.allowSelfSigned },
                     set: { newValue in

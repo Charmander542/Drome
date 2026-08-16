@@ -58,10 +58,16 @@
 		<key>UIImageRespectsSafeAreaInsets</key>
 		<false/>
 	</dict>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Drome uses the microphone for CarPlay voice search.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Drome uses speech recognition so you can search your library by voice in CarPlay.</string>
+	<key>NSSiriUsageDescription</key>
+	<string>Drome uses Siri so you can play songs from your library, or add missing tracks to your wishlist.</string>
+	<key>INIntentsSupported</key>
+	<array>
+		<string>INPlayMediaIntent</string>
+	</array>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_drome-pair._tcp</string>
+	</array>
 </dict>
 </plist>
 

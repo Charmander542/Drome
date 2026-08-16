@@ -83,8 +83,12 @@ final class DownloadManager: ObservableObject {
     static func directory(for serverKey: String) -> URL {
         let safe = serverKey.replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: ":", with: "_")
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let dir = support.appendingPathComponent("Drome/Downloads/\(safe)", isDirectory: true)
+        #if os(tvOS)
+        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        #else
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        #endif
+        let dir = root.appendingPathComponent("Drome/Downloads/\(safe)", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
@@ -427,8 +431,10 @@ private final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegat
 
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         Task { @MainActor in
+            #if os(iOS)
             AppDelegate.backgroundSessionCompletionHandler?()
             AppDelegate.backgroundSessionCompletionHandler = nil
+            #endif
         }
     }
 

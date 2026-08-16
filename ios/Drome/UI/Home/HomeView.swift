@@ -12,6 +12,7 @@ struct HomeView: View {
     @State private var error: String?
     @State private var showAccounts = false
     @State private var showSettings = false
+    @State private var showTVPairing = false
 
     var body: some View {
         Group {
@@ -61,6 +62,9 @@ struct HomeView: View {
                     Button { showAccounts = true } label: {
                         Label("Switch Account", systemImage: "person.2")
                     }
+                    Button { showTVPairing = true } label: {
+                        Label("Send to Apple TV", systemImage: "appletv")
+                    }
                     Button { showSettings = true } label: {
                         Label("Settings", systemImage: "gearshape")
                     }
@@ -74,6 +78,13 @@ struct HomeView: View {
         }
         .sheet(isPresented: $showAccounts) {
             AccountSwitcherSheet().environmentObject(env)
+        }
+        .sheet(isPresented: $showTVPairing) {
+            SongNavigationStack {
+                TVPairingView()
+                    .dromeSession(session)
+                    .environmentObject(env)
+            }
         }
         .sheet(isPresented: $showSettings) {
             SongNavigationStack {

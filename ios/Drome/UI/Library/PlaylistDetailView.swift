@@ -356,7 +356,7 @@ struct PlaylistDetailView: View {
                     .frame(maxWidth: .infinity)
                 }
 
-                Text("\(playlist.songs.count) songs")
+                Text(Playlist.songCountLabel(playlist.songs.count))
                     .font(.caption)
                     .foregroundStyle(DromeTheme.muted)
 
@@ -687,8 +687,8 @@ struct AddToPlaylistView: View {
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.title2)
                                     .foregroundStyle(DromeTheme.accent)
-                            } else if let count = playlist.songCount {
-                                Text("\(count)")
+                            } else {
+                                Text(playlist.songCountLabel)
                                     .font(.caption)
                                     .foregroundStyle(DromeTheme.muted)
                             }

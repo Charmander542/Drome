@@ -781,7 +781,7 @@ struct LibraryView: View {
     private func playlistSubtitle(_ playlist: Playlist) -> String {
         var parts: [String] = []
         if let owner = playlist.owner { parts.append(owner) }
-        if let count = playlist.songCount { parts.append("\(count) songs") }
+        if playlist.songCount != nil { parts.append(playlist.songCountLabel) }
         if playlist.isPublic == true { parts.append("Shared") }
         return parts.joined(separator: " · ")
     }
