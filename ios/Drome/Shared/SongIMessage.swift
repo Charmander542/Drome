@@ -17,17 +17,21 @@ enum SongIMessage {
     ) -> MSMessage {
         let template = MSMessageTemplateLayout()
         template.image = MessageCardImage.render(cover: cover, title: title, artist: artist)
+        template.caption = title
+        template.subcaption = artist.isEmpty ? nil : artist
 
         let message = MSMessage()
         message.layout = MSMessageLiveLayout(alternateLayout: template)
         message.summaryText = artist.isEmpty ? title : "\(title) — \(artist)"
-        message.url = payloadURL(
+        message.url = messageURL(
             webURL: webURL, song: song, title: title, artist: artist,
             album: album, serverHost: serverHost)
         return message
     }
 
-    static func payloadURL(
+    /// iMessage drops `drome://` from `MSMessage.url`. Keep an http(s) URL with
+    /// `song` / title / artist in the query so the live bubble can read it.
+    static func messageURL(
         webURL: URL?,
         song: Song,
         title: String,
@@ -35,12 +39,17 @@ enum SongIMessage {
         album: String,
         serverHost: String?
     ) -> URL {
-        let fallback = URL(string: "drome://imessage")!
-        var comps = URLComponents(url: webURL ?? fallback, resolvingAgainstBaseURL: false)
-            ?? URLComponents()
-        if webURL == nil {
-            comps.scheme = "drome"
-            comps.host = "imessage"
+        var comps: URLComponents
+        if let webURL, let parsed = URLComponents(url: webURL, resolvingAgainstBaseURL: false),
+           parsed.scheme == "http" || parsed.scheme == "https" {
+            comps = parsed
+        } else if let serverHost, !serverHost.isEmpty {
+            comps = URLComponents(string: "https://\(serverHost)/drome-imessage") ?? URLComponents()
+        } else {
+            comps = URLComponents()
+            comps.scheme = "https"
+            comps.host = "app.drome.invalid"
+            comps.path = "/t/\(song.id)"
         }
         var items = comps.queryItems ?? []
         func set(_ name: String, _ value: String?) {
@@ -56,7 +65,7 @@ enum SongIMessage {
         set("cover", song.coverArt ?? song.albumId)
         set("server", serverHost)
         comps.queryItems = items
-        return comps.url ?? fallback
+        return comps.url ?? webURL ?? URL(string: "https://app.drome.invalid/t/\(song.id)?song=\(song.id)")!
     }
 }
 

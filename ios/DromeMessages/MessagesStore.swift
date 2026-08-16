@@ -34,20 +34,25 @@ struct ShareTrack: Hashable, Identifiable {
     }
 
     static func from(url: URL?) -> ShareTrack? {
-        guard let url,
-              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
-        else { return nil }
+        guard let url else { return nil }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         func val(_ name: String) -> String {
             items.first { $0.name == name }?.value ?? ""
         }
-        let id = val("song")
+        var id = val("song")
+        if id.isEmpty, url.scheme == "drome", url.host == "track" {
+            id = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
         guard !id.isEmpty else { return nil }
+        func decode(_ raw: String) -> String {
+            raw.removingPercentEncoding ?? raw
+        }
         return ShareTrack(
-            id: id,
-            title: val("title").removingPercentEncoding ?? val("title"),
-            artist: val("artist").removingPercentEncoding ?? val("artist"),
-            album: val("album").removingPercentEncoding ?? val("album"),
-            coverArt: val("cover").isEmpty ? nil : val("cover"))
+            id: decode(id),
+            title: decode(val("title")),
+            artist: decode(val("artist")),
+            album: decode(val("album")),
+            coverArt: val("cover").isEmpty ? nil : decode(val("cover")))
     }
 }
 
@@ -81,6 +86,37 @@ enum MessagesStore {
         return rows.map {
             ShareTrack(id: $0.id, title: $0.title, artist: $0.artist, album: $0.album, coverArt: $0.coverArt)
         }
+    }
+
+    static func setPendingOpen(_ track: ShareTrack) {
+        guard !track.id.isEmpty else { return }
+        let row = Row(id: track.id, title: track.title, artist: track.artist, album: track.album, coverArt: track.coverArt)
+        guard let data = try? JSONEncoder().encode(row) else { return }
+        defaults?.set(data, forKey: "drome.pendingOpenTrack")
+        defaults?.synchronize()
+    }
+
+    static func save(_ track: ShareTrack) {
+        guard !track.id.isEmpty else { return }
+        var all = payloads()
+        all[track.id] = Row(
+            id: track.id, title: track.title, artist: track.artist,
+            album: track.album, coverArt: track.coverArt)
+        if let data = try? JSONEncoder().encode(all) {
+            defaults?.set(data, forKey: "drome.messages.payloads")
+        }
+    }
+
+    static func cachedTrack(id: String) -> ShareTrack? {
+        guard let row = payloads()[id] else { return nil }
+        return ShareTrack(id: row.id, title: row.title, artist: row.artist, album: row.album, coverArt: row.coverArt)
+    }
+
+    private static func payloads() -> [String: Row] {
+        guard let data = defaults?.data(forKey: "drome.messages.payloads"),
+              let rows = try? JSONDecoder().decode([String: Row].self, from: data)
+        else { return [:] }
+        return rows
     }
 
     static func serverHost() -> String? {

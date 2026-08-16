@@ -24,4 +24,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         }
         return UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
     }
+
+    func application(
+        _ app: UIApplication,
+        open url: URL,
+        options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+    ) -> Bool {
+        Task { @MainActor in
+            DeepLink.open(url, env: AppEnvironment.shared)
+        }
+        return true
+    }
 }

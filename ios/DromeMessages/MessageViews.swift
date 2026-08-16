@@ -2,31 +2,50 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
+@MainActor
+final class TranscriptChrome: ObservableObject {
+    @Published var track = ShareTrack(id: "", title: "", artist: "", album: "", coverArt: nil)
+    @Published var cover: UIImage?
+    @Published var canStream = false
+    var onOpenInDrome: () -> Void = {}
+}
+
 struct TranscriptBubbleView: View {
-    let track: ShareTrack
-    var cover: UIImage?
-    var canStream: Bool
+    @ObservedObject var chrome: TranscriptChrome
+    @Environment(\.openURL) private var openURL
     @ObservedObject var player: BubblePlayer
 
     private let artSize: CGFloat = 56
 
     var body: some View {
         HStack(spacing: 8) {
-            art
-            VStack(alignment: .leading, spacing: 1) {
-                Text(track.title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                if !track.artist.isEmpty {
-                    Text(track.artist)
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.7))
-                        .lineLimit(1)
+            Button {
+                if !chrome.track.id.isEmpty,
+                   let url = URL(string: "drome://track/\(chrome.track.id)") {
+                    openURL(url)
                 }
+                chrome.onOpenInDrome()
+            } label: {
+                HStack(spacing: 8) {
+                    art
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(chrome.track.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        if !chrome.track.artist.isEmpty {
+                            Text(chrome.track.artist)
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.7))
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 2)
+                    PlayingWaveform(isPlaying: player.isPlaying)
+                }
+                .contentShape(Rectangle())
             }
-            Spacer(minLength: 2)
-            PlayingWaveform(isPlaying: player.isPlaying)
+            .buttonStyle(.plain)
             Button {
                 player.toggle()
             } label: {
@@ -36,8 +55,8 @@ struct TranscriptBubbleView: View {
                     .foregroundStyle(Color(red: 0.24, green: 0.49, blue: 1))
             }
             .buttonStyle(.plain)
-            .disabled(!canStream && !player.hasItem)
-            .opacity((canStream || player.hasItem) ? 1 : 0.35)
+            .disabled(!chrome.canStream && !player.hasItem)
+            .opacity((chrome.canStream || player.hasItem) ? 1 : 0.35)
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 4)
@@ -48,7 +67,7 @@ struct TranscriptBubbleView: View {
     @ViewBuilder
     private var art: some View {
         Group {
-            if let cover {
+            if let cover = chrome.cover {
                 Image(uiImage: cover)
                     .resizable()
                     .scaledToFill()
@@ -65,31 +84,61 @@ struct TranscriptBubbleView: View {
     }
 }
 
-/// Dynamic Island–style bars. Cheap sine animation — not an FFT of the file.
+/// Six-glyph Drome mark. At rest it matches the logo; while playing the
+/// pieces pulse like the splash animation.
 struct PlayingWaveform: View {
     var isPlaying: Bool
+
+    /// Same silhouette as `SplashScreenView` / LaunchLogo, scaled to the chip.
+    private static let glyphs: [Glyph] = [
+        .capsule(10),
+        .circle(4.5),
+        .capsule(16.5),
+        .capsule(20),
+        .capsule(10),
+        .circle(3.8),
+    ]
+    private static let barWidth: CGFloat = 3.2
+    private static let spacing: CGFloat = 1.6
 
     var body: some View {
         TimelineView(.animation(minimumInterval: isPlaying ? 1.0 / 24.0 : 10, paused: !isPlaying)) { timeline in
             let t = isPlaying ? timeline.date.timeIntervalSinceReferenceDate : 0
-            HStack(alignment: .center, spacing: 2) {
-                ForEach(0..<4, id: \.self) { i in
-                    Capsule()
-                        .fill(Color.white)
-                        .frame(width: 2.5, height: barHeight(index: i, time: t))
+            HStack(alignment: .center, spacing: Self.spacing) {
+                ForEach(Self.glyphs.indices, id: \.self) { i in
+                    let scale = pulse(index: i, time: t)
+                    Self.glyphs[i].shape(width: Self.barWidth, scale: scale)
                 }
             }
-            .frame(width: 16, height: 18)
+            .frame(width: 28, height: 22)
         }
         .accessibilityHidden(true)
     }
 
-    private func barHeight(index: Int, time: TimeInterval) -> CGFloat {
-        let rest: [CGFloat] = [5, 11, 8, 6]
-        guard isPlaying else { return rest[index] }
-        let phase = Double(index) * 0.85
-        let wave = 0.5 + 0.5 * sin(time * 7.2 - phase)
-        return 4 + 14 * wave
+    private func pulse(index: Int, time: TimeInterval) -> CGFloat {
+        guard isPlaying else { return 1 }
+        let phase = Double(index) * 1.6
+        let wave = 0.55 + 0.45 * sin(time * 7.2 - phase)
+        return max(0.35, wave)
+    }
+
+    private enum Glyph {
+        case capsule(CGFloat)
+        case circle(CGFloat)
+
+        @ViewBuilder
+        func shape(width: CGFloat, scale: CGFloat) -> some View {
+            switch self {
+            case .capsule(let height):
+                Capsule()
+                    .fill(Color.white)
+                    .frame(width: width, height: height * scale)
+            case .circle(let diameter):
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: diameter * scale, height: diameter * scale)
+            }
+        }
     }
 }
 

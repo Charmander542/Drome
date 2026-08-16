@@ -16,7 +16,12 @@ enum SongShare {
 
     @MainActor
     static func present(song: Song) {
-        Task { await presentAsync(song: song) }
+        guard !SharePrepHUD.isVisible else { return }
+        SharePrepHUD.show()
+        Task {
+            await presentAsync(song: song)
+            SharePrepHUD.hide()
+        }
     }
 
     @MainActor
@@ -86,6 +91,7 @@ enum SongShare {
                 width: 1, height: 1)
             popover.permittedArrowDirections = []
         }
+        SharePrepHUD.hide()
         presenter.present(activity, animated: true)
     }
 
@@ -251,6 +257,68 @@ enum SongShare {
             _ activityViewController: UIActivityViewController
         ) -> LPLinkMetadata? {
             metadata
+        }
+    }
+}
+
+/// Center pill so Share doesn’t feel dead while cover / token upload runs.
+@MainActor
+private enum SharePrepHUD {
+    private static weak var container: UIView?
+    static var isVisible: Bool { container != nil }
+
+    static func show() {
+        hide()
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        guard let window = scenes.flatMap(\.windows).first(where: \.isKeyWindow) else { return }
+
+        let dim = UIView(frame: window.bounds)
+        dim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        dim.backgroundColor = UIColor.black.withAlphaComponent(0.28)
+        dim.isUserInteractionEnabled = true
+        dim.accessibilityViewIsModal = true
+
+        let pill = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
+        pill.layer.cornerRadius = 16
+        pill.clipsToBounds = true
+        pill.translatesAutoresizingMaskIntoConstraints = false
+
+        let spinner = UIActivityIndicatorView(style: .medium)
+        spinner.color = .white
+        spinner.startAnimating()
+
+        let label = UILabel()
+        label.text = "Preparing share"
+        label.font = .systemFont(ofSize: 15, weight: .semibold)
+        label.textColor = .white
+
+        let stack = UIStackView(arrangedSubviews: [spinner, label])
+        stack.axis = .horizontal
+        stack.alignment = .center
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        pill.contentView.addSubview(stack)
+        dim.addSubview(pill)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: pill.contentView.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: pill.contentView.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: pill.contentView.topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: pill.contentView.bottomAnchor, constant: -14),
+            pill.centerXAnchor.constraint(equalTo: dim.centerXAnchor),
+            pill.centerYAnchor.constraint(equalTo: dim.centerYAnchor),
+        ])
+
+        window.addSubview(dim)
+        container = dim
+        dim.alpha = 0
+        UIView.animate(withDuration: 0.18) { dim.alpha = 1 }
+    }
+
+    static func hide() {
+        guard let dim = container else { return }
+        container = nil
+        UIView.animate(withDuration: 0.12, animations: { dim.alpha = 0 }) { _ in
+            dim.removeFromSuperview()
         }
     }
 }

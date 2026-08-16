@@ -14,6 +14,7 @@ final class AppEnvironment: ObservableObject {
 
     @Published private(set) var session: AppSession?
     private var pendingDeepLink: URL?
+    private(set) var isHandlingDeepLink = false
 
     init() {
         accounts = AccountStore()
@@ -49,11 +50,17 @@ final class AppEnvironment: ObservableObject {
     }
 
     func handleDeepLink(_ url: URL) {
-        guard session != nil else {
-            pendingDeepLink = url
-            return
-        }
+        pendingDeepLink = url
+        isHandlingDeepLink = true
+        guard session != nil else { return }
         Task { await playDeepLink(url) }
+    }
+
+    func consumePendingOpen() {
+        guard session != nil, !isHandlingDeepLink else { return }
+        guard MessagesShareBridge.peekPendingOpen() != nil else { return }
+        isHandlingDeepLink = true
+        Task { await playDeepLink(nil) }
     }
 
     private func consumePendingDeepLink() {
@@ -62,10 +69,15 @@ final class AppEnvironment: ObservableObject {
         Task { await playDeepLink(url) }
     }
 
-    private func playDeepLink(_ url: URL) async {
+    private func playDeepLink(_ url: URL?) async {
+        defer {
+            pendingDeepLink = nil
+            isHandlingDeepLink = false
+        }
         guard let session else { return }
-        var songId = DeepLink.songID(from: url)
-        if songId == nil, DeepLink.isShareCard(url) {
+        let pending = MessagesShareBridge.consumePendingOpen()
+        var songId = url.flatMap { DeepLink.songID(from: $0) } ?? pending?.id
+        if songId == nil, let url, DeepLink.isShareCard(url) {
             songId = await fetchShareSongID(from: url)
         }
         guard let songId, !songId.isEmpty else { return }
@@ -76,7 +88,36 @@ final class AppEnvironment: ObservableObject {
                 context: PlaybackContext(label: song.title, kind: .search))
             NowPlayingPresenter.open()
         } catch {
-            // Deep-link failures are silent — the user can retry from the library.
+            guard let pending, pending.id == songId else { return }
+            let song = Song(
+                id: pending.id,
+                title: pending.title.isEmpty ? "Track" : pending.title,
+                album: pending.album.isEmpty ? nil : pending.album,
+                albumId: nil,
+                artist: pending.artist.isEmpty ? nil : pending.artist,
+                artistId: nil,
+                artists: nil,
+                track: nil,
+                discNumber: nil,
+                year: nil,
+                genre: nil,
+                coverArt: pending.coverArt,
+                size: nil,
+                suffix: nil,
+                duration: nil,
+                bitRate: nil,
+                samplingRate: nil,
+                bitDepth: nil,
+                contentType: nil,
+                path: nil,
+                playCount: nil,
+                userRating: nil,
+                starred: nil,
+                created: nil)
+            session.player.play(
+                [song], startAt: 0,
+                context: PlaybackContext(label: song.title, kind: .search))
+            NowPlayingPresenter.open()
         }
     }
 
@@ -157,8 +198,15 @@ final class AppSession: ObservableObject, Identifiable {
         let sessionStore = PlaybackSessionStore(userKey: userKey)
         player.attachSessionStore(sessionStore)
         // Restore last queue into the mini player (paused) after first paint.
+        // Hold off while a Messages deep link is in flight so we don't paint
+        // an empty Now Playing or overwrite the card's track.
         Task { @MainActor [player] in
             await Task.yield()
+            var spins = 0
+            while AppEnvironment.shared.isHandlingDeepLink, spins < 25 {
+                try? await Task.sleep(nanoseconds: 80_000_000)
+                spins += 1
+            }
             _ = player.restorePersistedSessionIfNeeded()
         }
         // History writes must never contend with the audio render path.

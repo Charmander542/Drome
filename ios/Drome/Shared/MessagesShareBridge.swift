@@ -8,9 +8,18 @@ enum MessagesShareBridge {
     static let accountsKey = "drome.accounts"
     static let activeKey = "drome.activeAccount"
     static let recentsKey = "drome.messages.recents"
+    static let pendingOpenKey = "drome.pendingOpenTrack"
     static let maxRecents = 24
 
     struct RecentTrack: Codable, Hashable, Identifiable {
+        var id: String
+        var title: String
+        var artist: String
+        var album: String
+        var coverArt: String?
+    }
+
+    struct PendingOpen: Codable {
         var id: String
         var title: String
         var artist: String
@@ -50,5 +59,21 @@ enum MessagesShareBridge {
               let decoded = try? JSONDecoder().decode([RecentTrack].self, from: data)
         else { return [] }
         return decoded
+    }
+
+    static func setPendingOpen(_ track: PendingOpen) {
+        guard let defaults, let data = try? JSONEncoder().encode(track) else { return }
+        defaults.set(data, forKey: pendingOpenKey)
+    }
+
+    static func consumePendingOpen() -> PendingOpen? {
+        guard let defaults, let data = defaults.data(forKey: pendingOpenKey) else { return nil }
+        defaults.removeObject(forKey: pendingOpenKey)
+        return try? JSONDecoder().decode(PendingOpen.self, from: data)
+    }
+
+    static func peekPendingOpen() -> PendingOpen? {
+        guard let data = defaults?.data(forKey: pendingOpenKey) else { return nil }
+        return try? JSONDecoder().decode(PendingOpen.self, from: data)
     }
 }

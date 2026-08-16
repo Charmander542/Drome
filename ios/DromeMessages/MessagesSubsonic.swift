@@ -46,7 +46,9 @@ final class MessagesSubsonic {
                   URLQueryItem(name: "size", value: String(size)),
               ], stable: true)
         else { return nil }
-        return try? await session.data(from: url).0
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 3
+        return try? await session.data(for: request).0
     }
 
     func streamURL(songId: String) -> URL? {
@@ -101,14 +103,26 @@ final class MessagesSubsonic {
         return out
     }
 
-    func payloadURL(track: ShareTrack) -> URL {
-        var comps = URLComponents()
-        comps.scheme = "drome"
-        comps.host = "imessage"
-        var items: [URLQueryItem] = []
+    /// iMessage strips custom schemes from `MSMessage.url`. Only http(s) survives.
+    func messageURL(track: ShareTrack, shareURL: URL?) -> URL {
+        let base = shareURL
+            ?? account.wishlistURL.map { wishlist in
+                var comps = URLComponents(url: wishlist, resolvingAgainstBaseURL: false)
+                var path = comps?.path ?? ""
+                if path.hasSuffix("/") { path.removeLast() }
+                comps?.path = path + "/s/imessage"
+                comps?.query = nil
+                return comps?.url ?? wishlist
+            }
+            ?? account.serverURL
+        var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) ?? URLComponents()
+        if comps.scheme != "http" && comps.scheme != "https" {
+            comps.scheme = "https"
+        }
+        var items = comps.queryItems ?? []
         Self.mergePayload(&items, track: track, serverHost: account.serverURL.host ?? "")
         comps.queryItems = items
-        return comps.url ?? URL(string: "drome://track/\(track.id)")!
+        return comps.url ?? base
     }
 
     static func mergePayload(_ items: inout [URLQueryItem], track: ShareTrack, serverHost: String) {
@@ -154,6 +168,19 @@ final class MessagesSubsonic {
         else { return nil }
         let raw = result["song"] as? [[String: Any]] ?? []
         return raw.compactMap { ShareTrack(subsonic: $0) }
+    }
+
+    func song(id: String) async -> ShareTrack? {
+        guard let url = endpoint("getSong", extra: [URLQueryItem(name: "id", value: id)], stable: true) else {
+            return nil
+        }
+        guard let data = try? await session.data(from: url).0,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let response = root["subsonic-response"] as? [String: Any],
+              response["status"] as? String == "ok",
+              let song = response["song"] as? [String: Any]
+        else { return nil }
+        return ShareTrack(subsonic: song)
     }
 
     private static func randomSalt(length: Int = 16) -> String {

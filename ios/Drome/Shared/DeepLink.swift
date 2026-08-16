@@ -3,15 +3,19 @@ import Foundation
 /// Opens `drome://track/{id}` and HTTPS share cards (`/s/{token}?song=`).
 enum DeepLink {
     static func songID(from url: URL) -> String? {
-        if url.scheme == "drome" {
-            guard url.host == "track" else { return nil }
-            let id = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            return id.isEmpty ? nil : id
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        if let song = items.first(where: { $0.name == "song" })?.value, !song.isEmpty {
+            return song.removingPercentEncoding ?? song
         }
-        if let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
-           let song = items.first(where: { $0.name == "song" })?.value,
-           !song.isEmpty {
-            return song
+        if url.scheme == "drome" {
+            if url.host == "track" {
+                let id = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                if !id.isEmpty { return id.removingPercentEncoding ?? id }
+            }
+            let last = url.lastPathComponent
+            if !last.isEmpty, last != "/", last != "track", last != "imessage", last != url.host {
+                return last.removingPercentEncoding ?? last
+            }
         }
         return nil
     }
@@ -25,5 +29,10 @@ enum DeepLink {
     @MainActor
     static func open(_ url: URL, env: AppEnvironment) {
         env.handleDeepLink(url)
+    }
+
+    @MainActor
+    static func consumePending(env: AppEnvironment) {
+        env.consumePendingOpen()
     }
 }

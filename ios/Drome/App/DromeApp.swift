@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct DromeApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var env = AppEnvironment()
     @State private var showSplash = true
 
@@ -24,6 +25,11 @@ struct DromeApp: App {
             .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                 if let url = activity.webpageURL {
                     DeepLink.open(url, env: env)
+                }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active {
+                    DeepLink.consumePending(env: env)
                 }
             }
         }

@@ -69,6 +69,7 @@ struct MainTabView: View {
             keyboardVisible = false
         }
         .onReceive(NotificationCenter.default.publisher(for: .dromeOpenNowPlaying)) { _ in
+            guard player.current != nil else { return }
             showNowPlaying = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .dromeFocusCarPlaySearch)) { _ in
