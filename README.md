@@ -24,6 +24,18 @@ App wishlist URL (on this LAN): `http://192.168.8.193:4534`
 
 Health check: `curl http://127.0.0.1:4534/health`
 
+Connect (multi-device) uses the **same** companion on `:4534`. After pulling
+Connect changes, rebuild so `/connect/devices` exists:
+
+```bash
+docker compose up -d --build
+curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:4534/connect/devices"
+# expect 401 (auth required), not 404
+```
+
+Both iPhone and Apple TV need the companion URL set (Settings → Wishlist companion /
+pairing). Same Navidrome login on each device.
+
 ### Environment
 
 | Variable | Purpose |

@@ -61,8 +61,9 @@ struct DromeConnectClient {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
-    func putDevice(_ device: ConnectDeviceHeartbeat) async throws -> ConnectDevice {
-        try await send(ConnectDevice.self, path: "/connect/devices/\(device.id)", method: "PUT", body: device)
+    func putDevice(_ device: ConnectDeviceHeartbeat) async throws {
+        struct R: Decodable { var id: String? }
+        _ = try await send(R.self, path: "/connect/devices/\(device.id)", method: "PUT", body: device)
     }
 
     func listDevices() async throws -> [ConnectDevice] {

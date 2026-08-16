@@ -1,4 +1,4 @@
-# Drome companion (wishlist + SpotiFLAC auto-download) next to an existing Navidrome.
+# Drome companion (wishlist + Connect + SpotiFLAC auto-download) next to an existing Navidrome.
 #
 # Your Navidrome already runs as container `navidrome` on network `navidrome_default`
 # with music at /srv/storage/Media/Music. This compose joins that network and writes

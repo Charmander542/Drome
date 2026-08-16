@@ -120,6 +120,40 @@ struct NowPlayingView: View {
             if let connect = session.connect {
                 ConnectDevicePicker(connect: connect)
                     .preferredColorScheme(.dark)
+            } else {
+                NavigationStack {
+                    List {
+                        Section {
+                            ZStack(alignment: .leading) {
+                                HStack(spacing: 14) {
+                                    Image(systemName: "airplayaudio")
+                                        .font(.title2)
+                                        .frame(width: 36)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("AirPlay & Bluetooth")
+                                        Text("Speakers, TVs, and headphones")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                }
+                                .allowsHitTesting(false)
+                                AirPlayRoutePicker(tintColor: .clear, activeTintColor: .clear)
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                            }
+                        } footer: {
+                            Text("Set a companion server in Settings to also move playback between Drome apps.")
+                        }
+                    }
+                    .navigationTitle("Audio output")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { showConnect = false }
+                        }
+                    }
+                }
+                .preferredColorScheme(.dark)
             }
         }
         .overlay(alignment: .top) {
@@ -848,21 +882,15 @@ struct NowPlayingView: View {
 
     private var bottomBar: some View {
         HStack {
-            if session.connect != nil {
-                Button { showConnect = true } label: {
-                    Image(systemName: session.connect?.isRemote == true
-                          ? "speaker.wave.2.fill"
-                          : "hifispeaker")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(session.connect?.isRemote == true ? DromeTheme.accent : .white)
-                        .frame(width: 44, height: 44)
-                }
-                .accessibilityLabel("Connect devices")
-            } else {
-                AirPlayRoutePicker()
+            Button { showConnect = true } label: {
+                Image(systemName: session.connect?.isRemote == true
+                      ? "speaker.wave.2.fill"
+                      : "airplayaudio")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(session.connect?.isRemote == true ? DromeTheme.accent : .white)
                     .frame(width: 44, height: 44)
-                    .accessibilityLabel("Audio output")
             }
+            .accessibilityLabel(session.connect != nil ? "Connect and AirPlay" : "AirPlay")
 
             Spacer()
 

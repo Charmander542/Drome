@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Spotify-style device picker for Drome Connect.
+/// Spotify-style device picker: Drome Connect devices + system AirPlay / Bluetooth.
 struct ConnectDevicePicker: View {
     @ObservedObject var connect: ConnectController
     @Environment(\.dismiss) private var dismiss
@@ -8,6 +8,18 @@ struct ConnectDevicePicker: View {
     var body: some View {
         NavigationStack {
             List {
+                if let serverStatus = connect.serverStatus {
+                    Section {
+                        Text(serverStatus)
+                            .foregroundStyle(.red)
+                        Text("Rebuild the companion container from latest main (`docker compose up -d --build`). Same URL as Wishlist.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } header: {
+                        Text("Server")
+                    }
+                }
+
                 Section {
                     deviceRow(
                         id: connect.deviceId,
@@ -44,10 +56,42 @@ struct ConnectDevicePicker: View {
                         }
                     }
                 } header: {
-                    Text("Other devices")
+                    Text("Drome devices")
                 } footer: {
-                    Text("Uses your companion server. Open Drome on another phone or Apple TV with the same login.")
+                    Text("Open Drome on another phone or Apple TV with the same login and companion server.")
                 }
+
+                #if os(iOS)
+                Section {
+                    ZStack(alignment: .leading) {
+                        HStack(spacing: 14) {
+                            Image(systemName: "airplayaudio")
+                                .font(.title2)
+                                .frame(width: 36)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("AirPlay & Bluetooth")
+                                Text("Speakers, TVs, and headphones")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .allowsHitTesting(false)
+
+                        // Invisible system control — tap anywhere in the row.
+                        AirPlayRoutePicker(tintColor: .clear, activeTintColor: .clear)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                } header: {
+                    Text("Audio output")
+                } footer: {
+                    Text("Routes this phone’s audio like Spotify’s AirPlay picker.")
+                }
+                #endif
             }
             #if os(iOS)
             .navigationTitle("Connect")

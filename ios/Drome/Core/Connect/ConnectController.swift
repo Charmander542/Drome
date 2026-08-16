@@ -9,6 +9,7 @@ final class ConnectController: ObservableObject {
     @Published private(set) var remoteSession: ConnectSession?
     /// True when another device is active and this one should not play audio.
     @Published private(set) var isRemote: Bool = false
+    @Published private(set) var serverStatus: String?
     @Published var notice: String?
 
     let deviceId: String
@@ -131,12 +132,20 @@ final class ConnectController: ObservableObject {
             elapsed: player.accurateElapsed(),
             duration: player.duration,
             capabilities: ["audio", "remote", "transfer"])
-        _ = try? await client.putDevice(body)
+        do {
+            _ = try await client.putDevice(body)
+            if serverStatus != nil { serverStatus = nil }
+        } catch {
+            serverStatus = error.localizedDescription
+        }
     }
 
     private func refreshDevices() async {
-        if let list = try? await client.listDevices() {
-            devices = list
+        do {
+            devices = try await client.listDevices()
+            if serverStatus != nil { serverStatus = nil }
+        } catch {
+            serverStatus = error.localizedDescription
         }
         if let session = try? await client.getSession() {
             remoteSession = session
