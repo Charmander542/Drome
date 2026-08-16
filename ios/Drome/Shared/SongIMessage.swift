@@ -17,8 +17,6 @@ enum SongIMessage {
     ) -> MSMessage {
         let template = MSMessageTemplateLayout()
         template.image = MessageCardImage.render(cover: cover, title: title, artist: artist)
-        template.caption = title
-        template.subcaption = artist.isEmpty ? nil : artist
 
         let message = MSMessage()
         message.layout = MSMessageLiveLayout(alternateLayout: template)
@@ -70,44 +68,45 @@ enum SongIMessage {
 }
 
 enum MessageCardImage {
-    static let art: CGFloat = 56
-    static let height: CGFloat = 64
-    static let width: CGFloat = 248
+    /// Tall art-on-top card for people without Drome (template layout).
+    /// Live bubbles use SwiftUI instead of this image.
+    static let side: CGFloat = 300
+    static let textHeight: CGFloat = 76
 
     static func render(cover: UIImage?, title: String, artist: String) -> UIImage {
+        let size = CGSize(width: side, height: side + textHeight)
         let format = UIGraphicsImageRendererFormat()
+        format.opaque = true
         format.scale = 3
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format)
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
         return renderer.image { _ in
-            let bounds = CGRect(x: 0, y: 0, width: width, height: height)
             UIColor.black.setFill()
-            UIRectFill(bounds)
+            UIRectFill(CGRect(origin: .zero, size: size))
 
-            let artRect = CGRect(x: 4, y: 4, width: art, height: art)
-            UIGraphicsGetCurrentContext()?.saveGState()
-            UIBezierPath(roundedRect: artRect, cornerRadius: 7).addClip()
+            let artRect = CGRect(x: 0, y: 0, width: side, height: side)
             if let cover, cover.size.width > 0, cover.size.height > 0 {
-                let scale = max(art / cover.size.width, art / cover.size.height)
+                let scale = max(side / cover.size.width, side / cover.size.height)
                 let w = cover.size.width * scale
                 let h = cover.size.height * scale
                 cover.draw(in: CGRect(x: artRect.midX - w / 2, y: artRect.midY - h / 2, width: w, height: h))
             } else {
-                UIColor(white: 0.18, alpha: 1).setFill()
-                UIBezierPath(rect: artRect).fill()
+                UIColor(white: 0.16, alpha: 1).setFill()
+                UIRectFill(artRect)
             }
-            UIGraphicsGetCurrentContext()?.restoreGState()
 
             let titleAttrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: 13, weight: .semibold),
+                .font: UIFont.systemFont(ofSize: 17, weight: .semibold),
                 .foregroundColor: UIColor.white,
             ]
             let artistAttrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: 11, weight: .regular),
+                .font: UIFont.systemFont(ofSize: 14, weight: .regular),
                 .foregroundColor: UIColor.white.withAlphaComponent(0.7),
             ]
-            (title as NSString).draw(in: CGRect(x: 68, y: 14, width: width - 76, height: 18), withAttributes: titleAttrs)
+            let textX: CGFloat = 16
+            let textW = side - 32
+            (title as NSString).draw(in: CGRect(x: textX, y: side + 14, width: textW, height: 22), withAttributes: titleAttrs)
             if !artist.isEmpty {
-                (artist as NSString).draw(in: CGRect(x: 68, y: 32, width: width - 76, height: 16), withAttributes: artistAttrs)
+                (artist as NSString).draw(in: CGRect(x: textX, y: side + 38, width: textW, height: 20), withAttributes: artistAttrs)
             }
         }
     }

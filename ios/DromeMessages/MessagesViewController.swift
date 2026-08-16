@@ -266,11 +266,14 @@ final class MessagesViewController: MSMessagesAppViewController {
         defer { picker.isWorking = false }
 
         let client = picker.client
-        let image = coverById[track.id]
+        var image = coverById[track.id]
+        if image == nil {
+            let jpeg = await client?.coverJPEG(coverArt: track.coverArt ?? track.id)
+            image = CoverImage.uiImage(from: jpeg)
+            if let image { coverById[track.id] = image }
+        }
         let template = MSMessageTemplateLayout()
         template.image = MessageCardImage.render(cover: image, title: track.title, artist: track.artist)
-        template.caption = track.title
-        template.subcaption = track.artist.isEmpty ? nil : track.artist
 
         let session = conversation.selectedMessage?.session ?? MSSession()
         let message = MSMessage(session: session)
@@ -279,21 +282,6 @@ final class MessagesViewController: MSMessagesAppViewController {
         message.url = client?.messageURL(track: track, shareURL: nil)
         MessagesStore.save(track)
         MessagesStore.setPendingOpen(track)
-
-        do {
-            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-                conversation.insert(message) { error in
-                    if let error {
-                        cont.resume(throwing: error)
-                    } else {
-                        cont.resume()
-                    }
-                }
-            }
-            requestPresentationStyle(.compact)
-        } catch {
-            // Leave the picker up so they can retry.
-        }
 
         do {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
