@@ -639,6 +639,16 @@ final class PlayerEngine: ObservableObject {
         )
     }
 
+    /// Snapshot for Drome Connect transfer / remote publish.
+    func connectSnapshot() -> PlaybackSessionSnapshot? {
+        makeSessionSnapshot()
+    }
+
+    /// Apply a Connect session from another device and optionally start playing.
+    func applyConnectSnapshot(_ snap: PlaybackSessionSnapshot, startPlaying: Bool) {
+        restore(snap, seeking: true, startPlaying: startPlaying, recordPlay: true)
+    }
+
     func seek(to time: TimeInterval) {
         #if os(tvOS)
         if tvUsingAudioPlayer {

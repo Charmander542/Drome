@@ -51,9 +51,31 @@ struct SettingsView: View {
             } header: {
                 Text("Wishlist companion")
             } footer: {
-                Text("Optional Go service for Spotify search + wishlist downloads into your Navidrome library. Set URL to http://host:4534")
+                Text("Companion server for Spotify wishlist downloads and Drome Connect (play on another phone or Apple TV). Example: http://host:4534")
             }
             .listRowBackground(DromeTheme.elevated)
+
+            if let connect = session.connect {
+                Section {
+                    NavigationLink {
+                        ConnectDevicePicker(connect: connect)
+                    } label: {
+                        Label(
+                            connect.isRemote
+                                ? "Playing elsewhere"
+                                : "Connect devices",
+                            systemImage: "hifispeaker.2"
+                        )
+                    }
+                    LabeledContent("This device", value: connect.deviceName)
+                    LabeledContent("Online", value: "\(max(connect.devices.count, 1))")
+                } header: {
+                    Text("Connect")
+                } footer: {
+                    Text("Same login on another Drome app. Tap a device to move playback there.")
+                }
+                .listRowBackground(DromeTheme.elevated)
+            }
 
             Section {
                 Toggle("Haptic intro", isOn: $hapticIntro)

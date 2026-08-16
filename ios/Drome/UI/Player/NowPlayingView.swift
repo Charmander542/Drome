@@ -36,6 +36,7 @@ struct NowPlayingView: View {
     @State private var artSwipeAnimating = false
     @State private var artContainerWidth: CGFloat = 390
     @State private var showMoreSheet = false
+    @State private var showConnect = false
 
     private enum Pane: String, CaseIterable {
         case song = "Song"
@@ -115,6 +116,12 @@ struct NowPlayingView: View {
                 .presentationDragIndicator(.visible)
             }
         }
+        .sheet(isPresented: $showConnect) {
+            if let connect = session.connect {
+                ConnectDevicePicker(connect: connect)
+                    .preferredColorScheme(.dark)
+            }
+        }
         .overlay(alignment: .top) {
             if let flashMessage {
                 Text(flashMessage)
@@ -130,6 +137,11 @@ struct NowPlayingView: View {
             guard let message, !message.isEmpty else { return }
             flash(message)
             player.sharePlayNotice = nil
+        }
+        .onChange(of: session.connect?.notice) { _, message in
+            guard let message, !message.isEmpty else { return }
+            flash(message)
+            session.connect?.notice = nil
         }
         .animation(.easeInOut(duration: 0.2), value: flashMessage)
         .preferredColorScheme(.dark)
@@ -766,7 +778,13 @@ struct NowPlayingView: View {
 
             Spacer(minLength: 0)
 
-            Button { skipPreviousWithArt() } label: {
+            Button {
+                if session.connect?.isRemote == true {
+                    Task { await session.connect?.sendRemote(ConnectCommandType.previous) }
+                } else {
+                    skipPreviousWithArt()
+                }
+            } label: {
                 Image(systemName: "backward.fill")
                     .font(.title2)
                     .foregroundStyle(.white)
@@ -774,10 +792,20 @@ struct NowPlayingView: View {
             }
             .disabled(artSwipeAnimating)
 
-            Button { player.playPause() } label: {
+            Button {
+                if session.connect?.isRemote == true {
+                    let playing = session.connect?.remoteSession?.isPlaying == true
+                    Task {
+                        await session.connect?.sendRemote(
+                            playing ? ConnectCommandType.pause : ConnectCommandType.play)
+                    }
+                } else {
+                    player.playPause()
+                }
+            } label: {
                 ZStack {
                     Circle().fill(Color.white).frame(width: 62, height: 62)
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    Image(systemName: transportPlaying ? "pause.fill" : "play.fill")
                         .font(.title2.weight(.bold))
                         .foregroundStyle(.black)
                         .frame(width: 62, height: 62)
@@ -785,7 +813,13 @@ struct NowPlayingView: View {
             }
             .buttonStyle(ScaleButtonStyle())
 
-            Button { skipNextWithArt() } label: {
+            Button {
+                if session.connect?.isRemote == true {
+                    Task { await session.connect?.sendRemote(ConnectCommandType.next) }
+                } else {
+                    skipNextWithArt()
+                }
+            } label: {
                 Image(systemName: "forward.fill")
                     .font(.title2)
                     .foregroundStyle(.white)
@@ -805,11 +839,30 @@ struct NowPlayingView: View {
         .frame(height: 68)
     }
 
+    private var transportPlaying: Bool {
+        if session.connect?.isRemote == true {
+            return session.connect?.remoteSession?.isPlaying == true
+        }
+        return player.isPlaying
+    }
+
     private var bottomBar: some View {
         HStack {
-            AirPlayRoutePicker()
-                .frame(width: 44, height: 44)
-                .accessibilityLabel("Audio output")
+            if session.connect != nil {
+                Button { showConnect = true } label: {
+                    Image(systemName: session.connect?.isRemote == true
+                          ? "speaker.wave.2.fill"
+                          : "hifispeaker")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(session.connect?.isRemote == true ? DromeTheme.accent : .white)
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Connect devices")
+            } else {
+                AirPlayRoutePicker()
+                    .frame(width: 44, height: 44)
+                    .accessibilityLabel("Audio output")
+            }
 
             Spacer()
 

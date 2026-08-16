@@ -126,7 +126,12 @@ CREATE TABLE IF NOT EXISTS playlist_mirrors (
 		db.Close()
 		return nil, err
 	}
-	return &wishlistStore{db: db}, nil
+	store := &wishlistStore{db: db}
+	if err := store.migrateConnect(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return store, nil
 }
 
 func (s *wishlistStore) Close() error { return s.db.Close() }

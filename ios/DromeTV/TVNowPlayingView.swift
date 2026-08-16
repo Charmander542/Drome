@@ -25,6 +25,7 @@ struct TVNowPlayingView: View {
     @State private var idleTick = 0
     @State private var isScrubbing = false
     @State private var armedQueueID: UUID?
+    @State private var showConnect = false
 
     var body: some View {
         ZStack {
@@ -43,6 +44,11 @@ struct TVNowPlayingView: View {
         }
         .focusScope(playerFocus)
         .onPlayPauseCommand { player.playPause() }
+        .sheet(isPresented: $showConnect) {
+            if let connect = session.connect {
+                ConnectDevicePicker(connect: connect)
+            }
+        }
         .onChange(of: focus) { _, new in
             if new == .cinema {
                 cinemaMode = true
@@ -255,6 +261,18 @@ struct TVNowPlayingView: View {
                 .focused($focus, equals: .autoplay)
                 .onMoveCommand { direction in
                     moveSongFocus(direction, from: .autoplay)
+                }
+
+                if session.connect != nil {
+                    TVTransportIcon(
+                        system: session.connect?.isRemote == true
+                            ? "speaker.wave.2.fill" : "hifispeaker",
+                        size: 22,
+                        hit: 64,
+                        tint: session.connect?.isRemote == true ? TVTheme.accent : .white.opacity(0.7))
+                    {
+                        showConnect = true
+                    }
                 }
             }
 

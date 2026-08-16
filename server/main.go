@@ -84,6 +84,7 @@ func main() {
 		navidrome: worker.navidrome,
 		spotify:   spotify,
 		downloads: worker,
+		connect:   newConnectHub(),
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -17,6 +17,7 @@ type server struct {
 	navidrome *navidromeVerifier
 	spotify   *spotifyClient
 	downloads *downloadWorker
+	connect   *connectHub
 }
 
 func (s *server) routes() http.Handler {
@@ -40,6 +41,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /s/{token}/cover", s.handleTrackShareCover)
 	mux.HandleFunc("GET /.well-known/apple-app-site-association", s.handleAppleAppSiteAssociation)
 	mux.HandleFunc("GET /apple-app-site-association", s.handleAppleAppSiteAssociation)
+	s.registerConnectRoutes(mux)
 	return logRequests(mux)
 }
 

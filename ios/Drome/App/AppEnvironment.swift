@@ -169,6 +169,7 @@ final class AppSession: ObservableObject, Identifiable {
     let lyricsIndexer: LyricsIndexer
     let artistImages: ArtistImageStore
     let connectivity: ConnectivityMonitor
+    let connect: ConnectController?
     private var playbackSideEffectCancellables = Set<AnyCancellable>()
 
     var id: UUID { account.id }
@@ -190,6 +191,13 @@ final class AppSession: ObservableObject, Identifiable {
         }
     }
 
+    var connectClient: DromeConnectClient? {
+        account.wishlistURL.map { url in
+            DromeConnectClient(baseURL: url, session: client.session,
+                               authItems: { [client] in client.authQueryItems() })
+        }
+    }
+
     init(account: Account, password: String, database: AppDatabase) {
         self.account = account
         client = SubsonicClient(account: account, password: password)
@@ -198,6 +206,17 @@ final class AppSession: ObservableObject, Identifiable {
         ratings.rotation = rotation
         downloads = DownloadManager(client: client, database: database, serverKey: account.serverKey)
         player = PlayerEngine(client: client, ratings: ratings, rotation: rotation, downloads: downloads)
+        if let wishlistURL = account.wishlistURL {
+            let connectClient = DromeConnectClient(
+                baseURL: wishlistURL,
+                session: client.session,
+                authItems: { [client] in client.authQueryItems() })
+            let controller = ConnectController(client: connectClient, player: player)
+            connect = controller
+            controller.start()
+        } else {
+            connect = nil
+        }
         let userKey = account.userKey
         let sessionStore = PlaybackSessionStore(userKey: userKey)
         player.attachSessionStore(sessionStore)
@@ -251,6 +270,7 @@ final class AppSession: ObservableObject, Identifiable {
 
     func teardown() {
         playbackSideEffectCancellables.removeAll()
+        connect?.stop()
         player.shutdown()
         lyricsIndexer.stop()
         downloads.invalidate()
