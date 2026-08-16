@@ -262,6 +262,10 @@ func (s *wishlistStore) listFor(user string) ([]entry, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// Close before the next query — MaxOpenConns(1) deadlocks if Rows stays open.
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
 
 	// Attach explicit share lists to the requester's own entries.
 	shareRows, err := s.db.Query(`

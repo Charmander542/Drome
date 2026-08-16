@@ -50,3 +50,15 @@ Optional string array on devices, e.g. `["audio","remote","transfer"]`.
 5. UI lists `GET /connect/devices`; tap another device → publish session → `POST` `transfer`.
 
 Devices vanish ~45s after the last heartbeat.
+
+## Ops notes
+
+Authenticated Connect/wishlist calls need a healthy SQLite connection. The
+companion uses `MaxOpenConns(1)` — never nest a second query while a `Rows`
+cursor is still open (that deadlocks the process until restart).
+
+Rebuild after pulling Connect fixes:
+
+```bash
+docker compose up -d --build
+```

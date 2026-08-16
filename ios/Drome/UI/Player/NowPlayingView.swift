@@ -885,7 +885,7 @@ struct NowPlayingView: View {
             Button { showConnect = true } label: {
                 Image(systemName: session.connect?.isRemote == true
                       ? "speaker.wave.2.fill"
-                      : "airplayaudio")
+                      : "hifispeaker")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(session.connect?.isRemote == true ? DromeTheme.accent : .white)
                     .frame(width: 44, height: 44)

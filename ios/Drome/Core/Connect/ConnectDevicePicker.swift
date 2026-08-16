@@ -12,7 +12,7 @@ struct ConnectDevicePicker: View {
                     Section {
                         Text(serverStatus)
                             .foregroundStyle(.red)
-                        Text("Rebuild the companion container from latest main (`docker compose up -d --build`). Same URL as Wishlist.")
+                        Text("Companion isn’t answering Connect. Rebuild/restart it (`docker compose up -d --build`) using the same URL as Wishlist.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } header: {

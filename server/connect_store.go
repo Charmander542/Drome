@@ -181,6 +181,10 @@ func (s *wishlistStore) deleteConnectDevice(owner, id string) error {
 }
 
 func (s *wishlistStore) listConnectDevices(owner string) ([]connectDevice, error) {
+	// MaxOpenConns(1): never nest queries while Rows is open — that deadlocks the pool.
+	var activeID string
+	_ = s.db.QueryRow(`SELECT active_device_id FROM connect_sessions WHERE owner=?`, owner).Scan(&activeID)
+
 	cutoff := float64(time.Now().Add(-connectDeviceTTL).UnixMilli()) / 1000.0
 	rows, err := s.db.Query(`
 SELECT id, owner, name, platform, model, is_playing, song_id, song_title, song_artist,
@@ -192,9 +196,6 @@ ORDER BY name COLLATE NOCASE`, owner, cutoff)
 		return nil, err
 	}
 	defer rows.Close()
-
-	var activeID string
-	_ = s.db.QueryRow(`SELECT active_device_id FROM connect_sessions WHERE owner=?`, owner).Scan(&activeID)
 
 	out := []connectDevice{}
 	for rows.Next() {

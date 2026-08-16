@@ -193,7 +193,16 @@ final class AppSession: ObservableObject, Identifiable {
 
     var connectClient: DromeConnectClient? {
         account.wishlistURL.map { url in
-            DromeConnectClient(baseURL: url, session: client.session,
+            let connectConfig = URLSessionConfiguration.default
+            connectConfig.timeoutIntervalForRequest = 12
+            connectConfig.timeoutIntervalForResource = 20
+            let connectSession = URLSession(
+                configuration: connectConfig,
+                delegate: account.allowSelfSigned
+                    ? ServerTrustDelegate(trustedHost: url.host)
+                    : nil,
+                delegateQueue: nil)
+            return DromeConnectClient(baseURL: url, session: connectSession,
                                authItems: { [client] in client.authQueryItems() })
         }
     }
@@ -207,9 +216,19 @@ final class AppSession: ObservableObject, Identifiable {
         downloads = DownloadManager(client: client, database: database, serverKey: account.serverKey)
         player = PlayerEngine(client: client, ratings: ratings, rotation: rotation, downloads: downloads)
         if let wishlistURL = account.wishlistURL {
+            // Short timeouts so a wedged companion can't stall the Connect loop for minutes.
+            let connectConfig = URLSessionConfiguration.default
+            connectConfig.timeoutIntervalForRequest = 12
+            connectConfig.timeoutIntervalForResource = 20
+            let connectSession = URLSession(
+                configuration: connectConfig,
+                delegate: account.allowSelfSigned
+                    ? ServerTrustDelegate(trustedHost: wishlistURL.host)
+                    : nil,
+                delegateQueue: nil)
             let connectClient = DromeConnectClient(
                 baseURL: wishlistURL,
-                session: client.session,
+                session: connectSession,
                 authItems: { [client] in client.authQueryItems() })
             let controller = ConnectController(client: connectClient, player: player)
             connect = controller
