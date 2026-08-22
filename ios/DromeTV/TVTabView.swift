@@ -6,6 +6,15 @@ struct TVTabView: View {
     @EnvironmentObject private var player: PlayerEngine
     @State private var tab: String = "home"
 
+    private var switchPromptBinding: Binding<Bool> {
+        Binding(
+            get: { session.connect?.showSwitchPrompt == true },
+            set: { newValue in
+                if !newValue { session.connect?.declineSwitchPrompt() }
+            }
+        )
+    }
+
     var body: some View {
         TabView(selection: $tab) {
             NavigationStack {
@@ -32,12 +41,7 @@ struct TVTabView: View {
         }
         .alert(
             "Switch playback?",
-            isPresented: Binding(
-                get: { session.connect?.showSwitchPrompt == true },
-                set: { newValue in
-                    if !newValue { session.connect?.declineSwitchPrompt() }
-                }
-            )
+            isPresented: switchPromptBinding
         ) {
             Button("Play here") {
                 session.connect?.confirmSwitchToThisDevice()

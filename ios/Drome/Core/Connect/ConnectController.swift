@@ -146,16 +146,25 @@ final class ConnectController: ObservableObject {
     /// Returns `true` when `action` ran immediately. `false` when deferred behind the switch prompt.
     @discardableResult
     func requestLocalPlayback(_ action: @escaping () -> Void) -> Bool {
-        guard let session = remoteSession,
-              session.activeDeviceId != deviceId,
-              devices.contains(where: { $0.id == session.activeDeviceId })
-        else {
+        // Another device owns Connect playback — ask before taking over.
+        let otherOwns: Bool = {
+            if let active = remoteSession?.activeDeviceId, active != deviceId {
+                return true
+            }
+            // Session row can briefly lag while we still know we're remote.
+            return isRemote
+        }()
+        guard otherOwns else {
             action()
             return true
         }
         pendingLocalPlayback = action
-        switchPromptDeviceName = devices.first(where: { $0.id == session.activeDeviceId })?.name
-            ?? "another device"
+        if let active = remoteSession?.activeDeviceId {
+            switchPromptDeviceName = devices.first(where: { $0.id == active })?.name
+                ?? "another device"
+        } else if switchPromptDeviceName.isEmpty {
+            switchPromptDeviceName = "another device"
+        }
         #if os(iOS)
         let canPresentAlert = UIApplication.shared.connectedScenes.contains {
             ($0 as? UIWindowScene)?.activationState == .foregroundActive

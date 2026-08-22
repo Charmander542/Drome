@@ -45,6 +45,7 @@ final class DownloadManager: ObservableObject {
     private let sessionDelegate = DownloadSessionDelegate()
     private var tasksBySongID: [String: URLSessionDownloadTask] = [:]
     private var coverInflight: Set<String> = []
+    private var streamingSuspended = false
 
     init(client: SubsonicClient, database: AppDatabase, serverKey: String) {
         self.client = client
@@ -235,7 +236,11 @@ final class DownloadManager: ObservableObject {
                 task.taskDescription = resolved.id
                 tasksBySongID[resolved.id] = task
                 liveProgress.set(resolved.id, fraction: 0)
-                task.resume()
+                if streamingSuspended {
+                    task.suspend()
+                } else {
+                    task.resume()
+                }
             }
             attachPlaylistMembership(songId: song.id, playlistId: playlistId, playlistName: playlistName)
         }
@@ -256,6 +261,23 @@ final class DownloadManager: ObservableObject {
         liveProgress.remove(songId)
         try? database.deleteDownload(serverKey: serverKey, songId: songId)
         reload()
+    }
+
+    /// Pause/resume offline downloads so a remote stream keeps the Wi‑Fi pipe.
+    func setStreamingPriority(_ active: Bool) {
+        if active {
+            guard !streamingSuspended else { return }
+            streamingSuspended = true
+            for task in tasksBySongID.values {
+                task.suspend()
+            }
+        } else {
+            guard streamingSuspended else { return }
+            streamingSuspended = false
+            for task in tasksBySongID.values {
+                task.resume()
+            }
+        }
     }
 
     func remove(songId: String) {

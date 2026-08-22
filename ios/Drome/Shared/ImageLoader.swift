@@ -317,11 +317,14 @@ struct RemoteImage: View {
     @State private var loadedURL: URL?
 
     var body: some View {
+        // Prefer state, but fall back to the memory cache on the first frame so a
+        // remount (e.g. dismiss gesture tree churn) never flashes the placeholder.
+        let displayed = image ?? url.flatMap { ImageLoader.shared.previewImage(for: $0) }
         ZStack {
             Rectangle()
                 .fill(Color(white: 0.16))
-            if let image {
-                Image(uiImage: image)
+            if let displayed {
+                Image(uiImage: displayed)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)

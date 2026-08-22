@@ -289,6 +289,25 @@ final class AppSession: ObservableObject, Identifiable {
                 }
             }
             .store(in: &playbackSideEffectCancellables)
+
+        // Offline downloads fight FLAC/lossy streams on the same LAN — park
+        // them while we're pulling audio over HTTP.
+        Publishers.CombineLatest(player.$isPlaying, player.$current)
+            .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+            .sink { [weak downloads] playing, current in
+                let streamingRemote = playing
+                    && current.map { downloads?.localURL(songId: $0.song.id) == nil } == true
+                downloads?.setStreamingPriority(streamingRemote)
+            }
+            .store(in: &playbackSideEffectCancellables)
+
+        // Nested ObservableObject — bubble changes so alerts / UI bound to
+        // `session.connect?.…` actually refresh (e.g. switch-device prompt).
+        connect?.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &playbackSideEffectCancellables)
     }
 
     func teardown() {

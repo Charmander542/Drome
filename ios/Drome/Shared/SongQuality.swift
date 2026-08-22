@@ -28,6 +28,23 @@ extension Song {
         return parts.joined(separator: " · ")
     }
 
+    /// Remote hi-res / lossless should own the network pipe by itself.
+    var needsSoloStream: Bool {
+        if let bitDepth, bitDepth >= 24 { return true }
+        if let samplingRate, samplingRate > 48_000 { return true }
+        // High bitrates are almost always lossless even when tags are sparse.
+        if let bitRate, bitRate >= 800 { return true }
+        let suffix = (suffix ?? "").lowercased()
+        if ["flac", "wav", "aiff", "aif", "dsf", "dff", "alac", "ape", "wv"].contains(suffix) {
+            return true
+        }
+        let type = (contentType ?? "").lowercased()
+        return type.contains("flac")
+            || type.contains("wav")
+            || type.contains("aiff")
+            || type.contains("alac")
+    }
+
     private var formatLabel: String? {
         if let suffix, !suffix.isEmpty {
             return suffix.uppercased()

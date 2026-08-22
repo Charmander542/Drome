@@ -302,9 +302,13 @@ final class SubsonicClient {
     /// `mp3` / `aac` request a server-side transcode at `maxBitRate` kbps.
     func streamURL(songId: String, compatibleWithAirPlay: Bool = false) -> URL? {
         if compatibleWithAirPlay {
-            return streamURL(songId: songId, format: "mp3", maxBitRate: 320)
+            return streamURL(songId: songId, format: "mp3", maxBitRate: 320,
+                             estimateContentLength: true)
         }
-        return streamURL(songId: songId, format: "raw", maxBitRate: nil)
+        // Content-Length keeps AVPlayer on the VOD path. Without it, raw
+        // lossless is treated like live HTTP and underruns sound like static.
+        return streamURL(songId: songId, format: "raw", maxBitRate: nil,
+                         estimateContentLength: true)
     }
 
     func streamURL(songId: String, format: String, maxBitRate: Int?,

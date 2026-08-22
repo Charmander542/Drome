@@ -171,10 +171,10 @@ struct HorizontalAlbumRail: View {
                 .font(DromeTheme.headlineFont)
                 .padding(.horizontal, 16)
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 14) {
+                LazyHStack(alignment: .top, spacing: 14) {
                     ForEach(albums) { album in
                         AlbumCard(album: album)
-                            .frame(width: 148)
+                            .frame(width: 148, alignment: .topLeading)
                     }
                 }
                 .padding(.horizontal, 16)

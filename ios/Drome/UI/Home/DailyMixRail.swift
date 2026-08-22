@@ -10,7 +10,7 @@ struct DailyMixRail: View {
                 .font(DromeTheme.headlineFont)
                 .padding(.horizontal, 16)
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 14) {
+                LazyHStack(alignment: .top, spacing: 14) {
                     if mixes.isEmpty && isLoading {
                         ForEach(0..<4, id: \.self) { _ in
                             DailyMixPlaceholder()
@@ -23,6 +23,7 @@ struct DailyMixRail: View {
                                 DailyMixCard(mix: mix)
                             }
                             .buttonStyle(.plain)
+                            .frame(width: 148, alignment: .topLeading)
                         }
                     }
                 }
@@ -67,7 +68,7 @@ struct DailyMixCard: View {
                     ProgressView().tint(.white)
                 }
             }
-            .frame(width: 148, height: 148)
+            .aspectRatio(1, contentMode: .fit)
             .overlay {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .stroke(Color.white.opacity(0.12), lineWidth: 1)
@@ -82,7 +83,6 @@ struct DailyMixCard: View {
                 .foregroundStyle(DromeTheme.muted)
                 .lineLimit(1)
         }
-        .frame(width: 148, alignment: .leading)
         .hoverEffectDisabled()
     }
 
@@ -115,7 +115,7 @@ private struct DailyMixPlaceholder: View {
         VStack(alignment: .leading, spacing: 8) {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(DromeTheme.elevated2)
-                .frame(width: 148, height: 148)
+                .aspectRatio(1, contentMode: .fit)
             RoundedRectangle(cornerRadius: 3)
                 .fill(DromeTheme.elevated2)
                 .frame(width: 100, height: 12)
@@ -123,7 +123,7 @@ private struct DailyMixPlaceholder: View {
                 .fill(DromeTheme.elevated2)
                 .frame(width: 80, height: 10)
         }
-        .frame(width: 148, alignment: .leading)
+        .frame(width: 148, alignment: .topLeading)
         .redacted(reason: .placeholder)
     }
 }

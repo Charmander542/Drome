@@ -291,7 +291,9 @@ final class PlayerEngine: ObservableObject {
     func resumeSession(forKey key: String) -> Bool {
         guard var snap = sessionStore?.snapshot(forResumeKey: key) else { return false }
         snap.elapsed = 0
-        restore(snap, seeking: false, startPlaying: true, recordPlay: true)
+        runLocalPlayback { [self] in
+            restore(snap, seeking: false, startPlaying: true, recordPlay: true)
+        }
         return true
     }
 
@@ -299,7 +301,9 @@ final class PlayerEngine: ObservableObject {
     @discardableResult
     func resumeLatestSession() -> Bool {
         guard let snap = sessionStore?.latest() else { return false }
-        restore(snap, seeking: true, startPlaying: true, recordPlay: true)
+        runLocalPlayback { [self] in
+            restore(snap, seeking: true, startPlaying: true, recordPlay: true)
+        }
         return true
     }
 
@@ -550,15 +554,94 @@ final class PlayerEngine: ObservableObject {
             self?.playCurrentWhenReady()
         }
         #else
-        player.play()
+        guard let item = player.currentItem else { return }
+        if item.status == .failed {
+            itemReadyCancellable = nil
+            itemReadyTimeout?.cancel()
+            return
+        }
+        if itemIsSafeToStart(item) {
+            itemReadyCancellable = nil
+            itemReadyTimeout?.cancel()
+            player.play()
+            return
+        }
+        waitUntilItemReadyForPlayback(item)
         #endif
     }
 
-    #if os(tvOS)
-    private func itemIsSafeToStart(_ item: AVPlayerItem) -> Bool {
-        item.status == .readyToPlay
+    /// Hold play() until the first packets are buffered so remote audio
+    /// doesn't start into an empty pipe (clicks / static / grain).
+    private func waitUntilItemReadyForPlayback(_ item: AVPlayerItem) {
+        itemReadyCancellable?.cancel()
+        itemReadyTimeout?.cancel()
+        if itemIsSafeToStart(item) {
+            player.play()
+            return
+        }
+        let solo = current?.song.needsSoloStream == true
+        let timeoutNs: UInt64 = solo ? 10_000_000_000 : 5_000_000_000
+        itemReadyTimeout = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: timeoutNs)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, item === self.player.currentItem else { return }
+                self.itemReadyCancellable = nil
+                // Prefer a brief stall over forcing an empty buffer — AVPlayer
+                // will fill and resume when automaticallyWaitsToMinimizeStalling.
+                if item.status == .readyToPlay || self.itemIsSafeToStart(item) {
+                    self.player.play()
+                } else if item.status != .failed {
+                    self.player.play()
+                }
+            }
+        }
+        itemReadyCancellable = Publishers.Merge3(
+            item.publisher(for: \.status).map { _ in () },
+            item.publisher(for: \.isPlaybackLikelyToKeepUp).map { _ in () },
+            item.publisher(for: \.loadedTimeRanges).map { _ in () }
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] in
+            guard let self, item === self.player.currentItem else { return }
+            if item.status == .failed {
+                self.itemReadyTimeout?.cancel()
+                self.itemReadyCancellable = nil
+                return
+            }
+            if self.itemIsSafeToStart(item) {
+                self.itemReadyTimeout?.cancel()
+                self.itemReadyCancellable = nil
+                self.player.play()
+            }
+        }
     }
 
+    /// Local files can start immediately; remote streams need a real buffer.
+    private func itemIsSafeToStart(_ item: AVPlayerItem) -> Bool {
+        guard item.status == .readyToPlay else { return false }
+        let isFile = (item.asset as? AVURLAsset)?.url.isFileURL == true
+        if isFile { return true }
+        if item.isPlaybackBufferEmpty { return false }
+        if item.isPlaybackLikelyToKeepUp { return true }
+        let now = item.currentTime()
+        guard now.isNumeric else { return false }
+        let nowSec = CMTimeGetSeconds(now)
+        let bufferedAhead = item.loadedTimeRanges
+            .map(\.timeRangeValue)
+            .compactMap { range -> TimeInterval? in
+                guard range.start.isNumeric, range.duration.isNumeric else { return nil }
+                let start = CMTimeGetSeconds(range.start)
+                let end = start + CMTimeGetSeconds(range.duration)
+                guard end > nowSec, start <= nowSec + 0.25 else { return nil }
+                return end - nowSec
+            }
+            .max() ?? 0
+        let minBuffer: TimeInterval = (current?.song.needsSoloStream == true) ? 3.5 : 1.75
+        return bufferedAhead >= minBuffer
+    }
+
+    #if os(tvOS)
     private func waitUntilItemReady(_ item: AVPlayerItem, onReady: @escaping () -> Void) {
         if item.status == .failed {
             retryCurrentAfterDecodeFailure()
@@ -571,7 +654,7 @@ final class PlayerEngine: ObservableObject {
         itemReadyCancellable?.cancel()
         itemReadyTimeout?.cancel()
         itemReadyTimeout = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 3_500_000_000)
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard let self else { return }
@@ -585,22 +668,28 @@ final class PlayerEngine: ObservableObject {
                 }
             }
         }
-        itemReadyCancellable = item.publisher(for: \.status)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] status in
-                guard let self else { return }
-                if status == .readyToPlay {
-                    self.itemReadyTimeout?.cancel()
-                    self.itemReadyCancellable = nil
-                    onReady()
-                } else if status == .failed {
-                    self.itemReadyTimeout?.cancel()
-                    self.itemReadyCancellable = nil
-                    if item === self.player.currentItem {
-                        self.retryCurrentAfterDecodeFailure()
-                    }
+        itemReadyCancellable = Publishers.Merge3(
+            item.publisher(for: \.status).map { _ in () },
+            item.publisher(for: \.isPlaybackLikelyToKeepUp).map { _ in () },
+            item.publisher(for: \.loadedTimeRanges).map { _ in () }
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] in
+            guard let self else { return }
+            if item.status == .failed {
+                self.itemReadyTimeout?.cancel()
+                self.itemReadyCancellable = nil
+                if item === self.player.currentItem {
+                    self.retryCurrentAfterDecodeFailure()
                 }
+                return
             }
+            if self.itemIsSafeToStart(item) {
+                self.itemReadyTimeout?.cancel()
+                self.itemReadyCancellable = nil
+                onReady()
+            }
+        }
     }
 
     private func retryCurrentAfterDecodeFailure() {
@@ -770,11 +859,7 @@ final class PlayerEngine: ObservableObject {
                 self.pushNowPlayingInfo()
                 if finished, shouldResume {
                     self.activateAudioSession()
-                    #if os(tvOS)
                     self.playCurrentWhenReady()
-                    #else
-                    self.player.play()
-                    #endif
                 }
             }
         }
@@ -1047,27 +1132,34 @@ final class PlayerEngine: ObservableObject {
         ])
         let item = AVPlayerItem(asset: asset)
         sharePlayBridge.remember(item, identity: Self.sharePlayContentID(for: song))
-        item.preferredForwardBufferDuration = isFile ? 4 : 45
+        // Hi-res FLAC needs a deep buffer; a second stream stealing the pipe is
+        // what made playback sound grainy / staticy.
+        if isFile {
+            item.preferredForwardBufferDuration = 4
+        } else if song.needsSoloStream {
+            item.preferredForwardBufferDuration = 90
+        } else {
+            item.preferredForwardBufferDuration = 45
+        }
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         item.preferredPeakBitRate = 0
         return item
     }
 
     /// How many *upcoming* items to keep in AVQueuePlayer.
-    /// Remote lossless streams are bandwidth-heavy; only preload one ahead so
-    /// the current track keeps the pipe. Local files can preload two.
+    /// Remote streams own the pipe alone — a second HTTP audio request is
+    /// what made FLAC/lossy sound grainy over Wi‑Fi.
     private func upcomingPrefetchCount() -> Int {
         #if os(tvOS)
-        // A second live HTTP/transcode stream is what FigFilePlayer probes and
-        // fails while the current track is still playing.
         return 0
         #else
         let currentIsLocal = current.map { downloads.localURL(songId: $0.song.id) != nil } ?? false
         let upcoming = peekUpcoming(limit: 2)
         let upcomingAllLocal = !upcoming.isEmpty
             && upcoming.allSatisfy { downloads.localURL(songId: $0.song.id) != nil }
-        if currentIsLocal && upcomingAllLocal { return 2 }
-        return 1
+        // Gapless only when everything is already on disk.
+        if currentIsLocal && upcomingAllLocal { return min(2, upcoming.count) }
+        return 0
         #endif
     }
 

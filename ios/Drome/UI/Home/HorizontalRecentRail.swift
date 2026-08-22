@@ -22,9 +22,10 @@ struct HorizontalRecentRail: View {
                 .font(DromeTheme.headlineFont)
                 .padding(.horizontal, 16)
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 14) {
+                LazyHStack(alignment: .top, spacing: 14) {
                     ForEach(entries) { entry in
                         card(for: entry)
+                            .frame(width: 148, alignment: .topLeading)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -41,7 +42,7 @@ struct HorizontalRecentRail: View {
             } label: {
                 VStack(alignment: .leading, spacing: 8) {
                     RemoteImage(url: session.artworkURL(id: song.coverArt ?? song.albumId ?? song.id, size: 300))
-                        .frame(width: 148, height: 148)
+                        .aspectRatio(1, contentMode: .fit)
                         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     HStack(spacing: 4) {
                         Text(song.title)
@@ -54,8 +55,6 @@ struct HorizontalRecentRail: View {
                     SongArtistLinks(song: song, font: .caption, color: DromeTheme.muted,
                                     navigatesOnTap: false)
                 }
-                .frame(width: 148, alignment: .leading)
-                .clipped()
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -65,7 +64,7 @@ struct HorizontalRecentRail: View {
             VStack(alignment: .leading, spacing: 8) {
                 RemoteImage(url: session.artworkURL(
                     id: coverSong.coverArt ?? coverSong.albumId ?? id, size: 300))
-                    .frame(width: 148, height: 148)
+                    .aspectRatio(1, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 Text(name)
                     .font(.subheadline.weight(.semibold))
@@ -75,8 +74,6 @@ struct HorizontalRecentRail: View {
                 SongArtistLinks(song: coverSong, font: .caption, color: DromeTheme.muted,
                                 navigatesOnTap: false)
             }
-            .frame(width: 148, alignment: .leading)
-            .clipped()
             .contentShape(Rectangle())
             .onTapGesture {
                 songNavigator?.viewAlbum(Album(
@@ -109,7 +106,9 @@ struct HorizontalRecentRail: View {
 
     @ViewBuilder
     private func mixCard(name: String, coverSong: Song, subtitle: String) -> some View {
-        if let vibe = MoodVibe.allCases.first(where: { $0.title == name }) {
+        if let vibe = MoodVibe.allCases.first(where: {
+            $0.title == name || ($0 == .lucky && name.localizedCaseInsensitiveContains("lucky"))
+        }) {
             Button {
                 if player.resumeSession(forKey: "mix:\(name)") { return }
                 Task {
@@ -118,7 +117,8 @@ struct HorizontalRecentRail: View {
                     spinningVibe = nil
                 }
             } label: {
-                MoodVibeCard(vibe: vibe, isSpinning: spinningVibe == vibe)
+                // Square tile — not the circular dial chip used on the tuner.
+                MoodVibeTile(vibe: vibe, isSpinning: spinningVibe == vibe)
             }
             .buttonStyle(.plain)
             .hoverEffectDisabled()
@@ -298,7 +298,7 @@ struct HorizontalRecentRail: View {
                     .padding(10)
                 }
             }
-            .frame(width: 148, height: 148)
+            .aspectRatio(1, contentMode: .fit)
             .overlay {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .stroke(Color.white.opacity(0.12), lineWidth: 1)
@@ -313,7 +313,6 @@ struct HorizontalRecentRail: View {
                 .foregroundStyle(DromeTheme.muted)
                 .lineLimit(1)
         }
-        .frame(width: 148, alignment: .leading)
     }
 
     /// Matches the Rated library folder tiles (icon plate, not a song cover + badge).
@@ -326,7 +325,7 @@ struct HorizontalRecentRail: View {
                     .font(.system(size: 44, weight: .semibold))
                     .foregroundStyle(collection.accent)
             }
-            .frame(width: 148, height: 148)
+            .aspectRatio(1, contentMode: .fit)
 
             Text(collection.rawValue)
                 .font(.subheadline.weight(.semibold))
@@ -339,13 +338,12 @@ struct HorizontalRecentRail: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
-        .frame(width: 148, alignment: .leading)
     }
 
     private func coverCard(coverID: String, title: String, subtitle: String, badge: Int?) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             RemoteImage(url: session.artworkURL(id: coverID, size: 300))
-                .frame(width: 148, height: 148)
+                .aspectRatio(1, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             HStack(spacing: 4) {
                 Text(title)
@@ -363,7 +361,5 @@ struct HorizontalRecentRail: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
-        .frame(width: 148, alignment: .leading)
-        .clipped()
     }
 }

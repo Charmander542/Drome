@@ -8,6 +8,15 @@ struct MainTabView: View {
     @State private var showNowPlaying = false
     @State private var keyboardVisible = false
 
+    private var switchPromptBinding: Binding<Bool> {
+        Binding(
+            get: { session.connect?.showSwitchPrompt == true },
+            set: { newValue in
+                if !newValue { session.connect?.declineSwitchPrompt() }
+            }
+        )
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
             VStack(spacing: 0) {
@@ -62,17 +71,13 @@ struct MainTabView: View {
         }
         .overlay {
             if showNowPlaying {
-                SongNavigationStack {
-                    NowPlayingView {
-                        var txn = Transaction()
-                        txn.disablesAnimations = true
-                        withTransaction(txn) { showNowPlaying = false }
-                    }
+                // Offset lives on the stack inside NowPlayingView so the whole
+                // sheet (not just content over a black nav chrome) slides away.
+                NowPlayingView {
+                    var txn = Transaction()
+                    txn.disablesAnimations = true
+                    withTransaction(txn) { showNowPlaying = false }
                 }
-                .toolbar(.hidden, for: .navigationBar)
-                .toolbarBackground(.hidden, for: .navigationBar)
-                .containerBackground(.clear, for: .navigation)
-                .ignoresSafeArea(edges: .bottom)
                 .transition(.asymmetric(
                     insertion: .move(edge: .bottom),
                     removal: .identity))
@@ -80,12 +85,7 @@ struct MainTabView: View {
         }
         .alert(
             "Switch playback?",
-            isPresented: Binding(
-                get: { session.connect?.showSwitchPrompt == true },
-                set: { newValue in
-                    if !newValue { session.connect?.declineSwitchPrompt() }
-                }
-            )
+            isPresented: switchPromptBinding
         ) {
             Button("Play here") {
                 session.connect?.confirmSwitchToThisDevice()

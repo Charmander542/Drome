@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Compact radio-tuner for mood vibes. Tap a station to select it, scrub to
-/// preview along the spectrum, then hit play.
+/// Radio dial for moods. Stations sit on a slow→loud spectrum; play builds
+/// a queue on-device from tempo and genre (not Daily Mix collages / ratings).
 struct VibeTuner: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
@@ -10,10 +10,10 @@ struct VibeTuner: View {
     @State private var spinning: MoodVibe?
     @State private var error: String?
 
-    private let vibes = MoodVibe.allCases
+    private let vibes = MoodVibe.spectrum
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             header
             tuner
             if let error {
@@ -22,131 +22,145 @@ struct VibeTuner: View {
                     .foregroundStyle(.red)
             }
         }
-        .padding(14)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
         .background {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(DromeTheme.elevated)
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(selected.wash.opacity(0.92))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(selected.colors[0].opacity(0.16))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .stroke(selected.ink.opacity(0.22), lineWidth: 1)
                 }
         }
         .padding(.horizontal, 16)
         .hoverEffectDisabled()
-        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: selected)
+        .animation(.spring(response: 0.38, dampingFraction: 0.84), value: selected)
         .sensoryFeedback(.selection, trigger: selected)
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
-            Button {
-                Task { await play(selected) }
-            } label: {
-                ZStack {
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: selected.colors,
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing)
-                        )
-                    if spinning != nil {
-                        ProgressView().tint(.white)
-                    } else {
-                        Image(systemName: "play.fill")
-                            .font(.body.weight(.bold))
-                            .foregroundStyle(.white)
-                            .offset(x: 1)
-                    }
-                }
-                .frame(width: 44, height: 44)
-                .shadow(color: selected.colors[0].opacity(0.45), radius: 8, y: 2)
-            }
-            .buttonStyle(.plain)
-            .disabled(spinning != nil)
-            .accessibilityLabel("Play \(selected.title)")
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .center, spacing: 8) {
-                    Text(selected.title)
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                    Spacer(minLength: 8)
-                    VibeMeter(heights: selected.meterHeights, color: selected.colors[0])
-                }
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("TUNE")
+                    .font(.caption2.weight(.bold))
+                    .tracking(1.6)
+                    .foregroundStyle(selected.ink.opacity(0.7))
+                Text(selected.title)
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                 Text(selected.blurb)
                     .font(.caption)
-                    .foregroundStyle(DromeTheme.muted)
-                    .lineLimit(1)
+                    .foregroundStyle(Color.white.opacity(0.62))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            VStack(spacing: 8) {
+                VibeMeter(heights: selected.meterHeights, color: selected.ink)
+                Button {
+                    Task { await play(selected) }
+                } label: {
+                    HStack(spacing: 6) {
+                        if spinning != nil {
+                            ProgressView().tint(.black)
+                        } else {
+                            Image(systemName: "play.fill")
+                                .font(.caption.weight(.bold))
+                                .offset(x: 0.5)
+                        }
+                        Text(spinning == nil ? "Play" : "Tuning")
+                            .font(.subheadline.weight(.bold))
+                    }
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(selected.ink, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(spinning != nil)
+                .accessibilityLabel("Play \(selected.title)")
             }
         }
     }
 
     private var tuner: some View {
-        GeometryReader { geo in
-            let n = CGFloat(vibes.count)
-            let slot = geo.size.width / n
-            let selectedIndex = vibes.firstIndex(of: selected) ?? 0
+        VStack(spacing: 8) {
+            GeometryReader { geo in
+                let n = CGFloat(vibes.count)
+                let slot = geo.size.width / n
+                let selectedIndex = vibes.firstIndex(of: selected) ?? 0
 
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: vibes.map { $0.colors[0] },
-                            startPoint: .leading,
-                            endPoint: .trailing)
-                    )
-                    .frame(height: 4)
-                    .padding(.horizontal, slot / 2 - 2)
-                    .opacity(0.85)
+                ZStack(alignment: .leading) {
+                    // Frequency hash marks — radio, not a mix collage.
+                    VStack(spacing: 0) {
+                        HStack(spacing: 0) {
+                            ForEach(0..<24, id: \.self) { i in
+                                Rectangle()
+                                    .fill(Color.white.opacity(i.isMultiple(of: 4) ? 0.28 : 0.1))
+                                    .frame(width: 1, height: i.isMultiple(of: 4) ? 10 : 5)
+                                if i < 23 { Spacer(minLength: 0) }
+                            }
+                        }
+                        .padding(.horizontal, 4)
+                        Capsule()
+                            .fill(Color.white.opacity(0.14))
+                            .frame(height: 2)
+                    }
+                    .frame(height: 16)
+                    .offset(y: -22)
 
-                Capsule()
-                    .fill(Color.white.opacity(0.10))
-                    .frame(width: slot, height: 52)
-                    .offset(x: slot * CGFloat(selectedIndex))
+                    Capsule()
+                        .fill(selected.ink.opacity(0.18))
+                        .frame(width: slot, height: 56)
+                        .offset(x: slot * CGFloat(selectedIndex))
 
-                HStack(spacing: 0) {
-                    ForEach(vibes) { vibe in
-                        station(vibe)
-                            .frame(width: slot, height: 52)
+                    HStack(spacing: 0) {
+                        ForEach(vibes) { vibe in
+                            station(vibe)
+                                .frame(width: slot, height: 56)
+                        }
                     }
                 }
+                .contentShape(Rectangle())
+                .gesture(scrub(width: geo.size.width))
+                .accessibilityElement(children: .contain)
             }
-            .contentShape(Rectangle())
-            .gesture(scrub(width: geo.size.width))
-            .accessibilityElement(children: .contain)
+            .frame(height: 56)
+
+            HStack(spacing: 0) {
+                ForEach(vibes) { vibe in
+                    Text(vibe.shortLabel)
+                        .font(.system(size: 9, weight: vibe == selected ? .bold : .medium))
+                        .foregroundStyle(vibe == selected ? selected.ink : Color.white.opacity(0.38))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .frame(maxWidth: .infinity)
+                }
+            }
         }
-        .frame(height: 52)
     }
 
     private func station(_ vibe: MoodVibe) -> some View {
         let on = vibe == selected
         return ZStack {
             Circle()
-                .fill(
-                    LinearGradient(
-                        colors: vibe.colors,
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing)
-                )
-                .frame(width: on ? 42 : 28, height: on ? 42 : 28)
-                .shadow(color: on ? vibe.colors[0].opacity(0.55) : .clear, radius: 8)
+                .fill(vibe.wash)
+                .overlay {
+                    Circle().stroke(vibe.ink.opacity(on ? 0.9 : 0.35), lineWidth: on ? 2 : 1)
+                }
+                .frame(width: on ? 36 : 22, height: on ? 36 : 22)
             Image(systemName: vibe.symbol)
-                .font(.system(size: on ? 16 : 11, weight: .bold))
-                .foregroundStyle(.white)
+                .font(.system(size: on ? 14 : 9, weight: .semibold))
+                .foregroundStyle(vibe.ink)
             if spinning == vibe {
-                ProgressView().tint(.white)
+                ProgressView().tint(vibe.ink)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
-        .opacity(spinning != nil && spinning != vibe ? 0.55 : 1)
+        .opacity(spinning != nil && spinning != vibe ? 0.45 : 1)
         .accessibilityLabel(vibe.title)
         .accessibilityAddTraits(on ? [.isSelected, .isButton] : .isButton)
         .accessibilityHint("Selects this mood. Use Play to start the mix.")
@@ -160,7 +174,6 @@ struct VibeTuner: View {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 guard spinning == nil else { return }
-                // Only scrub after a clear drag so a tap doesn't fight selection.
                 let distance = hypot(value.translation.width, value.translation.height)
                 guard distance >= 6 else { return }
                 selectVibe(atX: value.location.x, width: width)
@@ -168,7 +181,6 @@ struct VibeTuner: View {
             .onEnded { value in
                 guard spinning == nil else { return }
                 let distance = hypot(value.translation.width, value.translation.height)
-                // Tap (or tiny movement): select the vibe under the finger.
                 if distance < 6 {
                     selectVibe(atX: value.location.x, width: width)
                 }
@@ -196,7 +208,6 @@ struct VibeTuner: View {
         }
     }
 
-    /// Opens on a vibe that fits the time of day.
     private static func vibeForHour() -> MoodVibe {
         switch Calendar.current.component(.hour, from: Date()) {
         case 5..<11: return .focus
@@ -212,7 +223,7 @@ private struct VibeMeter: View {
     let color: Color
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 2) {
+        HStack(alignment: .bottom, spacing: 2.5) {
             ForEach(Array(heights.enumerated()), id: \.offset) { _, h in
                 Capsule()
                     .fill(color)
@@ -221,20 +232,5 @@ private struct VibeMeter: View {
         }
         .frame(height: 18, alignment: .bottom)
         .accessibilityHidden(true)
-    }
-}
-
-private extension MoodVibe {
-    /// Tiny EQ silhouette so each mood has a different "shape" in the header.
-    var meterHeights: [CGFloat] {
-        switch self {
-        case .chill: return [7, 11, 8, 9]
-        case .hype: return [16, 18, 13, 17]
-        case .lateNight: return [6, 10, 14, 8]
-        case .feelGood: return [12, 16, 11, 15]
-        case .focus: return [10, 10, 14, 10]
-        case .heartbreak: return [5, 14, 8, 6]
-        case .lucky: return [17, 8, 16, 11]
-        }
     }
 }

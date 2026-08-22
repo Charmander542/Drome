@@ -57,157 +57,164 @@ struct NowPlayingView: View {
     }
 
     var body: some View {
-        GeometryReader { geo in
-            let width = geo.size.width
-            let height = geo.size.height
-            let chromeReserve: CGFloat = 148
+        // NavigationStack must move with dismissY. If offset is only on the
+        // root content, UIKit nav chrome stays put and reads as a black sheet.
+        SongNavigationStack {
+            GeometryReader { geo in
+                let width = Self.finiteSize(geo.size.width)
+                let height = Self.finiteSize(geo.size.height)
+                let chromeReserve: CGFloat = 148
+                let paneHeight = max(0, height - chromeReserve)
 
-            ZStack {
-                background
-                    .frame(width: width, height: height)
-                    .clipped()
+                ZStack {
+                    background
+                        .frame(width: width, height: height)
+                        .clipped()
 
-                VStack(spacing: 0) {
-                    dismissChrome(width: width)
+                    VStack(spacing: 0) {
+                        dismissChrome(width: width)
+                            .modifier(ConditionalDismissGesture(
+                                enabled: tab == .lyrics && !isDismissClosing
+                                    && !showQueue && !showAddToPlaylist
+                                    && !showMoreSheet && !showConnect,
+                                gesture: dismissGesture))
 
-                    Group {
-                        switch tab {
-                        case .song:
-                            songPane(width: width, height: height - chromeReserve)
-                        case .lyrics:
-                            lyricsPane
-                                .frame(width: width, height: height - chromeReserve, alignment: .top)
+                        Group {
+                            switch tab {
+                            case .song:
+                                songPane(width: width, height: paneHeight)
+                            case .lyrics:
+                                lyricsPane
+                                    .frame(width: width, height: paneHeight, alignment: .top)
+                            }
                         }
+                        .frame(width: width)
+                        .frame(maxHeight: .infinity, alignment: .top)
                     }
-                    .frame(width: width)
-                    .frame(maxHeight: .infinity, alignment: .top)
+                    .frame(width: width, height: height)
                 }
                 .frame(width: width, height: height)
-            }
-            .frame(width: width, height: height)
-            .offset(y: dismissY)
-            .transaction { txn in
-                if isDismissDragging && !isDismissClosing { txn.animation = nil }
-            }
-            .onAppear { sheetHeight = height }
-            .onChange(of: height) { _, h in sheetHeight = h }
-        }
-        .background {
-            NowPlayingDismissPan(
-                enabled: !isDismissClosing && !showQueue && !showAddToPlaylist
-                    && !showMoreSheet && !showConnect,
-                lyricsOnlyTopBand: tab == .lyrics,
-                onChanged: { y in
-                    guard !isDismissClosing else { return }
-                    var txn = Transaction()
-                    txn.disablesAnimations = true
-                    withTransaction(txn) {
-                        isDismissDragging = true
-                        dismissY = max(0, y)
-                    }
-                },
-                onEnded: { y, velocity in
-                    guard !isDismissClosing else { return }
-                    finishDismiss(translation: y, velocity: velocity)
+                .onAppear {
+                    if height > 0 { sheetHeight = height }
                 }
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .ignoresSafeArea(edges: .bottom)
-        .toolbar(.hidden, for: .navigationBar)
-        .sheet(isPresented: $showQueue) {
-            QueueView()
-                .presentationDetents([.medium, .large])
-                .dromeSession(session)
-        }
-        .sheet(isPresented: $showAddToPlaylist) {
-            if let song = player.current?.song {
-                NavigationStack {
-                    AddToPlaylistView(song: song)
-                        .dromeSession(session)
+                .onChange(of: height) { _, h in
+                    if h > 0 { sheetHeight = h }
+                }
+            }
+            // Gesture on the unmoved frame so global coords don't chase the offset.
+            .modifier(ConditionalDismissGesture(
+                enabled: tab == .song && !isDismissClosing
+                    && !showQueue && !showAddToPlaylist
+                    && !showMoreSheet && !showConnect,
+                gesture: dismissGesture))
+            .ignoresSafeArea(edges: .bottom)
+            .toolbar(.hidden, for: .navigationBar)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .containerBackground(.clear, for: .navigation)
+            .sheet(isPresented: $showQueue) {
+                QueueView()
+                    .presentationDetents([.medium, .large])
+                    .dromeSession(session)
+            }
+            .sheet(isPresented: $showAddToPlaylist) {
+                if let song = player.current?.song {
+                    NavigationStack {
+                        AddToPlaylistView(song: song)
+                            .dromeSession(session)
+                            .toolbar {
+                                ToolbarItem(placement: .cancellationAction) {
+                                    Button("Close") { showAddToPlaylist = false }
+                                }
+                            }
+                    }
+                    .preferredColorScheme(.dark)
+                }
+            }
+            .sheet(isPresented: $showMoreSheet) {
+                if let song = player.current?.song {
+                    NowPlayingMoreSheet(song: song, isPresented: $showMoreSheet) {
+                        showAddToPlaylist = true
+                    }
+                    .dromeSession(session)
+                    .presentationDetents([.medium])
+                    .presentationDragIndicator(.visible)
+                }
+            }
+            .sheet(isPresented: $showConnect) {
+                if let connect = session.connect {
+                    ConnectDevicePicker(connect: connect)
+                        .preferredColorScheme(.dark)
+                } else {
+                    NavigationStack {
+                        List {
+                            Section {
+                                ZStack(alignment: .leading) {
+                                    HStack(spacing: 14) {
+                                        Image(systemName: "airplayaudio")
+                                            .font(.title2)
+                                            .frame(width: 36)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("AirPlay & Bluetooth")
+                                            Text("Speakers, TVs, and headphones")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                    }
+                                    .allowsHitTesting(false)
+                                    AirPlayRoutePicker(tintColor: .clear, activeTintColor: .clear)
+                                        .frame(maxWidth: .infinity, minHeight: 44)
+                                }
+                            } footer: {
+                                Text("Set a companion server in Settings to also move playback between Drome apps.")
+                            }
+                        }
+                        .navigationTitle("Audio output")
+                        .navigationBarTitleDisplayMode(.inline)
                         .toolbar {
                             ToolbarItem(placement: .cancellationAction) {
-                                Button("Close") { showAddToPlaylist = false }
+                                Button("Done") { showConnect = false }
                             }
                         }
-                }
-                .preferredColorScheme(.dark)
-            }
-        }
-        .sheet(isPresented: $showMoreSheet) {
-            if let song = player.current?.song {
-                NowPlayingMoreSheet(song: song, isPresented: $showMoreSheet) {
-                    showAddToPlaylist = true
-                }
-                .dromeSession(session)
-                .presentationDetents([.medium])
-                .presentationDragIndicator(.visible)
-            }
-        }
-        .sheet(isPresented: $showConnect) {
-            if let connect = session.connect {
-                ConnectDevicePicker(connect: connect)
+                    }
                     .preferredColorScheme(.dark)
-            } else {
-                NavigationStack {
-                    List {
-                        Section {
-                            ZStack(alignment: .leading) {
-                                HStack(spacing: 14) {
-                                    Image(systemName: "airplayaudio")
-                                        .font(.title2)
-                                        .frame(width: 36)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("AirPlay & Bluetooth")
-                                        Text("Speakers, TVs, and headphones")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                }
-                                .allowsHitTesting(false)
-                                AirPlayRoutePicker(tintColor: .clear, activeTintColor: .clear)
-                                    .frame(maxWidth: .infinity, minHeight: 44)
-                            }
-                        } footer: {
-                            Text("Set a companion server in Settings to also move playback between Drome apps.")
-                        }
-                    }
-                    .navigationTitle("Audio output")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Done") { showConnect = false }
-                        }
-                    }
                 }
-                .preferredColorScheme(.dark)
             }
-        }
-        .overlay(alignment: .top) {
-            if let flashMessage {
-                Text(flashMessage)
-                    .font(.footnote.weight(.semibold))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.top, 56)
-                    .transition(.opacity)
+            .overlay(alignment: .top) {
+                if let flashMessage {
+                    Text(flashMessage)
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(.top, 56)
+                        .transition(.opacity)
+                }
             }
+            .onChange(of: player.sharePlayNotice) { _, message in
+                guard let message, !message.isEmpty else { return }
+                flash(message)
+                player.sharePlayNotice = nil
+            }
+            .onChange(of: session.connect?.notice) { _, message in
+                guard let message, !message.isEmpty else { return }
+                flash(message)
+                session.connect?.notice = nil
+            }
+            .animation(.easeInOut(duration: 0.2), value: flashMessage)
+            .preferredColorScheme(.dark)
+            .background(NowPlayingClearHostBackground())
         }
-        .onChange(of: player.sharePlayNotice) { _, message in
-            guard let message, !message.isEmpty else { return }
-            flash(message)
-            player.sharePlayNotice = nil
+        // Offset the whole stack so swipe reveals Home, not nav chrome.
+        .offset(y: dismissY)
+        .transaction { txn in
+            if isDismissDragging && !isDismissClosing { txn.animation = nil }
         }
-        .onChange(of: session.connect?.notice) { _, message in
-            guard let message, !message.isEmpty else { return }
-            flash(message)
-            session.connect?.notice = nil
-        }
-        .animation(.easeInOut(duration: 0.2), value: flashMessage)
-        .preferredColorScheme(.dark)
-        .background(NowPlayingHostClearer())
+    }
+
+    private static func finiteSize(_ value: CGFloat) -> CGFloat {
+        guard value.isFinite, value > 0 else { return 0 }
+        return value
     }
 
     // MARK: - Chrome
@@ -358,11 +365,35 @@ struct NowPlayingView: View {
         }
     }
 
-    private func finishDismiss(translation: CGFloat, velocity: CGFloat) {
+    private var dismissGesture: some Gesture {
+        DragGesture(minimumDistance: 20, coordinateSpace: .global)
+            .onChanged { value in
+                guard !isDismissClosing else { return }
+                let dy = value.translation.height
+                let dx = value.translation.width
+                if !isDismissDragging {
+                    guard dy > 14, dy >= abs(dx) else { return }
+                    isDismissDragging = true
+                }
+                var txn = Transaction()
+                txn.disablesAnimations = true
+                withTransaction(txn) {
+                    dismissY = max(0, dy)
+                }
+            }
+            .onEnded { value in
+                guard !isDismissClosing else { return }
+                finishDismiss(
+                    translation: value.translation.height,
+                    predicted: value.predictedEndTranslation.height)
+            }
+    }
+
+    private func finishDismiss(translation: CGFloat, predicted: CGFloat) {
         guard !isDismissClosing else { return }
         let y = max(0, translation)
-        let threshold = min(160, sheetHeight * 0.18)
-        let flicked = velocity > 1100 && y > 28
+        let threshold = min(160, max(sheetHeight, 1) * 0.18)
+        let flicked = predicted > threshold * 1.55 && y > 28
         if y > threshold || flicked {
             // Stay "dragging" so a cancelled pan can't spring the sheet back
             // up for a frame, and don't reset dismissY before the cover dies.
@@ -410,13 +441,15 @@ struct NowPlayingView: View {
         let contentWidth = max(0, width - horizontalPad * 2)
         // Same visual size as before (~38% of the song pane), but taken from
         // the stable screen height so the open animation can't grow/shrink it.
-        let estimatedPane = max(400, UIScreen.main.bounds.height - 220)
+        let screenH = UIScreen.main.bounds.height
+        let estimatedPane = max(400, (screenH.isFinite ? screenH : 800) - 220)
         let artSide = min(contentWidth, max(180, estimatedPane * 0.38))
+        let paneHeight = max(0, height)
 
         return VStack(spacing: 0) {
             Spacer(minLength: 4)
 
-            artwork(side: artSide, containerWidth: width)
+            artwork(side: artSide, containerWidth: max(0, width))
 
             Spacer(minLength: 16)
 
@@ -446,7 +479,7 @@ struct NowPlayingView: View {
                 .frame(width: contentWidth)
                 .padding(.bottom, 24)
         }
-        .frame(width: width, height: height)
+        .frame(width: max(0, width), height: paneHeight)
     }
 
     private func artwork(side: CGFloat, containerWidth: CGFloat) -> some View {
@@ -588,6 +621,7 @@ struct NowPlayingView: View {
 
     private func skipNextWithArt() {
         guard !artSwipeAnimating else { return }
+        lastScrubDisplayed = min(max(0, clock.elapsed), stableDuration)
         if canSwipeArtNext {
             completeArtSwipe(goingNext: true, containerWidth: artContainerWidth)
         } else {
@@ -598,6 +632,7 @@ struct NowPlayingView: View {
 
     private func skipPreviousWithArt() {
         guard !artSwipeAnimating else { return }
+        lastScrubDisplayed = min(max(0, clock.elapsed), stableDuration)
         // Match hardware/previous button: restart if we're >3s in.
         if player.elapsed > 3 {
             animateScrubToStart()
@@ -627,7 +662,6 @@ struct NowPlayingView: View {
         let from = isSeeking ? seekElapsed : (scrubAnimElapsed ?? preserved ?? lastScrubDisplayed)
         guard from > 0.35 else {
             scrubAnimElapsed = nil
-            lastScrubDisplayed = min(max(0, clock.elapsed), stableDuration)
             return
         }
         scrubAnimElapsed = from
@@ -863,15 +897,6 @@ struct NowPlayingView: View {
                 }
             )
             .tint(.white)
-            .onChange(of: displayed) { old, value in
-                guard scrubAnimElapsed == nil else { return }
-                // When the playhead hard-jumps to 0 on skip, keep a one-shot
-                // preserve so `animateScrubToStart` can still glide from the old time.
-                if value < 0.25, old > 1 {
-                    scrubPreserveFrom = old
-                }
-                lastScrubDisplayed = value
-            }
 
             HStack {
                 Text(Formatters.playbackTime(displayed))
@@ -1193,179 +1218,15 @@ private enum NowPlayingBackdrop {
     }
 }
 
-private struct NowPlayingDismissPan: UIViewRepresentable {
-    var enabled: Bool
-    /// Lyrics: only the top strip, so the list can still scroll.
-    /// Song: top strip always, plus the rest of the page on a downward drag.
-    var lyricsOnlyTopBand: Bool
-    var onChanged: (CGFloat) -> Void
-    var onEnded: (_ translation: CGFloat, _ velocity: CGFloat) -> Void
+private struct ConditionalDismissGesture<G: Gesture>: ViewModifier {
+    let enabled: Bool
+    let gesture: G
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeUIView(context: Context) -> InstallerView {
-        let view = InstallerView()
-        view.backgroundColor = .clear
-        view.isUserInteractionEnabled = false
-        context.coordinator.parent = self
-        view.coordinator = context.coordinator
-        return view
-    }
-
-    func updateUIView(_ uiView: InstallerView, context: Context) {
-        context.coordinator.parent = self
-        context.coordinator.pan.isEnabled = enabled
-        uiView.coordinator = context.coordinator
-        context.coordinator.attach(from: uiView)
-    }
-
-    final class InstallerView: UIView {
-        var coordinator: Coordinator?
-
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            coordinator?.attach(from: self)
-        }
-
-        override func layoutSubviews() {
-            super.layoutSubviews()
-            coordinator?.attach(from: self)
-        }
-    }
-
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        var parent: NowPlayingDismissPan?
-        private weak var probe: UIView?
-        private weak var host: UIView?
-
-        lazy var pan: UIPanGestureRecognizer = {
-            let g = UIPanGestureRecognizer(target: self, action: #selector(handle))
-            g.delegate = self
-            g.cancelsTouchesInView = false
-            g.delaysTouchesBegan = false
-            g.delaysTouchesEnded = false
-            g.maximumNumberOfTouches = 1
-            return g
-        }()
-
-        func attach(from probe: UIView) {
-            self.probe = probe
-            let next = Self.resolveHost(from: probe)
-            if host === next { return }
-            host?.removeGestureRecognizer(pan)
-            host = next
-            next?.addGestureRecognizer(pan)
-        }
-
-        deinit {
-            host?.removeGestureRecognizer(pan)
-        }
-
-        /// Prefer the cover's root view (just under the window) so hit-testing
-        /// uses the full screen, not the 0×0 representable.
-        static func resolveHost(from probe: UIView) -> UIView? {
-            var current: UIView? = probe
-            var best: UIView?
-            while let view = current {
-                if !(view is UIWindow), view.bounds.width > 160, view.bounds.height > 300 {
-                    best = view
-                }
-                current = view.superview
-            }
-            return best ?? probe.window
-        }
-
-        /// Full-width header: grabber, title, Song/Lyrics picker, and slack
-        /// so you don't have to hit the capsule.
-        func topBandHeight(in host: UIView) -> CGFloat {
-            host.safeAreaInsets.top + 220
-        }
-
-        @objc func handle(_ gesture: UIPanGestureRecognizer) {
-            let view = gesture.view
-            let y = gesture.translation(in: view).y
-            let v = gesture.velocity(in: view).y
-            switch gesture.state {
-            case .changed:
-                parent?.onChanged(y)
-            case .ended, .cancelled, .failed:
-                parent?.onEnded(y, v)
-            default:
-                break
-            }
-        }
-
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            guard let parent, parent.enabled,
-                  let pan = gestureRecognizer as? UIPanGestureRecognizer,
-                  let host = pan.view ?? host
-            else { return false }
-
-            let loc = pan.location(in: host)
-            guard host.bounds.contains(loc) else { return false }
-
-            let t = pan.translation(in: host)
-            let vel = pan.velocity(in: host)
-            let clearlyHorizontal = abs(vel.x) > max(abs(vel.y) * 2.2, 500)
-                || (abs(t.x) > abs(t.y) * 2.2 && abs(t.x) > 28)
-            let clearlyUp = vel.y < -280 && t.y < -6
-
-            let inTopBand = loc.y <= topBandHeight(in: host)
-            if inTopBand {
-                // Always take the pull from the header unless it's a sideways
-                // skip or an upward lyrics-scroll.
-                return !clearlyHorizontal && !clearlyUp
-            }
-
-            if parent.lyricsOnlyTopBand { return false }
-
-            // Rest of the song page: still dismiss, but don't fight album swipes.
-            let downward = vel.y > 0 || t.y > 0
-            return downward && !clearlyHorizontal
-        }
-
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-            true
-        }
-    }
-}
-
-/// Makes NavigationStack / hosting views behind Now Playing clear so a
-/// swipe-down reveals Home instead of a second black card.
-private struct NowPlayingHostClearer: UIViewRepresentable {
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.isUserInteractionEnabled = false
-        view.backgroundColor = .clear
-        return view
-    }
-
-    func updateUIView(_ uiView: UIView, context: Context) {
-        DispatchQueue.main.async { Self.clear(from: uiView) }
-    }
-
-    private static func clear(from view: UIView) {
-        var node: UIView? = view
-        var hops = 0
-        while let current = node, hops < 12 {
-            if current is UIWindow { break }
-            current.backgroundColor = .clear
-            current.isOpaque = false
-            node = current.superview
-            hops += 1
-        }
-        var responder: UIResponder? = view.next
-        while let current = responder {
-            if let vc = current as? UIViewController {
-                vc.view.backgroundColor = .clear
-                vc.view.isOpaque = false
-                break
-            }
-            responder = current.next
-        }
+    func body(content: Content) -> some View {
+        // Always attach the same modifier tree. Branching on `enabled` remounts
+        // Now Playing (and RemoteImage state), which flashes the album art away
+        // the instant dismiss commits.
+        content.simultaneousGesture(gesture, including: enabled ? .all : .none)
     }
 }
 
@@ -1547,3 +1408,45 @@ struct NowPlayingMoreSheet: View {
     }
 }
 
+/// One-shot clear of NavigationStack / hosting chrome so swipe-down reveals
+/// Home. Runs once after attach — not every update (that path crashed before).
+private struct NowPlayingClearHostBackground: UIViewRepresentable {
+    final class Coordinator {
+        var didClear = false
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        guard !context.coordinator.didClear else { return }
+        context.coordinator.didClear = true
+        DispatchQueue.main.async {
+            Self.clear(from: uiView)
+        }
+    }
+
+    private static func clear(from view: UIView) {
+        var responder: UIResponder? = view.next
+        var hops = 0
+        while let current = responder, hops < 12 {
+            if let nav = current as? UINavigationController {
+                nav.view.backgroundColor = .clear
+                nav.view.isOpaque = false
+                for child in nav.viewControllers {
+                    child.view.backgroundColor = .clear
+                    child.view.isOpaque = false
+                }
+                return
+            }
+            responder = current.next
+            hops += 1
+        }
+    }
+}
