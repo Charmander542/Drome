@@ -38,17 +38,22 @@ enum VibeEngine {
         switch vibe {
         case .focus:
             return Taste(
-                prefer: ["Classical", "Ambient", "Soundtrack"],
+                prefer: ["Jazz", "Classical", "Ambient", "Soundtrack", "Blues"],
                 avoid: ["Hip-Hop", "Dance", "Pop", "Metal", "Punk", "Country", "Rock"],
-                fetch: ["Classical", "Instrumental", "Soundtrack", "Ambient",
-                        "Piano", "Score", "Minimal", "Modern Classical"],
-                energy: 0.0...0.32,
+                fetch: ["Jazz", "Cool Jazz", "Smooth Jazz", "Bebop", "Instrumental",
+                        "Classical", "Soundtrack", "Ambient", "Piano", "Score",
+                        "Minimal", "Modern Classical", "New Age", "Blues"],
+                // Jazz lands ~0.34; keep room for slow instrumentals without
+                // pulling in mid-tempo vocal pop.
+                energy: 0.0...0.40,
                 vocals: .instrumental,
                 titleBoost: ["piano", "sonata", "concerto", "nocturne", "prelude",
-                             "adagio", "andante", "symphony", "quartet", "suite",
-                             "etude", "étude", "op.", "movement", "score", "theme",
-                             "ambient", "meditation"],
-                titleAvoid: ["remix", "radio edit", "feat", "ft.", "rap"],
+                             "adagio", "andante", "symphony", "quartet", "trio",
+                             "quintet", "suite", "etude", "étude", "op.", "movement",
+                             "score", "theme", "ambient", "meditation", "instrumental",
+                             "solo", "sax", "trumpet", "improvis"],
+                titleAvoid: ["remix", "radio edit", "feat", "ft.", "rap", "vocal",
+                             "sings", "lyrics"],
                 durationBias: .longer)
         case .lateNight:
             return Taste(
@@ -228,7 +233,9 @@ enum VibeEngine {
         switch genre {
         case "Classical", "Ambient": e = 0.16
         case "Soundtrack": e = 0.28
-        case "Jazz", "Blues": e = 0.34
+        // Slow/cool jazz fits focus; keep below mid-tempo defaults.
+        case "Jazz": e = 0.28
+        case "Blues": e = 0.32
         case "Folk", "Country": e = 0.36
         case "Soul", "R&B": e = 0.42
         case "Indie", "Alternative": e = 0.48
@@ -250,9 +257,18 @@ enum VibeEngine {
     }
 
     private static func looksInstrumental(_ hay: String, genre: String?) -> Bool {
-        if genre == "Classical" || genre == "Ambient" || genre == "Soundtrack" { return true }
+        if genre == "Classical" || genre == "Ambient" || genre == "Soundtrack" {
+            return true
+        }
+        // Jazz/Blues are often instrumental; treat as such unless clearly vocal.
+        if genre == "Jazz" || genre == "Blues" {
+            let vocalMarks = ["vocal", "vocals", "sings", "feat", "ft.", "lyrics"]
+            if vocalMarks.contains(where: { hay.contains($0) }) { return false }
+            return true
+        }
         let marks = ["instrumental", "piano", "sonata", "concerto", "symphony",
-                     "quartet", "nocturne", "etude", "étude", "op.", "score"]
+                     "quartet", "trio", "quintet", "nocturne", "etude", "étude",
+                     "op.", "score", "solo piano"]
         return marks.contains(where: { hay.contains($0) })
     }
 

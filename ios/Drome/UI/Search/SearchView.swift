@@ -51,15 +51,7 @@ struct SearchView: View {
                 hasCompletedSearch = false
                 scheduleSearch(query)
             }
-            .onAppear {
-                isSearchPresented = true
-            }
             .task {
-                // Lazy tabs can miss the first isPresented flip; retry once the field exists.
-                try? await Task.sleep(nanoseconds: 30_000_000)
-                if query.isEmpty {
-                    isSearchPresented = true
-                }
                 let loaded = await Task.detached(priority: .utility) {
                     RecentSearchesStore.load()
                 }.value

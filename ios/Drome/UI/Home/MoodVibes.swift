@@ -28,7 +28,7 @@ enum MoodVibe: String, CaseIterable, Identifiable {
 
     var blurb: String {
         switch self {
-        case .focus: return "Slow classical - no lyrics in the way"
+        case .focus: return "Slow instrumentals — jazz, classical, ambient"
         case .lateNight: return "Quiet songs with words, for winding down"
         case .chill: return "Story-first and unhurried — country & folk"
         case .heartbreak: return "The sad ones, on purpose"

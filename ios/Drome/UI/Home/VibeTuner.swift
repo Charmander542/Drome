@@ -60,17 +60,23 @@ struct VibeTuner: View {
             VStack(spacing: 8) {
                 VibeMeter(heights: selected.meterHeights, color: selected.ink)
                 Button {
+                    guard spinning == nil else { return }
                     Task { await play(selected) }
                 } label: {
                     HStack(spacing: 6) {
-                        if spinning != nil {
-                            ProgressView().tint(.black)
-                        } else {
+                        // Fixed slot so ProgressView ↔ play doesn't resize the capsule.
+                        ZStack {
                             Image(systemName: "play.fill")
                                 .font(.caption.weight(.bold))
                                 .offset(x: 0.5)
+                                .opacity(spinning == nil ? 1 : 0)
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.black)
+                                .opacity(spinning == nil ? 0 : 1)
                         }
-                        Text(spinning == nil ? "Play" : "Tuning")
+                        .frame(width: 12, height: 12)
+                        Text("Play")
                             .font(.subheadline.weight(.bold))
                     }
                     .foregroundStyle(.black)
@@ -79,7 +85,8 @@ struct VibeTuner: View {
                     .background(selected.ink, in: Capsule())
                 }
                 .buttonStyle(.plain)
-                .disabled(spinning != nil)
+                .allowsHitTesting(spinning == nil)
+                .animation(nil, value: spinning)
                 .accessibilityLabel("Play \(selected.title)")
             }
         }
@@ -154,13 +161,9 @@ struct VibeTuner: View {
             Image(systemName: vibe.symbol)
                 .font(.system(size: on ? 14 : 9, weight: .semibold))
                 .foregroundStyle(vibe.ink)
-            if spinning == vibe {
-                ProgressView().tint(vibe.ink)
-            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
-        .opacity(spinning != nil && spinning != vibe ? 0.45 : 1)
         .accessibilityLabel(vibe.title)
         .accessibilityAddTraits(on ? [.isSelected, .isButton] : .isButton)
         .accessibilityHint("Selects this mood. Use Play to start the mix.")
