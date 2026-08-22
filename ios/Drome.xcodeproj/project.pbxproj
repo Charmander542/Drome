@@ -99,7 +99,7 @@
 				UI/Home/HorizontalRecentRail.swift,
 				UI/Home/HorizontalSongRail.swift,
 				UI/Home/MoodVibes.swift,
-				UI/Home/VibeWheel.swift,
+				UI/Home/VibeTuner.swift,
 				UI/Library/AlbumDetailView.swift,
 				UI/Library/ArtistDetailView.swift,
 				UI/Library/DownloadsView.swift,

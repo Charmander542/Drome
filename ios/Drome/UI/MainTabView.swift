@@ -48,7 +48,9 @@ struct MainTabView: View {
             // mid-presentation and delays the keyboard / first keystroke.
             if player.current != nil {
                 MiniPlayerBar {
-                    showNowPlaying = true
+                    withAnimation(.easeOut(duration: 0.32)) {
+                        showNowPlaying = true
+                    }
                 }
                 .padding(.bottom, connectivity.isOnline ? 49 : 0)
                 .opacity(keyboardVisible ? 0 : 1)
@@ -58,9 +60,22 @@ struct MainTabView: View {
                 .animation(.spring(response: 0.35, dampingFraction: 0.85), value: player.current?.id)
             }
         }
-        .fullScreenCover(isPresented: $showNowPlaying) {
-            SongNavigationStack {
-                NowPlayingView()
+        .overlay {
+            if showNowPlaying {
+                SongNavigationStack {
+                    NowPlayingView {
+                        var txn = Transaction()
+                        txn.disablesAnimations = true
+                        withTransaction(txn) { showNowPlaying = false }
+                    }
+                }
+                .toolbar(.hidden, for: .navigationBar)
+                .toolbarBackground(.hidden, for: .navigationBar)
+                .containerBackground(.clear, for: .navigation)
+                .ignoresSafeArea(edges: .bottom)
+                .transition(.asymmetric(
+                    insertion: .move(edge: .bottom),
+                    removal: .identity))
             }
         }
         .alert(
@@ -89,7 +104,9 @@ struct MainTabView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .dromeOpenNowPlaying)) { _ in
             guard player.current != nil else { return }
-            showNowPlaying = true
+            withAnimation(.easeOut(duration: 0.32)) {
+                showNowPlaying = true
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .dromeFocusCarPlaySearch)) { _ in
             selectedTab = 1

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 
 /// One cover in the Now Playing art strip. `id` is the song id so SwiftUI
@@ -19,6 +20,7 @@ struct NowPlayingView: View {
     @EnvironmentObject private var rotation: RotationManager
     @EnvironmentObject private var downloads: DownloadManager
     @Environment(\.dismiss) private var dismiss
+    var onClose: (() -> Void)? = nil
 
     @State private var tab: Pane = .song
     @State private var showQueue = false
@@ -28,7 +30,13 @@ struct NowPlayingView: View {
     /// Brief override so skip/restart can glide the scrubber to 0.
     @State private var scrubAnimElapsed: Double?
     @State private var lastScrubDisplayed: Double = 0
-    @State private var dismissDrag: CGFloat = 0
+    /// One-shot pre-skip position when the playhead hard-jumps to 0 before we animate.
+    @State private var scrubPreserveFrom: Double?
+    /// Follows the finger with no animation; springs only on release.
+    @State private var dismissY: CGFloat = 0
+    @State private var isDismissDragging = false
+    @State private var isDismissClosing = false
+    @State private var sheetHeight: CGFloat = 800
     @State private var flashMessage: String?
     /// Always [previous, current, next] — center is index 1 when drag is 0.
     @State private var artPages: [ArtStripPage] = []
@@ -52,7 +60,7 @@ struct NowPlayingView: View {
         GeometryReader { geo in
             let width = geo.size.width
             let height = geo.size.height
-            let headerGap: CGFloat = 28
+            let chromeReserve: CGFloat = 148
 
             ZStack {
                 background
@@ -60,21 +68,15 @@ struct NowPlayingView: View {
                     .clipped()
 
                 VStack(spacing: 0) {
-                    grabber
-
-                    panePicker
-                        .frame(maxWidth: min(280, width - 48))
-                        .padding(.bottom, 8)
+                    dismissChrome(width: width)
 
                     Group {
                         switch tab {
                         case .song:
-                            songPane(width: width, height: height - 72 - headerGap)
+                            songPane(width: width, height: height - chromeReserve)
                         case .lyrics:
                             lyricsPane
-                                // Match song pane's remaining height so the
-                                // Lyrics tab doesn't sit lower than Song.
-                                .frame(width: width, height: height - 72 - headerGap, alignment: .top)
+                                .frame(width: width, height: height - chromeReserve, alignment: .top)
                         }
                     }
                     .frame(width: width)
@@ -83,12 +85,33 @@ struct NowPlayingView: View {
                 .frame(width: width, height: height)
             }
             .frame(width: width, height: height)
-            .offset(y: max(0, dismissDrag))
+            .offset(y: dismissY)
             .transaction { txn in
-                if dismissDrag > 0 { txn.animation = nil }
+                if isDismissDragging && !isDismissClosing { txn.animation = nil }
             }
-            // Song pane only — lyrics scrolling must not pull the sheet closed.
-            .modifier(ConditionalDismissGesture(enabled: tab == .song, gesture: dismissGesture))
+            .onAppear { sheetHeight = height }
+            .onChange(of: height) { _, h in sheetHeight = h }
+        }
+        .background {
+            NowPlayingDismissPan(
+                enabled: !isDismissClosing && !showQueue && !showAddToPlaylist
+                    && !showMoreSheet && !showConnect,
+                lyricsOnlyTopBand: tab == .lyrics,
+                onChanged: { y in
+                    guard !isDismissClosing else { return }
+                    var txn = Transaction()
+                    txn.disablesAnimations = true
+                    withTransaction(txn) {
+                        isDismissDragging = true
+                        dismissY = max(0, y)
+                    }
+                },
+                onEnded: { y, velocity in
+                    guard !isDismissClosing else { return }
+                    finishDismiss(translation: y, velocity: velocity)
+                }
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .ignoresSafeArea(edges: .bottom)
         .toolbar(.hidden, for: .navigationBar)
@@ -184,24 +207,32 @@ struct NowPlayingView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: flashMessage)
         .preferredColorScheme(.dark)
+        .background(NowPlayingHostClearer())
     }
 
     // MARK: - Chrome
 
-    private var grabber: some View {
+    /// Grabber + pane picker. On Lyrics this is the dismiss handle so the
+    /// lyrics list can scroll without fighting the sheet.
+    private func dismissChrome(width: CGFloat) -> some View {
         VStack(spacing: 0) {
             Capsule()
-                .fill(Color.white.opacity(0.45))
-                .frame(width: 36, height: 5)
-                .padding(.top, 8)
+                .fill(Color.white.opacity(0.5))
+                .frame(width: 40, height: 5)
+                .padding(.top, 12)
+                .padding(.bottom, 22)
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
             headerSubtitle
-                .padding(.top, 28)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+            panePicker
+                .frame(maxWidth: min(280, width - 48))
+                .padding(.bottom, 8)
         }
-        .padding(.bottom, 4)
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
-        // Always allow dismiss from the grabber, including on the Lyrics pane.
-        .simultaneousGesture(dismissGesture)
+        .padding(.bottom, 8)
     }
 
     @ViewBuilder
@@ -327,31 +358,37 @@ struct NowPlayingView: View {
         }
     }
 
-    private var dismissGesture: some Gesture {
-        DragGesture(minimumDistance: 8, coordinateSpace: .local)
-            .onChanged { value in
-                // Only track mostly-vertical pulls; ignore diagonal noise.
-                guard value.translation.height > 0,
-                      value.translation.height > abs(value.translation.width) * 1.15
-                else { return }
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) {
-                    dismissDrag = value.translation.height
-                }
+    private func finishDismiss(translation: CGFloat, velocity: CGFloat) {
+        guard !isDismissClosing else { return }
+        let y = max(0, translation)
+        let threshold = min(160, sheetHeight * 0.18)
+        let flicked = velocity > 1100 && y > 28
+        if y > threshold || flicked {
+            // Stay "dragging" so a cancelled pan can't spring the sheet back
+            // up for a frame, and don't reset dismissY before the cover dies.
+            isDismissClosing = true
+            isDismissDragging = false
+            withAnimation(.easeIn(duration: 0.2)) {
+                dismissY = sheetHeight + 40
             }
-            .onEnded { value in
-                let shouldDismiss = value.translation.height > 140
-                    || value.predictedEndTranslation.height > 220
-                if shouldDismiss {
-                    dismiss()
-                    dismissDrag = 0
-                } else {
-                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.9)) {
-                        dismissDrag = 0
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                var txn = Transaction()
+                txn.disablesAnimations = true
+                withTransaction(txn) {
+                    if let onClose {
+                        onClose()
+                    } else {
+                        dismiss()
                     }
                 }
             }
+        } else {
+            isDismissDragging = false
+            withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
+                dismissY = 0
+            }
+        }
     }
 
     private var swipeUpToLyricsGesture: some Gesture {
@@ -371,7 +408,10 @@ struct NowPlayingView: View {
     private func songPane(width: CGFloat, height: CGFloat) -> some View {
         let horizontalPad: CGFloat = 24
         let contentWidth = max(0, width - horizontalPad * 2)
-        let artSide = min(contentWidth, max(180, height * 0.38))
+        // Same visual size as before (~38% of the song pane), but taken from
+        // the stable screen height so the open animation can't grow/shrink it.
+        let estimatedPane = max(400, UIScreen.main.bounds.height - 220)
+        let artSide = min(contentWidth, max(180, estimatedPane * 0.38))
 
         return VStack(spacing: 0) {
             Spacer(minLength: 4)
@@ -573,9 +613,21 @@ struct NowPlayingView: View {
 
     /// Glide the scrubber thumb to 0 so skips don't hard-jump the playhead UI.
     private func animateScrubToStart() {
-        let from = isSeeking ? seekElapsed : (scrubAnimElapsed ?? lastScrubDisplayed)
+        // While paused, AVPlayer often reports a stale time for a beat after
+        // `next()` — animating from that makes the thumb jump up then back.
+        // Snap cleanly; the playing path still gets the glide.
+        if !player.isPlaying {
+            scrubAnimElapsed = nil
+            scrubPreserveFrom = nil
+            lastScrubDisplayed = 0
+            return
+        }
+        let preserved = scrubPreserveFrom
+        scrubPreserveFrom = nil
+        let from = isSeeking ? seekElapsed : (scrubAnimElapsed ?? preserved ?? lastScrubDisplayed)
         guard from > 0.35 else {
             scrubAnimElapsed = nil
+            lastScrubDisplayed = min(max(0, clock.elapsed), stableDuration)
             return
         }
         scrubAnimElapsed = from
@@ -585,6 +637,7 @@ struct NowPlayingView: View {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 300_000_000)
             scrubAnimElapsed = nil
+            lastScrubDisplayed = min(max(0, clock.elapsed), stableDuration)
         }
     }
 
@@ -812,12 +865,12 @@ struct NowPlayingView: View {
             .tint(.white)
             .onChange(of: displayed) { old, value in
                 guard scrubAnimElapsed == nil else { return }
-                // Preserve the pre-skip position when the playhead hard-jumps to 0.
+                // When the playhead hard-jumps to 0 on skip, keep a one-shot
+                // preserve so `animateScrubToStart` can still glide from the old time.
                 if value < 0.25, old > 1 {
-                    lastScrubDisplayed = old
-                } else {
-                    lastScrubDisplayed = value
+                    scrubPreserveFrom = old
                 }
+                lastScrubDisplayed = value
             }
 
             HStack {
@@ -960,11 +1013,7 @@ struct NowPlayingView: View {
     private var lyricsPane: some View {
         Group {
             if let song = player.current?.song {
-                LyricsView(song: song) {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        tab = .song
-                    }
-                }
+                LyricsView(song: song)
             } else {
                 EmptyStateView(title: "Nothing playing")
             }
@@ -1144,15 +1193,178 @@ private enum NowPlayingBackdrop {
     }
 }
 
-private struct ConditionalDismissGesture<G: Gesture>: ViewModifier {
-    let enabled: Bool
-    let gesture: G
+private struct NowPlayingDismissPan: UIViewRepresentable {
+    var enabled: Bool
+    /// Lyrics: only the top strip, so the list can still scroll.
+    /// Song: top strip always, plus the rest of the page on a downward drag.
+    var lyricsOnlyTopBand: Bool
+    var onChanged: (CGFloat) -> Void
+    var onEnded: (_ translation: CGFloat, _ velocity: CGFloat) -> Void
 
-    func body(content: Content) -> some View {
-        if enabled {
-            content.simultaneousGesture(gesture)
-        } else {
-            content
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIView(context: Context) -> InstallerView {
+        let view = InstallerView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        context.coordinator.parent = self
+        view.coordinator = context.coordinator
+        return view
+    }
+
+    func updateUIView(_ uiView: InstallerView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.pan.isEnabled = enabled
+        uiView.coordinator = context.coordinator
+        context.coordinator.attach(from: uiView)
+    }
+
+    final class InstallerView: UIView {
+        var coordinator: Coordinator?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            coordinator?.attach(from: self)
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            coordinator?.attach(from: self)
+        }
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var parent: NowPlayingDismissPan?
+        private weak var probe: UIView?
+        private weak var host: UIView?
+
+        lazy var pan: UIPanGestureRecognizer = {
+            let g = UIPanGestureRecognizer(target: self, action: #selector(handle))
+            g.delegate = self
+            g.cancelsTouchesInView = false
+            g.delaysTouchesBegan = false
+            g.delaysTouchesEnded = false
+            g.maximumNumberOfTouches = 1
+            return g
+        }()
+
+        func attach(from probe: UIView) {
+            self.probe = probe
+            let next = Self.resolveHost(from: probe)
+            if host === next { return }
+            host?.removeGestureRecognizer(pan)
+            host = next
+            next?.addGestureRecognizer(pan)
+        }
+
+        deinit {
+            host?.removeGestureRecognizer(pan)
+        }
+
+        /// Prefer the cover's root view (just under the window) so hit-testing
+        /// uses the full screen, not the 0×0 representable.
+        static func resolveHost(from probe: UIView) -> UIView? {
+            var current: UIView? = probe
+            var best: UIView?
+            while let view = current {
+                if !(view is UIWindow), view.bounds.width > 160, view.bounds.height > 300 {
+                    best = view
+                }
+                current = view.superview
+            }
+            return best ?? probe.window
+        }
+
+        /// Full-width header: grabber, title, Song/Lyrics picker, and slack
+        /// so you don't have to hit the capsule.
+        func topBandHeight(in host: UIView) -> CGFloat {
+            host.safeAreaInsets.top + 220
+        }
+
+        @objc func handle(_ gesture: UIPanGestureRecognizer) {
+            let view = gesture.view
+            let y = gesture.translation(in: view).y
+            let v = gesture.velocity(in: view).y
+            switch gesture.state {
+            case .changed:
+                parent?.onChanged(y)
+            case .ended, .cancelled, .failed:
+                parent?.onEnded(y, v)
+            default:
+                break
+            }
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let parent, parent.enabled,
+                  let pan = gestureRecognizer as? UIPanGestureRecognizer,
+                  let host = pan.view ?? host
+            else { return false }
+
+            let loc = pan.location(in: host)
+            guard host.bounds.contains(loc) else { return false }
+
+            let t = pan.translation(in: host)
+            let vel = pan.velocity(in: host)
+            let clearlyHorizontal = abs(vel.x) > max(abs(vel.y) * 2.2, 500)
+                || (abs(t.x) > abs(t.y) * 2.2 && abs(t.x) > 28)
+            let clearlyUp = vel.y < -280 && t.y < -6
+
+            let inTopBand = loc.y <= topBandHeight(in: host)
+            if inTopBand {
+                // Always take the pull from the header unless it's a sideways
+                // skip or an upward lyrics-scroll.
+                return !clearlyHorizontal && !clearlyUp
+            }
+
+            if parent.lyricsOnlyTopBand { return false }
+
+            // Rest of the song page: still dismiss, but don't fight album swipes.
+            let downward = vel.y > 0 || t.y > 0
+            return downward && !clearlyHorizontal
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            true
+        }
+    }
+}
+
+/// Makes NavigationStack / hosting views behind Now Playing clear so a
+/// swipe-down reveals Home instead of a second black card.
+private struct NowPlayingHostClearer: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        DispatchQueue.main.async { Self.clear(from: uiView) }
+    }
+
+    private static func clear(from view: UIView) {
+        var node: UIView? = view
+        var hops = 0
+        while let current = node, hops < 12 {
+            if current is UIWindow { break }
+            current.backgroundColor = .clear
+            current.isOpaque = false
+            node = current.superview
+            hops += 1
+        }
+        var responder: UIResponder? = view.next
+        while let current = responder {
+            if let vc = current as? UIViewController {
+                vc.view.backgroundColor = .clear
+                vc.view.isOpaque = false
+                break
+            }
+            responder = current.next
         }
     }
 }

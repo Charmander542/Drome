@@ -21,7 +21,7 @@ struct HomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
-                VibeWheel()
+                VibeTuner()
                     .padding(.top, 4)
 
                 if hasCompanion && (!dailyMixes.isEmpty || mixesLoading) {

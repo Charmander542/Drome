@@ -4,10 +4,6 @@ struct DailyMixRail: View {
     let mixes: [DailyMix]
     var isLoading: Bool = false
 
-    @EnvironmentObject private var player: PlayerEngine
-    @EnvironmentObject private var session: AppSession
-    @State private var playingID: String?
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Daily Mixes")
@@ -21,10 +17,10 @@ struct DailyMixRail: View {
                         }
                     } else {
                         ForEach(mixes) { mix in
-                            Button {
-                                play(mix)
+                            NavigationLink {
+                                DailyMixDetailView(mix: mix)
                             } label: {
-                                DailyMixCard(mix: mix, isPlaying: playingID == mix.id)
+                                DailyMixCard(mix: mix)
                             }
                             .buttonStyle(.plain)
                         }
@@ -33,17 +29,6 @@ struct DailyMixRail: View {
                 .padding(.horizontal, 16)
             }
         }
-    }
-
-    private func play(_ mix: DailyMix) {
-        guard !mix.songs.isEmpty else { return }
-        if player.resumeSession(forKey: "mix:\(mix.title)") { return }
-        playingID = mix.id
-        player.shuffleMode = .off
-        player.play(
-            mix.songs, startAt: 0,
-            context: PlaybackContext(label: mix.title, kind: .mix))
-        playingID = nil
     }
 }
 

@@ -422,6 +422,10 @@ final class PlayerEngine: ObservableObject {
                 handleCurrentItemChange(item)
             }
             applyPlaybackIntent(keepPlaying)
+            if !keepPlaying {
+                // Prefetched items can sit at a non-zero time; pin to start while paused.
+                pinPlayheadToStart()
+            }
             ensureAutoplayBuffer()
             return
         }
@@ -433,6 +437,9 @@ final class PlayerEngine: ObservableObject {
         }
         consumeFromQueues(upNext)
         setCurrent(upNext, startPlaying: keepPlaying)
+        if !keepPlaying {
+            pinPlayheadToStart()
+        }
         ensureAutoplayBuffer()
     }
 
@@ -471,9 +478,15 @@ final class PlayerEngine: ObservableObject {
             // Force the setCurrent path (not AVQueuePlayer.advance) so we don't
             // hit handleCurrentItemChange's async low-rated skip.
             setCurrent(upNext, startPlaying: keepPlaying, allowLowRated: true)
+            if !keepPlaying {
+                pinPlayheadToStart()
+            }
             ensureAutoplayBuffer()
         } else {
             previous(preferPreviousTrack: true)
+            if !keepPlaying {
+                pinPlayheadToStart()
+            }
         }
     }
 
@@ -491,6 +504,29 @@ final class PlayerEngine: ObservableObject {
             player.pause()
         }
         pushNowPlayingInfo()
+    }
+
+    /// Force the visible + actual playhead to 0 after a paused skip/advance.
+    private func pinPlayheadToStart() {
+        setPlayhead(elapsed: 0)
+        #if os(tvOS)
+        if tvUsingAudioPlayer {
+            tvAudio.seek(to: 0)
+            return
+        }
+        #endif
+        guard player.currentItem != nil else { return }
+        let target = CMTime.zero
+        seekEpoch += 1
+        let epoch = seekEpoch
+        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.seekEpoch == epoch else { return }
+                self.appliedSeekEpoch = epoch
+                self.setPlayhead(elapsed: 0)
+                self.pushNowPlayingInfo()
+            }
+        }
     }
 
     private func playCurrentWhenReady() {
@@ -1273,6 +1309,11 @@ final class PlayerEngine: ObservableObject {
                 guard self.seekEpoch == self.appliedSeekEpoch else { return }
                 let seconds = time.seconds
                 guard seconds.isFinite, seconds >= 0 else { return }
+                // While paused, ignore non-zero AVPlayer times right after a skip —
+                // prefetched items often report a stale playhead until seek settles.
+                if !self.wantsToPlay, seconds > 0.35, self.elapsed < 0.35 {
+                    return
+                }
                 // Skip tiny updates to cut SwiftUI churn while audio stays smooth.
                 if abs(seconds - self.lastPublishedElapsed) < 0.2,
                    abs(seconds - self.elapsed) < 0.2 {
@@ -1393,6 +1434,9 @@ final class PlayerEngine: ObservableObject {
         // Keep transport UI on sticky intent — AVPlayer status flickers here.
         if isPlaying != wantsToPlay {
             isPlaying = wantsToPlay
+        }
+        if !wantsToPlay {
+            pinPlayheadToStart()
         }
         topUpWindow()
         // Prefetch the following track after the new current claims bandwidth.

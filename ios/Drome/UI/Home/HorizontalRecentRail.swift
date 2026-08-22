@@ -125,24 +125,20 @@ struct HorizontalRecentRail: View {
             .disabled(spinningVibe != nil)
 
         } else if let mix = dailyMixes.first(where: { $0.title == name }) {
-            Button {
-                playDailyMix(mix)
+            // Same as the Daily Mixes rail: open the mix (collage cover), don't autoplay.
+            NavigationLink {
+                DailyMixDetailView(mix: mix)
             } label: {
                 DailyMixCard(mix: mix)
             }
             .buttonStyle(.plain)
             .hoverEffectDisabled()
 
-        } else if name.hasPrefix("Daily Mix") {
-            Button {
-                if player.resumeSession(forKey: "mix:\(name)") { return }
-                Task { await fetchAndPlayDailyMix(named: name) }
+        } else if name.hasPrefix("Daily Mix") || subtitle == "Daily Mix" {
+            NavigationLink {
+                DailyMixDetailView(title: name)
             } label: {
-                coverCard(
-                    coverID: coverSong.coverArt ?? coverSong.albumId ?? coverSong.id,
-                    title: name,
-                    subtitle: subtitle,
-                    badge: nil)
+                dailyMixFallbackCard(title: name, subtitle: "Daily Mix")
             }
             .buttonStyle(.plain)
             .hoverEffectDisabled()
@@ -258,20 +254,6 @@ struct HorizontalRecentRail: View {
                     context: PlaybackContext(label: name, kind: .genre))
     }
 
-    private func playDailyMix(_ mix: DailyMix) {
-        guard !mix.songs.isEmpty else { return }
-        if player.resumeSession(forKey: "mix:\(mix.title)") { return }
-        player.shuffleMode = .off
-        player.play(mix.songs, startAt: 0,
-                    context: PlaybackContext(label: mix.title, kind: .mix))
-    }
-
-    private func fetchAndPlayDailyMix(named name: String) async {
-        guard let mix = (try? await session.wishlist?.dailyMixes())?.mixes
-            .first(where: { $0.title == name }) else { return }
-        playDailyMix(mix)
-    }
-
     private func playRatedCollection(_ collection: RatedCollection) async {
         let minRating: Int
         switch collection {
@@ -287,6 +269,51 @@ struct HorizontalRecentRail: View {
         guard !songs.isEmpty else { return }
         player.play(songs, startAt: 0,
                     context: PlaybackContext(label: collection.rawValue, kind: .mix))
+    }
+
+    /// Matches Daily Mix collage language without using the last-played song art.
+    private func dailyMixFallbackCard(title: String, subtitle: String) -> some View {
+        let indexDigit = title.split(separator: " ").last.flatMap { Int($0) } ?? 1
+        return VStack(alignment: .leading, spacing: 8) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(hex: "#2A9D8F").opacity(0.55),
+                                Color(hex: "#1D3557").opacity(0.9)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing)
+                    )
+                VStack {
+                    Spacer()
+                    HStack {
+                        Text("\(indexDigit)")
+                            .font(.system(size: 42, weight: .heavy, design: .rounded))
+                            .foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
+                        Spacer()
+                    }
+                    .padding(10)
+                }
+            }
+            .frame(width: 148, height: 148)
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
+            }
+
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(DromeTheme.muted)
+                .lineLimit(1)
+        }
+        .frame(width: 148, alignment: .leading)
     }
 
     /// Matches the Rated library folder tiles (icon plate, not a song cover + badge).

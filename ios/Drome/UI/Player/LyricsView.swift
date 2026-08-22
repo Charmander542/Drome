@@ -5,7 +5,6 @@ import SwiftUI
 /// auto-scroll never shove neighboring lines around.
 struct LyricsView: View {
     let song: Song
-    var onPullDownToSong: (() -> Void)? = nil
 
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
@@ -18,7 +17,6 @@ struct LyricsView: View {
     @State private var userScrolling = false
     @State private var reenableFollowTask: Task<Void, Never>?
     @State private var lastScrolledIndex: Int = -1
-    @State private var pullDownDrag: CGFloat = 0
 
     private enum LineState {
         case past, active, upcoming
@@ -100,11 +98,6 @@ struct LyricsView: View {
             .simultaneousGesture(
                 DragGesture(minimumDistance: 12)
                     .onChanged { value in
-                        let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.15
-                        // Pull-down to leave lyrics: only when the drag is clearly downward.
-                        if mostlyVertical, value.translation.height > 0 {
-                            pullDownDrag = value.translation.height
-                        }
                         guard !userScrolling else { return }
                         // Finger moving up through the list = reading ahead.
                         if value.translation.height < -8 || abs(value.translation.width) > 20 {
@@ -112,22 +105,14 @@ struct LyricsView: View {
                             reenableFollowTask?.cancel()
                         }
                     }
-                    .onEnded { value in
-                        let pull = pullDownDrag
-                        pullDownDrag = 0
-                        if pull > 90,
-                           abs(value.translation.height) > abs(value.translation.width) * 1.2,
-                           value.translation.height > 70 {
-                            onPullDownToSong?()
-                            return
-                        }
+                    .onEnded { _ in
                         guard userScrolling else { return }
                         reenableFollowTask?.cancel()
                         reenableFollowTask = Task {
                             try? await Task.sleep(nanoseconds: 2_800_000_000)
                             guard !Task.isCancelled else { return }
                             userScrolling = false
-                            lastScrolledIndex = -1 // allow follow to resume cleanly
+                            lastScrolledIndex = -1
                         }
                     }
             )

@@ -582,7 +582,9 @@ final class AppDatabase: @unchecked Sendable {
                         case "genre": return "Genre"
                         case "artist": return "Artist"
                         case "outOfRotation": return "Playlist"
-                        default: return "Mix"
+                        default:
+                            if (name ?? key).hasPrefix("Daily Mix") { return "Daily Mix" }
+                            return "Mix"
                         }
                     }()
                     entry = .mix(
