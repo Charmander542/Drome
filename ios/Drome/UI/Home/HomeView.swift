@@ -8,54 +8,58 @@ struct HomeView: View {
     @State private var homePlaylists: [Playlist] = []
     @State private var frequent: [Album] = []
     @State private var newest: [Album] = []
+    @State private var dailyMixes: [DailyMix] = []
+    @State private var mixesLoading = false
     @State private var isLoading = false
     @State private var error: String?
     @State private var showAccounts = false
     @State private var showSettings = false
     @State private var showTVPairing = false
 
+    private var hasCompanion: Bool { session.wishlist != nil }
+
     var body: some View {
-        Group {
-            if isLoading && recentEntries.isEmpty && newest.isEmpty {
-                LoadingStateView()
-            } else if let error, recentEntries.isEmpty && frequent.isEmpty {
-                ErrorStateView(message: error) { Task { await load() } }
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 28) {
-                        Text(greetingText)
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
-                            .padding(.horizontal, 16)
-                            .padding(.top, 4)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                VibeWheel()
+                    .padding(.top, 4)
 
-                        MoodVibeRail()
+                if hasCompanion && (!dailyMixes.isEmpty || mixesLoading) {
+                    DailyMixRail(mixes: dailyMixes, isLoading: mixesLoading)
+                }
 
-                        if !recentEntries.isEmpty {
-                            HorizontalRecentRail(title: "Recently played", entries: recentEntries)
-                        }
-                        if !homePlaylists.isEmpty {
-                            HorizontalPlaylistRail(title: "Playlists", playlists: homePlaylists)
-                        }
-                        if !frequent.isEmpty {
-                            HorizontalAlbumRail(title: "Jump back in", albums: frequent)
-                        }
-                        if !newest.isEmpty {
-                            HorizontalAlbumRail(title: "New in your library", albums: newest)
-                        }
-                        if recentEntries.isEmpty && frequent.isEmpty && newest.isEmpty {
-                            EmptyStateView(title: "Your library is empty",
-                                           message: "Add music to Navidrome and pull to refresh.")
-                                .frame(height: 280)
-                        }
-                    }
-                    .padding(.vertical, 12)
-                    .padding(.bottom, 72)
+                if !recentEntries.isEmpty {
+                    HorizontalRecentRail(
+                        title: "Recently played",
+                        entries: recentEntries,
+                        dailyMixes: dailyMixes)
+                }
+                if !homePlaylists.isEmpty {
+                    HorizontalPlaylistRail(title: "Playlists", playlists: homePlaylists)
+                }
+                if !frequent.isEmpty {
+                    HorizontalAlbumRail(title: "Jump back in", albums: frequent)
+                }
+                if !newest.isEmpty {
+                    HorizontalAlbumRail(title: "New in your library", albums: newest)
+                }
+
+                if let error, recentEntries.isEmpty && frequent.isEmpty && newest.isEmpty {
+                    ErrorStateView(message: error) { Task { await loadAll() } }
+                } else if !isLoading && recentEntries.isEmpty && frequent.isEmpty
+                            && newest.isEmpty && dailyMixes.isEmpty {
+                    EmptyStateView(title: "Your library is empty",
+                                   message: "Add music to Navidrome and pull to refresh.")
+                        .frame(height: 220)
                 }
             }
+            .padding(.vertical, 12)
+            .padding(.bottom, 72)
         }
-        .task(id: session.id) { await load() }
-        .refreshable { await load() }
-        .navigationTitle("Home")
+        .task(id: session.id) { await loadAll() }
+        .refreshable { await loadAll() }
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -95,18 +99,13 @@ struct HomeView: View {
         }
     }
 
-    private var greetingText: String {
-        let hour = Calendar.current.component(.hour, from: Date())
-        let hello: String
-        switch hour {
-        case 5..<12: hello = "Good morning"
-        case 12..<17: hello = "Good afternoon"
-        default: hello = "Good evening"
-        }
-        return "\(hello), \(session.account.username)"
+    private func loadAll() async {
+        async let home: Void = loadHome()
+        async let mixes: Void = loadMixes()
+        _ = await (home, mixes)
     }
 
-    private func load() async {
+    private func loadHome() async {
         isLoading = true
         error = nil
         defer { isLoading = false }
@@ -126,6 +125,21 @@ struct HomeView: View {
             homePlaylists = Self.rankedHomePlaylists(lists, recent: recent)
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+
+    private func loadMixes() async {
+        guard let client = session.wishlist else {
+            dailyMixes = []
+            mixesLoading = false
+            return
+        }
+        if dailyMixes.isEmpty { mixesLoading = true }
+        defer { mixesLoading = false }
+        if let mixes = try? await client.dailyMixes().mixes, !mixes.isEmpty {
+            dailyMixes = mixes
+        } else if dailyMixes.isEmpty {
+            dailyMixes = []
         }
     }
 

@@ -60,6 +60,8 @@ final class PlayerEngine: ObservableObject {
     var autoplayProvider: AutoplayProvider?
     /// Fired when a track becomes current (explicit `setCurrent` or gapless advance).
     var onTrackStarted: ((Song) -> Void)?
+    /// Connect gate: run `action` immediately and return `true`, or defer and return `false`.
+    var localPlaybackGate: ((@escaping () -> Void) -> Bool)?
 
     // MARK: Private state
 
@@ -114,6 +116,8 @@ final class PlayerEngine: ObservableObject {
     /// Art-swipe previous restores these when in-queue history is empty.
     private var sessionUndoStack: [PlaybackSessionSnapshot] = []
     private let maxSessionUndo = 8
+    /// When another Connect device is playing, drive UI playhead from its session.
+    private var remotePlayheadAnchor: (elapsed: TimeInterval, at: Date, playing: Bool)?
 
     // MARK: Init
 
@@ -217,64 +221,68 @@ final class PlayerEngine: ObservableObject {
     /// (Play turns shuffle off; use `playShuffled` for shuffle).
     func play(_ songs: [Song], startAt index: Int = 0, context: PlaybackContext) {
         guard songs.indices.contains(index) else { return }
-        pushSessionUndoIfNeeded()
-        cancelAutoplayWork()
-        ratings.ingest(songs)
-        if shuffleMode != .off {
-            suppressShuffleReorder = true
-            shuffleMode = .off
-            suppressShuffleReorder = false
-        }
-        self.context = context
-        fullContextSongs = songs
+        runLocalPlayback { [self] in
+            pushSessionUndoIfNeeded()
+            cancelAutoplayWork()
+            ratings.ingest(songs)
+            if shuffleMode != .off {
+                suppressShuffleReorder = true
+                shuffleMode = .off
+                suppressShuffleReorder = false
+            }
+            self.context = context
+            fullContextSongs = songs
 
-        let startSong = songs[index]
-        originalContextOrder = Array(songs[(index + 1)...]).map { QueueItem(song: $0) }
-        contextQueue = originalContextOrder
-        userQueue.removeAll()
-        history.removeAll()
-        // Direct user tap — always honor the chosen track even if low-rated.
-        setCurrent(QueueItem(song: startSong), startPlaying: true, allowLowRated: true)
-        ensureAutoplayBuffer()
-        persistSessionSoon()
-        broadcastSharePlayIfNeeded()
+            let startSong = songs[index]
+            originalContextOrder = Array(songs[(index + 1)...]).map { QueueItem(song: $0) }
+            contextQueue = originalContextOrder
+            userQueue.removeAll()
+            history.removeAll()
+            // Direct user tap — always honor the chosen track even if low-rated.
+            setCurrent(QueueItem(song: startSong), startPlaying: true, allowLowRated: true)
+            ensureAutoplayBuffer()
+            persistSessionSoon()
+            broadcastSharePlayIfNeeded()
+        }
     }
 
     /// Shuffle-button entry point: enables shuffle (smart by default) and
     /// picks the opening track from the weighted pool too.
     func playShuffled(_ songs: [Song], context: PlaybackContext) {
         guard !songs.isEmpty else { return }
-        pushSessionUndoIfNeeded()
-        cancelAutoplayWork()
-        ratings.ingest(songs)
-        if shuffleMode == .off { shuffleMode = .smart }
-        self.context = context
-        fullContextSongs = songs
-
-        let pool = orderedForShuffle(songs)
-        guard let first = pool.first else {
-            // Everything was excluded (e.g. all out of rotation): play as-is.
-            // Undo already pushed; nested play would double-push — skip.
+        runLocalPlayback { [self] in
+            pushSessionUndoIfNeeded()
+            cancelAutoplayWork()
+            ratings.ingest(songs)
+            if shuffleMode == .off { shuffleMode = .smart }
             self.context = context
             fullContextSongs = songs
-            originalContextOrder = Array(songs.dropFirst()).map { QueueItem(song: $0) }
-            contextQueue = originalContextOrder
+
+            let pool = orderedForShuffle(songs)
+            guard let first = pool.first else {
+                // Everything was excluded (e.g. all out of rotation): play as-is.
+                // Undo already pushed; nested play would double-push — skip.
+                self.context = context
+                fullContextSongs = songs
+                originalContextOrder = Array(songs.dropFirst()).map { QueueItem(song: $0) }
+                contextQueue = originalContextOrder
+                userQueue.removeAll()
+                history.removeAll()
+                if let song = songs.first {
+                    setCurrent(QueueItem(song: song), startPlaying: true, allowLowRated: true)
+                }
+                ensureAutoplayBuffer()
+                persistSessionSoon()
+                return
+            }
+            originalContextOrder = songs.filter { $0.id != first.id }.map { QueueItem(song: $0) }
+            contextQueue = pool.dropFirst().map { QueueItem(song: $0) }
             userQueue.removeAll()
             history.removeAll()
-            if let song = songs.first {
-                setCurrent(QueueItem(song: song), startPlaying: true, allowLowRated: true)
-            }
+            setCurrent(QueueItem(song: first), startPlaying: true, allowLowRated: true)
             ensureAutoplayBuffer()
             persistSessionSoon()
-            return
         }
-        originalContextOrder = songs.filter { $0.id != first.id }.map { QueueItem(song: $0) }
-        contextQueue = pool.dropFirst().map { QueueItem(song: $0) }
-        userQueue.removeAll()
-        history.removeAll()
-        setCurrent(QueueItem(song: first), startPlaying: true, allowLowRated: true)
-        ensureAutoplayBuffer()
-        persistSessionSoon()
     }
 
     /// Restore a previously saved listening session (queue + shuffle).
@@ -353,18 +361,26 @@ final class PlayerEngine: ObservableObject {
         if wantsToPlay { pause() } else { resume() }
     }
 
-    func resume() {
-        setPlaybackIntent(true)
-        activateAudioSession()
-        #if os(tvOS)
-        if tvUsingAudioPlayer {
-            tvAudio.play()
+    func resume(bypassConnectGate: Bool = false) {
+        let body = { [self] in
+            clearRemotePlayheadMirror()
+            setPlaybackIntent(true)
+            activateAudioSession()
+            #if os(tvOS)
+            if tvUsingAudioPlayer {
+                tvAudio.play()
+                persistSessionSoon()
+                return
+            }
+            #endif
+            playCurrentWhenReady()
             persistSessionSoon()
-            return
         }
-        #endif
-        playCurrentWhenReady()
-        persistSessionSoon()
+        if bypassConnectGate {
+            body()
+        } else {
+            runLocalPlayback(body)
+        }
     }
 
     func pause() {
@@ -645,8 +661,8 @@ final class PlayerEngine: ObservableObject {
     }
 
     /// Apply a Connect session from another device and optionally start playing.
-    func applyConnectSnapshot(_ snap: PlaybackSessionSnapshot, startPlaying: Bool) {
-        restore(snap, seeking: true, startPlaying: startPlaying, recordPlay: true)
+    func applyConnectSnapshot(_ snap: PlaybackSessionSnapshot, startPlaying: Bool, recordPlay: Bool = true) {
+        restore(snap, seeking: true, startPlaying: startPlaying, recordPlay: recordPlay)
     }
 
     func seek(to time: TimeInterval) {
@@ -734,6 +750,12 @@ final class PlayerEngine: ObservableObject {
     /// High-resolution playhead for karaoke / scrubber UIs. Prefer this over
     /// the throttled `elapsed` publish when you need frame-smooth updates.
     func accurateElapsed() -> TimeInterval {
+        if let anchor = remotePlayheadAnchor {
+            if anchor.playing {
+                return max(0, anchor.elapsed + Date().timeIntervalSince(anchor.at))
+            }
+            return max(0, anchor.elapsed)
+        }
         #if os(tvOS)
         if tvUsingAudioPlayer {
             return tvAudio.currentTime
@@ -742,6 +764,24 @@ final class PlayerEngine: ObservableObject {
         let seconds = player.currentTime().seconds
         guard seconds.isFinite, seconds >= 0 else { return elapsed }
         return seconds
+    }
+
+    /// Drive mini / now-playing playhead from another Connect device's session.
+    func mirrorRemotePlayhead(elapsed: TimeInterval, duration: TimeInterval, isPlaying: Bool) {
+        remotePlayheadAnchor = (elapsed, Date(), isPlaying)
+        setPlayhead(elapsed: elapsed, duration: duration > 0 ? duration : nil)
+    }
+
+    func clearRemotePlayheadMirror() {
+        remotePlayheadAnchor = nil
+    }
+
+    private func runLocalPlayback(_ action: @escaping () -> Void) {
+        if let gate = localPlaybackGate {
+            _ = gate(action)
+        } else {
+            action()
+        }
     }
 
     private func setPlayhead(elapsed: TimeInterval, duration newDuration: TimeInterval? = nil) {
@@ -772,41 +812,49 @@ final class PlayerEngine: ObservableObject {
 
     func playNext(_ song: Song) {
         ratings.ingest([song])
-        userQueue.insert(QueueItem(song: song), at: 0)
         if current == nil {
-            let item = userQueue.removeFirst()
-            setCurrent(item, startPlaying: true, allowLowRated: true)
-        } else {
-            resyncUpcomingWindow()
+            runLocalPlayback { [self] in
+                userQueue.insert(QueueItem(song: song), at: 0)
+                let item = userQueue.removeFirst()
+                setCurrent(item, startPlaying: true, allowLowRated: true)
+            }
+            return
         }
+        userQueue.insert(QueueItem(song: song), at: 0)
+        resyncUpcomingWindow()
     }
 
     func addToQueue(_ song: Song) {
         ratings.ingest([song])
-        userQueue.append(QueueItem(song: song))
         if current == nil {
-            let item = userQueue.removeFirst()
-            setCurrent(item, startPlaying: true, allowLowRated: true)
-        } else {
-            resyncUpcomingWindow()
+            runLocalPlayback { [self] in
+                userQueue.append(QueueItem(song: song))
+                let item = userQueue.removeFirst()
+                setCurrent(item, startPlaying: true, allowLowRated: true)
+            }
+            return
         }
+        userQueue.append(QueueItem(song: song))
+        resyncUpcomingWindow()
     }
 
     func jump(to item: QueueItem) {
         guard item.id != current?.id else { return }
-        if let current {
-            history.append(current)
+        runLocalPlayback { [self] in
+            if let current {
+                history.append(current)
+            }
+            // Everything before the tapped item in play order is skipped.
+            if let idx = userQueue.firstIndex(where: { $0.id == item.id }) {
+                userQueue.removeSubrange(0...idx)
+            } else if let idx = contextQueue.firstIndex(where: { $0.id == item.id }) {
+                userQueue.removeAll()
+                contextQueue.removeSubrange(0...idx)
+            }
+            // User tapped a specific queue row — play it even if low-rated.
+            setCurrent(item, startPlaying: true, allowLowRated: true)
+            ensureAutoplayBuffer()
         }
-        // Everything before the tapped item in play order is skipped.
-        if let idx = userQueue.firstIndex(where: { $0.id == item.id }) {
-            userQueue.removeSubrange(0...idx)
-        } else if let idx = contextQueue.firstIndex(where: { $0.id == item.id }) {
-            userQueue.removeAll()
-            contextQueue.removeSubrange(0...idx)
-        }
-        // User tapped a specific queue row — play it even if low-rated.
-        setCurrent(item, startPlaying: true, allowLowRated: true)
-        ensureAutoplayBuffer()
     }
 
     func moveUserQueueItems(from source: IndexSet, to destination: Int) {

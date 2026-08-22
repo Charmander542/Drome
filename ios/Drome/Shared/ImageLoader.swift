@@ -19,7 +19,7 @@ final class ImageLoader: @unchecked Sendable {
     private var failed = Set<NSString>()
     private var activeFetches = 0
     private var waiters: [CheckedContinuation<Void, Never>] = []
-    private let maxConcurrentFetches = 12
+    private let maxConcurrentFetches = 8
 
     var session: URLSession {
         get { lock.lock(); defer { lock.unlock() }; return _session }

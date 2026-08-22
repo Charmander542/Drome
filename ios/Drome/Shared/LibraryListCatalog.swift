@@ -123,6 +123,19 @@ enum LibraryListCatalog {
         try? FileManager.default.removeItem(at: dir)
     }
 
+    /// Songs/albums/artists now live in SQLite. Drop the old JSON files after import.
+    static func invalidateLists(serverKey: String) {
+        lock.lock()
+        albumsByServer.removeValue(forKey: serverKey)
+        artistsByServer.removeValue(forKey: serverKey)
+        songsByServer.removeValue(forKey: serverKey)
+        lock.unlock()
+        let dir = directory(for: serverKey)
+        for kind in ["albums", "artists", "songs"] {
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent("\(kind).json"))
+        }
+    }
+
     // MARK: - Disk
 
     private static func ensureDiskLoaded(serverKey: String) {

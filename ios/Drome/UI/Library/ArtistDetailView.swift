@@ -35,7 +35,8 @@ struct ArtistDetailView: View {
                 HStack {
                     Spacer(minLength: 0)
                     ArtistAvatar(artistId: artist.id, name: artist.name,
-                                 size: 120, navidromeCoverArt: artist.coverArt)
+                                 size: 120, navidromeCoverArt: artist.coverArt,
+                                 allowsSpotifyLookup: true)
                     Spacer(minLength: 0)
                 }
                 .listRowBackground(Color.clear)

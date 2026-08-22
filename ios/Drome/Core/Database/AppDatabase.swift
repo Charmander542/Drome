@@ -45,7 +45,7 @@ struct DownloadPlaylistMembership: Hashable, Identifiable {
 
 /// On-device SQLite database (GRDB): lyrics cache, FTS5 lyrics search index,
 /// offline-download metadata, Out-of-Rotation manual overrides, and play history.
-final class AppDatabase {
+final class AppDatabase: @unchecked Sendable {
     let pool: DatabasePool
 
     init(url: URL) throws {
@@ -205,6 +205,60 @@ final class AppDatabase {
             try db.execute(sql: """
                 CREATE INDEX download_playlists_playlist
                 ON download_playlists (server_key, playlist_id);
+                """)
+        }
+        migrator.registerMigration("v7_library_index") { db in
+            try db.execute(sql: """
+                CREATE TABLE library_songs (
+                    server_key TEXT NOT NULL,
+                    id         TEXT NOT NULL,
+                    sort_key   TEXT NOT NULL,
+                    letter     TEXT NOT NULL,
+                    song_json  TEXT NOT NULL,
+                    PRIMARY KEY (server_key, id)
+                );
+                """)
+            try db.execute(sql: """
+                CREATE INDEX library_songs_letter
+                ON library_songs (server_key, letter, sort_key, id);
+                """)
+            try db.execute(sql: """
+                CREATE TABLE library_albums (
+                    server_key TEXT NOT NULL,
+                    id         TEXT NOT NULL,
+                    sort_key   TEXT NOT NULL,
+                    letter     TEXT NOT NULL,
+                    album_json TEXT NOT NULL,
+                    PRIMARY KEY (server_key, id)
+                );
+                """)
+            try db.execute(sql: """
+                CREATE INDEX library_albums_letter
+                ON library_albums (server_key, letter, sort_key, id);
+                """)
+            try db.execute(sql: """
+                CREATE TABLE library_artists (
+                    server_key  TEXT NOT NULL,
+                    id          TEXT NOT NULL,
+                    sort_key    TEXT NOT NULL,
+                    letter      TEXT NOT NULL,
+                    artist_json TEXT NOT NULL,
+                    PRIMARY KEY (server_key, id)
+                );
+                """)
+            try db.execute(sql: """
+                CREATE INDEX library_artists_letter
+                ON library_artists (server_key, letter, sort_key, id);
+                """)
+            try db.execute(sql: """
+                CREATE TABLE library_sync (
+                    server_key TEXT NOT NULL,
+                    kind       TEXT NOT NULL,
+                    is_complete INTEGER NOT NULL DEFAULT 0,
+                    item_count INTEGER NOT NULL DEFAULT 0,
+                    updated_at REAL NOT NULL DEFAULT 0,
+                    PRIMARY KEY (server_key, kind)
+                );
                 """)
         }
         return migrator

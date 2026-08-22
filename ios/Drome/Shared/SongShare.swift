@@ -67,7 +67,12 @@ enum SongShare {
             }
         }
 
-        let metadata = linkMetadata(headline: headline, openURL: webURL ?? appURL, image: cover)
+        let metadata = linkMetadata(
+            headline: headline,
+            openURL: webURL ?? appURL,
+            // Always provide a card image so Messages / the share sheet never
+            // fall back to the app icon when cover art is still loading.
+            image: MessageCardImage.render(cover: cover, title: title, artist: artist))
         let iMessage = SongIMessage.make(
             song: song, title: title, artist: artist, album: album,
             cover: cover, webURL: webURL,

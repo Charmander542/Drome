@@ -244,4 +244,22 @@ struct DromeWishlistClient {
         }
         return url
     }
+
+    func dailyMixes(timeZone: TimeZone = .current) async throws -> DailyMixResponse {
+        try await send(
+            DailyMixResponse.self,
+            path: "/mixes/daily",
+            method: "GET",
+            extraQuery: [URLQueryItem(name: "tz", value: timeZone.identifier)]
+        )
+    }
+
+    func vibeMix(id: String, timeZone: TimeZone = .current) async throws -> VibeMix {
+        try await send(
+            VibeMix.self,
+            path: "/mixes/vibe/\(id)",
+            method: "GET",
+            extraQuery: [URLQueryItem(name: "tz", value: timeZone.identifier)]
+        )
+    }
 }

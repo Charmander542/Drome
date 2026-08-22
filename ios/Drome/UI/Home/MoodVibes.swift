@@ -83,49 +83,90 @@ enum MoodVibe: String, CaseIterable, Identifiable {
 @MainActor
 enum MoodPlayer {
     static func play(_ vibe: MoodVibe, session: AppSession) async {
+        if let client = session.wishlist,
+           let mix = try? await client.vibeMix(id: vibe.rawValue),
+           !mix.songs.isEmpty {
+            play(mix.songs, vibe: vibe, session: session)
+            return
+        }
+        await playLocal(vibe, session: session)
+    }
+
+    private static func play(_ songs: [Song], vibe: MoodVibe, session: AppSession) {
+        let excluded = session.rotation.excludedIDs
+        let filtered = songs.filter { !excluded.contains($0.id) }.uniquedByID()
+        guard !filtered.isEmpty else { return }
+        session.ratings.ingest(filtered)
+        session.player.play(filtered, startAt: 0,
+                            context: PlaybackContext(label: vibe.title, kind: .mix))
+    }
+
+    /// Companion-offline path: same idea as Daily Mix (anchors + similar)
+    /// with the vibe's genre seed instead of a taste cluster.
+    private static func playLocal(_ vibe: MoodVibe, session: AppSession) async {
         let client = session.client
         let ratings = session.ratings
         let rotation = session.rotation
         let excluded = rotation.excludedIDs
 
         var pool: [Song] = []
-
-        for genre in vibe.genreHints {
-            let batch = (try? await client.songsByGenre(genre, count: 50)) ?? []
-            pool.append(contentsOf: batch)
-            if pool.count >= 60 { break }
+        await withTaskGroup(of: [Song].self) { group in
+            for genre in vibe.genreHints.prefix(5) {
+                group.addTask {
+                    (try? await client.songsByGenre(genre, count: 40)) ?? []
+                }
+            }
+            if vibe == .lucky {
+                group.addTask {
+                    (try? await client.randomSongs(size: 100)) ?? []
+                }
+            }
+            for await batch in group {
+                pool.append(contentsOf: batch)
+            }
         }
 
-        if pool.count < 25 || vibe == .lucky {
-            pool.append(contentsOf: (try? await client.randomSongs(size: vibe == .lucky ? 100 : 60)) ?? [])
+        pool = pool.filter { !excluded.contains($0.id) }.uniquedByID()
+        if pool.count < 20 {
+            pool.append(contentsOf: (try? await client.randomSongs(size: 80)) ?? [])
+            pool = pool.filter { !excluded.contains($0.id) }.uniquedByID()
         }
-
-        pool = pool
-            .filter { !excluded.contains($0.id) }
-            .uniquedByID()
 
         ratings.ingest(pool)
 
+        let anchors = Array(pool
+            .sorted { ratings.rating(for: $0) > ratings.rating(for: $1) }
+            .compactMap(\.artistId)
+            .uniqued()
+            .prefix(3))
+        await withTaskGroup(of: [Song].self) { group in
+            for id in anchors {
+                group.addTask {
+                    (try? await client.similarSongs(artistId: id, count: 20)) ?? []
+                }
+            }
+            for await batch in group {
+                pool.append(contentsOf: batch)
+            }
+        }
+        pool = pool.filter { !excluded.contains($0.id) }.uniquedByID()
+
         if vibe.minimumRatingBias {
-            // Soft preference: keep everything, but shuffle with rating weight.
             let ordered = ShuffleEngine.weightedShuffle(pool) { ratings.rating(for: $0) }
             guard !ordered.isEmpty else { return }
-            session.player.shuffleMode = .smart
-            session.player.playShuffled(ordered, context: PlaybackContext(label: vibe.title, kind: .mix))
+            session.player.play(Array(ordered.prefix(50)), startAt: 0,
+                                context: PlaybackContext(label: vibe.title, kind: .mix))
         } else if vibe == .hype {
-            // Prefer frequently played / higher energy proxies (play count).
             let ordered = pool.sorted { ($0.playCount ?? 0) > ($1.playCount ?? 0) }
-            let top = Array(ordered.prefix(max(40, ordered.count / 2))).shuffled()
-            let use = top.isEmpty ? pool.shuffled() : top
-            guard !use.isEmpty else { return }
-            session.player.shuffleMode = .random
-            session.player.playShuffled(use, context: PlaybackContext(label: vibe.title, kind: .mix))
+            let top = Array(ordered.prefix(max(40, ordered.count / 2)))
+            guard !top.isEmpty else { return }
+            session.player.play(top.shuffled(), startAt: 0,
+                                context: PlaybackContext(label: vibe.title, kind: .mix))
         } else {
-            // Lucky — true random.
-            let use = pool.shuffled()
+            let use = Array(pool.shuffled().prefix(50))
             guard !use.isEmpty else { return }
-            session.player.shuffleMode = .random
-            session.player.playShuffled(use, context: PlaybackContext(label: vibe.title, kind: .mix))
+            session.player.play(use, startAt: 0,
+                                context: PlaybackContext(label: vibe.title, kind: .mix))
         }
     }
 }

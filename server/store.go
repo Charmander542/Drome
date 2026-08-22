@@ -131,6 +131,10 @@ CREATE TABLE IF NOT EXISTS playlist_mirrors (
 		db.Close()
 		return nil, err
 	}
+	if err := store.migrateMixes(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return store, nil
 }
 

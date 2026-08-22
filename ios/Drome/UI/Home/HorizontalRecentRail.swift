@@ -6,6 +6,7 @@ import SwiftUI
 struct HorizontalRecentRail: View {
     let title: String
     let entries: [RecentPlayEntry]
+    var dailyMixes: [DailyMix] = []
 
     @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject private var session: AppSession
@@ -123,6 +124,29 @@ struct HorizontalRecentRail: View {
             .hoverEffectDisabled()
             .disabled(spinningVibe != nil)
 
+        } else if let mix = dailyMixes.first(where: { $0.title == name }) {
+            Button {
+                playDailyMix(mix)
+            } label: {
+                DailyMixCard(mix: mix)
+            }
+            .buttonStyle(.plain)
+            .hoverEffectDisabled()
+
+        } else if name.hasPrefix("Daily Mix") {
+            Button {
+                if player.resumeSession(forKey: "mix:\(name)") { return }
+                Task { await fetchAndPlayDailyMix(named: name) }
+            } label: {
+                coverCard(
+                    coverID: coverSong.coverArt ?? coverSong.albumId ?? coverSong.id,
+                    title: name,
+                    subtitle: subtitle,
+                    badge: nil)
+            }
+            .buttonStyle(.plain)
+            .hoverEffectDisabled()
+
         } else if let collection = RatedCollection.allCases.first(where: { $0.rawValue == name }) {
             Button {
                 if player.resumeSession(forKey: "mix:\(name)") { return }
@@ -232,6 +256,20 @@ struct HorizontalRecentRail: View {
         guard !songs.isEmpty else { return }
         player.play(songs, startAt: 0,
                     context: PlaybackContext(label: name, kind: .genre))
+    }
+
+    private func playDailyMix(_ mix: DailyMix) {
+        guard !mix.songs.isEmpty else { return }
+        if player.resumeSession(forKey: "mix:\(mix.title)") { return }
+        player.shuffleMode = .off
+        player.play(mix.songs, startAt: 0,
+                    context: PlaybackContext(label: mix.title, kind: .mix))
+    }
+
+    private func fetchAndPlayDailyMix(named name: String) async {
+        guard let mix = (try? await session.wishlist?.dailyMixes())?.mixes
+            .first(where: { $0.title == name }) else { return }
+        playDailyMix(mix)
     }
 
     private func playRatedCollection(_ collection: RatedCollection) async {

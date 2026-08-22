@@ -20,7 +20,24 @@ struct ConnectDevicePicker: View {
                     }
                 }
 
+                if connect.isBusy {
+                    Section {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text(connect.notice ?? "Switching…")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else if let notice = connect.notice,
+                          !notice.hasPrefix("Playing") {
+                    Section {
+                        Text(notice)
+                            .foregroundStyle(.red)
+                    }
+                }
+
                 Section {
+                    let others = connect.devices.filter { $0.id != connect.deviceId }
                     deviceRow(
                         id: connect.deviceId,
                         name: connect.deviceName,
@@ -28,14 +45,8 @@ struct ConnectDevicePicker: View {
                         isHere: true,
                         isActive: !connect.isRemote
                     ) {
-                        Task { await connect.takeControl() }
+                        Task { _ = await connect.takeControl() }
                     }
-                } header: {
-                    Text("This device")
-                }
-
-                Section {
-                    let others = connect.devices.filter { $0.id != connect.deviceId }
                     if others.isEmpty {
                         Text("No other devices online")
                             .foregroundStyle(.secondary)
@@ -49,14 +60,15 @@ struct ConnectDevicePicker: View {
                                 isActive: device.isActive == true
                             ) {
                                 Task {
-                                    await connect.transfer(to: device)
-                                    dismiss()
+                                    if await connect.transfer(to: device) {
+                                        dismiss()
+                                    }
                                 }
                             }
                         }
                     }
                 } header: {
-                    Text("Drome devices")
+                    Text("Devices")
                 } footer: {
                     Text("Open Drome on another phone or Apple TV with the same login and companion server.")
                 }
@@ -67,9 +79,11 @@ struct ConnectDevicePicker: View {
                         HStack(spacing: 14) {
                             Image(systemName: "airplayaudio")
                                 .font(.title2)
+                                .foregroundStyle(.primary)
                                 .frame(width: 36)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("AirPlay & Bluetooth")
+                                    .foregroundStyle(.primary)
                                 Text("Speakers, TVs, and headphones")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -81,10 +95,10 @@ struct ConnectDevicePicker: View {
                         }
                         .allowsHitTesting(false)
 
-                        // Invisible system control — tap anywhere in the row.
                         AirPlayRoutePicker(tintColor: .clear, activeTintColor: .clear)
                             .frame(maxWidth: .infinity, minHeight: 44)
                     }
+                    .contentShape(Rectangle())
                     .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
                 } header: {
                     Text("Audio output")
@@ -99,37 +113,53 @@ struct ConnectDevicePicker: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
+                        .disabled(connect.isBusy)
                 }
             }
             #else
             .navigationTitle("Connect")
             #endif
+            .interactiveDismissDisabled(connect.isBusy)
+            .tint(.primary)
         }
     }
 
     private func deviceRow(id: String, name: String, platform: String,
                             isHere: Bool, isActive: Bool,
                             action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        let busy = connect.busyDeviceId == id
+        return Button(action: action) {
             HStack(spacing: 14) {
                 Image(systemName: ConnectDevice(id: id, name: name, platform: platform).systemImage)
                     .font(.title2)
+                    .foregroundStyle(.primary)
                     .frame(width: 36)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name)
                         .foregroundStyle(.primary)
-                    Text(isHere ? "This \(platformLabel(platform))" : platformLabel(platform))
+                    Text(busy
+                         ? "Switching…"
+                         : (isHere ? "This \(platformLabel(platform))" : platformLabel(platform)))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Spacer()
-                if isActive {
+                Spacer(minLength: 0)
+                if busy {
+                    ProgressView()
+                } else if isActive {
                     Image(systemName: "speaker.wave.2.fill")
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(.primary)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .padding(.vertical, 4)
         }
         .buttonStyle(.plain)
+        #if os(iOS)
+        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+        #endif
+        .disabled(connect.isBusy)
     }
 
     private func platformLabel(_ platform: String) -> String {

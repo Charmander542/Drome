@@ -1,5 +1,4 @@
 import SwiftUI
-import Combine
 
 struct SearchView: View {
     private enum Source: String, CaseIterable {
@@ -21,7 +20,7 @@ struct SearchView: View {
     @State private var addedSpotifyIDs: Set<String> = []
     @State private var error: String?
     @State private var debounceTask: Task<Void, Never>?
-    @FocusState private var searchFocused: Bool
+    @State private var isSearchPresented = false
     @State private var recentItems: [RecentSearchItem] = []
     @State private var matchedSongs: [String: Song] = [:]
     @State private var matchedAlbums: [String: Album] = [:]
@@ -30,18 +29,19 @@ struct SearchView: View {
         results
             .navigationTitle("Search")
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
-                        prompt: source == .library
-                            ? "Artists, songs, albums…"
-                            : "Search Spotify tracks, albums…")
+            .searchable(
+                text: $query,
+                isPresented: $isSearchPresented,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: source == .library
+                    ? "Artists, songs, albums…"
+                    : "Search Spotify tracks, albums…")
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
-            .focused($searchFocused)
             .safeAreaInset(edge: .top, spacing: 0) {
                 searchControls
             }
             .onChange(of: query) { _, newValue in
-                // Keep this handler tiny — any heavy work here stalls the keyboard.
                 scheduleSearch(newValue)
             }
             .onChange(of: source) { _, _ in
@@ -51,8 +51,15 @@ struct SearchView: View {
                 hasCompletedSearch = false
                 scheduleSearch(query)
             }
+            .onAppear {
+                isSearchPresented = true
+            }
             .task {
-                // Decode recents off the critical path so the keyboard can appear.
+                // Lazy tabs can miss the first isPresented flip; retry once the field exists.
+                try? await Task.sleep(nanoseconds: 30_000_000)
+                if query.isEmpty {
+                    isSearchPresented = true
+                }
                 let loaded = await Task.detached(priority: .utility) {
                     RecentSearchesStore.load()
                 }.value
@@ -60,11 +67,7 @@ struct SearchView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .dromeFocusCarPlaySearch)) { _ in
                 source = .library
-                // Let the tab settle before focusing — avoids a frozen keyboard.
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 150_000_000)
-                    searchFocused = true
-                }
+                isSearchPresented = true
             }
             .scrollDismissesKeyboard(.interactively)
     }
@@ -113,44 +116,64 @@ struct SearchView: View {
     @ViewBuilder
     private var libraryResults: some View {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            recentSearchesView
-        } else if let error, hits.isEmpty {
-            ErrorStateView(message: error)
-        } else if hits.isEmpty {
-            // Quiet placeholder while debouncing / in-flight — swapping to a
-            // full LoadingStateView here stalls the first keystroke.
-            if hasCompletedSearch && !isSearching {
-                EmptyStateView(title: "No results", message: "Try a different query.")
-            } else {
-                ZStack {
-                    Color.clear
-                    if isSearching {
-                        ProgressView()
-                            .tint(DromeTheme.muted)
-                    }
+        List {
+            if trimmed.isEmpty {
+                recentSearchesSection
+            } else if let error, hits.isEmpty {
+                Section {
+                    Text(error)
+                        .font(.subheadline)
+                        .foregroundStyle(DromeTheme.muted)
+                        .listRowBackground(DromeTheme.background)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        } else {
-            ZStack(alignment: .top) {
-                rankedList
-                if isSearching {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Searching…")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(DromeTheme.muted)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.top, 8)
-                    .allowsHitTesting(false)
+            } else if hits.isEmpty && hasCompletedSearch && !isSearching {
+                Section {
+                    Text("No results")
+                        .font(.subheadline)
+                        .foregroundStyle(DromeTheme.muted)
+                        .listRowBackground(DromeTheme.background)
+                }
+            } else {
+                ForEach(hits) { hit in
+                    hitRow(hit)
+                        .listRowBackground(DromeTheme.background)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                 }
             }
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .scrollDismissesKeyboard(.interactively)
+        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
+        .overlay {
+            if trimmed.isEmpty && recentItems.isEmpty {
+                EmptyStateView(
+                    title: "Find your music",
+                    systemImage: "magnifyingglass",
+                    message: "Try an artist, album, song, or a line of lyrics.")
+                .allowsHitTesting(false)
+            } else if !trimmed.isEmpty && hits.isEmpty && isSearching {
+                ProgressView()
+                    .tint(DromeTheme.muted)
+            }
+        }
+        .overlay(alignment: .top) {
+            if isSearching && !hits.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Searching…")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(DromeTheme.muted)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: Capsule())
+                .padding(.top, 8)
+                .allowsHitTesting(false)
+            }
+        }
+        .animation(nil, value: query)
     }
 
     @ViewBuilder
@@ -160,66 +183,83 @@ struct SearchView: View {
                 title: "Wishlist not configured",
                 systemImage: "heart",
                 message: "Set your companion server URL in Settings to search Spotify and add tracks to your wishlist.")
-        } else if isSearching && spotifyHits.isEmpty {
-            LoadingStateView(message: "Searching Spotify…")
-        } else if let error {
-            ErrorStateView(message: error)
-        } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            recentSearchesView
-        } else if spotifyHits.isEmpty && !isSearching {
-            EmptyStateView(title: "No results", message: "Try a different query.")
         } else {
-            spotifyList
-        }
-    }
-
-    @ViewBuilder
-    private var recentSearchesView: some View {
-        if recentItems.isEmpty {
-            EmptyStateView(
-                title: source == .library ? "Find your music" : "Search Spotify",
-                systemImage: "magnifyingglass",
-                message: source == .library
-                    ? "Try an artist, album, song, or a line of lyrics."
-                    : "Find tracks to add to your wishlist.")
-        } else if source == .spotify {
-            EmptyStateView(
-                title: "Search Spotify",
-                systemImage: "magnifyingglass",
-                message: "Find tracks to add to your wishlist.")
-        } else {
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
             List {
-                Section {
-                    ForEach(recentItems) { item in
-                        recentItemRow(item)
+                if trimmed.isEmpty {
+                    Section { EmptyView() }
+                } else if let error, spotifyHits.isEmpty {
+                    Section {
+                        Text(error)
+                            .font(.subheadline)
+                            .foregroundStyle(DromeTheme.muted)
+                            .listRowBackground(DromeTheme.background)
+                    }
+                } else if spotifyHits.isEmpty && hasCompletedSearch && !isSearching {
+                    Section {
+                        Text("No results")
+                            .font(.subheadline)
+                            .foregroundStyle(DromeTheme.muted)
+                            .listRowBackground(DromeTheme.background)
+                    }
+                } else {
+                    ForEach(spotifyHits) { hit in
+                        spotifyRow(hit)
                             .listRowBackground(DromeTheme.background)
                             .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    RecentSearchesStore.remove(item)
-                                    recentItems = RecentSearchesStore.load()
-                                } label: {
-                                    Label("Remove", systemImage: "trash")
-                                }
-                            }
-                    }
-                } header: {
-                    HStack {
-                        Text("Recent")
-                        Spacer()
-                        Button("Clear") {
-                            RecentSearchesStore.clear()
-                            recentItems = []
-                        }
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(DromeTheme.accent)
-                        .textCase(nil)
                     }
                 }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .scrollDismissesKeyboard(.interactively)
             .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
+            .overlay {
+                if trimmed.isEmpty {
+                    EmptyStateView(
+                        title: "Search Spotify",
+                        systemImage: "magnifyingglass",
+                        message: "Find tracks to add to your wishlist.")
+                    .allowsHitTesting(false)
+                } else if spotifyHits.isEmpty && isSearching {
+                    ProgressView()
+                        .tint(DromeTheme.muted)
+                }
+            }
+            .animation(nil, value: query)
+        }
+    }
+
+    @ViewBuilder
+    private var recentSearchesSection: some View {
+        if !recentItems.isEmpty {
+            Section {
+                ForEach(recentItems) { item in
+                    recentItemRow(item)
+                        .listRowBackground(DromeTheme.background)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                RecentSearchesStore.remove(item)
+                                recentItems = RecentSearchesStore.load()
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                        }
+                }
+            } header: {
+                HStack {
+                    Text("Recent")
+                    Spacer()
+                    Button("Clear") {
+                        RecentSearchesStore.clear()
+                        recentItems = []
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(DromeTheme.accent)
+                    .textCase(nil)
+                }
+            }
         }
     }
 
@@ -252,7 +292,7 @@ struct SearchView: View {
                         .foregroundStyle(DromeTheme.muted)
                 )
             ) {
-                searchFocused = false
+                dismissKeyboard()
                 bumpRecent(item)
             }
 
@@ -266,7 +306,8 @@ struct SearchView: View {
                             Text("SONG")
                                 .font(.caption2.weight(.bold))
                                 .foregroundStyle(DromeTheme.muted)
-                        )
+                        ),
+                        lightweight: true
                     ) {
                         playRecentSongItem(item, song: song)
                     }
@@ -307,8 +348,13 @@ struct SearchView: View {
         }
     }
 
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
     private func playRecentSongItem(_ item: RecentSearchItem, song: Song?) {
-        searchFocused = false
+        dismissKeyboard()
         bumpRecent(item)
         if let song {
             session.player.play([song], startAt: 0,
@@ -335,34 +381,6 @@ struct SearchView: View {
         } catch {
             self.error = error.localizedDescription
         }
-    }
-
-    private var rankedList: some View {
-        List {
-            ForEach(hits) { hit in
-                hitRow(hit)
-                    .listRowBackground(DromeTheme.background)
-                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-            }
-        }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .scrollDismissesKeyboard(.interactively)
-        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
-    }
-
-    private var spotifyList: some View {
-        List {
-            ForEach(spotifyHits) { hit in
-                spotifyRow(hit)
-                    .listRowBackground(DromeTheme.background)
-                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-            }
-        }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .scrollDismissesKeyboard(.interactively)
-        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
     }
 
     private func spotifyRow(_ hit: SpotifySearchHit) -> some View {
@@ -396,10 +414,10 @@ struct SearchView: View {
         .contentShape(Rectangle())
         .simultaneousGesture(TapGesture().onEnded {
             if hit.kind == "album", let album = matchedAlbums[hit.spotifyId] {
-                searchFocused = false
+                dismissKeyboard()
                 songNavigator?.viewAlbum(album)
             } else if let song = matchedSongs[hit.spotifyId] {
-                searchFocused = false
+                dismissKeyboard()
                 session.player.play([song], startAt: 0,
                             context: PlaybackContext(label: "Library", kind: .search))
                 NowPlayingPresenter.open()
@@ -514,7 +532,7 @@ struct SearchView: View {
                             .foregroundStyle(DromeTheme.muted)
                     )
                 ) {
-                    searchFocused = false
+                    dismissKeyboard()
                     rememberHit(hit)
                 }
             }
@@ -527,9 +545,10 @@ struct SearchView: View {
                         Text("SONG")
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(DromeTheme.muted)
-                    )
+                    ),
+                    lightweight: true
                 ) {
-                    searchFocused = false
+                    dismissKeyboard()
                     rememberHit(hit)
                     let songs = hits.compactMap(\.song)
                     let start = songs.firstIndex(where: { $0.id == song.id }) ?? 0
@@ -644,11 +663,10 @@ struct SearchView: View {
                 userInfo: ["query": ""])
             return
         }
-        // Do not flip isSearching here — that rebuilds results under the
-        // keyboard and makes the first character feel stuck.
         error = nil
         debounceTask = Task {
-            try? await Task.sleep(nanoseconds: 220_000_000)
+            // Local index first so the first character isn't waiting on the network.
+            try? await Task.sleep(nanoseconds: 40_000_000)
             guard !Task.isCancelled else { return }
             NotificationCenter.default.post(
                 name: .dromeCarPlaySearchQuery,
@@ -656,14 +674,47 @@ struct SearchView: View {
                 userInfo: ["query": trimmed])
             switch source {
             case .library:
-                await runSearch(trimmed)
+                await runLocalSearch(trimmed)
+                guard !Task.isCancelled else { return }
+                guard trimmed.count >= 2 else { return }
+                if hits.isEmpty {
+                    isSearching = true
+                }
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+                await runNetworkSearch(trimmed)
             case .spotify:
+                try? await Task.sleep(nanoseconds: 180_000_000)
+                guard !Task.isCancelled else { return }
                 await runSpotifySearch(trimmed)
             }
         }
     }
 
-    private func runSearch(_ q: String) async {
+    private func runLocalSearch(_ q: String) async {
+        let serverKey = session.account.serverKey
+        let index = session.library
+        let db = session.database
+        let wantLyrics = includeLyrics
+        let ranked = await Task.detached(priority: .userInitiated) {
+            let metadata = (try? index.search(serverKey: serverKey, query: q))
+                ?? SearchResult3(artist: nil, album: nil, song: nil)
+            let lyrics: [LyricsSearchMatch]
+            if wantLyrics {
+                lyrics = (try? db.searchLyrics(serverKey: serverKey, query: q)) ?? []
+            } else {
+                lyrics = []
+            }
+            return SearchRanker.rank(query: q, result: metadata, lyrics: lyrics)
+        }.value
+        guard !Task.isCancelled else { return }
+        hits = ranked
+        if !ranked.isEmpty || q.count < 2 {
+            hasCompletedSearch = true
+        }
+    }
+
+    private func runNetworkSearch(_ q: String) async {
         isSearching = true
         error = nil
         defer {
@@ -672,32 +723,30 @@ struct SearchView: View {
         }
         do {
             let serverKey = session.account.serverKey
+            let db = session.database
             let wantLyrics = includeLyrics
-            async let metadataTask = session.client.search(q, artistCount: 20, albumCount: 20, songCount: 40)
-            let lyrics: [LyricsSearchMatch]
-            if wantLyrics {
-                lyrics = await Task.detached(priority: .userInitiated) {
-                    (try? AppEnvironment.shared?.database.searchLyrics(
-                        serverKey: serverKey, query: q)) ?? []
-                }.value
-            } else {
-                lyrics = []
-            }
-            let metadata = try await metadataTask
-            guard !Task.isCancelled else { return }
-            let ranked = await Task.detached(priority: .userInitiated) {
-                SearchRanker.rank(query: q, result: metadata, lyrics: lyrics)
+            let client = session.client
+            let ranked = try await Task.detached(priority: .userInitiated) {
+                let metadata = try await client.search(q, artistCount: 20, albumCount: 20, songCount: 40)
+                let lyrics: [LyricsSearchMatch]
+                if wantLyrics {
+                    lyrics = (try? db.searchLyrics(serverKey: serverKey, query: q)) ?? []
+                } else {
+                    lyrics = []
+                }
+                return (SearchRanker.rank(query: q, result: metadata, lyrics: lyrics), metadata.songs)
             }.value
             guard !Task.isCancelled else { return }
-            hits = ranked
-            // Ingest after the list paints — never block ranking/publish on DB.
-            let songs = metadata.songs
+            hits = ranked.0
+            let songs = ranked.1
             Task { @MainActor in
                 await Task.yield()
                 session.ratings.ingest(songs)
             }
         } catch {
-            self.error = error.localizedDescription
+            if hits.isEmpty {
+                self.error = error.localizedDescription
+            }
         }
     }
 
@@ -705,7 +754,10 @@ struct SearchView: View {
         guard let wishlist = session.wishlist else { return }
         isSearching = true
         error = nil
-        defer { isSearching = false }
+        defer {
+            isSearching = false
+            hasCompletedSearch = true
+        }
         do {
             let hits = try await wishlist.search(query: q, types: "track,album,playlist", limit: 10)
             spotifyHits = hits

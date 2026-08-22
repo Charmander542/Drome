@@ -68,8 +68,8 @@ struct ArtistAvatar: View {
     var size: CGFloat = 48
     var navidromeCoverArt: String?
     /// Library lists should stay on Navidrome covers — Spotify lookup storms
-    /// the network and thrash List cells while scrolling.
-    var allowsSpotifyLookup: Bool = true
+    /// the network and thrash List cells while scrolling. Opt in on artist detail.
+    var allowsSpotifyLookup: Bool = false
 
     @EnvironmentObject private var session: AppSession
     @State private var spotifyURL: URL?

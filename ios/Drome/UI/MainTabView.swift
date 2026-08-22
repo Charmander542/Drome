@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MainTabView: View {
     @EnvironmentObject private var player: PlayerEngine
+    @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var connectivity: ConnectivityMonitor
     @State private var selectedTab = 0
     @State private var showNowPlaying = false
@@ -61,6 +62,24 @@ struct MainTabView: View {
             SongNavigationStack {
                 NowPlayingView()
             }
+        }
+        .alert(
+            "Switch playback?",
+            isPresented: Binding(
+                get: { session.connect?.showSwitchPrompt == true },
+                set: { newValue in
+                    if !newValue { session.connect?.declineSwitchPrompt() }
+                }
+            )
+        ) {
+            Button("Play here") {
+                session.connect?.confirmSwitchToThisDevice()
+            }
+            Button("Cancel", role: .cancel) {
+                session.connect?.declineSwitchPrompt()
+            }
+        } message: {
+            Text("\(session.connect?.switchPromptDeviceName ?? "Another device") is the current player. Switch playback to this device?")
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardVisible = true

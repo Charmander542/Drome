@@ -11,6 +11,7 @@ struct MiniPlayerBar: View {
         if let current = player.current {
             let title = current.song.title.trimmingCharacters(in: .whitespacesAndNewlines)
             let artist = (current.song.artist ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let remote = session.connect?.isRemote == true
 
             HStack(spacing: 12) {
                 Button(action: onOpen) {
@@ -46,9 +47,17 @@ struct MiniPlayerBar: View {
                 .buttonStyle(.plain)
 
                 Button {
-                    player.playPause()
+                    if remote {
+                        let playing = session.connect?.remoteSession?.isPlaying == true
+                        Task {
+                            await session.connect?.sendRemote(
+                                playing ? ConnectCommandType.pause : ConnectCommandType.play)
+                        }
+                    } else {
+                        player.playPause()
+                    }
                 } label: {
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    Image(systemName: transportPlaying ? "pause.fill" : "play.fill")
                         .font(.body.weight(.bold))
                         .foregroundStyle(.white)
                         .frame(width: 40, height: 40)
@@ -57,7 +66,11 @@ struct MiniPlayerBar: View {
                 .buttonStyle(.plain)
 
                 Button {
-                    player.next()
+                    if remote {
+                        Task { await session.connect?.sendRemote(ConnectCommandType.next) }
+                    } else {
+                        player.next()
+                    }
                 } label: {
                     Image(systemName: "forward.fill")
                         .font(.body.weight(.semibold))
@@ -81,6 +94,13 @@ struct MiniPlayerBar: View {
             .padding(.horizontal, 8)
             .id(current.id)
         }
+    }
+
+    private var transportPlaying: Bool {
+        if session.connect?.isRemote == true {
+            return session.connect?.remoteSession?.isPlaying == true
+        }
+        return player.isPlaying
     }
 
     private var progress: CGFloat {

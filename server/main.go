@@ -85,6 +85,7 @@ func main() {
 		spotify:   spotify,
 		downloads: worker,
 		connect:   newConnectHub(),
+		mixes:     newMixHub(),
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

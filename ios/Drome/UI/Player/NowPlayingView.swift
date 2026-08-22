@@ -37,6 +37,11 @@ struct NowPlayingView: View {
     @State private var artContainerWidth: CGFloat = 390
     @State private var showMoreSheet = false
     @State private var showConnect = false
+    /// Dual backdrops so album color + blur can crossfade on track change.
+    @State private var backdropFront = NowPlayingBackdrop.Layer()
+    @State private var backdropBack = NowPlayingBackdrop.Layer()
+    @State private var backdropFrontOpacity: Double = 1
+    @State private var backdropGeneration = 0
 
     private enum Pane: String, CaseIterable {
         case song = "Song"
@@ -280,22 +285,45 @@ struct NowPlayingView: View {
     }
 
     private var background: some View {
-        ZStack {
-            Color.black
-            // Prefer the strip's centered cover so the blur doesn't jump ahead
-            // of the art swipe animation.
-            if let url = artPages.count > 1 ? artPages[1].url : artPages.first?.url {
-                RemoteImage(url: url, holdImageWhileLoading: true)
-                    .scaledToFill()
-                    .blur(radius: 80)
-                    .opacity(0.4)
-                    .allowsHitTesting(false)
+        NowPlayingBackdrop.Body(
+            front: backdropFront,
+            back: backdropBack,
+            frontOpacity: backdropFrontOpacity
+        )
+        .onAppear { syncBackground(animated: false) }
+        .onChange(of: currentBackdropURL?.absoluteString) { _, _ in
+            syncBackground(animated: true)
+        }
+    }
+
+    private var currentBackdropURL: URL? {
+        artPages.count > 1 ? artPages[1].url : artPages.first?.url
+    }
+
+    private func syncBackground(animated: Bool) {
+        let nextURL = currentBackdropURL
+        guard nextURL != backdropFront.url else { return }
+
+        backdropGeneration += 1
+        let generation = backdropGeneration
+
+        Task { @MainActor in
+            let wash = await NowPlayingBackdrop.washColor(for: nextURL)
+            guard generation == backdropGeneration else { return }
+
+            if !animated || backdropFront.url == nil {
+                backdropBack = .init()
+                backdropFront = .init(url: nextURL, wash: wash)
+                backdropFrontOpacity = 1
+                return
             }
-            LinearGradient(
-                colors: [.black.opacity(0.1), .black.opacity(0.9)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+
+            backdropBack = backdropFront
+            backdropFront = .init(url: nextURL, wash: wash)
+            backdropFrontOpacity = 0
+            withAnimation(.easeInOut(duration: 0.85)) {
+                backdropFrontOpacity = 1
+            }
         }
     }
 
@@ -455,6 +483,7 @@ struct NowPlayingView: View {
 
         let pages = [prev, current, next]
         ImageLoader.shared.prefetch(pages.compactMap(\.url))
+        NowPlayingBackdrop.prefetchWash(for: pages.map(\.url))
         return pages
     }
 
@@ -616,6 +645,7 @@ struct NowPlayingView: View {
                 artPages = filled
             }
             ImageLoader.shared.prefetch(filled.compactMap(\.url))
+            NowPlayingBackdrop.prefetchWash(for: filled.map(\.url))
             artSwipeAnimating = false
         }
     }
@@ -624,8 +654,11 @@ struct NowPlayingView: View {
         let song = player.current?.song
         let title = cleaned(song?.title) ?? "Unknown Title"
         let isDownloaded = song.map { downloads.isDownloaded($0.id) } ?? false
+        // Caps glyphs are taller than mixed case — lock the title row so the
+        // artist line doesn't jump when the ellipsis HStack recenters.
+        let titleLineHeight = UIFont.preferredFont(forTextStyle: .title3).lineHeight + 2
 
-        return HStack(alignment: .center, spacing: 10) {
+        return HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 // Tap title → album (when we know the album id).
                 HStack(alignment: .center, spacing: 6) {
@@ -650,6 +683,7 @@ struct NowPlayingView: View {
                                     .foregroundStyle(.white)
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.85)
+                                    .frame(maxWidth: .infinity, minHeight: titleLineHeight, maxHeight: titleLineHeight, alignment: .leading)
                             }
                             .buttonStyle(.plain)
                         } else {
@@ -658,6 +692,7 @@ struct NowPlayingView: View {
                                 .foregroundStyle(.white)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.85)
+                                .frame(maxWidth: .infinity, minHeight: titleLineHeight, maxHeight: titleLineHeight, alignment: .leading)
                         }
                     }
                     .layoutPriority(1)
@@ -671,6 +706,7 @@ struct NowPlayingView: View {
 
                     Spacer(minLength: 0)
                 }
+                .frame(height: titleLineHeight)
 
                 // Each credited artist name is independently tappable.
                 if let song {
@@ -695,7 +731,7 @@ struct NowPlayingView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(minHeight: 48, alignment: .leading)
+            .frame(minHeight: 48, alignment: .topLeading)
 
             if song != nil {
                 Button {
@@ -704,7 +740,7 @@ struct NowPlayingView: View {
                     Image(systemName: "ellipsis")
                         .font(.title3.weight(.bold))
                         .foregroundStyle(.white)
-                        .frame(width: 40, height: 40)
+                        .frame(width: 40, height: titleLineHeight)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -761,7 +797,11 @@ struct NowPlayingView: View {
                     } else {
                         let target = min(max(0, seekElapsed), total)
                         seekElapsed = target
-                        player.seek(to: target)
+                        if session.connect?.isRemote == true {
+                            Task { await session.connect?.sendRemote(ConnectCommandType.seek, seekTo: target) }
+                        } else {
+                            player.seek(to: target)
+                        }
                         // Hold the scrubbed time until AVPlayer finishes seeking.
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                             isSeeking = false
@@ -920,7 +960,11 @@ struct NowPlayingView: View {
     private var lyricsPane: some View {
         Group {
             if let song = player.current?.song {
-                LyricsView(song: song)
+                LyricsView(song: song) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        tab = .song
+                    }
+                }
             } else {
                 EmptyStateView(title: "Nothing playing")
             }
@@ -953,6 +997,150 @@ struct NowPlayingView: View {
             try? await Task.sleep(nanoseconds: 1_400_000_000)
             if flashMessage == message { flashMessage = nil }
         }
+    }
+}
+
+/// Album-tinted Now Playing wash. Two full layers crossfade so color and blur
+/// morph together instead of snapping under a fixed black gradient.
+private enum NowPlayingBackdrop {
+    struct Layer: Equatable {
+        var url: URL? = nil
+        var wash: Color = Color(red: 0.12, green: 0.12, blue: 0.14)
+    }
+
+    private static var washCache: [String: Color] = [:]
+
+    struct Body: View {
+        let front: Layer
+        let back: Layer
+        let frontOpacity: Double
+
+        var body: some View {
+            ZStack {
+                Color.black
+                layer(back)
+                layer(front)
+                    .opacity(frontOpacity)
+                // Keep controls readable without killing the album color.
+                LinearGradient(
+                    colors: [
+                        .black.opacity(0.05),
+                        .black.opacity(0.35),
+                        .black.opacity(0.88)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+        }
+
+        @ViewBuilder
+        private func layer(_ layer: Layer) -> some View {
+            ZStack {
+                // Soft color field from the cover.
+                RadialGradient(
+                    colors: [
+                        layer.wash.opacity(0.95),
+                        layer.wash.opacity(0.35),
+                        .black.opacity(0.9)
+                    ],
+                    center: .top,
+                    startRadius: 20,
+                    endRadius: 520
+                )
+                LinearGradient(
+                    colors: [
+                        layer.wash.opacity(0.75),
+                        layer.wash.opacity(0.22),
+                        .clear
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                if let url = layer.url {
+                    RemoteImage(url: url, holdImageWhileLoading: true)
+                        .scaledToFill()
+                        .blur(radius: 72)
+                        .opacity(0.42)
+                        .allowsHitTesting(false)
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    static func washColor(for url: URL?) async -> Color {
+        guard let url else {
+            return Color(red: 0.12, green: 0.12, blue: 0.14)
+        }
+        let key = url.absoluteString
+        if let cached = washCache[key] { return cached }
+
+        var image = ImageLoader.shared.previewImage(for: url)
+        if image == nil {
+            image = await ImageLoader.shared.image(for: url)
+        }
+        guard let image else {
+            return Color(red: 0.12, green: 0.12, blue: 0.14)
+        }
+        let color = averageColor(from: image)
+        washCache[key] = color
+        return color
+    }
+
+    /// Warm wash colors for neighbors so the next crossfade starts immediately.
+    static func prefetchWash(for urls: [URL?]) {
+        for url in urls.compactMap({ $0 }) {
+            let key = url.absoluteString
+            if washCache[key] != nil { continue }
+            Task(priority: .utility) {
+                _ = await washColor(for: url)
+            }
+        }
+    }
+
+    /// Slightly saturated average so washes read as color, not mud.
+    private static func averageColor(from image: UIImage) -> Color {
+        guard let sample = image.preparingThumbnail(of: CGSize(width: 24, height: 24)),
+              let cg = sample.cgImage else {
+            return Color(red: 0.12, green: 0.12, blue: 0.14)
+        }
+        let w = cg.width, h = cg.height
+        guard w > 0, h > 0 else {
+            return Color(red: 0.12, green: 0.12, blue: 0.14)
+        }
+        var data = [UInt8](repeating: 0, count: w * h * 4)
+        guard let ctx = CGContext(
+            data: &data, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else {
+            return Color(red: 0.12, green: 0.12, blue: 0.14)
+        }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+        var r = 0.0, g = 0.0, b = 0.0, weight = 0.0
+        for i in stride(from: 0, to: data.count, by: 4) {
+            let pr = Double(data[i]) / 255
+            let pg = Double(data[i + 1]) / 255
+            let pb = Double(data[i + 2]) / 255
+            // Skip near-black / near-white pixels so art edges don't mute the wash.
+            let luma = 0.2126 * pr + 0.7152 * pg + 0.0722 * pb
+            guard luma > 0.08, luma < 0.92 else { continue }
+            let sat = max(pr, pg, pb) - min(pr, pg, pb)
+            let sampleWeight = 0.35 + sat * 1.65
+            r += pr * sampleWeight
+            g += pg * sampleWeight
+            b += pb * sampleWeight
+            weight += sampleWeight
+        }
+        guard weight > 0 else {
+            return Color(red: 0.12, green: 0.12, blue: 0.14)
+        }
+        r /= weight; g /= weight; b /= weight
+        // Lift midtones a bit so dark covers still tint the room.
+        let lift: (Double) -> Double = { min(1, $0 * 0.78 + 0.12) }
+        return Color(red: lift(r), green: lift(g), blue: lift(b))
     }
 }
 

@@ -161,6 +161,8 @@ final class AppEnvironment: ObservableObject {
 final class AppSession: ObservableObject, Identifiable {
     let account: Account
     let client: SubsonicClient
+    let database: AppDatabase
+    let library: LibraryIndex
     let ratings: RatingsStore
     let rotation: RotationManager
     let downloads: DownloadManager
@@ -209,6 +211,8 @@ final class AppSession: ObservableObject, Identifiable {
 
     init(account: Account, password: String, database: AppDatabase) {
         self.account = account
+        self.database = database
+        library = LibraryIndex(database: database)
         client = SubsonicClient(account: account, password: password)
         ratings = RatingsStore(client: client, database: database, userKey: account.userKey)
         rotation = RotationManager(client: client, database: database, userKey: account.userKey)

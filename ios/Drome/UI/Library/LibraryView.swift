@@ -34,15 +34,14 @@ struct LibraryView: View {
 
     @State private var filter: LibraryFilter = .playlists
     @State private var playlists: [Playlist] = []
-    @State private var albums: [Album] = []
-    @State private var artistIndexes: [ArtistIndex] = []
-    @State private var songs: [Song] = []
-    @State private var albumSectionsCache: [(letter: String, albums: [Album])] = []
-    @State private var artistSectionsCache: [(letter: String, artists: [Artist])] = []
-    @State private var songSectionsCache: [(letter: String, songs: [Song])] = []
-    /// Flat play order for the Songs tab — avoid rebuilding on every tap.
-    @State private var flatSongsCache: [Song] = []
-    @State private var songIndexByID: [String: Int] = [:]
+    @State private var albumWindow: [LibraryLetterSection<Album>] = []
+    @State private var albumLetters: [String] = []
+    @State private var albumRevealCount = 80
+    @State private var artistWindow: [LibraryLetterSection<Artist>] = []
+    @State private var artistLetters: [String] = []
+    @State private var songWindow: [LibraryLetterSection<Song>] = []
+    @State private var songLetters: [String] = []
+    @State private var songRevealCount = 80
     @State private var isLoading = false
     @State private var albumsHasMore = false
     @State private var albumsLoadingMore = false
@@ -50,17 +49,21 @@ struct LibraryView: View {
     @State private var albumsFillTask: Task<Void, Never>?
     @State private var pendingAlbumLetter: String?
     @State private var albumScrollTarget: String?
+    @State private var albumWindowBusy = false
+    @State private var albumIgnoreRetreatUntil = Date.distantPast
     @State private var artistsFillTask: Task<Void, Never>?
-    @State private var artistSectionsRemaining: [(letter: String, artists: [Artist])] = []
-    @State private var artistsHasMore = false
     @State private var pendingArtistLetter: String?
     @State private var artistScrollTarget: String?
+    @State private var artistWindowBusy = false
+    @State private var artistIgnoreRetreatUntil = Date.distantPast
     @State private var songHasMore = false
     @State private var songLoadingMore = false
     @State private var songNativeOffset = 0
     @State private var songsFillTask: Task<Void, Never>?
     @State private var pendingSongLetter: String?
     @State private var songScrollTarget: String?
+    @State private var songWindowBusy = false
+    @State private var songIgnoreRetreatUntil = Date.distantPast
     @State private var error: String?
     @State private var showCreatePlaylist = false
     @State private var newPlaylistName = ""
@@ -108,9 +111,9 @@ struct LibraryView: View {
             }
         }
         .task {
-            await hydrateAllTabsFromCache()
+            await importLegacyLibraryIndexIfNeeded()
+            await hydratePlaylistsFromCache()
             await ensureActiveTabReady(forceNetwork: false)
-            visitedFilters.formUnion([.artists, .albums, .songs])
         }
         .task(id: filter) {
             await ensureActiveTabReady(forceNetwork: false)
@@ -206,7 +209,7 @@ struct LibraryView: View {
                 }
                 if visitedFilters.contains(.artists) {
                     keepAlivePane(.artists) {
-                        if artistSectionsCache.isEmpty && isLoading && filter == .artists {
+                        if artistWindow.isEmpty && isLoading && filter == .artists {
                             ProgressView()
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else {
@@ -216,7 +219,7 @@ struct LibraryView: View {
                 }
                 if visitedFilters.contains(.albums) {
                     keepAlivePane(.albums) {
-                        if albums.isEmpty && isLoading && filter == .albums {
+                        if albumWindow.isEmpty && isLoading && filter == .albums {
                             ProgressView()
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else {
@@ -226,7 +229,7 @@ struct LibraryView: View {
                 }
                 if visitedFilters.contains(.songs) {
                     keepAlivePane(.songs) {
-                        if songs.isEmpty && isLoading && filter == .songs {
+                        if songWindow.isEmpty && isLoading && filter == .songs {
                             ProgressView()
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else {
@@ -248,10 +251,9 @@ struct LibraryView: View {
 
     private var hasAnyTabContent: Bool {
         !playlists.isEmpty
-            || !albums.isEmpty
-            || !artistSectionsCache.isEmpty
-            || !songs.isEmpty
-            || !flatSongsCache.isEmpty
+            || !albumWindow.isEmpty
+            || !artistWindow.isEmpty
+            || !songWindow.isEmpty
     }
 
     /// Keep visited tabs mounted so flips don't rebuild lists / re-fetch art.
@@ -271,9 +273,9 @@ struct LibraryView: View {
     private var isEmpty: Bool {
         switch filter {
         case .playlists: return playlists.isEmpty
-        case .albums: return albums.isEmpty
-        case .artists: return artistSectionsCache.isEmpty
-        case .songs: return songs.isEmpty
+        case .albums: return albumWindow.isEmpty
+        case .artists: return artistWindow.isEmpty
+        case .songs: return songWindow.isEmpty
         case .genres: return false
         }
     }
@@ -440,9 +442,13 @@ struct LibraryView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    ForEach(albumSectionsCache, id: \.letter) { section in
+                    ForEach(albumWindow) { section in
                         Section {
-                            ForEach(section.albums) { album in
+                            let isLast = section.letter == albumWindow.last?.letter
+                            let rows = isLast
+                                ? Array(section.items.prefix(albumRevealCount))
+                                : section.items
+                            ForEach(rows) { album in
                                 AlbumMediaRow(album: album, showsChevron: true)
                                     .padding(.horizontal, 16)
                                     .padding(.vertical, 8)
@@ -451,6 +457,20 @@ struct LibraryView: View {
                                 Divider()
                                     .background(Color.white.opacity(0.06))
                                     .padding(.leading, 84)
+                            }
+                            if isLast && albumRevealCount < section.items.count {
+                                ProgressView()
+                                    .padding(.vertical, 16)
+                                    .frame(maxWidth: .infinity)
+                                    .onAppear {
+                                        albumRevealCount = min(
+                                            section.items.count,
+                                            albumRevealCount + Self.letterRevealPage)
+                                    }
+                            } else if isLast {
+                                letterEdgeRow(hasMore: Self.nextLetter(after: section.letter, in: albumLetters) != nil) {
+                                    Task { await appendAlbumLetter(after: section.letter) }
+                                }
                             }
                         } header: {
                             Text(section.letter)
@@ -464,13 +484,19 @@ struct LibraryView: View {
                         }
                     }
 
-                    if albumsHasMore {
+                    if albumsHasMore && albumWindow.isEmpty {
                         ProgressView()
                             .padding(.vertical, 20)
                             .frame(maxWidth: .infinity)
                     }
                 }
                 .padding(.bottom, 72)
+            }
+            .onScrollGeometryChange(for: Bool.self) { geo in
+                geo.contentOffset.y <= geo.contentInsets.top + 24
+            } action: { wasNearTop, isNearTop in
+                guard isNearTop, !wasNearTop, let first = albumWindow.first?.letter else { return }
+                Task { await prependAlbumLetter(before: first) }
             }
             .overlay(alignment: .trailing) {
                 AlphabetScrubber(
@@ -486,38 +512,17 @@ struct LibraryView: View {
                 snapScroll(proxy, to: letter)
                 albumScrollTarget = nil
             }
-            .onChange(of: albumSectionsCache.map(\.letter)) { _, letters in
-                guard let pending = pendingAlbumLetter,
-                      letters.contains(pending) else { return }
-                pendingAlbumLetter = nil
-                albumScrollTarget = pending
-            }
-        }
-    }
-
-    private func rebuildAlbumSections(from albums: [Album]) -> [(letter: String, albums: [Album])] {
-        let grouped = Dictionary(grouping: albums) { album -> String in
-            LibrarySortLetter.sectionLetter(for: album.name)
-        }
-        return grouped.keys.sorted(by: LibrarySortLetter.sectionLetterSort).compactMap { letter in
-            guard let items = grouped[letter], !items.isEmpty else { return nil }
-            let sorted = items.sorted {
-                LibrarySortLetter.sortableName($0.name)
-                    .localizedCaseInsensitiveCompare(LibrarySortLetter.sortableName($1.name)) == .orderedAscending
-            }
-            return (letter: letter, albums: sorted)
         }
     }
 
     private var artistsList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                // Same LazyVStack pattern as Albums — eager VStack mounted every
-                // artist + avatar on tab flip and made Artists feel uniquely slow.
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    ForEach(artistSectionsCache, id: \.letter) { section in
+                    ForEach(artistWindow) { section in
                         Section {
-                            ForEach(section.artists) { artist in
+                            let isLast = section.letter == artistWindow.last?.letter
+                            ForEach(section.items) { artist in
                                 NavigationLink {
                                     ArtistDetailView(artistID: artist.id, placeholderName: artist.name)
                                 } label: {
@@ -553,6 +558,11 @@ struct LibraryView: View {
                                     .background(Color.white.opacity(0.06))
                                     .padding(.leading, 76)
                             }
+                            if isLast {
+                                letterEdgeRow(hasMore: Self.nextLetter(after: section.letter, in: artistLetters) != nil) {
+                                    Task { await appendArtistLetter(after: section.letter) }
+                                }
+                            }
                         } header: {
                             Text(section.letter)
                                 .font(.subheadline.weight(.bold))
@@ -566,6 +576,12 @@ struct LibraryView: View {
                     }
                 }
                 .padding(.bottom, 72)
+            }
+            .onScrollGeometryChange(for: Bool.self) { geo in
+                geo.contentOffset.y <= geo.contentInsets.top + 24
+            } action: { wasNearTop, isNearTop in
+                guard isNearTop, !wasNearTop, let first = artistWindow.first?.letter else { return }
+                Task { await prependArtistLetter(before: first) }
             }
             .overlay(alignment: .trailing) {
                 AlphabetScrubber(
@@ -581,63 +597,43 @@ struct LibraryView: View {
                 snapScroll(proxy, to: letter)
                 artistScrollTarget = nil
             }
-            .onChange(of: artistSectionsCache.map(\.letter)) { _, letters in
-                guard let pending = pendingArtistLetter else { return }
-                pendingArtistLetter = nil
-                if let target = LibrarySortLetter.nearestSectionLetter(pending, in: letters) {
-                    artistScrollTarget = target
-                }
-            }
         }
-    }
-
-    private nonisolated static func buildArtistSections(
-        from indexes: [ArtistIndex]
-    ) -> [(letter: String, artists: [Artist])] {
-        buildArtistSections(fromArtists: indexes.flatMap(\.artists))
-    }
-
-    /// Bucket by artist name so A–Z matches the scrubber (not server index labels).
-    private nonisolated static func buildArtistSections(
-        fromArtists artists: [Artist]
-    ) -> [(letter: String, artists: [Artist])] {
-        var buckets: [String: [Artist]] = [:]
-        var seen = Set<String>()
-        for artist in artists where seen.insert(artist.id).inserted {
-            let letter = LibrarySortLetter.sectionLetter(for: artist.name)
-            buckets[letter, default: []].append(artist)
-        }
-        return buckets.keys.sorted(by: LibrarySortLetter.sectionLetterSort).compactMap { letter in
-            guard var items = buckets[letter], !items.isEmpty else { return nil }
-            items.sort {
-                LibrarySortLetter.sortableName($0.name)
-                    .localizedCaseInsensitiveCompare(LibrarySortLetter.sortableName($1.name)) == .orderedAscending
-            }
-            return (letter: letter, artists: items)
-        }
-    }
-
-    private func rebuildArtistSections(from indexes: [ArtistIndex]) -> [(letter: String, artists: [Artist])] {
-        Self.buildArtistSections(from: indexes)
     }
 
     private var songsList: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    ForEach(songSectionsCache, id: \.letter) { section in
+                    ForEach(songWindow) { section in
                         Section {
-                            ForEach(section.songs, id: \.id) { song in
+                            let isLast = section.letter == songWindow.last?.letter
+                            let rows = isLast
+                                ? Array(section.items.prefix(songRevealCount))
+                                : section.items
+                            ForEach(rows, id: \.id) { song in
                                 SongRow(song: song, showAlbum: true, lightweight: true) {
-                                        let start = songIndexByID[song.id] ?? 0
-                                        playerPlay(flatSongsCache, startAt: start)
-                                    }
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 4)
+                                    playSongFromLibrary(song)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 4)
 
                                 Divider()
                                     .background(Color.white.opacity(0.06))
                                     .padding(.leading, 76)
+                            }
+                            if isLast && songRevealCount < section.items.count {
+                                ProgressView()
+                                    .padding(.vertical, 16)
+                                    .frame(maxWidth: .infinity)
+                                    .onAppear {
+                                        songRevealCount = min(
+                                            section.items.count,
+                                            songRevealCount + Self.letterRevealPage)
+                                    }
+                            } else if isLast {
+                                letterEdgeRow(hasMore: Self.nextLetter(after: section.letter, in: songLetters) != nil) {
+                                    Task { await appendSongLetter(after: section.letter) }
+                                }
                             }
                         } header: {
                             Text(section.letter)
@@ -651,13 +647,19 @@ struct LibraryView: View {
                         }
                     }
 
-                    if songHasMore {
+                    if songHasMore && songWindow.isEmpty {
                         ProgressView()
                             .padding(.vertical, 20)
                             .frame(maxWidth: .infinity)
                     }
                 }
                 .padding(.bottom, 72)
+            }
+            .onScrollGeometryChange(for: Bool.self) { geo in
+                geo.contentOffset.y <= geo.contentInsets.top + 24
+            } action: { wasNearTop, isNearTop in
+                guard isNearTop, !wasNearTop, let first = songWindow.first?.letter else { return }
+                Task { await prependSongLetter(before: first) }
             }
             .overlay(alignment: .trailing) {
                 AlphabetScrubber(
@@ -673,90 +675,86 @@ struct LibraryView: View {
                 snapScroll(proxy, to: letter)
                 songScrollTarget = nil
             }
-            .onChange(of: songSectionsCache.map(\.letter)) { _, letters in
-                guard let pending = pendingSongLetter,
-                      letters.contains(pending) else { return }
-                pendingSongLetter = nil
-                songScrollTarget = pending
-            }
         }
     }
 
-    private func applySongCatalog(_ songs: [Song]) async {
-        let shouldWarm = flatSongsCache.isEmpty
-        let built = await Task.detached(priority: .userInitiated) {
-            let sections = Self.buildSongSections(from: songs)
-            let flat = sections.flatMap(\.songs)
-            var index: [String: Int] = [:]
-            index.reserveCapacity(flat.count)
-            for (i, song) in flat.enumerated() {
-                index[song.id] = i
-            }
-            return (sections: sections, flat: flat, index: index)
-        }.value
-        guard !Task.isCancelled else { return }
-        songSectionsCache = built.sections
-        flatSongsCache = built.flat
-        songIndexByID = built.index
-        self.songs = built.flat
-        if shouldWarm {
-            warmSongCovers(Array(built.flat.prefix(48)))
-        }
-    }
-
-    /// Pure section builder — safe to run off the main actor.
-    private nonisolated static func buildSongSections(
-        from songs: [Song]
-    ) -> [(letter: String, songs: [Song])] {
-        let grouped = Dictionary(grouping: songs) { song -> String in
-            LibrarySortLetter.sectionLetter(for: song.title)
-        }
-        return grouped.keys.sorted(by: LibrarySortLetter.sectionLetterSort).compactMap { letter in
-            guard let items = grouped[letter], !items.isEmpty else { return nil }
-            let sorted = items.sorted {
-                LibrarySortLetter.sortableName($0.title)
-                    .localizedCaseInsensitiveCompare(LibrarySortLetter.sortableName($1.title)) == .orderedAscending
-            }
-            return (letter: letter, songs: sorted)
-        }
-    }
-
-    private nonisolated static func buildAlbumSections(
-        from albums: [Album]
-    ) -> [(letter: String, albums: [Album])] {
-        let grouped = Dictionary(grouping: albums) { album -> String in
-            LibrarySortLetter.sectionLetter(for: album.name)
-        }
-        return grouped.keys.sorted(by: LibrarySortLetter.sectionLetterSort).compactMap { letter in
-            guard let items = grouped[letter], !items.isEmpty else { return nil }
-            let sorted = items.sorted {
-                LibrarySortLetter.sortableName($0.name)
-                    .localizedCaseInsensitiveCompare(LibrarySortLetter.sortableName($1.name)) == .orderedAscending
-            }
-            return (letter: letter, albums: sorted)
+    @ViewBuilder
+    private func letterEdgeRow(hasMore: Bool, load: @escaping () -> Void) -> some View {
+        if hasMore {
+            Color.clear
+                .frame(height: 1)
+                .onAppear(perform: load)
         }
     }
 
     /// Shared list thumbnail size — small & sharp enough for 48pt rows.
     private static let listArtSize = 96
+    private static let letterReveal = 80
+    private static let letterRevealPage = 80
+    private static let playFromHereLimit = 500
+    private static let maxWindowLetters = 4
+    /// Don't drop a short letter that's likely still on screen.
+    private static let hardMaxWindowLetters = 10
+    private static let trimIfLetterLongerThan = 40
 
-    private func applyAlbumCatalog(_ albums: [Album]) async {
-        let shouldWarm = self.albums.isEmpty
-        let sections = await Task.detached(priority: .userInitiated) {
-            Self.buildAlbumSections(from: albums)
-        }.value
-        guard !Task.isCancelled else { return }
-        self.albums = albums
-        albumSectionsCache = sections
-        // Only warm on first paint — re-warming every page steals bandwidth
-        // from the A–Z fill.
-        if shouldWarm {
-            warmAlbumCovers(Array(albums.prefix(48)))
+    private static func nextLetter(after letter: String, in letters: [String]) -> String? {
+        guard let idx = letters.firstIndex(of: letter), idx + 1 < letters.count else { return nil }
+        return letters[idx + 1]
+    }
+
+    private static func previousLetter(before letter: String, in letters: [String]) -> String? {
+        guard let idx = letters.firstIndex(of: letter), idx > 0 else { return nil }
+        return letters[idx - 1]
+    }
+
+    /// Letters around a jump target so scrolling up or down stays on one list.
+    private static func neighborhood(center: String, in letters: [String]) -> [String] {
+        guard let idx = letters.firstIndex(of: center) else { return [center] }
+        var from = idx
+        var to = idx
+        while to - from + 1 < maxWindowLetters {
+            let canBefore = from > 0
+            let canAfter = to + 1 < letters.count
+            if !canBefore && !canAfter { break }
+            let beforeDist = idx - from
+            let afterDist = to - idx
+            if canBefore && (!canAfter || beforeDist <= afterDist) {
+                from -= 1
+            } else {
+                to += 1
+            }
+        }
+        return Array(letters[from...to])
+    }
+
+    private static func trimLetterWindow<Item: Identifiable>(
+        _ window: inout [LibraryLetterSection<Item>],
+        droppingFromStart: Bool
+    ) {
+        while window.count > maxWindowLetters {
+            let far = droppingFromStart ? window.first : window.last
+            let farIsLong = (far?.items.count ?? 0) >= trimIfLetterLongerThan
+            if window.count > hardMaxWindowLetters || farIsLong {
+                if droppingFromStart {
+                    window.removeFirst()
+                } else {
+                    window.removeLast()
+                }
+            } else {
+                break
+            }
         }
     }
 
-    private func playerPlay(_ songs: [Song], startAt: Int) {
-        player.play(songs, startAt: startAt, context: PlaybackContext(label: "Songs", kind: .mix))
+    private func playSongFromLibrary(_ song: Song) {
+        let key = session.account.serverKey
+        let index = session.library
+        Task {
+            let queue = await Task.detached(priority: .userInitiated) {
+                (try? index.songs(serverKey: key, startingAt: song.id, limit: Self.playFromHereLimit)) ?? [song]
+            }.value
+            player.play(queue, startAt: 0, context: PlaybackContext(label: "Songs", kind: .mix))
+        }
     }
 
     private func warmAlbumCovers(_ albums: [Album]) {
@@ -786,48 +784,20 @@ struct LibraryView: View {
         return parts.joined(separator: " · ")
     }
 
-    /// Pull every tab’s cached tops into `@State` once so filter flips are free.
-    private func hydrateAllTabsFromCache() async {
-        let serverKey = session.account.serverKey
+    private func importLegacyLibraryIndexIfNeeded() async {
+        let key = session.account.serverKey
+        let index = session.library
+        await Task.detached(priority: .utility) {
+            index.importLegacyJSONIfNeeded(serverKey: key)
+        }.value
+    }
 
+    private func hydratePlaylistsFromCache() async {
+        let serverKey = session.account.serverKey
         if playlists.isEmpty,
            let cached = LibraryListCatalog.playlists(serverKey: serverKey),
            !cached.isEmpty {
             playlists = cached
-        }
-
-        if albums.isEmpty,
-           let cached = LibraryListCatalog.albums(serverKey: serverKey),
-           !cached.isEmpty {
-            await applyAlbumCatalog(cached)
-            albumsOffset = cached.count
-            albumsHasMore = !LibraryListCatalog.albumsComplete(serverKey: serverKey)
-        }
-
-        if artistSectionsCache.isEmpty,
-           let cached = LibraryListCatalog.artistSections(serverKey: serverKey),
-           !cached.isEmpty {
-            applyArtistSections(cached.map { (letter: $0.letter, artists: $0.artists) })
-        }
-
-        // Songs catalogs can be huge — hydrate off the first-paint path unless
-        // Songs is already selected.
-        if flatSongsCache.isEmpty,
-           let cached = LibraryListCatalog.songs(serverKey: serverKey),
-           !cached.isEmpty {
-            if filter == .songs {
-                await applySongCatalog(cached)
-                songNativeOffset = cached.count
-                songHasMore = !LibraryListCatalog.songsComplete(serverKey: serverKey)
-            } else {
-                let complete = LibraryListCatalog.songsComplete(serverKey: serverKey)
-                Task { @MainActor in
-                    guard flatSongsCache.isEmpty else { return }
-                    await applySongCatalog(cached)
-                    songNativeOffset = cached.count
-                    songHasMore = !complete
-                }
-            }
         }
     }
 
@@ -892,7 +862,6 @@ struct LibraryView: View {
         let keepVisible = !isEmpty
         if !keepVisible { isLoading = true }
         error = nil
-        // Focus network on the active tab so A–Z fill stays timely.
         if filter != .albums {
             albumsFillTask?.cancel()
             albumsFillTask = nil
@@ -902,8 +871,6 @@ struct LibraryView: View {
             artistsFillTask?.cancel()
             artistsFillTask = nil
             pendingArtistLetter = nil
-            artistSectionsRemaining = []
-            artistsHasMore = false
         }
         if filter != .songs {
             songsFillTask?.cancel()
@@ -942,16 +909,289 @@ struct LibraryView: View {
         }
     }
 
-    // MARK: - Shared catalog UX (Albums / Artists / Songs)
-    // Instant cache → first chunk → background fill → snap scrubber jumps.
+    // MARK: - SQLite letter windows (Albums / Artists / Songs)
+
+    private func serverKey() -> String { session.account.serverKey }
+
+    private func indexLetters(_ kind: LibraryIndexKind) async -> [String] {
+        let key = serverKey()
+        let index = session.library
+        return await Task.detached(priority: .utility) {
+            (try? index.letters(kind: kind, serverKey: key)) ?? []
+        }.value
+    }
+
+    private func indexCount(_ kind: LibraryIndexKind) async -> Int {
+        let key = serverKey()
+        let index = session.library
+        return await Task.detached(priority: .utility) {
+            (try? index.count(kind: kind, serverKey: key)) ?? 0
+        }.value
+    }
+
+    private func indexComplete(_ kind: LibraryIndexKind) async -> Bool {
+        let key = serverKey()
+        let index = session.library
+        return await Task.detached(priority: .utility) {
+            (try? index.isComplete(kind: kind, serverKey: key)) ?? false
+        }.value
+    }
+
+    private func showAlbumLetter(_ letter: String) async {
+        albumIgnoreRetreatUntil = Date().addingTimeInterval(0.55)
+        let sections = await loadAlbumSections(Self.neighborhood(center: letter, in: albumLetters))
+        albumRevealCount = Self.letterReveal
+        albumWindow = sections
+        if let items = sections.first(where: { $0.letter == letter })?.items
+            ?? sections.first?.items {
+            warmAlbumCovers(Array(items.prefix(24)))
+        }
+        albumScrollTarget = letter
+    }
+
+    private func showArtistLetter(_ letter: String) async {
+        artistIgnoreRetreatUntil = Date().addingTimeInterval(0.55)
+        let sections = await loadArtistSections(Self.neighborhood(center: letter, in: artistLetters))
+        artistWindow = sections
+        if let items = sections.first(where: { $0.letter == letter })?.items
+            ?? sections.first?.items {
+            warmArtistCovers(Array(items.prefix(24)))
+        }
+        artistScrollTarget = letter
+    }
+
+    private func showSongLetter(_ letter: String) async {
+        songIgnoreRetreatUntil = Date().addingTimeInterval(0.55)
+        let sections = await loadSongSections(Self.neighborhood(center: letter, in: songLetters))
+        songRevealCount = Self.letterReveal
+        songWindow = sections
+        if let items = sections.first(where: { $0.letter == letter })?.items
+            ?? sections.first?.items {
+            warmSongCovers(Array(items.prefix(24)))
+        }
+        songScrollTarget = letter
+    }
+
+    private func loadAlbumSections(_ letters: [String]) async -> [LibraryLetterSection<Album>] {
+        let key = serverKey()
+        let index = session.library
+        var loaded: [(Int, LibraryLetterSection<Album>)] = []
+        await withTaskGroup(of: (Int, String, [Album]).self) { group in
+            for (offset, letter) in letters.enumerated() {
+                group.addTask {
+                    let items = (try? index.albums(serverKey: key, letter: letter)) ?? []
+                    return (offset, letter, items)
+                }
+            }
+            for await (offset, letter, items) in group where !items.isEmpty {
+                loaded.append((offset, LibraryLetterSection(letter: letter, items: items)))
+            }
+        }
+        return loaded.sorted { $0.0 < $1.0 }.map(\.1)
+    }
+
+    private func loadArtistSections(_ letters: [String]) async -> [LibraryLetterSection<Artist>] {
+        let key = serverKey()
+        let index = session.library
+        var loaded: [(Int, LibraryLetterSection<Artist>)] = []
+        await withTaskGroup(of: (Int, String, [Artist]).self) { group in
+            for (offset, letter) in letters.enumerated() {
+                group.addTask {
+                    let items = (try? index.artists(serverKey: key, letter: letter)) ?? []
+                    return (offset, letter, items)
+                }
+            }
+            for await (offset, letter, items) in group where !items.isEmpty {
+                loaded.append((offset, LibraryLetterSection(letter: letter, items: items)))
+            }
+        }
+        return loaded.sorted { $0.0 < $1.0 }.map(\.1)
+    }
+
+    private func loadSongSections(_ letters: [String]) async -> [LibraryLetterSection<Song>] {
+        let key = serverKey()
+        let index = session.library
+        var loaded: [(Int, LibraryLetterSection<Song>)] = []
+        await withTaskGroup(of: (Int, String, [Song]).self) { group in
+            for (offset, letter) in letters.enumerated() {
+                group.addTask {
+                    let items = (try? index.songs(serverKey: key, letter: letter)) ?? []
+                    return (offset, letter, items)
+                }
+            }
+            for await (offset, letter, items) in group where !items.isEmpty {
+                loaded.append((offset, LibraryLetterSection(letter: letter, items: items)))
+            }
+        }
+        return loaded.sorted { $0.0 < $1.0 }.map(\.1)
+    }
+
+    private func appendAlbumLetter(after letter: String) async {
+        guard !albumWindowBusy,
+              let next = Self.nextLetter(after: letter, in: albumLetters),
+              !albumWindow.contains(where: { $0.letter == next }) else { return }
+        albumWindowBusy = true
+        defer { albumWindowBusy = false }
+        let sections = await loadAlbumSections([next])
+        guard let section = sections.first,
+              !albumWindow.contains(where: { $0.letter == section.letter }) else { return }
+        albumRevealCount = Self.letterReveal
+        albumWindow.append(section)
+        Self.trimLetterWindow(&albumWindow, droppingFromStart: true)
+    }
+
+    private func prependAlbumLetter(before letter: String) async {
+        guard Date() >= albumIgnoreRetreatUntil,
+              albumScrollTarget == nil,
+              !albumWindowBusy,
+              let prev = Self.previousLetter(before: letter, in: albumLetters),
+              !albumWindow.contains(where: { $0.letter == prev }) else { return }
+        albumWindowBusy = true
+        defer { albumWindowBusy = false }
+        let sections = await loadAlbumSections([prev])
+        guard let section = sections.first,
+              !albumWindow.contains(where: { $0.letter == section.letter }) else { return }
+        let anchor = albumWindow.first?.letter
+        albumWindow.insert(section, at: 0)
+        Self.trimLetterWindow(&albumWindow, droppingFromStart: false)
+        if let anchor {
+            albumScrollTarget = anchor
+        }
+    }
+
+    private func appendArtistLetter(after letter: String) async {
+        guard !artistWindowBusy,
+              let next = Self.nextLetter(after: letter, in: artistLetters),
+              !artistWindow.contains(where: { $0.letter == next }) else { return }
+        artistWindowBusy = true
+        defer { artistWindowBusy = false }
+        let sections = await loadArtistSections([next])
+        guard let section = sections.first,
+              !artistWindow.contains(where: { $0.letter == section.letter }) else { return }
+        artistWindow.append(section)
+        Self.trimLetterWindow(&artistWindow, droppingFromStart: true)
+    }
+
+    private func prependArtistLetter(before letter: String) async {
+        guard Date() >= artistIgnoreRetreatUntil,
+              artistScrollTarget == nil,
+              !artistWindowBusy,
+              let prev = Self.previousLetter(before: letter, in: artistLetters),
+              !artistWindow.contains(where: { $0.letter == prev }) else { return }
+        artistWindowBusy = true
+        defer { artistWindowBusy = false }
+        let sections = await loadArtistSections([prev])
+        guard let section = sections.first,
+              !artistWindow.contains(where: { $0.letter == section.letter }) else { return }
+        let anchor = artistWindow.first?.letter
+        artistWindow.insert(section, at: 0)
+        Self.trimLetterWindow(&artistWindow, droppingFromStart: false)
+        if let anchor {
+            artistScrollTarget = anchor
+        }
+    }
+
+    private func appendSongLetter(after letter: String) async {
+        guard !songWindowBusy,
+              let next = Self.nextLetter(after: letter, in: songLetters),
+              !songWindow.contains(where: { $0.letter == next }) else { return }
+        songWindowBusy = true
+        defer { songWindowBusy = false }
+        let sections = await loadSongSections([next])
+        guard let section = sections.first,
+              !songWindow.contains(where: { $0.letter == section.letter }) else { return }
+        songRevealCount = Self.letterReveal
+        songWindow.append(section)
+        Self.trimLetterWindow(&songWindow, droppingFromStart: true)
+    }
+
+    private func prependSongLetter(before letter: String) async {
+        guard Date() >= songIgnoreRetreatUntil,
+              songScrollTarget == nil,
+              !songWindowBusy,
+              let prev = Self.previousLetter(before: letter, in: songLetters),
+              !songWindow.contains(where: { $0.letter == prev }) else { return }
+        songWindowBusy = true
+        defer { songWindowBusy = false }
+        let sections = await loadSongSections([prev])
+        guard let section = sections.first,
+              !songWindow.contains(where: { $0.letter == section.letter }) else { return }
+        let anchor = songWindow.first?.letter
+        songWindow.insert(section, at: 0)
+        Self.trimLetterWindow(&songWindow, droppingFromStart: false)
+        if let anchor {
+            songScrollTarget = anchor
+        }
+    }
+
+    private func refreshVisibleIfNeeded(
+        kind: LibraryIndexKind,
+        pageLetters: Set<String>,
+        pending: String?
+    ) async {
+        let letters = await indexLetters(kind)
+        let pendingHit = pending.map { pageLetters.contains($0) } ?? false
+
+        switch kind {
+        case .albums:
+            albumLetters = letters
+            if pendingHit, let pending {
+                await showAlbumLetter(pending)
+            } else if let current = albumWindow.first?.letter, pageLetters.contains(current) {
+                await reloadAlbumLetter(current)
+            } else if albumWindow.isEmpty, let first = letters.first {
+                await showAlbumLetter(first)
+            }
+        case .artists:
+            artistLetters = letters
+            if pendingHit, let pending {
+                await showArtistLetter(pending)
+            } else if artistWindow.isEmpty, let first = letters.first {
+                await showArtistLetter(first)
+            }
+        case .songs:
+            songLetters = letters
+            if pendingHit, let pending {
+                await showSongLetter(pending)
+            } else if let current = songWindow.first?.letter, pageLetters.contains(current) {
+                await reloadSongLetter(current)
+            } else if songWindow.isEmpty, let first = letters.first {
+                await showSongLetter(first)
+            }
+        }
+    }
+
+    private func reloadAlbumLetter(_ letter: String) async {
+        let key = serverKey()
+        let index = session.library
+        let items = await Task.detached(priority: .utility) {
+            (try? index.albums(serverKey: key, letter: letter)) ?? []
+        }.value
+        if let idx = albumWindow.firstIndex(where: { $0.letter == letter }) {
+            albumWindow[idx] = LibraryLetterSection(letter: letter, items: items)
+        }
+    }
+
+    private func reloadSongLetter(_ letter: String) async {
+        let key = serverKey()
+        let index = session.library
+        let items = await Task.detached(priority: .utility) {
+            (try? index.songs(serverKey: key, letter: letter)) ?? []
+        }.value
+        if let idx = songWindow.firstIndex(where: { $0.letter == letter }) {
+            songWindow[idx] = LibraryLetterSection(letter: letter, items: items)
+        }
+    }
 
     private func loadAlbumsCatalog(forceNetwork: Bool = false) async {
         albumsFillTask?.cancel()
         pendingAlbumLetter = nil
 
-        // Already painted in this session — don't rebuild sections on tab flip.
-        if !forceNetwork, !albums.isEmpty {
+        if !forceNetwork, !albumWindow.isEmpty {
             isLoading = false
+            albumLetters = await indexLetters(.albums)
+            albumsHasMore = !(await indexComplete(.albums))
+            albumsOffset = await indexCount(.albums)
             if albumsHasMore {
                 albumsFillTask = Task { @MainActor in
                     await fillAlbumsInBackground()
@@ -960,29 +1200,36 @@ struct LibraryView: View {
             return
         }
 
-        let serverKey = session.account.serverKey
-        if !forceNetwork,
-           let cached = LibraryListCatalog.albums(serverKey: serverKey),
-           !cached.isEmpty {
-            await applyAlbumCatalog(cached)
+        let count = await indexCount(.albums)
+        if !forceNetwork, count > 0 {
+            albumLetters = await indexLetters(.albums)
+            albumsHasMore = !(await indexComplete(.albums))
+            albumsOffset = count
             isLoading = false
-            albumsOffset = cached.count
-            albumsHasMore = !LibraryListCatalog.albumsComplete(serverKey: serverKey)
-            if !albumsHasMore {
-                return
+            if let first = albumLetters.first {
+                await showAlbumLetter(first)
             }
-        } else {
-            if forceNetwork {
-                albums = []
-                albumSectionsCache = []
+            if albumsHasMore {
+                albumsFillTask = Task { @MainActor in
+                    await fillAlbumsInBackground()
+                }
             }
-            albumsOffset = 0
-            albumsHasMore = true
-            await loadMoreAlbums(isInitial: true, replace: true)
-            guard !Task.isCancelled else { return }
-            persistAlbumCatalog(complete: !albumsHasMore)
+            return
         }
 
+        if forceNetwork {
+            let key = serverKey()
+            let index = session.library
+            try? await Task.detached {
+                try index.clear(kind: .albums, serverKey: key)
+            }.value
+            albumWindow = []
+            albumLetters = []
+        }
+        albumsOffset = 0
+        albumsHasMore = true
+        await loadMoreAlbums(isInitial: true, replace: true)
+        guard !Task.isCancelled else { return }
         guard albumsHasMore else { return }
         albumsFillTask = Task { @MainActor in
             await fillAlbumsInBackground()
@@ -994,50 +1241,11 @@ struct LibraryView: View {
             await loadMoreAlbums()
             await Task.yield()
         }
-        persistAlbumCatalog(complete: !albumsHasMore)
-        clearPendingLetterIfMissing(
-            pending: &pendingAlbumLetter,
-            letters: albumSectionsCache.map(\.letter))
-    }
-
-    private func refreshAlbumsFromStartIfNeeded() async {
-        do {
-            let headSize = min(50, max(albums.count, 1))
-            let head = try await session.client.albumList(
-                type: .alphabeticalByName, size: headSize, offset: 0)
-            guard !Task.isCancelled else { return }
-
-            let cachedHead = Array(albums.prefix(head.count))
-            let headChanged = head.map(\.id) != cachedHead.map(\.id)
-
-            var grew = false
-            if !headChanged {
-                let probe = try await session.client.albumList(
-                    type: .alphabeticalByName, size: 1, offset: albums.count)
-                grew = !probe.isEmpty
-            }
-
-            guard headChanged || grew else { return }
-
-            albumsOffset = headChanged ? 0 : albums.count
-            albumsHasMore = true
-            if headChanged {
-                await loadMoreAlbums(isInitial: true, replace: true)
-            }
-            if albumsHasMore {
-                await fillAlbumsInBackground()
-            } else {
-                persistAlbumCatalog(complete: true)
-            }
-        } catch {
-            // Keep cached albums.
+        albumLetters = await indexLetters(.albums)
+        if let pending = pendingAlbumLetter, albumLetters.contains(pending) {
+            pendingAlbumLetter = nil
+            await showAlbumLetter(pending)
         }
-    }
-
-    private func persistAlbumCatalog(complete: Bool) {
-        guard !albums.isEmpty else { return }
-        LibraryListCatalog.storeAlbums(
-            albums, serverKey: session.account.serverKey, isComplete: complete)
     }
 
     private func snapScroll(_ proxy: ScrollViewProxy, to letter: String) {
@@ -1049,18 +1257,24 @@ struct LibraryView: View {
     }
 
     private func jumpAlbums(to letter: String, proxy: ScrollViewProxy, dragging: Bool) {
-        let letters = albumSectionsCache.map(\.letter)
-        let target = letters.contains(letter)
+        let resolved = albumLetters.contains(letter)
             ? letter
-            : LibrarySortLetter.nearestSectionLetter(letter, in: letters)
-        if let target {
-            snapScroll(proxy, to: target)
-        }
-        guard !dragging else { return }
-        if letters.contains(letter) {
-            pendingAlbumLetter = nil
+            : LibrarySortLetter.nearestSectionLetter(letter, in: albumLetters)
+
+        if let resolved, albumWindow.contains(where: { $0.letter == resolved }) {
+            snapScroll(proxy, to: resolved)
+            if !dragging { pendingAlbumLetter = nil }
             return
         }
+
+        if dragging { return }
+
+        if let resolved, albumLetters.contains(resolved) {
+            pendingAlbumLetter = nil
+            Task { await showAlbumLetter(resolved) }
+            return
+        }
+
         pendingAlbumLetter = letter
         if albumsFillTask == nil || albumsFillTask?.isCancelled == true {
             albumsFillTask = Task { @MainActor in
@@ -1088,31 +1302,35 @@ struct LibraryView: View {
             let page = try await session.client.albumList(
                 type: .alphabeticalByName, size: pageSize, offset: offset)
             if Task.isCancelled { return }
+            let key = serverKey()
+            let index = session.library
             if page.isEmpty {
                 albumsHasMore = false
-                persistAlbumCatalog(complete: true)
+                try? await Task.detached {
+                    try index.appendAlbums([], serverKey: key, isComplete: true)
+                }.value
                 return
             }
 
-            var merged: [Album]
-            if replace {
-                merged = page
-                albumsOffset = page.count
-            } else {
-                merged = albums
-                var seen = Set(merged.map(\.id))
-                for album in page where seen.insert(album.id).inserted {
-                    merged.append(album)
+            albumsOffset = offset + page.count
+            albumsHasMore = page.count >= pageSize && albumsOffset < 50_000
+            let complete = !albumsHasMore
+            try? await Task.detached(priority: .utility) {
+                if replace {
+                    try index.replaceAlbums(page, serverKey: key, isComplete: complete)
+                } else {
+                    try index.appendAlbums(page, serverKey: key, isComplete: complete)
                 }
-                albumsOffset = offset + page.count
-            }
-            albumsHasMore = page.count >= pageSize && merged.count < 10_000
+            }.value
 
             isLoading = false
-            await applyAlbumCatalog(merged)
-            persistAlbumCatalog(complete: !albumsHasMore)
+            let pageLetters = Set(page.map { LibrarySortLetter.sectionLetter(for: $0.name) })
+            await refreshVisibleIfNeeded(kind: .albums, pageLetters: pageLetters, pending: pendingAlbumLetter)
+            if let pending = pendingAlbumLetter, albumLetters.contains(pending) {
+                pendingAlbumLetter = nil
+            }
         } catch {
-            if albums.isEmpty {
+            if albumWindow.isEmpty {
                 self.error = error.localizedDescription
             }
         }
@@ -1121,128 +1339,72 @@ struct LibraryView: View {
     private func loadArtistsCatalog(forceNetwork: Bool = false) async throws {
         artistsFillTask?.cancel()
 
-        if !forceNetwork, !artistSectionsCache.isEmpty {
+        if !forceNetwork, !artistWindow.isEmpty {
             isLoading = false
+            artistLetters = await indexLetters(.artists)
             return
         }
 
-        let serverKey = session.account.serverKey
-        if !forceNetwork,
-           let cached = LibraryListCatalog.artistSections(serverKey: serverKey),
-           !cached.isEmpty {
-            let sections = cached.map { (letter: $0.letter, artists: $0.artists) }
-            applyArtistSections(sections)
+        let count = await indexCount(.artists)
+        if !forceNetwork, count > 0 {
+            artistLetters = await indexLetters(.artists)
             isLoading = false
+            if let first = artistLetters.first {
+                await showArtistLetter(first)
+            }
             return
         }
-
-        artistSectionsCache = []
-        artistSectionsRemaining = []
-        artistsHasMore = false
 
         let indexes = try await session.client.artists()
         guard !Task.isCancelled else { return }
-
-        let sections = await Task.detached(priority: .userInitiated) {
-            Self.buildArtistSections(from: indexes)
+        let artists = indexes.flatMap(\.artists)
+        let key = serverKey()
+        let index = session.library
+        try? await Task.detached(priority: .utility) {
+            try index.replaceArtists(artists, serverKey: key)
         }.value
-        guard !Task.isCancelled else { return }
-
+        artistLetters = await indexLetters(.artists)
         isLoading = false
-        artistIndexes = indexes
-        // Full index is already local after getArtists — publish every letter
-        // immediately so scrubber jumps never wait on a fake drip-feed.
-        applyArtistSections(sections)
-        LibraryListCatalog.storeArtistSections(
-            sections, serverKey: serverKey, isComplete: true)
-
-        if let pending = pendingArtistLetter {
-            pendingArtistLetter = nil
-            if let target = LibrarySortLetter.nearestSectionLetter(
-                pending, in: sections.map(\.letter)
-            ) {
-                artistScrollTarget = target
-            }
-        }
-    }
-
-    private func applyArtistSections(_ sections: [(letter: String, artists: [Artist])]) {
-        let shouldWarm = artistSectionsCache.isEmpty
-        artistSectionsCache = sections
-        artistSectionsRemaining = []
-        artistsHasMore = false
-        if shouldWarm {
-            warmArtistCovers(Array(sections.flatMap(\.artists).prefix(48)))
-        }
-    }
-
-    private func refreshArtistsQuietly() async {
-        do {
-            let indexes = try await session.client.artists()
-            guard !Task.isCancelled else { return }
-            let sections = await Task.detached(priority: .userInitiated) {
-                Self.buildArtistSections(from: indexes)
-            }.value
-            guard !Task.isCancelled else { return }
-
-            let cachedIDs = artistSectionsCache.flatMap(\.artists).map(\.id)
-            let freshIDs = sections.flatMap(\.artists).map(\.id)
-            guard cachedIDs != freshIDs else { return }
-
-            artistIndexes = indexes
-            applyArtistSections(sections)
-            LibraryListCatalog.storeArtistSections(
-                sections, serverKey: session.account.serverKey, isComplete: true)
-        } catch {
-            // Keep cached artists.
+        let pending = pendingArtistLetter
+        pendingArtistLetter = nil
+        let letter = pending.flatMap { artistLetters.contains($0) ? $0 : nil }
+            ?? artistLetters.first
+        if let letter {
+            await showArtistLetter(letter)
         }
     }
 
     private func jumpArtists(to letter: String, proxy: ScrollViewProxy, dragging: Bool) {
-        let letters = artistSectionsCache.map(\.letter)
+        let resolved = artistLetters.contains(letter)
+            ? letter
+            : LibrarySortLetter.nearestSectionLetter(letter, in: artistLetters)
 
-        if let target = LibrarySortLetter.nearestSectionLetter(letter, in: letters) {
-            snapScroll(proxy, to: target)
-            if dragging { return }
-            pendingArtistLetter = nil
-            prefetchArtistSection(target)
+        if let resolved, artistWindow.contains(where: { $0.letter == resolved }) {
+            snapScroll(proxy, to: resolved)
+            if !dragging { pendingArtistLetter = nil }
             return
         }
 
         if dragging { return }
 
-        if !artistSectionsRemaining.isEmpty {
-            artistSectionsCache.append(contentsOf: artistSectionsRemaining)
-            artistSectionsCache.sort { LibrarySortLetter.sectionLetterSort($0.letter, $1.letter) }
-            artistSectionsRemaining = []
-            artistsHasMore = false
-            if let target = LibrarySortLetter.nearestSectionLetter(
-                letter, in: artistSectionsCache.map(\.letter)
-            ) {
-                pendingArtistLetter = nil
-                prefetchArtistSection(target)
-                artistScrollTarget = target
-                return
-            }
+        if let resolved, artistLetters.contains(resolved) {
+            pendingArtistLetter = nil
+            Task { await showArtistLetter(resolved) }
+            return
         }
 
         pendingArtistLetter = letter
-    }
-
-    private func prefetchArtistSection(_ letter: String) {
-        guard let section = artistSectionsCache.first(where: { $0.letter == letter }) else { return }
-        let urls = section.artists.prefix(16).compactMap {
-            session.client.coverArtURL(id: $0.coverArt ?? $0.id, size: Self.listArtSize)
-        }
-        ImageLoader.shared.prefetch(urls, limit: 16)
     }
 
     private func loadFullSongCatalog(forceNetwork: Bool = false) async {
         songsFillTask?.cancel()
         pendingSongLetter = nil
 
-        if !forceNetwork, !flatSongsCache.isEmpty {
+        if !forceNetwork, !songWindow.isEmpty {
             isLoading = false
+            songLetters = await indexLetters(.songs)
+            songHasMore = !(await indexComplete(.songs))
+            songNativeOffset = await indexCount(.songs)
             if songHasMore {
                 songsFillTask = Task { @MainActor in
                     await fillSongsInBackground()
@@ -1251,31 +1413,36 @@ struct LibraryView: View {
             return
         }
 
-        let serverKey = session.account.serverKey
-        if !forceNetwork,
-           let cached = LibraryListCatalog.songs(serverKey: serverKey),
-           !cached.isEmpty {
-            await applySongCatalog(cached)
+        let count = await indexCount(.songs)
+        if !forceNetwork, count > 0 {
+            songLetters = await indexLetters(.songs)
+            songHasMore = !(await indexComplete(.songs))
+            songNativeOffset = count
             isLoading = false
-            songNativeOffset = cached.count
-            songHasMore = !LibraryListCatalog.songsComplete(serverKey: serverKey)
-            if !songHasMore {
-                return
+            if let first = songLetters.first {
+                await showSongLetter(first)
             }
-        } else {
-            if forceNetwork {
-                songs = []
-                songSectionsCache = []
-                flatSongsCache = []
-                songIndexByID = [:]
+            if songHasMore {
+                songsFillTask = Task { @MainActor in
+                    await fillSongsInBackground()
+                }
             }
-            songNativeOffset = 0
-            songHasMore = true
-            await loadMoreSongs(isInitial: true, replace: true)
-            guard !Task.isCancelled else { return }
-            persistSongCatalog(complete: !songHasMore)
+            return
         }
 
+        if forceNetwork {
+            let key = serverKey()
+            let index = session.library
+            try? await Task.detached {
+                try index.clear(kind: .songs, serverKey: key)
+            }.value
+            songWindow = []
+            songLetters = []
+        }
+        songNativeOffset = 0
+        songHasMore = true
+        await loadMoreSongs(isInitial: true, replace: true)
+        guard !Task.isCancelled else { return }
         guard songHasMore else { return }
         songsFillTask = Task { @MainActor in
             await fillSongsInBackground()
@@ -1287,71 +1454,32 @@ struct LibraryView: View {
             await loadMoreSongs()
             await Task.yield()
         }
-        persistSongCatalog(complete: !songHasMore)
-        clearPendingLetterIfMissing(
-            pending: &pendingSongLetter,
-            letters: songSectionsCache.map(\.letter))
-    }
-
-    private func refreshSongsFromStartIfNeeded() async {
-        do {
-            let head = try await session.client.nativeSongs(start: 0, end: min(80, flatSongsCache.count))
-            guard !Task.isCancelled else { return }
-
-            let cachedHead = Array(flatSongsCache.prefix(head.count))
-            let headChanged = head.map(\.id) != cachedHead.map(\.id)
-
-            var grew = false
-            if !headChanged {
-                let probe = try await session.client.nativeSongs(
-                    start: flatSongsCache.count,
-                    end: flatSongsCache.count + 1)
-                grew = !probe.isEmpty
-            }
-
-            guard headChanged || grew else { return }
-
-            songNativeOffset = headChanged ? 0 : flatSongsCache.count
-            songHasMore = true
-            if headChanged {
-                await loadMoreSongs(isInitial: true, replace: true)
-            }
-            if songHasMore {
-                await fillSongsInBackground()
-            } else {
-                persistSongCatalog(complete: true)
-            }
-        } catch {
-            // Keep the cached list — native refresh is best-effort.
+        songLetters = await indexLetters(.songs)
+        if let pending = pendingSongLetter, songLetters.contains(pending) {
+            pendingSongLetter = nil
+            await showSongLetter(pending)
         }
-    }
-
-    private func persistSongCatalog(complete: Bool) {
-        guard !flatSongsCache.isEmpty else { return }
-        LibraryListCatalog.storeSongs(
-            flatSongsCache,
-            serverKey: session.account.serverKey,
-            isComplete: complete)
-    }
-
-    private func clearPendingLetterIfMissing(pending: inout String?, letters: [String]) {
-        guard let letter = pending, !letters.contains(letter) else { return }
-        pending = nil
     }
 
     private func jumpSongs(to letter: String, proxy: ScrollViewProxy, dragging: Bool) {
-        let letters = songSectionsCache.map(\.letter)
-        let target = letters.contains(letter)
+        let resolved = songLetters.contains(letter)
             ? letter
-            : LibrarySortLetter.nearestSectionLetter(letter, in: letters)
-        if let target {
-            snapScroll(proxy, to: target)
-        }
-        guard !dragging else { return }
-        if letters.contains(letter) {
-            pendingSongLetter = nil
+            : LibrarySortLetter.nearestSectionLetter(letter, in: songLetters)
+
+        if let resolved, songWindow.contains(where: { $0.letter == resolved }) {
+            snapScroll(proxy, to: resolved)
+            if !dragging { pendingSongLetter = nil }
             return
         }
+
+        if dragging { return }
+
+        if let resolved, songLetters.contains(resolved) {
+            pendingSongLetter = nil
+            Task { await showSongLetter(resolved) }
+            return
+        }
+
         pendingSongLetter = letter
         if songsFillTask == nil || songsFillTask?.isCancelled == true {
             songsFillTask = Task { @MainActor in
@@ -1379,39 +1507,43 @@ struct LibraryView: View {
         do {
             let page = try await session.client.nativeSongs(start: start, end: end)
             if Task.isCancelled { return }
+            let key = serverKey()
+            let index = session.library
 
             if page.isEmpty {
                 songHasMore = false
-                persistSongCatalog(complete: true)
+                try? await Task.detached {
+                    try index.appendSongs([], serverKey: key, isComplete: true)
+                }.value
                 return
             }
 
-            var merged: [Song]
-            if replace {
-                merged = page
-            } else {
-                merged = flatSongsCache
-                var seen = Set(merged.map(\.id))
-                for song in page where seen.insert(song.id).inserted {
-                    merged.append(song)
-                }
-            }
             songNativeOffset = start + page.count
-            songHasMore = page.count >= pageSize && merged.count < 50_000
+            songHasMore = page.count >= pageSize && songNativeOffset < 80_000
+            let complete = !songHasMore
+            try? await Task.detached(priority: .utility) {
+                if replace {
+                    try index.replaceSongs(page, serverKey: key, isComplete: complete)
+                } else {
+                    try index.appendSongs(page, serverKey: key, isComplete: complete)
+                }
+            }.value
 
             isLoading = false
-            await applySongCatalog(merged)
-            persistSongCatalog(complete: !songHasMore)
+            let pageLetters = Set(page.map { LibrarySortLetter.sectionLetter(for: $0.title) })
+            await refreshVisibleIfNeeded(kind: .songs, pageLetters: pageLetters, pending: pendingSongLetter)
+            if let pending = pendingSongLetter, songLetters.contains(pending) {
+                pendingSongLetter = nil
+            }
 
-            if !songHasMore {
-                let snapshot = merged
+            if complete {
                 Task {
                     await Task.yield()
-                    session.ratings.ingest(snapshot)
+                    session.ratings.ingest(page)
                 }
             }
         } catch {
-            if flatSongsCache.isEmpty {
+            if songWindow.isEmpty {
                 await loadSongsViaAlbumsFallback()
             } else {
                 songHasMore = false
@@ -1419,14 +1551,15 @@ struct LibraryView: View {
         }
     }
 
-    /// Legacy path when `/api/song` isn't available — still sorts by title
-    /// before each publish so the list doesn't thrash.
+    /// Legacy path when `/api/song` isn't available.
     private func loadSongsViaAlbumsFallback() async {
         songHasMore = false
         var collected: [Song] = []
         var seen = Set<String>()
         var offset = 0
         let pageSize = 40
+        let key = serverKey()
+        let index = session.library
 
         while !Task.isCancelled {
             let albumsPage: [Album]
@@ -1435,13 +1568,14 @@ struct LibraryView: View {
                     type: .alphabeticalByName, size: pageSize, offset: offset)
             } catch {
                 if collected.isEmpty, let fallback = try? await loadSongCatalogFallback() {
-                    let sorted = fallback.sorted {
-                        LibrarySortLetter.sortableName($0.title)
-                            .localizedCaseInsensitiveCompare(LibrarySortLetter.sortableName($1.title)) == .orderedAscending
+                    try? await Task.detached {
+                        try index.replaceSongs(fallback, serverKey: key, isComplete: true)
+                    }.value
+                    songLetters = await indexLetters(.songs)
+                    isLoading = false
+                    if let first = songLetters.first {
+                        await showSongLetter(first)
                     }
-                    await applySongCatalog(sorted)
-                    LibraryListCatalog.storeSongs(
-                        sorted, serverKey: session.account.serverKey, isComplete: true)
                 } else if collected.isEmpty {
                     self.error = error.localizedDescription
                 }
@@ -1462,12 +1596,14 @@ struct LibraryView: View {
                 }
             }
 
-            let sorted = collected.sorted {
-                LibrarySortLetter.sortableName($0.title)
-                    .localizedCaseInsensitiveCompare(LibrarySortLetter.sortableName($1.title)) == .orderedAscending
-            }
+            try? await Task.detached {
+                try index.replaceSongs(collected, serverKey: key, isComplete: false)
+            }.value
+            songLetters = await indexLetters(.songs)
             isLoading = false
-            await applySongCatalog(sorted)
+            if songWindow.isEmpty, let first = songLetters.first {
+                await showSongLetter(first)
+            }
 
             offset += albumsPage.count
             if albumsPage.count < pageSize { break }
@@ -1475,13 +1611,10 @@ struct LibraryView: View {
         }
 
         if !collected.isEmpty {
-            let sorted = collected.sorted {
-                LibrarySortLetter.sortableName($0.title)
-                    .localizedCaseInsensitiveCompare(LibrarySortLetter.sortableName($1.title)) == .orderedAscending
-            }
-            LibraryListCatalog.storeSongs(
-                sorted, serverKey: session.account.serverKey, isComplete: true)
-            session.ratings.ingest(sorted)
+            try? await Task.detached {
+                try index.replaceSongs(collected, serverKey: key, isComplete: true)
+            }.value
+            session.ratings.ingest(collected)
         }
     }
 
@@ -1507,19 +1640,22 @@ struct LibraryView: View {
             await runLibraryScan(showBanner: true)
         }
         LibraryListCatalog.invalidate(serverKey: session.account.serverKey)
+        let key = serverKey()
+        let index = session.library
+        try? await Task.detached {
+            try index.clearAll(serverKey: key)
+        }.value
         albumsFillTask?.cancel()
         artistsFillTask?.cancel()
         songsFillTask?.cancel()
-        albums = []
-        albumSectionsCache = []
-        artistSectionsCache = []
-        songs = []
-        songSectionsCache = []
-        flatSongsCache = []
-        songIndexByID = [:]
+        albumWindow = []
+        albumLetters = []
+        artistWindow = []
+        artistLetters = []
+        songWindow = []
+        songLetters = []
         playlists = []
         await load(forceNetwork: true)
-        // Refresh the other tabs into cache in the background so flips stay instant.
         Task { @MainActor in
             await hydrateSiblingTabsAfterRefresh()
         }
@@ -1539,7 +1675,6 @@ struct LibraryView: View {
         if active != .albums {
             await loadAlbumsCatalog(forceNetwork: true)
         }
-        // Songs are large — leave them to load when that tab opens, then persist.
     }
 
     @discardableResult

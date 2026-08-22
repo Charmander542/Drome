@@ -98,11 +98,14 @@ final class SubsonicClient {
         guard let url = endpointURL(endpoint, parameters: parameters) else {
             throw SubsonicError.invalidURL
         }
-        let (data, response) = try await session.data(from: url)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw SubsonicError.http(status: http.statusCode)
-        }
-        return try JSONDecoder().decode(SubsonicEnvelope<P>.self, from: data).payload
+        let session = self.session
+        return try await Task.detached(priority: .userInitiated) {
+            let (data, response) = try await session.data(from: url)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                throw SubsonicError.http(status: http.statusCode)
+            }
+            return try JSONDecoder().decode(SubsonicEnvelope<P>.self, from: data).payload
+        }.value
     }
 
     // MARK: - System

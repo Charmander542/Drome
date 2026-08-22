@@ -18,6 +18,7 @@ type server struct {
 	spotify   *spotifyClient
 	downloads *downloadWorker
 	connect   *connectHub
+	mixes     *mixHub
 }
 
 func (s *server) routes() http.Handler {
@@ -42,6 +43,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /.well-known/apple-app-site-association", s.handleAppleAppSiteAssociation)
 	mux.HandleFunc("GET /apple-app-site-association", s.handleAppleAppSiteAssociation)
 	s.registerConnectRoutes(mux)
+	s.registerMixRoutes(mux)
 	return logRequests(mux)
 }
 

@@ -9,6 +9,7 @@ struct SplashScreenView: View {
     @State private var startDate = Date()
     @State private var showStill = true
     @State private var overlayOpacity: Double = 1
+    @State private var absorbTaps = true
 
     /// Brand mark size — 10% larger than the original 200pt splash.
     private static let logoSize: CGFloat = 220
@@ -73,7 +74,7 @@ struct SplashScreenView: View {
             }
         }
         .opacity(overlayOpacity)
-        .allowsHitTesting(overlayOpacity > 0.05)
+        .allowsHitTesting(absorbTaps)
         .task {
             startDate = Date()
             try? await Task.sleep(nanoseconds: UInt64(stillHold * 1_000_000_000))
@@ -83,6 +84,8 @@ struct SplashScreenView: View {
             }
             let remaining = max(0, totalDuration - stillHold)
             try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+            // Drop hit-testing before the fade so the first Search tap isn't eaten.
+            absorbTaps = false
             withAnimation(.easeInOut(duration: exitFade)) {
                 overlayOpacity = 0
             }
