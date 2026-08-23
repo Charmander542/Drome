@@ -227,6 +227,13 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 		return
 	}
 
+	// Amazon stages as {ASIN}.flac; if rename/embed was soft-failed upstream,
+	// drop dupes next to a good file or fail so we don't keep B0… / Unknown tracks.
+	if err := cleanupRecentASINLeftovers(w.cfg.MusicDir, started); err != nil {
+		w.fail(e, attempt, err)
+		return
+	}
+
 	logf("download done id=%d — removing from wishlist", e.ID)
 	if err := w.triggerScan(parent); err != nil {
 		logf("navidrome scan trigger: %v (library will pick up on next scheduled scan)", err)

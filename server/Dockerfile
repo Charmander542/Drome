@@ -17,6 +17,9 @@ RUN apt-get update \
  && mkdir -p /data /music \
  && chown drome:drome /data /music
 
+COPY patches/patch_spotiflac_amazon_finalize.py /tmp/patch_spotiflac_amazon_finalize.py
+RUN python3 /tmp/patch_spotiflac_amazon_finalize.py && rm -f /tmp/patch_spotiflac_amazon_finalize.py
+
 COPY --from=build /out/drome-server /usr/local/bin/drome-server
 COPY download-entry.sh /usr/local/bin/drome-download
 COPY retag.py /usr/local/bin/drome-retag

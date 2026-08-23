@@ -1,0 +1,201 @@
+diff --git a/backend/amazon.go b/backend/amazon.go
+index 7e94d58..4751e8e 100644
+--- a/backend/amazon.go
++++ b/backend/amazon.go
+@@ -252,21 +252,23 @@ func (a *AmazonDownloader) DownloadByURL(amazonURL, outputDir, quality, filename
+ 		}
+ 	}
+ 
+-	if spotifyTrackName != "" && spotifyArtistName != "" {
+-		filenameArtist := spotifyArtistName
+-		filenameAlbumArtist := spotifyAlbumArtist
+-		if useFirstArtistOnly {
+-			filenameArtist = GetFirstArtist(spotifyArtistName)
+-			filenameAlbumArtist = GetFirstArtist(spotifyAlbumArtist)
+-		}
+-		expectedFilename := BuildExpectedFilename(spotifyTrackName, filenameArtist, spotifyAlbumName, filenameAlbumArtist, spotifyReleaseDate, filenameFormat, playlistName, playlistOwner, includeTrackNumber, position, spotifyDiscNumber, false, isrcOverride)
+-		expectedPath := filepath.Join(outputDir, expectedFilename)
++	if err := RequireSpotifyIdentity(spotifyTrackName, spotifyArtistName); err != nil {
++		return "", err
++	}
+ 
+-		if !GetRedownloadWithSuffixSetting() {
+-			if fileInfo, err := os.Stat(expectedPath); err == nil && fileInfo.Size() > 0 {
+-				fmt.Printf("File already exists: %s (%.2f MB)\n", expectedPath, float64(fileInfo.Size())/(1024*1024))
+-				return "EXISTS:" + expectedPath, nil
+-			}
++	filenameArtist := spotifyArtistName
++	filenameAlbumArtist := spotifyAlbumArtist
++	if useFirstArtistOnly {
++		filenameArtist = GetFirstArtist(spotifyArtistName)
++		filenameAlbumArtist = GetFirstArtist(spotifyAlbumArtist)
++	}
++	expectedFilename := BuildExpectedFilename(spotifyTrackName, filenameArtist, spotifyAlbumName, filenameAlbumArtist, spotifyReleaseDate, filenameFormat, playlistName, playlistOwner, includeTrackNumber, position, spotifyDiscNumber, false, isrcOverride)
++	expectedPath := filepath.Join(outputDir, expectedFilename)
++
++	if !GetRedownloadWithSuffixSetting() {
++		if fileInfo, err := os.Stat(expectedPath); err == nil && fileInfo.Size() > 0 {
++			fmt.Printf("File already exists: %s (%.2f MB)\n", expectedPath, float64(fileInfo.Size())/(1024*1024))
++			return "EXISTS:" + expectedPath, nil
+ 		}
+ 	}
+ 
+@@ -353,83 +355,81 @@ func (a *AmazonDownloader) DownloadByURL(amazonURL, outputDir, quality, filename
+ 	originalFileDir := filepath.Dir(filePath)
+ 	originalFileBase := strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
+ 
+-	if spotifyTrackName != "" && spotifyArtistName != "" {
+-		safeArtist := sanitizeFilename(spotifyArtistName)
+-		safeAlbumArtist := sanitizeFilename(spotifyAlbumArtist)
+-
+-		if useFirstArtistOnly {
+-			safeArtist = sanitizeFilename(GetFirstArtist(spotifyArtistName))
+-			safeAlbumArtist = sanitizeFilename(GetFirstArtist(spotifyAlbumArtist))
+-		}
+-
+-		safeTitle := sanitizeFilename(spotifyTrackName)
+-		safeAlbum := sanitizeFilename(spotifyAlbumName)
++	safeArtist := sanitizeFilename(spotifyArtistName)
++	safeAlbumArtist := sanitizeFilename(spotifyAlbumArtist)
+ 
+-		year := ""
+-		if len(spotifyReleaseDate) >= 4 {
+-			year = spotifyReleaseDate[:4]
+-		}
++	if useFirstArtistOnly {
++		safeArtist = sanitizeFilename(GetFirstArtist(spotifyArtistName))
++		safeAlbumArtist = sanitizeFilename(GetFirstArtist(spotifyAlbumArtist))
++	}
+ 
+-		var newFilename string
++	safeTitle := sanitizeFilename(spotifyTrackName)
++	safeAlbum := sanitizeFilename(spotifyAlbumName)
+ 
+-		if strings.Contains(filenameFormat, "{") {
+-			newFilename = filenameFormat
+-			newFilename = strings.ReplaceAll(newFilename, "{title}", safeTitle)
+-			newFilename = strings.ReplaceAll(newFilename, "{artist}", safeArtist)
+-			newFilename = strings.ReplaceAll(newFilename, "{album}", safeAlbum)
+-			newFilename = strings.ReplaceAll(newFilename, "{album_artist}", safeAlbumArtist)
+-			newFilename = strings.ReplaceAll(newFilename, "{year}", year)
+-			newFilename = strings.ReplaceAll(newFilename, "{date}", SanitizeFilename(spotifyReleaseDate))
+-			newFilename = strings.ReplaceAll(newFilename, "{isrc}", SanitizeOptionalFilename(isrc))
++	year := ""
++	if len(spotifyReleaseDate) >= 4 {
++		year = spotifyReleaseDate[:4]
++	}
+ 
+-			if spotifyDiscNumber > 0 {
+-				newFilename = strings.ReplaceAll(newFilename, "{disc}", fmt.Sprintf("%d", spotifyDiscNumber))
+-			} else {
+-				newFilename = strings.ReplaceAll(newFilename, "{disc}", "")
+-			}
++	var newFilename string
+ 
+-			if position > 0 {
+-				newFilename = strings.ReplaceAll(newFilename, "{track}", fmt.Sprintf("%02d", position))
+-			} else {
++	if strings.Contains(filenameFormat, "{") {
++		newFilename = filenameFormat
++		newFilename = strings.ReplaceAll(newFilename, "{title}", safeTitle)
++		newFilename = strings.ReplaceAll(newFilename, "{artist}", safeArtist)
++		newFilename = strings.ReplaceAll(newFilename, "{album}", safeAlbum)
++		newFilename = strings.ReplaceAll(newFilename, "{album_artist}", safeAlbumArtist)
++		newFilename = strings.ReplaceAll(newFilename, "{year}", year)
++		newFilename = strings.ReplaceAll(newFilename, "{date}", SanitizeFilename(spotifyReleaseDate))
++		newFilename = strings.ReplaceAll(newFilename, "{isrc}", SanitizeOptionalFilename(isrc))
+ 
+-				newFilename = regexp.MustCompile(`\{track\}\.\s*`).ReplaceAllString(newFilename, "")
+-				newFilename = regexp.MustCompile(`\{track\}\s*-\s*`).ReplaceAllString(newFilename, "")
+-				newFilename = regexp.MustCompile(`\{track\}\s*`).ReplaceAllString(newFilename, "")
+-			}
++		if spotifyDiscNumber > 0 {
++			newFilename = strings.ReplaceAll(newFilename, "{disc}", fmt.Sprintf("%d", spotifyDiscNumber))
+ 		} else {
++			newFilename = strings.ReplaceAll(newFilename, "{disc}", "")
++		}
+ 
+-			switch filenameFormat {
+-			case "artist-title":
+-				newFilename = fmt.Sprintf("%s - %s", safeArtist, safeTitle)
+-			case "title":
+-				newFilename = safeTitle
+-			default:
+-				newFilename = fmt.Sprintf("%s - %s", safeTitle, safeArtist)
+-			}
++		if position > 0 {
++			newFilename = strings.ReplaceAll(newFilename, "{track}", fmt.Sprintf("%02d", position))
++		} else {
+ 
+-			if includeTrackNumber && position > 0 {
+-				newFilename = fmt.Sprintf("%02d. %s", position, newFilename)
+-			}
++			newFilename = regexp.MustCompile(`\{track\}\.\s*`).ReplaceAllString(newFilename, "")
++			newFilename = regexp.MustCompile(`\{track\}\s*-\s*`).ReplaceAllString(newFilename, "")
++			newFilename = regexp.MustCompile(`\{track\}\s*`).ReplaceAllString(newFilename, "")
+ 		}
++	} else {
+ 
+-		ext := filepath.Ext(filePath)
+-		if ext == "" {
+-			ext = ".flac"
+-		}
+-		newFilename = newFilename + ext
+-		newFilePath := filepath.Join(outputDir, newFilename)
+-		if GetRedownloadWithSuffixSetting() {
+-			newFilePath, _ = ResolveOutputPathForDownload(newFilePath, true)
++		switch filenameFormat {
++		case "artist-title":
++			newFilename = fmt.Sprintf("%s - %s", safeArtist, safeTitle)
++		case "title":
++			newFilename = safeTitle
++		default:
++			newFilename = fmt.Sprintf("%s - %s", safeTitle, safeArtist)
+ 		}
+ 
+-		if err := os.Rename(filePath, newFilePath); err != nil {
+-			fmt.Printf("Warning: Failed to rename file: %v\n", err)
+-		} else {
+-			filePath = newFilePath
+-			fmt.Printf("Renamed to: %s\n", newFilename)
++		if includeTrackNumber && position > 0 {
++			newFilename = fmt.Sprintf("%02d. %s", position, newFilename)
+ 		}
+ 	}
+ 
++	ext := filepath.Ext(filePath)
++	if ext == "" {
++		ext = ".flac"
++	}
++	newFilename = newFilename + ext
++	newFilePath := filepath.Join(outputDir, newFilename)
++	if GetRedownloadWithSuffixSetting() {
++		newFilePath, _ = ResolveOutputPathForDownload(newFilePath, true)
++	}
++
++	promoted, err := PromoteOrDedupASIN(filePath, newFilePath)
++	if err != nil {
++		return "", err
++	}
++	filePath = promoted
++	fmt.Printf("Renamed to: %s\n", filepath.Base(filePath))
++
+ 	fmt.Println("Embedding Spotify metadata...")
+ 
+ 	coverPath := ""
+@@ -474,9 +474,12 @@ func (a *AmazonDownloader) DownloadByURL(amazonURL, outputDir, quality, filename
+ 	}
+ 
+ 	if err := EmbedMetadataToConvertedFile(filePath, metadata, coverPath); err != nil {
+-		fmt.Printf("Warning: Failed to embed metadata: %v\n", err)
+-	} else {
+-		fmt.Println("Metadata embedded successfully")
++		return "", fmt.Errorf("embed metadata: %w", err)
++	}
++	fmt.Println("Metadata embedded successfully")
++
++	if err := FinalizeTaggedDownload(filePath, metadata); err != nil {
++		return "", err
+ 	}
+ 
+ 	if strings.HasSuffix(strings.ToLower(filePath), ".flac") {
