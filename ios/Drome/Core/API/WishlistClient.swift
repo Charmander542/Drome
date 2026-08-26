@@ -247,7 +247,7 @@ struct DromeWishlistClient {
 
     func dailyMixes(timeZone: TimeZone = .current,
                     excludeSongIDs: Set<String> = [],
-                    recencyHours: Double = PlaybackPreferences.autoplayRecencyHours
+                    recencyHours: Double = 72
     ) async throws -> DailyMixResponse {
         var query = [
             URLQueryItem(name: "tz", value: timeZone.identifier),

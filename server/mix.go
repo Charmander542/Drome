@@ -119,6 +119,7 @@ func buildDailyMixes(tracks []mixTrack, similar map[string][]mixTrack, seed stri
 	pool := usableTracks(tracks)
 	if len(exclude) > 0 {
 		pool = filterExcluded(pool, exclude)
+		similar = filterSimilarExcluded(similar, exclude)
 	}
 	if len(pool) < minClusterSongs {
 		return nil
@@ -132,6 +133,7 @@ func buildDailyMixes(tracks []mixTrack, similar map[string][]mixTrack, seed stri
 	out := make([]dailyMix, 0, len(clusters))
 	for i, c := range clusters {
 		songs := fillCluster(c, pool, similar, used, rng, dailyMixLength)
+		songs = filterExcluded(songs, exclude)
 		if len(songs) < minClusterSongs {
 			continue
 		}
@@ -151,6 +153,7 @@ func buildDailyMixes(tracks []mixTrack, similar map[string][]mixTrack, seed stri
 		extra := artistFallbackClusters(pool, used, minDailyMixes-len(out))
 		for _, c := range extra {
 			songs := fillCluster(c, pool, similar, used, rng, dailyMixLength)
+			songs = filterExcluded(songs, exclude)
 			if len(songs) < minClusterSongs {
 				continue
 			}
@@ -272,6 +275,20 @@ func filterExcluded(tracks []mixTrack, exclude map[string]struct{}) []mixTrack {
 			continue
 		}
 		out = append(out, t)
+	}
+	return out
+}
+
+func filterSimilarExcluded(similar map[string][]mixTrack, exclude map[string]struct{}) map[string][]mixTrack {
+	if len(exclude) == 0 || len(similar) == 0 {
+		return similar
+	}
+	out := make(map[string][]mixTrack, len(similar))
+	for k, list := range similar {
+		filtered := filterExcluded(list, exclude)
+		if len(filtered) > 0 {
+			out[k] = filtered
+		}
 	}
 	return out
 }

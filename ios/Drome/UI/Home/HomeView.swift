@@ -139,10 +139,15 @@ struct HomeView: View {
         let hours = PlaybackPreferences.autoplayRecencyHours
         let recentIDs = (try? env.database.recentPlayIDs(
             userKey: session.account.userKey, withinHours: hours)) ?? []
+        if session.rotation.songIDs.isEmpty {
+            await session.rotation.refresh()
+        }
+        var exclude = recentIDs
+        exclude.formUnion(session.rotation.excludedIDs)
         if let mixes = try? await client.dailyMixes(
-            excludeSongIDs: recentIDs, recencyHours: hours
+            excludeSongIDs: exclude, recencyHours: hours
         ).mixes, !mixes.isEmpty {
-            dailyMixes = mixes
+            dailyMixes = Self.withoutOutOfRotation(mixes, excluded: session.rotation.excludedIDs)
         } else if dailyMixes.isEmpty {
             dailyMixes = []
         }
@@ -170,5 +175,22 @@ struct HomeView: View {
             }
         ordered.append(contentsOf: rest)
         return Array(ordered.prefix(20))
+    }
+
+    /// Drop Out of Rotation tracks from mixes; omit mixes that empty out.
+    private static func withoutOutOfRotation(_ mixes: [DailyMix],
+                                             excluded: Set<String>) -> [DailyMix] {
+        guard !excluded.isEmpty else { return mixes }
+        return mixes.compactMap { mix in
+            let songs = mix.songs.filter { !excluded.contains($0.id) }
+            guard songs.count >= 8 else { return nil }
+            var cleaned = mix
+            cleaned.songs = songs
+            if !cleaned.coverArtIds.isEmpty {
+                let keep = Set(songs.compactMap { $0.coverArt ?? $0.albumId ?? $0.id })
+                cleaned.coverArtIds = cleaned.coverArtIds.filter { keep.contains($0) }
+            }
+            return cleaned
+        }
     }
 }

@@ -127,20 +127,21 @@ struct DailyMixDetailView: View {
     }
 
     private func play(_ mix: DailyMix, shuffled: Bool) {
-        guard !mix.songs.isEmpty else { return }
+        let songs = mix.songs.filter { !session.rotation.excludedIDs.contains($0.id) }
+        guard !songs.isEmpty else { return }
         if shuffled {
-            player.playShuffled(mix.songs, context: PlaybackContext(label: mix.title, kind: .mix))
+            player.playShuffled(songs, context: PlaybackContext(label: mix.title, kind: .mix))
         } else {
             // Play = ordered from the first track (clears shuffle). Never resume
             // a prior mid-mix / shuffled session.
-            player.play(mix.songs, startAt: 0,
+            player.play(songs, startAt: 0,
                         context: PlaybackContext(label: mix.title, kind: .mix))
         }
     }
 
     private func loadIfNeeded() async {
         if let mix, !mix.songs.isEmpty {
-            resolved = mix
+            resolved = Self.cleaned(mix, excluded: session.rotation.excludedIDs)
             return
         }
         let want = title ?? mix?.title
@@ -149,19 +150,37 @@ struct DailyMixDetailView: View {
         error = nil
         defer { isLoading = false }
         do {
+            if session.rotation.songIDs.isEmpty {
+                await session.rotation.refresh()
+            }
             let hours = PlaybackPreferences.autoplayRecencyHours
             let recentIDs = (try? AppEnvironment.shared.database.recentPlayIDs(
                 userKey: session.account.userKey, withinHours: hours)) ?? []
+            var exclude = recentIDs
+            exclude.formUnion(session.rotation.excludedIDs)
             let mixes = try await session.wishlist?.dailyMixes(
-                excludeSongIDs: recentIDs, recencyHours: hours
+                excludeSongIDs: exclude, recencyHours: hours
             ).mixes ?? []
             if let found = mixes.first(where: { $0.title == want || $0.id == mix?.id }) {
-                resolved = found
+                if let cleaned = Self.cleaned(found, excluded: session.rotation.excludedIDs) {
+                    resolved = cleaned
+                } else {
+                    error = "This mix is all Out of Rotation right now."
+                }
             } else {
                 error = "Couldn’t find \(want) for today."
             }
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    private static func cleaned(_ mix: DailyMix, excluded: Set<String>) -> DailyMix? {
+        guard !excluded.isEmpty else { return mix }
+        let songs = mix.songs.filter { !excluded.contains($0.id) }
+        guard !songs.isEmpty else { return nil }
+        var copy = mix
+        copy.songs = songs
+        return copy
     }
 }

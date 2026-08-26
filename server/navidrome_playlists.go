@@ -289,6 +289,26 @@ func (v *navidromeVerifier) findPlaylistID(lists []ndPlaylist, name, owner strin
 	return ""
 }
 
+// outOfRotationIDs loads Drome's system "Out of Rotation" playlist song IDs.
+func (v *navidromeVerifier) outOfRotationIDs(ctx context.Context, creds subsonicCreds) map[string]struct{} {
+	lists, err := v.listPlaylists(ctx, creds)
+	if err != nil {
+		return nil
+	}
+	id := v.findPlaylistID(lists, "Out of Rotation", creds.user)
+	if id == "" {
+		id = v.findPlaylistID(lists, "Out of Rotation", "")
+	}
+	if id == "" {
+		return nil
+	}
+	ids, err := v.playlistSongIDs(ctx, creds, id)
+	if err != nil {
+		return nil
+	}
+	return ids
+}
+
 func (v *navidromeVerifier) ensureNamedPlaylist(ctx context.Context, creds subsonicCreds, name, owner string, makePublic bool) (id string, created bool, err error) {
 	name = strings.TrimSpace(name)
 	if name == "" {

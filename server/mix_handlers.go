@@ -2,11 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,17 +85,17 @@ func requestExcludeIDs(r *http.Request) map[string]struct{} {
 	return out
 }
 
-func excludeCacheKey(exclude map[string]struct{}, recencyHours int) string {
-	if len(exclude) == 0 {
-		return "r" + strconv.Itoa(recencyHours)
+func mergeExclude(base map[string]struct{}, extra map[string]struct{}) map[string]struct{} {
+	if len(extra) == 0 {
+		return base
 	}
-	ids := make([]string, 0, len(exclude))
-	for id := range exclude {
-		ids = append(ids, id)
+	if base == nil {
+		base = map[string]struct{}{}
 	}
-	sort.Strings(ids)
-	sum := sha1.Sum([]byte(strings.Join(ids, ",")))
-	return "r" + strconv.Itoa(recencyHours) + "-" + hex.EncodeToString(sum[:8])
+	for id := range extra {
+		base[id] = struct{}{}
+	}
+	return base
 }
 
 type dailyMixResponse struct {
@@ -106,25 +103,70 @@ type dailyMixResponse struct {
 	Mixes []dailyMix `json:"mixes"`
 }
 
+// filterDailyMixResponse drops excluded song IDs from a cached payload without
+// regenerating mixes (keeps the day's lineup stable).
+func filterDailyMixResponse(raw []byte, exclude map[string]struct{}) ([]byte, bool) {
+	if len(exclude) == 0 {
+		return raw, false
+	}
+	var resp dailyMixResponse
+	if json.Unmarshal(raw, &resp) != nil {
+		return raw, false
+	}
+	changed := false
+	out := make([]dailyMix, 0, len(resp.Mixes))
+	for _, mix := range resp.Mixes {
+		songs := filterExcluded(mix.Songs, exclude)
+		if len(songs) != len(mix.Songs) {
+			changed = true
+		}
+		if len(songs) < minClusterSongs {
+			changed = true
+			continue
+		}
+		mix.Songs = songs
+		mix.CoverArtIDs = mixCovers(songs)
+		out = append(out, mix)
+	}
+	if !changed {
+		return raw, false
+	}
+	resp.Mixes = out
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		return raw, false
+	}
+	return payload, true
+}
+
 func (s *server) handleDailyMixes(w http.ResponseWriter, r *http.Request) {
 	owner := requestUser(r)
 	day := radioDay(time.Now(), requestTZ(r))
 	exclude := requestExcludeIDs(r)
-	recency := requestRecencyHours(r)
-	cacheSuffix := excludeCacheKey(exclude, recency)
-	cacheDay := day + "|" + cacheSuffix
+	_ = requestRecencyHours(r) // client still sends it; used via exclude list at first build
 
-	if raw, ok, err := s.store.getDailyMixJSON(owner, cacheDay); err == nil && ok {
+	if creds, ok := s.playlistCreds(r); ok {
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		oor := s.navidrome.outOfRotationIDs(ctx, creds)
+		cancel()
+		exclude = mergeExclude(exclude, oor)
+	}
+
+	// Cache key is the radio day only — exclude/recency must NOT rotate mixes
+	// mid-day (that made Daily Mixes reshuffle every time you played a song).
+	if raw, ok, err := s.store.getDailyMixJSON(owner, day); err == nil && ok {
+		body, _ := filterDailyMixResponse([]byte(raw), exclude)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(raw))
+		_, _ = w.Write(body)
 		return
 	}
 
-	key := owner + "|daily|" + cacheDay
+	key := owner + "|daily|" + day
 	body, err := s.mixOnce(key, func() ([]byte, error) {
-		if raw, ok, err := s.store.getDailyMixJSON(owner, cacheDay); err == nil && ok {
-			return []byte(raw), nil
+		if raw, ok, err := s.store.getDailyMixJSON(owner, day); err == nil && ok {
+			filtered, _ := filterDailyMixResponse([]byte(raw), exclude)
+			return filtered, nil
 		}
 		creds, ok := s.playlistCreds(r)
 		if !ok {
@@ -135,7 +177,8 @@ func (s *server) handleDailyMixes(w http.ResponseWriter, r *http.Request) {
 		snapshot := s.navidrome.mixSnapshot(ctx, creds)
 		artists := topArtistKeys(snapshot, 16)
 		similar := s.navidrome.similarByArtists(ctx, creds, artists, 20)
-		mixes := buildDailyMixes(snapshot, similar, owner+"|"+day+"|"+cacheSuffix, exclude)
+		// First build of the radio day: bake in then-current excludes (recent + OOR).
+		mixes := buildDailyMixes(snapshot, similar, owner+"|"+day, exclude)
 		if mixes == nil {
 			mixes = []dailyMix{}
 		}
@@ -144,7 +187,7 @@ func (s *server) handleDailyMixes(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		_ = s.store.putDailyMixJSON(owner, cacheDay, string(payload))
+		_ = s.store.putDailyMixJSON(owner, day, string(payload))
 		return payload, nil
 	})
 	if err != nil {
