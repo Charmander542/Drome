@@ -10,8 +10,9 @@ final class PlaybackClock: ObservableObject {
     @Published private(set) var duration: TimeInterval = 0
 
     func set(elapsed: TimeInterval, duration: TimeInterval? = nil) {
-        if abs(self.elapsed - elapsed) >= 0.04 {
-            self.elapsed = elapsed
+        let safeElapsed = elapsed.isFinite ? max(0, elapsed) : 0
+        if abs(self.elapsed - safeElapsed) >= 0.04 {
+            self.elapsed = safeElapsed
         }
         if let duration, duration.isFinite, duration >= 0,
            abs(self.duration - duration) >= 0.05 {
@@ -21,6 +22,6 @@ final class PlaybackClock: ObservableObject {
 
     func reset(duration: TimeInterval = 0) {
         elapsed = 0
-        self.duration = max(0, duration)
+        self.duration = duration.isFinite ? max(0, duration) : 0
     }
 }

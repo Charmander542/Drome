@@ -86,13 +86,17 @@ struct SettingsView: View {
             }
             .listRowBackground(DromeTheme.elevated)
 
-            Section("Playback") {
+            Section {
                 Toggle("Autoplay / Infinite Shuffle", isOn: $player.autoplayEnabled)
                 Toggle("Skip low-rated songs everywhere", isOn: Binding(
                     get: { PlaybackPreferences.skipLowRatedEverywhere },
                     set: { PlaybackPreferences.skipLowRatedEverywhere = $0 }
                 ))
-                Picker("Default shuffle", selection: Binding(
+                Toggle("Compress on cellular", isOn: Binding(
+                    get: { PlaybackPreferences.compressOnCellular },
+                    set: { PlaybackPreferences.compressOnCellular = $0 }
+                ))
+                Picker("Shuffle", selection: Binding(
                     get: { player.shuffleMode },
                     set: { player.shuffleMode = $0 }
                 )) {
@@ -109,6 +113,10 @@ struct SettingsView: View {
                     Text("7 days").tag(168)
                     Text("30 days").tag(720)
                 }
+            } header: {
+                Text("Playback")
+            } footer: {
+                Text("Compress on cellular uses MP3 over LTE/5G (format switches only between songs). Autoplay recency also keeps Daily Mixes from repeating songs you’ve heard in that window.")
             }
             .listRowBackground(DromeTheme.elevated)
 

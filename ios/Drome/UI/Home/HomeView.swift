@@ -136,7 +136,12 @@ struct HomeView: View {
         }
         if dailyMixes.isEmpty { mixesLoading = true }
         defer { mixesLoading = false }
-        if let mixes = try? await client.dailyMixes().mixes, !mixes.isEmpty {
+        let hours = PlaybackPreferences.autoplayRecencyHours
+        let recentIDs = (try? env.database.recentPlayIDs(
+            userKey: session.account.userKey, withinHours: hours)) ?? []
+        if let mixes = try? await client.dailyMixes(
+            excludeSongIDs: recentIDs, recencyHours: hours
+        ).mixes, !mixes.isEmpty {
             dailyMixes = mixes
         } else if dailyMixes.isEmpty {
             dailyMixes = []

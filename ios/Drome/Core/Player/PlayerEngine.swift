@@ -29,6 +29,8 @@ final class PlayerEngine: ObservableObject {
     /// Sticky transport intent. AVPlayer briefly reports paused / waiting while
     /// skipping tracks — UI follows this so the play/pause button does not flash.
     private var wantsToPlay = false
+    /// Connect must not tear down AVQueuePlayer while this device is producing audio.
+    var isLocalPlaybackEngaged: Bool { wantsToPlay || isPlaying }
     /// Playhead lives on `clock` for SwiftUI; these mirrors are for engine logic.
     private(set) var elapsed: TimeInterval = 0
     private(set) var duration: TimeInterval = 0
@@ -73,6 +75,18 @@ final class PlayerEngine: ObservableObject {
     /// The full source collection, used for repeat-all wraparound.
     private var fullContextSongs: [Song] = []
     private var isRebuilding = false
+    /// Nested rebuilds (AirPlay flip mid-advance) must not clear this early.
+    private var rebuildDepth = 0
+    /// Prevents didPlayToEndTime + currentItem KVO from both advancing the queue.
+    private var isHandlingTrackEnd = false
+    /// Natural end arrived while a rebuild was in flight — flush when safe.
+    private var pendingAdvanceAfterRebuild = false
+    /// Coalesced Next taps while a rebuild is in flight (one setCurrent later).
+    private var pendingNextCount = 0
+    /// Connect takeControl / transfer while a rebuild was in flight.
+    private var pendingConnectApply: (snap: PlaybackSessionSnapshot, startPlaying: Bool, recordPlay: Bool)?
+    /// Invalidates in-flight item-ready KVO / timeouts across rebuilds.
+    private var itemReadyGeneration = 0
     private var seekEpoch = 0
     private var appliedSeekEpoch = 0
     private var autoplayTask: Task<Void, Never>?
@@ -96,6 +110,10 @@ final class PlayerEngine: ObservableObject {
     private var lastPublishedElapsed: TimeInterval = -1
     /// Tracks AirPlay so we only rebuild when the route actually flips.
     private var lastAirPlayActive = false
+    private var pendingAirPlayRebuild = false
+    /// Cellular vs Wi‑Fi stream format (compress-on-cellular).
+    private var lastCellularCompressed = false
+    private var pendingNetworkRebuild = false
     private let sharePlayBridge = SharePlayCoordinatorBridge()
     private let groupStateObserver = GroupStateObserver()
     private var sharePlaySession: GroupSession<DromeListenTogether>?
@@ -104,6 +122,10 @@ final class PlayerEngine: ObservableObject {
     private var applyingSharePlay = false
     private var lastSharePlaySnapshot: SharePlaySnapshot?
     private var pendingSharePlaySnapshot: SharePlaySnapshot?
+    /// True while AVPlayer is mid tear-down / buffer-wait — Connect/SharePlay must wait.
+    private var isPlayerTransitioning: Bool {
+        isRebuilding || isHandlingTrackEnd || rebuildDepth > 0 || itemReadyCancellable != nil
+    }
 
     private let client: SubsonicClient
     private let ratings: RatingsStore
@@ -137,17 +159,22 @@ final class PlayerEngine: ObservableObject {
         player.allowsExternalPlayback = false
         player.actionAtItemEnd = .pause
         tvAudio.onFinished = { [weak self] in
-            self?.playNextAfterCurrentEnds()
+            self?.advanceAfterCurrentEnds(playImmediately: true)
         }
         #else
-        player.actionAtItemEnd = .advance
+        // Always pause at end and advance ourselves. AVQueuePlayer `.advance` into
+        // an empty lookahead (typical for remote streams) races rebuildWindow and
+        // was crashing on next / natural end.
+        player.actionAtItemEnd = .pause
         #endif
 
         configureAudioSession()
         configureRemoteCommands()
         observePlayer()
         observeAppLifecycle()
+        observeNetworkStreamChanges()
         lastAirPlayActive = isAirPlayRouteActive
+        lastCellularCompressed = shouldCompressForCellular
 
         #if os(iOS)
         player.playbackCoordinator.delegate = sharePlayBridge
@@ -170,8 +197,11 @@ final class PlayerEngine: ObservableObject {
     @discardableResult
     func restorePersistedSessionIfNeeded() -> Bool {
         guard current == nil else { return false }
-        guard let snap = sessionStore?.latest() else { return false }
-        restore(snap, seeking: true, startPlaying: false, recordPlay: false)
+        guard var snap = sessionStore?.latest() else { return false }
+        // After song-end crashes we often saved the *next* track with the
+        // previous playhead (~⅓). Cold launch always starts that track at 0.
+        snap.elapsed = 0
+        restore(snap, seeking: false, startPlaying: false, recordPlay: false)
         return true
     }
 
@@ -180,13 +210,97 @@ final class PlayerEngine: ObservableObject {
         let airPlay = isAirPlayRouteActive
         guard airPlay != lastAirPlayActive else { return }
         lastAirPlayActive = airPlay
+        scheduleStreamFormatRebuild(pending: \.pendingAirPlayRebuild)
+    }
+
+    private func handlePossibleCellularStreamChange() {
+        let compressed = shouldCompressForCellular
+        guard compressed != lastCellularCompressed else { return }
+        lastCellularCompressed = compressed
+        // Do NOT rebuild mid-track. Format applies on the next `setCurrent`.
+        // Mid-song tear-down + seek was making cellular playback jump around.
+    }
+
+    /// User toggled Compress on cellular — rebuild current item once.
+    private func rebuildForStreamPreferenceChange() {
+        lastCellularCompressed = shouldCompressForCellular
+        scheduleStreamFormatRebuild(pending: \.pendingNetworkRebuild)
+    }
+
+    private func scheduleStreamFormatRebuild(
+        pending: ReferenceWritableKeyPath<PlayerEngine, Bool>
+    ) {
+        guard current != nil else { return }
+        // Never rebuild mid song-end / buffer-wait — schedule for after.
+        if isPlayerTransitioning {
+            self[keyPath: pending] = true
+            return
+        }
+        performStreamFormatRebuild()
+    }
+
+    private func performStreamFormatRebuild() {
+        pendingAirPlayRebuild = false
+        pendingNetworkRebuild = false
         guard current != nil else { return }
         let resume = wantsToPlay
-        let position = elapsed
+        let position = max(0, elapsed)
         rebuildWindow(startPlaying: resume)
         if position > 0.5 {
             seek(to: position)
         }
+    }
+
+    private func finishRebuildSideEffects() {
+        if pendingNextCount > 0 {
+            let skips = pendingNextCount
+            pendingNextCount = 0
+            pendingAdvanceAfterRebuild = false
+            pendingConnectApply = nil
+            DispatchQueue.main.async { [weak self] in
+                self?.advanceBy(skips, playImmediately: true)
+            }
+            return
+        }
+        if pendingAdvanceAfterRebuild {
+            pendingAdvanceAfterRebuild = false
+            pendingConnectApply = nil
+            DispatchQueue.main.async { [weak self] in
+                self?.advanceAfterCurrentEnds(playImmediately: true)
+            }
+            return
+        }
+        if let pending = pendingConnectApply {
+            pendingConnectApply = nil
+            DispatchQueue.main.async { [weak self] in
+                self?.restore(pending.snap, seeking: true,
+                              startPlaying: pending.startPlaying,
+                              recordPlay: pending.recordPlay)
+            }
+            return
+        }
+        if pendingAirPlayRebuild || pendingNetworkRebuild {
+            DispatchQueue.main.async { [weak self] in
+                self?.performStreamFormatRebuild()
+            }
+        }
+    }
+
+    private func observeNetworkStreamChanges() {
+        // Path changes only update the sticky cellular flag for *next* track.
+        NotificationCenter.default.publisher(for: .dromeNetworkPathChanged)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.handlePossibleCellularStreamChange()
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: PlaybackPreferences.streamPreferenceDidChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.rebuildForStreamPreferenceChange()
+            }
+            .store(in: &cancellables)
     }
 
     func shutdown() {
@@ -354,7 +468,10 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
-    private func persistSessionNow() {
+    private func persistSessionNow(force: Bool = false) {
+        // Never snapshot mid tear-down — AVPlayer's currentTime can still be
+        // the previous track while `current` already advanced.
+        if !force, isPlayerTransitioning { return }
         guard let store = sessionStore, let snap = makeSessionSnapshot() else { return }
         store.save(snap)
     }
@@ -405,46 +522,65 @@ final class PlayerEngine: ObservableObject {
 
     func next() {
         let keepPlaying = wantsToPlay
-        // Drop leading low-rated tracks when the user opted into global skip.
-        drainLowRatedFromQueues()
-        guard peekUpcoming(limit: 1).first != nil else {
-            if autoplayEnabled, repeatMode == .off {
-                continueWithAutoplayIfNeeded(playImmediately: true)
-                return
-            }
-            player.seek(to: CMTime(seconds: duration, preferredTimescale: 600))
+        // Rapid Next while tearing down AVPlayer crashed — coalesce into one jump.
+        if isHandlingTrackEnd || isRebuilding || rebuildDepth > 0 || itemReadyCancellable != nil {
+            pendingNextCount += 1
+            pendingAdvanceAfterRebuild = true
             return
         }
-        // Prefer advancing the preloaded AVQueuePlayer window so bookkeeping
-        // stays in `handleCurrentItemChange` (one code path for skip + gapless).
-        // tvOS plays one HTTP stream at a time — skip rebuilds instead of
-        // advancing into a prefetched item FigFilePlayer may already have failed.
-        #if !os(tvOS)
-        if window.count > 1 {
-            player.advanceToNextItem()
-            if let item = player.currentItem {
-                handleCurrentItemChange(item)
+        // Drop leading low-rated tracks when the user opted into global skip.
+        drainLowRatedFromQueues(resyncWindow: false)
+        let skips = 1 + pendingNextCount
+        pendingNextCount = 0
+        advanceBy(skips, playImmediately: keepPlaying)
+    }
+
+    /// Skip `count` tracks with a single player rebuild (not N nested rebuilds).
+    private func advanceBy(_ count: Int, playImmediately: Bool) {
+        let steps = max(1, count)
+        guard !isHandlingTrackEnd else {
+            pendingNextCount += steps
+            return
+        }
+        if isRebuilding || rebuildDepth > 0 {
+            pendingNextCount += steps
+            pendingAdvanceAfterRebuild = true
+            return
+        }
+        isHandlingTrackEnd = true
+        defer { isHandlingTrackEnd = false }
+
+        drainLowRatedFromQueues(resyncWindow: false)
+
+        if let current {
+            history.append(current)
+            scrobbleSubmission(current.song)
+        }
+
+        var landed: QueueItem?
+        var skipped = 0
+        while skipped < steps {
+            guard let upNext = peekUpcoming(limit: 1).first else { break }
+            consumeFromQueues(upNext)
+            skipped += 1
+            if skipped < steps {
+                history.append(upNext)
+            } else {
+                landed = upNext
             }
-            applyPlaybackIntent(keepPlaying)
-            if !keepPlaying {
-                // Prefetched items can sit at a non-zero time; pin to start while paused.
+        }
+
+        if let landed {
+            setCurrent(landed, startPlaying: playImmediately)
+            if !playImmediately {
                 pinPlayheadToStart()
             }
             ensureAutoplayBuffer()
             return
         }
-        #endif
-        guard let upNext = peekUpcoming(limit: 1).first else { return }
-        if let current {
-            history.append(current)
-            scrobbleSubmission(current.song)
+        if playImmediately {
+            handleQueueExhausted()
         }
-        consumeFromQueues(upNext)
-        setCurrent(upNext, startPlaying: keepPlaying)
-        if !keepPlaying {
-            pinPlayheadToStart()
-        }
-        ensureAutoplayBuffer()
     }
 
     func previous(preferPreviousTrack: Bool = false) {
@@ -575,6 +711,8 @@ final class PlayerEngine: ObservableObject {
     private func waitUntilItemReadyForPlayback(_ item: AVPlayerItem) {
         itemReadyCancellable?.cancel()
         itemReadyTimeout?.cancel()
+        itemReadyGeneration += 1
+        let generation = itemReadyGeneration
         if itemIsSafeToStart(item) {
             player.play()
             return
@@ -585,7 +723,10 @@ final class PlayerEngine: ObservableObject {
             try? await Task.sleep(nanoseconds: timeoutNs)
             guard !Task.isCancelled else { return }
             await MainActor.run {
-                guard let self, item === self.player.currentItem else { return }
+                guard let self,
+                      generation == self.itemReadyGeneration,
+                      item === self.player.currentItem,
+                      !self.isRebuilding else { return }
                 self.itemReadyCancellable = nil
                 // Prefer a brief stall over forcing an empty buffer — AVPlayer
                 // will fill and resume when automaticallyWaitsToMinimizeStalling.
@@ -603,7 +744,10 @@ final class PlayerEngine: ObservableObject {
         )
         .receive(on: DispatchQueue.main)
         .sink { [weak self] in
-            guard let self, item === self.player.currentItem else { return }
+            guard let self,
+                  generation == self.itemReadyGeneration,
+                  item === self.player.currentItem,
+                  !self.isRebuilding else { return }
             if item.status == .failed {
                 self.itemReadyTimeout?.cancel()
                 self.itemReadyCancellable = nil
@@ -706,7 +850,7 @@ final class PlayerEngine: ObservableObject {
                 self.tvUsingAudioPlayer = true
                 self.setPlaybackIntent(true)
             } catch {
-                self.playNextAfterCurrentEnds()
+                self.advanceAfterCurrentEnds(playImmediately: true)
             }
         }
     }
@@ -756,12 +900,20 @@ final class PlayerEngine: ObservableObject {
 
     private func makeSessionSnapshot() -> PlaybackSessionSnapshot? {
         guard let current, let context else { return nil }
-        return PlaybackSessionSnapshot(
+        // Prefer the engine playhead during transitions; AV currentTime can lag.
+        let playhead = isPlayerTransitioning ? elapsed : accurateElapsed()
+        let songDuration = TimeInterval(current.song.duration ?? 0)
+        let clamped: TimeInterval = {
+            guard playhead.isFinite else { return 0 }
+            guard songDuration > 1 else { return max(0, playhead) }
+            return min(max(0, playhead), songDuration)
+        }()
+        var snap = PlaybackSessionSnapshot(
             resumeKey: context.resumeKey(fallbackSong: current.song),
             label: context.label,
             kind: context.kind,
             currentSong: current.song,
-            elapsed: accurateElapsed(),
+            elapsed: clamped,
             shuffleMode: shuffleMode.rawValue,
             repeatMode: {
                 switch repeatMode {
@@ -778,6 +930,9 @@ final class PlayerEngine: ObservableObject {
             fullContextSongs: fullContextSongs,
             updatedAt: Date().timeIntervalSince1970
         )
+        // Trim before returning so encode/copy work stays cheap on the hot path.
+        snap.trimForPersistence()
+        return snap
     }
 
     /// Snapshot for Drome Connect transfer / remote publish.
@@ -786,7 +941,20 @@ final class PlayerEngine: ObservableObject {
     }
 
     /// Apply a Connect session from another device and optionally start playing.
-    func applyConnectSnapshot(_ snap: PlaybackSessionSnapshot, startPlaying: Bool, recordPlay: Bool = true) {
+    /// - Parameter force: Intentional takeControl / transfer — still waits out an
+    ///   in-flight rebuild (nested `removeAllItems` crashes); applied right after.
+    func applyConnectSnapshot(_ snap: PlaybackSessionSnapshot,
+                              startPlaying: Bool,
+                              recordPlay: Bool = true,
+                              force: Bool = false) {
+        // Applying a full restore tears down AVQueuePlayer. Never do that while
+        // a local advance/rebuild/buffer-wait is in flight — that path crashes.
+        if isPlayerTransitioning {
+            if force {
+                pendingConnectApply = (snap, startPlaying, recordPlay)
+            }
+            return
+        }
         restore(snap, seeking: true, startPlaying: startPlaying, recordPlay: recordPlay)
     }
 
@@ -889,8 +1057,10 @@ final class PlayerEngine: ObservableObject {
 
     /// Drive mini / now-playing playhead from another Connect device's session.
     func mirrorRemotePlayhead(elapsed: TimeInterval, duration: TimeInterval, isPlaying: Bool) {
-        remotePlayheadAnchor = (elapsed, Date(), isPlaying)
-        setPlayhead(elapsed: elapsed, duration: duration > 0 ? duration : nil)
+        let safeElapsed = elapsed.isFinite ? max(0, elapsed) : 0
+        let safeDuration = duration.isFinite && duration > 0 ? duration : 0
+        remotePlayheadAnchor = (safeElapsed, Date(), isPlaying)
+        setPlayhead(elapsed: safeElapsed, duration: safeDuration > 0 ? safeDuration : nil)
     }
 
     func clearRemotePlayheadMirror() {
@@ -906,11 +1076,12 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func setPlayhead(elapsed: TimeInterval, duration newDuration: TimeInterval? = nil) {
-        self.elapsed = elapsed
-        if let newDuration {
+        let safeElapsed = elapsed.isFinite ? max(0, elapsed) : 0
+        self.elapsed = safeElapsed
+        if let newDuration, newDuration.isFinite, newDuration >= 0 {
             duration = newDuration
         }
-        clock.set(elapsed: elapsed, duration: newDuration ?? duration)
+        clock.set(elapsed: safeElapsed, duration: duration)
     }
 
     func cycleShuffleMode() {
@@ -1065,20 +1236,34 @@ final class PlayerEngine: ObservableObject {
                             startPlaying: Bool,
                             allowLowRated: Bool = false,
                             recordPlay: Bool = true) {
-        current = item
-        setPlayhead(elapsed: 0, duration: TimeInterval(item.song.duration ?? 0))
+        var playItem = item
+        // Collapse a streak of low-rated skips into ONE rebuild — chaining
+        // async next() → removeAllItems was a common end-of-song crash.
+        if !allowLowRated {
+            var guardCount = 0
+            while shouldSkipLowRated(playItem.song),
+                  let upNext = peekUpcoming(limit: 1).first,
+                  guardCount < 40 {
+                history.append(playItem)
+                scrobbleSubmission(playItem.song)
+                consumeFromQueues(upNext)
+                playItem = upNext
+                guardCount += 1
+            }
+        }
+
+        current = playItem
+        setPlayhead(elapsed: 0, duration: TimeInterval(playItem.song.duration ?? 0))
+        // Pin the new track at 0 before rebuild so a crash mid-rebuild doesn't
+        // restore the next song at the previous playhead (~⅓).
+        persistSessionNow(force: true)
         rebuildWindow(startPlaying: startPlaying)
-        loadArtwork(for: item.song)
+        loadArtwork(for: playItem.song)
         if recordPlay {
-            scrobbleNowPlaying(item.song)
-            onTrackStarted?(item.song)
+            scrobbleNowPlaying(playItem.song)
+            onTrackStarted?(playItem.song)
         }
-        if !allowLowRated, shouldSkipLowRated(item.song), peekUpcoming(limit: 1) != nil {
-            // Advance past globally-skipped low ratings without stalling.
-            DispatchQueue.main.async { [weak self] in self?.next() }
-        } else {
-            ensureAutoplayBuffer()
-        }
+        ensureAutoplayBuffer()
         persistSessionSoon()
         broadcastSharePlayIfNeeded()
     }
@@ -1096,18 +1281,40 @@ final class PlayerEngine: ObservableObject {
         #endif
     }
 
-    private func makePlayerItem(for song: Song) -> AVPlayerItem {
-        makePlayerItem(for: song, url: playbackURL(for: song))
+    /// Cellular / expensive path and user opted into compression.
+    /// Only real WWAN — `isExpensive` flaps on Low Data Mode / hotspot and was
+    /// flipping stream format mid-song (seek jumps that felt like skipping).
+    private var shouldCompressForCellular: Bool {
+        #if os(tvOS)
+        return false
+        #else
+        guard PlaybackPreferences.compressOnCellular else { return false }
+        return ConnectivityMonitor.lastIsCellular
+        #endif
     }
 
-    private func playbackURL(for song: Song) -> URL {
+    private func makePlayerItem(for song: Song) -> AVPlayerItem? {
+        guard let url = playbackURL(for: song) else { return nil }
+        return makePlayerItem(for: song, url: url)
+    }
+
+    private func playbackURL(for song: Song) -> URL? {
         #if os(tvOS)
-        tvHTTPStreamURL(for: song) ?? URL(fileURLWithPath: "/dev/null")
+        return tvHTTPStreamURL(for: song)
         #else
         let airPlay = isAirPlayRouteActive
         if !airPlay, let local = downloads.localURL(songId: song.id) { return local }
-        return client.streamURL(songId: song.id, compatibleWithAirPlay: airPlay)
-            ?? URL(fileURLWithPath: "/dev/null")
+        if airPlay {
+            return client.streamURL(songId: song.id, compatibleWithAirPlay: true)
+        }
+        if shouldCompressForCellular {
+            return client.streamURL(
+                songId: song.id,
+                format: "mp3",
+                maxBitRate: PlaybackPreferences.cellularMaxBitRate,
+                estimateContentLength: true)
+        }
+        return client.streamURL(songId: song.id, compatibleWithAirPlay: false)
         #endif
     }
 
@@ -1141,26 +1348,20 @@ final class PlayerEngine: ObservableObject {
         } else {
             item.preferredForwardBufferDuration = 45
         }
+        // Cellular MP3: shorter buffer so stalls recover without huge seeks.
+        if shouldCompressForCellular, !isFile {
+            item.preferredForwardBufferDuration = 20
+        }
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         item.preferredPeakBitRate = 0
         return item
     }
 
     /// How many *upcoming* items to keep in AVQueuePlayer.
-    /// Remote streams own the pipe alone — a second HTTP audio request is
-    /// what made FLAC/lossy sound grainy over Wi‑Fi.
+    /// Always 0: we advance via `setCurrent` rebuild. Prefetching a second
+    /// HTTP stream raced end-of-track / Connect and crashed mid-listen.
     private func upcomingPrefetchCount() -> Int {
-        #if os(tvOS)
-        return 0
-        #else
-        let currentIsLocal = current.map { downloads.localURL(songId: $0.song.id) != nil } ?? false
-        let upcoming = peekUpcoming(limit: 2)
-        let upcomingAllLocal = !upcoming.isEmpty
-            && upcoming.allSatisfy { downloads.localURL(songId: $0.song.id) != nil }
-        // Gapless only when everything is already on disk.
-        if currentIsLocal && upcomingAllLocal { return min(2, upcoming.count) }
-        return 0
-        #endif
+        0
     }
 
     private func rebuildWindow(startPlaying: Bool) {
@@ -1224,6 +1425,7 @@ final class PlayerEngine: ObservableObject {
         let playerItem = makePlayerItem(for: song, url: url)
         window.append((playerItem, queueItem))
         player.insert(playerItem, after: nil)
+        updateActionAtItemEnd()
         isRebuilding = false
         pushNowPlayingInfo()
         if startPlaying {
@@ -1238,33 +1440,44 @@ final class PlayerEngine: ObservableObject {
 
     #if !os(tvOS)
     private func rebuildWindowStreaming(startPlaying: Bool) {
+        rebuildDepth += 1
         isRebuilding = true
+        itemReadyGeneration += 1
         prefetchTask?.cancel()
         itemReadyCancellable?.cancel()
         itemReadyCancellable = nil
         itemReadyTimeout?.cancel()
         itemReadyTimeout = nil
+        // Suspend SharePlay coordination around tear-down, but do NOT
+        // re-coordinateWithSession every track — that crashed the coordinator.
         let suspension = sharePlaySession.map { _ in
             player.playbackCoordinator.beginSuspension(for: .dromeRebuilding)
         }
-        defer { suspension?.end() }
         player.pause()
         player.rate = 0
         player.removeAllItems()
         window.removeAll()
         sharePlayBridge.reset()
-        defer {
-            isRebuilding = false
-            pushNowPlayingInfo()
-        }
-        guard let current else { return }
 
-        let playerItem = makePlayerItem(for: current.song)
+        defer {
+            suspension?.end()
+            rebuildDepth = max(0, rebuildDepth - 1)
+            if rebuildDepth == 0 {
+                isRebuilding = false
+                pushNowPlayingInfo()
+                finishRebuildSideEffects()
+            }
+        }
+
+        guard let current else { return }
+        guard let playerItem = makePlayerItem(for: current.song) else {
+            // No playable URL — skip forward once rebuild unwinds.
+            pendingAdvanceAfterRebuild = true
+            return
+        }
         window.append((playerItem, current))
         player.insert(playerItem, after: nil)
-        if let session = sharePlaySession {
-            player.playbackCoordinator.coordinateWithSession(session)
-        }
+        updateActionAtItemEnd()
 
         if startPlaying {
             activateAudioSession()
@@ -1273,8 +1486,6 @@ final class PlayerEngine: ObservableObject {
         } else {
             setPlaybackIntent(false)
         }
-
-        schedulePrefetchTopUp(delayNanoseconds: 1_200_000_000)
     }
     #endif
 
@@ -1282,40 +1493,44 @@ final class PlayerEngine: ObservableObject {
     /// the currently playing item (preserving gapless playback).
     private func resyncUpcomingWindow() {
         if let first = window.first {
+            rebuildDepth += 1
             isRebuilding = true
             prefetchTask?.cancel()
             for entry in window.dropFirst() {
                 player.remove(entry.playerItem)
             }
             window = [first]
-            isRebuilding = false
-            // Prefer the playing item; top up lookahead after a beat.
-            schedulePrefetchTopUp(delayNanoseconds: 400_000_000)
+            rebuildDepth = max(0, rebuildDepth - 1)
+            if rebuildDepth == 0 { isRebuilding = false }
+            updateActionAtItemEnd()
         }
         persistSessionSoon()
         broadcastSharePlayIfNeeded()
     }
 
     /// Tops up the window after a natural advance or delayed prefetch.
+    /// Currently a no-op (upcomingPrefetchCount == 0) — kept for future local gapless.
     private func topUpWindow() {
         let targetCount = 1 + upcomingPrefetchCount()
-        guard window.count < targetCount, repeatMode != .one else { return }
+        guard window.count < targetCount, repeatMode != .one else {
+            updateActionAtItemEnd()
+            return
+        }
         let queued = Set(window.map(\.queueItem.id))
         for queueItem in peekUpcoming(limit: targetCount) where !queued.contains(queueItem.id) {
             if window.count >= targetCount { break }
-            let playerItem = makePlayerItem(for: queueItem.song)
+            guard let playerItem = makePlayerItem(for: queueItem.song) else { continue }
             window.append((playerItem, queueItem))
             player.insert(playerItem, after: player.items().last)
         }
+        updateActionAtItemEnd()
     }
 
     private func schedulePrefetchTopUp(delayNanoseconds: UInt64) {
+        // Prefetch disabled — second HTTP streams raced song-end rebuilds.
         prefetchTask?.cancel()
-        prefetchTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: delayNanoseconds)
-            guard !Task.isCancelled, let self else { return }
-            self.topUpWindow()
-        }
+        prefetchTask = nil
+        _ = delayNanoseconds
     }
 
     private func peekUpcoming(limit: Int) -> [QueueItem] {
@@ -1491,21 +1706,14 @@ final class PlayerEngine: ObservableObject {
     }
 
     /// AVQueuePlayer advanced by itself (gapless transition) — update our
-    /// bookkeeping to match.
+    /// bookkeeping to match. With actionAtItemEnd=.pause this is uncommon;
+    /// keep it for any residual multi-item windows.
     private func handleCurrentItemChange(_ item: AVPlayerItem?) {
-        guard !isRebuilding else { return }
+        guard !isRebuilding, !isHandlingTrackEnd else { return }
         guard let item else {
-            // Gapless handoffs often emit a transient `nil` currentItem while
-            // the next buffer is already playing. Treating that as "exhausted"
-            // cleared our window and left the UI stuck on the previous track.
-            #if os(tvOS)
+            // Transient nil during rebuild/removeAllItems — ignore. Natural end
+            // is handled by didPlayToEndTime → advanceAfterCurrentEnds.
             return
-            #else
-            if player.items().isEmpty {
-                handleQueueExhausted()
-            }
-            return
-            #endif
         }
         guard let index = window.firstIndex(where: { $0.playerItem === item }) else {
             return
@@ -1519,30 +1727,21 @@ final class PlayerEngine: ObservableObject {
         let newCurrent = window[index].queueItem
         window.removeFirst(index)
         consumeFromQueues(newCurrent)
-        // Assign a fresh value so SwiftUI always observes the change even if
-        // song metadata happens to compare equal.
         current = newCurrent
         setPlayhead(elapsed: 0, duration: TimeInterval(newCurrent.song.duration ?? 0))
-        // Keep transport UI on sticky intent — AVPlayer status flickers here.
         if isPlaying != wantsToPlay {
             isPlaying = wantsToPlay
         }
         if !wantsToPlay {
             pinPlayheadToStart()
         }
-        topUpWindow()
-        // Prefetch the following track after the new current claims bandwidth.
-        schedulePrefetchTopUp(delayNanoseconds: 800_000_000)
+        updateActionAtItemEnd()
+        // Prefetch disabled — avoid second-stream races at song boundaries.
         pushNowPlayingInfo()
         scrobbleNowPlaying(newCurrent.song)
         loadArtwork(for: newCurrent.song)
         onTrackStarted?(newCurrent.song)
-        // Gapless advance is programmatic — honor skip-low-rated here.
-        if shouldSkipLowRated(newCurrent.song), peekUpcoming(limit: 1) != nil {
-            DispatchQueue.main.async { [weak self] in self?.next() }
-        } else {
-            ensureAutoplayBuffer()
-        }
+        ensureAutoplayBuffer()
         broadcastSharePlayIfNeeded()
     }
 
@@ -1554,29 +1753,24 @@ final class PlayerEngine: ObservableObject {
             if let song = current?.song { scrobbleSubmission(song) }
             return
         }
-        #if os(tvOS)
-        playNextAfterCurrentEnds()
-        #endif
-    }
-
-    #if os(tvOS)
-    /// Natural end / Infinite Shuffle: start the next queued song on a fresh
-    /// HTTP stream instead of advancing a prefetched AVQueuePlayer item.
-    private func playNextAfterCurrentEnds() {
-        drainLowRatedFromQueues()
-        if let upNext = peekUpcoming(limit: 1).first {
-            if let current {
-                history.append(current)
-                scrobbleSubmission(current.song)
-            }
-            consumeFromQueues(upNext)
-            setCurrent(upNext, startPlaying: true)
-            ensureAutoplayBuffer()
+        if isRebuilding || rebuildDepth > 0 {
+            pendingAdvanceAfterRebuild = true
             return
         }
-        handleQueueExhausted()
+        advanceAfterCurrentEnds(playImmediately: true)
     }
-    #endif
+
+    /// Start the next queued song on a fresh player item. Used for Next and
+    /// natural end — never AVQueuePlayer.advance (races rebuild / Connect).
+    private func advanceAfterCurrentEnds(playImmediately: Bool) {
+        advanceBy(1 + pendingNextCount, playImmediately: playImmediately)
+        pendingNextCount = 0
+    }
+
+    private func updateActionAtItemEnd() {
+        // Keep a single advance path (didPlayToEndTime / next → setCurrent).
+        player.actionAtItemEnd = .pause
+    }
 
     private func handleQueueExhausted() {
         guard let finished = current else { return }
@@ -1800,11 +1994,15 @@ final class PlayerEngine: ObservableObject {
         broadcastSharePlayIfNeeded()
     }
 
-    private func drainLowRatedFromQueues() {
+    private func drainLowRatedFromQueues(resyncWindow: Bool = true) {
         guard PlaybackPreferences.skipLowRatedEverywhere else { return }
         userQueue.removeAll { shouldSkipLowRated($0.song) }
         contextQueue.removeAll { shouldSkipLowRated($0.song) }
-        resyncUpcomingWindow()
+        // Skip resync when the caller is about to rebuild the window entirely
+        // (next / end-of-track) — mutating AVQueuePlayer twice races and crashes.
+        if resyncWindow {
+            resyncUpcomingWindow()
+        }
     }
 
     private func shouldSkipLowRated(_ song: Song) -> Bool {
@@ -2034,6 +2232,10 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func applySharePlaySnapshot(_ snapshot: SharePlaySnapshot) async {
+        if isPlayerTransitioning {
+            pendingSharePlaySnapshot = snapshot
+            return
+        }
         if applyingSharePlay {
             pendingSharePlaySnapshot = snapshot
             return

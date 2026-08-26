@@ -128,11 +128,11 @@ struct DailyMixDetailView: View {
 
     private func play(_ mix: DailyMix, shuffled: Bool) {
         guard !mix.songs.isEmpty else { return }
-        if player.resumeSession(forKey: "mix:\(mix.title)") { return }
         if shuffled {
             player.playShuffled(mix.songs, context: PlaybackContext(label: mix.title, kind: .mix))
         } else {
-            player.shuffleMode = .off
+            // Play = ordered from the first track (clears shuffle). Never resume
+            // a prior mid-mix / shuffled session.
             player.play(mix.songs, startAt: 0,
                         context: PlaybackContext(label: mix.title, kind: .mix))
         }
@@ -149,7 +149,12 @@ struct DailyMixDetailView: View {
         error = nil
         defer { isLoading = false }
         do {
-            let mixes = try await session.wishlist?.dailyMixes().mixes ?? []
+            let hours = PlaybackPreferences.autoplayRecencyHours
+            let recentIDs = (try? AppEnvironment.shared.database.recentPlayIDs(
+                userKey: session.account.userKey, withinHours: hours)) ?? []
+            let mixes = try await session.wishlist?.dailyMixes(
+                excludeSongIDs: recentIDs, recencyHours: hours
+            ).mixes ?? []
             if let found = mixes.first(where: { $0.title == want || $0.id == mix?.id }) {
                 resolved = found
             } else {

@@ -6,9 +6,14 @@ struct DailyMixRail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Daily Mixes")
-                .font(DromeTheme.headlineFont)
-                .padding(.horizontal, 16)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Daily Mixes")
+                    .font(DromeTheme.headlineFont)
+                Text("Made for you from ratings, plays, and similar artists — refreshes daily.")
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.muted)
+            }
+            .padding(.horizontal, 16)
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 14) {
                     if mixes.isEmpty && isLoading {

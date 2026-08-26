@@ -245,12 +245,23 @@ struct DromeWishlistClient {
         return url
     }
 
-    func dailyMixes(timeZone: TimeZone = .current) async throws -> DailyMixResponse {
-        try await send(
+    func dailyMixes(timeZone: TimeZone = .current,
+                    excludeSongIDs: Set<String> = [],
+                    recencyHours: Double = PlaybackPreferences.autoplayRecencyHours
+    ) async throws -> DailyMixResponse {
+        var query = [
+            URLQueryItem(name: "tz", value: timeZone.identifier),
+            URLQueryItem(name: "recencyHours", value: String(Int(recencyHours))),
+        ]
+        if !excludeSongIDs.isEmpty {
+            let joined = excludeSongIDs.prefix(400).joined(separator: ",")
+            query.append(URLQueryItem(name: "exclude", value: joined))
+        }
+        return try await send(
             DailyMixResponse.self,
             path: "/mixes/daily",
             method: "GET",
-            extraQuery: [URLQueryItem(name: "tz", value: timeZone.identifier)]
+            extraQuery: query
         )
     }
 

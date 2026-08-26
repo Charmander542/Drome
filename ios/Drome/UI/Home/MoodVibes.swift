@@ -28,7 +28,7 @@ enum MoodVibe: String, CaseIterable, Identifiable {
 
     var blurb: String {
         switch self {
-        case .focus: return "Slow instrumentals — jazz, classical, ambient"
+        case .focus: return "Slow instrumentals - jazz & clasical"
         case .lateNight: return "Quiet songs with words, for winding down"
         case .chill: return "Story-first and unhurried — country & folk"
         case .heartbreak: return "The sad ones, on purpose"
@@ -112,41 +112,77 @@ enum MoodVibe: String, CaseIterable, Identifiable {
 
 @MainActor
 enum MoodPlayer {
+    /// Songs from recent vibe Plays — skipped on the next refill so Play feels new.
+    private static var recentVibeSongIDs: [String] = []
+    private static let recentCap = 160
+
     static func play(_ vibe: MoodVibe, session: AppSession) async {
-        let excluded = session.rotation.excludedIDs
-        let songs = await gather(vibe: vibe, session: session)
-        let picked = VibeEngine.pick(vibe: vibe, from: songs, excluded: excluded)
+        var excluded = session.rotation.excludedIDs
+        excluded.formUnion(recentVibeSongIDs)
+        if let currentID = session.player.current?.song.id {
+            excluded.insert(currentID)
+        }
+
+        var songs = await gather(vibe: vibe, session: session)
+        var picked = VibeEngine.pick(vibe: vibe, from: songs, excluded: excluded)
+
+        // Tiny libraries: if recent exclusions emptied the pool, refill without them.
+        if picked.count < 8 {
+            songs = await gather(vibe: vibe, session: session)
+            picked = VibeEngine.pick(
+                vibe: vibe,
+                from: songs,
+                excluded: session.rotation.excludedIDs)
+        }
         guard !picked.isEmpty else { return }
+
+        remember(picked)
         session.ratings.ingest(picked)
         session.player.play(
             picked, startAt: 0,
             context: PlaybackContext(label: vibe.title, kind: .mix))
     }
 
+    private static func remember(_ songs: [Song]) {
+        recentVibeSongIDs.append(contentsOf: songs.map(\.id))
+        if recentVibeSongIDs.count > recentCap {
+            recentVibeSongIDs = Array(recentVibeSongIDs.suffix(recentCap))
+        }
+    }
+
     private static func gather(vibe: MoodVibe, session: AppSession) async -> [Song] {
         let client = session.client
         if vibe == .lucky {
-            return (try? await client.randomSongs(size: 100)) ?? []
+            // Two pulls so Lucky doesn't recycle the same random page.
+            async let a = (try? await client.randomSongs(size: 100)) ?? []
+            async let b = (try? await client.randomSongs(size: 100)) ?? []
+            return (await a + b).uniquedByID()
         }
         let tags = VibeEngine.taste(for: vibe).fetch
         var pool: [Song] = []
-        // Keep this light so Navidrome still has headroom for the lossless stream.
+        // Pull across more genre tags + larger batches so each Play has a
+        // wide enough pool to sample a fresh queue.
         await withTaskGroup(of: [Song].self) { group in
-            for tag in tags.prefix(3) {
+            for tag in tags.prefix(6) {
                 group.addTask {
-                    var batch = (try? await client.randomSongs(size: 24, genre: tag)) ?? []
-                    if batch.count < 10 {
-                        batch += (try? await client.songsByGenre(tag, count: 24)) ?? []
+                    var batch = (try? await client.randomSongs(size: 40, genre: tag)) ?? []
+                    if batch.count < 16 {
+                        batch += (try? await client.songsByGenre(tag, count: 40)) ?? []
                     }
                     return batch
                 }
+            }
+            // Untagged randoms keep discovery from collapsing to the same
+            // handful of well-tagged tracks.
+            group.addTask {
+                (try? await client.randomSongs(size: 80)) ?? []
             }
             for await batch in group {
                 pool.append(contentsOf: batch)
             }
         }
-        if pool.count < 20 {
-            pool += (try? await client.randomSongs(size: 80)) ?? []
+        if pool.count < 40 {
+            pool += (try? await client.randomSongs(size: 120)) ?? []
         }
         return pool.uniquedByID()
     }

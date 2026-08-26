@@ -5,6 +5,9 @@ import Foundation
 enum PlaybackPreferences {
     private static let skipLowRatedKey = "drome.skipLowRatedEverywhere"
     private static let recencyHoursKey = "drome.autoplayRecencyHours"
+    private static let compressCellularKey = "drome.compressOnCellular"
+    /// Posted when stream-format prefs change so the player can rebuild.
+    static let streamPreferenceDidChange = Notification.Name("drome.streamPreferenceDidChange")
 
     static var skipLowRatedEverywhere: Bool {
         get { UserDefaults.standard.bool(forKey: skipLowRatedKey) }
@@ -19,6 +22,22 @@ enum PlaybackPreferences {
         }
         set { UserDefaults.standard.set(newValue, forKey: recencyHoursKey) }
     }
+
+    /// On cellular, request a server-side MP3 transcode instead of raw FLAC.
+    /// Defaults on — saves data; turn off for lossless over LTE.
+    static var compressOnCellular: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: compressCellularKey) == nil { return true }
+            return UserDefaults.standard.bool(forKey: compressCellularKey)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: compressCellularKey)
+            NotificationCenter.default.post(name: streamPreferenceDidChange, object: nil)
+        }
+    }
+
+    /// Cellular stream bitrate (kbps) when `compressOnCellular` is on.
+    static var cellularMaxBitRate: Int { 192 }
 }
 
 /// One credited artist under a song — optionally linked to a Navidrome artist id.

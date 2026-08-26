@@ -79,7 +79,8 @@ final class ConnectController: ObservableObject {
                 _ = try await client.putSession(ConnectSessionPut(
                     activeDeviceId: device.id,
                     isPlaying: player.isPlaying,
-                    snapshot: snap))
+                    snapshot: snap,
+                    claim: true))
             }
             _ = try await client.postCommand(ConnectCommandPost(
                 type: ConnectCommandType.transfer,
@@ -105,24 +106,19 @@ final class ConnectController: ObservableObject {
         busyDeviceId = deviceId
         notice = "Switching here…"
         defer { busyDeviceId = nil }
+        let previousActive = remoteSession?.activeDeviceId
         do {
             if let session = try await client.getSession(), let snap = session.snapshot {
                 applyingRemote = true
                 defer { applyingRemote = false }
                 player.clearRemotePlayheadMirror()
                 lastMirroredSongId = nil
-                player.applyConnectSnapshot(snap, startPlaying: true)
+                player.applyConnectSnapshot(snap, startPlaying: true, force: true)
             }
-            _ = try await client.postCommand(ConnectCommandPost(
-                type: ConnectCommandType.takeControl,
-                fromDeviceId: deviceId,
-                targetDeviceId: deviceId,
-                seekTo: nil))
             isRemote = false
-            ignoreRemoteUntil = Date().addingTimeInterval(4)
+            ignoreRemoteUntil = Date().addingTimeInterval(8)
             notice = "Playing here"
-            await publishSession(force: true)
-            await refreshDevices()
+            await claimActiveAndStopOthers(previousActive: previousActive)
             return true
         } catch {
             notice = error.localizedDescription
@@ -146,13 +142,20 @@ final class ConnectController: ObservableObject {
     /// Returns `true` when `action` ran immediately. `false` when deferred behind the switch prompt.
     @discardableResult
     func requestLocalPlayback(_ action: @escaping () -> Void) -> Bool {
-        // Another device owns Connect playback — ask before taking over.
+        // Mid-confirm / post-"Play here" window — always allow local start.
+        // Without this, confirm → play() → gate sees the other device still
+        // active and re-opens the prompt (Play here appears broken).
+        if let until = ignoreRemoteUntil, Date() < until {
+            action()
+            return true
+        }
+
+        // Stick to the last active device. Only prompt — never silent steal.
         let otherOwns: Bool = {
-            if let active = remoteSession?.activeDeviceId, active != deviceId {
-                return true
+            guard let active = remoteSession?.activeDeviceId, !active.isEmpty else {
+                return false
             }
-            // Session row can briefly lag while we still know we're remote.
-            return isRemote
+            return active != deviceId
         }()
         guard otherOwns else {
             action()
@@ -183,21 +186,40 @@ final class ConnectController: ObservableObject {
         showSwitchPrompt = false
         let action = pendingLocalPlayback
         pendingLocalPlayback = nil
+        let previousActive = remoteSession?.activeDeviceId
         isRemote = false
-        ignoreRemoteUntil = Date().addingTimeInterval(4)
+        // Must be set BEFORE action() so nested play() passes the gate.
+        ignoreRemoteUntil = Date().addingTimeInterval(8)
         player?.clearRemotePlayheadMirror()
         lastMirroredSongId = nil
         action?()
         notice = "Playing here"
         Task {
-            await publishSession(force: true)
-            await refreshDevices()
+            await claimActiveAndStopOthers(previousActive: previousActive)
         }
     }
 
     func declineSwitchPrompt() {
         showSwitchPrompt = false
         pendingLocalPlayback = nil
+    }
+
+    /// Become the active player and tell the previous one to stop audio.
+    private func claimActiveAndStopOthers(previousActive: String?) async {
+        await publishSession(force: true, claim: true)
+        if let prev = previousActive, prev != deviceId {
+            _ = try? await client.postCommand(ConnectCommandPost(
+                type: ConnectCommandType.pause,
+                fromDeviceId: deviceId,
+                targetDeviceId: prev,
+                seekTo: nil))
+        }
+        _ = try? await client.postCommand(ConnectCommandPost(
+            type: ConnectCommandType.takeControl,
+            fromDeviceId: deviceId,
+            targetDeviceId: deviceId,
+            seekTo: nil))
+        await refreshDevices()
     }
 
     private func tick() async {
@@ -252,7 +274,8 @@ final class ConnectController: ObservableObject {
         }
         ignoreRemoteUntil = nil
 
-        guard let session = remoteSession else {
+        guard let session = remoteSession,
+              !session.activeDeviceId.isEmpty else {
             isRemote = false
             player?.clearRemotePlayheadMirror()
             lastMirroredSongId = nil
@@ -265,17 +288,15 @@ final class ConnectController: ObservableObject {
                 lastMirroredSongId = nil
             }
             isRemote = false
-        } else if devices.contains(where: { $0.id == active }) {
-            isRemote = true
-            if player?.isPlaying == true {
-                player?.pause()
-            }
-            mirrorRemoteSnapshotIfNeeded(session)
-        } else {
-            // Active device went offline — stay put, don't steal.
-            isRemote = false
-            player?.clearRemotePlayheadMirror()
+            return
         }
+
+        // Another device is the active player — this one must not make sound.
+        isRemote = true
+        if player?.isLocalPlaybackEngaged == true {
+            player?.pause()
+        }
+        mirrorRemoteSnapshotIfNeeded(session)
     }
 
     /// Keep local queue / Now Playing in sync with the active device without starting audio.
@@ -286,6 +307,8 @@ final class ConnectController: ObservableObject {
             lastMirroredSongId = songId
             applyingRemote = true
             defer { applyingRemote = false }
+            // force: false — skip if mid track-advance to avoid crashes; playhead
+            // still mirrors below so UI stays in sync.
             player.applyConnectSnapshot(snap, startPlaying: false, recordPlay: false)
         }
         player.mirrorRemotePlayhead(
@@ -294,16 +317,22 @@ final class ConnectController: ObservableObject {
             isPlaying: session.isPlaying)
     }
 
-    private func publishSession(force: Bool) async {
-        // Never claim activeDeviceId while another device owns playback.
+    private func publishSession(force: Bool, claim: Bool = false) async {
+        // Only the active player may refresh the shared session. Claiming a new
+        // activeDeviceId requires `claim: true` (confirm / takeControl / transfer).
         guard !applyingRemote, !isRemote, let player, let snap = player.connectSnapshot() else { return }
+        if !claim, let active = remoteSession?.activeDeviceId, !active.isEmpty, active != deviceId {
+            return
+        }
         let fingerprint = "\(snap.currentSong.id)|\(Int(snap.elapsed))|\(player.isPlaying)|\(snap.userQueue.count)|\(snap.contextQueue.count)"
         if !force, fingerprint == lastPublishedFingerprint { return }
         lastPublishedFingerprint = fingerprint
+        let creating = remoteSession == nil || remoteSession?.activeDeviceId.isEmpty == true
         if let session = try? await client.putSession(ConnectSessionPut(
             activeDeviceId: deviceId,
             isPlaying: player.isPlaying,
-            snapshot: snap)) {
+            snapshot: snap,
+            claim: claim || creating)) {
             remoteSession = session
         }
     }
@@ -324,16 +353,20 @@ final class ConnectController: ObservableObject {
         guard let player else { return }
         switch cmd.type {
         case ConnectCommandType.transfer, ConnectCommandType.takeControl:
+            // Ignore echoes of a takeover we just initiated locally.
+            if let until = ignoreRemoteUntil, Date() < until {
+                break
+            }
             if let session = try? await client.getSession(), let snap = session.snapshot {
                 applyingRemote = true
                 defer { applyingRemote = false }
                 player.clearRemotePlayheadMirror()
                 lastMirroredSongId = nil
-                player.applyConnectSnapshot(snap, startPlaying: true)
+                player.applyConnectSnapshot(snap, startPlaying: true, force: true)
                 isRemote = false
-                ignoreRemoteUntil = Date().addingTimeInterval(4)
+                ignoreRemoteUntil = Date().addingTimeInterval(8)
                 notice = "Playing here"
-                await publishSession(force: true)
+                await publishSession(force: true, claim: true)
             }
         case ConnectCommandType.play:
             player.resume(bypassConnectGate: true)

@@ -258,9 +258,9 @@ func (v *navidromeVerifier) frequentAlbumSongs(ctx context.Context, creds subson
 		ids = ids[:albumLimit]
 	}
 	var (
-		mu   sync.Mutex
-		out  []ndSong
-		wg   sync.WaitGroup
+		mu  sync.Mutex
+		out []ndSong
+		wg  sync.WaitGroup
 	)
 	for _, a := range ids {
 		id := a.ID.String()

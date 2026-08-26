@@ -4,9 +4,11 @@ struct MainTabView: View {
     @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var connectivity: ConnectivityMonitor
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab = 0
     @State private var showNowPlaying = false
     @State private var keyboardVisible = false
+    @State private var wasInBackground = false
 
     private var switchPromptBinding: Binding<Bool> {
         Binding(
@@ -110,6 +112,24 @@ struct MainTabView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .dromeFocusCarPlaySearch)) { _ in
             selectedTab = 1
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .background:
+                wasInBackground = true
+            case .active:
+                // Dynamic Island / Lock Screen Now Playing brings the app from
+                // background while audio is active — open the full player.
+                // Ignore inactive (Control Center) and paused background returns.
+                if wasInBackground, player.isPlaying, player.current != nil, !showNowPlaying {
+                    withAnimation(.easeOut(duration: 0.32)) {
+                        showNowPlaying = true
+                    }
+                }
+                wasInBackground = false
+            default:
+                break
+            }
         }
     }
 

@@ -135,37 +135,41 @@ enum VibeEngine {
             return Array(pool.shuffled().prefix(mixLength))
         }
         let spec = taste(for: vibe)
-        let scored = pool.compactMap { song -> (Song, Double)? in
+        var scored = pool.compactMap { song -> (Song, Double)? in
             let s = score(song, spec: spec)
             return s > 0.35 ? (song, s) : nil
         }
-        .sorted { $0.1 > $1.1 }
-
-        var chosen = scored.map(\.0)
-        if chosen.count < 12 {
+        if scored.count < 12 {
             // Relax: keep anything that isn't in the avoid set.
-            chosen = pool.filter { song in
+            scored = pool.compactMap { song -> (Song, Double)? in
                 let g = normalizedGenre(song)
-                if let g, spec.avoid.contains(g) { return false }
-                return true
+                if let g, spec.avoid.contains(g) { return nil }
+                return (song, max(0.2, score(song, spec: spec)))
             }
         }
-        // Weighted sample by score without rating — higher fit first, then shuffle
-        // within bands so two plays of Focus don't clone each other.
-        let top = Array(chosen.prefix(max(mixLength * 2, 80)))
-        return Array(bandShuffle(top).prefix(mixLength))
+        // Weighted random sample — not "always the same top band shuffled".
+        // Each Play draws a new queue from the fit pool.
+        return weightedSample(scored, count: mixLength)
     }
 
-    /// Shuffle inside score bands so the queue isn't a rigid ranking.
-    private static func bandShuffle(_ songs: [Song]) -> [Song] {
-        guard songs.count > 8 else { return songs.shuffled() }
-        let band = max(4, songs.count / 5)
+    /// Sample `count` songs without replacement, weighted by fit score.
+    private static func weightedSample(_ scored: [(Song, Double)], count: Int) -> [Song] {
+        guard !scored.isEmpty else { return [] }
+        var pool = scored
         var out: [Song] = []
-        var i = 0
-        while i < songs.count {
-            let slice = Array(songs[i..<min(i + band, songs.count)])
-            out.append(contentsOf: slice.shuffled())
-            i += band
+        out.reserveCapacity(min(count, pool.count))
+        while out.count < count, !pool.isEmpty {
+            let total = pool.reduce(0.0) { $0 + max(0.05, $1.1) }
+            var ticket = Double.random(in: 0..<total)
+            var pick = 0
+            for (i, item) in pool.enumerated() {
+                ticket -= max(0.05, item.1)
+                if ticket <= 0 {
+                    pick = i
+                    break
+                }
+            }
+            out.append(pool.remove(at: pick).0)
         }
         return out
     }

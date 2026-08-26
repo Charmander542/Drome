@@ -127,6 +127,8 @@ struct ConnectSessionPut: Encodable {
     var activeDeviceId: String
     var isPlaying: Bool
     var snapshot: PlaybackSessionSnapshot?
+    /// Explicit takeover. Without this, the server rejects changing activeDeviceId.
+    var claim: Bool = false
 }
 
 struct ConnectCommandPost: Encodable {

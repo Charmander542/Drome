@@ -41,7 +41,7 @@ struct VibeTuner: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("TUNE")
+                Text("VIBE TUNER")
                     .font(.caption2.weight(.bold))
                     .tracking(1.6)
                     .foregroundStyle(selected.ink.opacity(0.7))
@@ -95,8 +95,9 @@ struct VibeTuner: View {
     private var tuner: some View {
         VStack(spacing: 8) {
             GeometryReader { geo in
-                let n = CGFloat(vibes.count)
-                let slot = geo.size.width / n
+                let n = CGFloat(max(vibes.count, 1))
+                let width = geo.size.width.isFinite ? max(0, geo.size.width) : 0
+                let slot = width > 0 ? width / n : 0
                 let selectedIndex = vibes.firstIndex(of: selected) ?? 0
 
                 ZStack(alignment: .leading) {
@@ -118,20 +119,22 @@ struct VibeTuner: View {
                     .frame(height: 16)
                     .offset(y: -22)
 
-                    Capsule()
-                        .fill(selected.ink.opacity(0.18))
-                        .frame(width: slot, height: 56)
-                        .offset(x: slot * CGFloat(selectedIndex))
+                    if slot > 0 {
+                        Capsule()
+                            .fill(selected.ink.opacity(0.18))
+                            .frame(width: slot, height: 56)
+                            .offset(x: slot * CGFloat(selectedIndex))
 
-                    HStack(spacing: 0) {
-                        ForEach(vibes) { vibe in
-                            station(vibe)
-                                .frame(width: slot, height: 56)
+                        HStack(spacing: 0) {
+                            ForEach(vibes) { vibe in
+                                station(vibe)
+                                    .frame(width: slot, height: 56)
+                            }
                         }
                     }
                 }
                 .contentShape(Rectangle())
-                .gesture(scrub(width: geo.size.width))
+                .gesture(scrub(width: width))
                 .accessibilityElement(children: .contain)
             }
             .frame(height: 56)

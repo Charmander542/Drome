@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +53,54 @@ func requestTZ(r *http.Request) string {
 	return tz
 }
 
+func requestRecencyHours(r *http.Request) int {
+	raw := strings.TrimSpace(r.URL.Query().Get("recencyHours"))
+	if raw == "" {
+		return 72
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 72
+	}
+	if n > 720 {
+		return 720
+	}
+	return n
+}
+
+func requestExcludeIDs(r *http.Request) map[string]struct{} {
+	raw := strings.TrimSpace(r.URL.Query().Get("exclude"))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make(map[string]struct{}, len(parts))
+	for _, p := range parts {
+		id := strings.TrimSpace(p)
+		if id == "" {
+			continue
+		}
+		out[id] = struct{}{}
+		if len(out) >= 500 {
+			break
+		}
+	}
+	return out
+}
+
+func excludeCacheKey(exclude map[string]struct{}, recencyHours int) string {
+	if len(exclude) == 0 {
+		return "r" + strconv.Itoa(recencyHours)
+	}
+	ids := make([]string, 0, len(exclude))
+	for id := range exclude {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	sum := sha1.Sum([]byte(strings.Join(ids, ",")))
+	return "r" + strconv.Itoa(recencyHours) + "-" + hex.EncodeToString(sum[:8])
+}
+
 type dailyMixResponse struct {
 	Date  string     `json:"date"`
 	Mixes []dailyMix `json:"mixes"`
@@ -57,16 +109,21 @@ type dailyMixResponse struct {
 func (s *server) handleDailyMixes(w http.ResponseWriter, r *http.Request) {
 	owner := requestUser(r)
 	day := radioDay(time.Now(), requestTZ(r))
-	if raw, ok, err := s.store.getDailyMixJSON(owner, day); err == nil && ok {
+	exclude := requestExcludeIDs(r)
+	recency := requestRecencyHours(r)
+	cacheSuffix := excludeCacheKey(exclude, recency)
+	cacheDay := day + "|" + cacheSuffix
+
+	if raw, ok, err := s.store.getDailyMixJSON(owner, cacheDay); err == nil && ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(raw))
 		return
 	}
 
-	key := owner + "|daily|" + day
+	key := owner + "|daily|" + cacheDay
 	body, err := s.mixOnce(key, func() ([]byte, error) {
-		if raw, ok, err := s.store.getDailyMixJSON(owner, day); err == nil && ok {
+		if raw, ok, err := s.store.getDailyMixJSON(owner, cacheDay); err == nil && ok {
 			return []byte(raw), nil
 		}
 		creds, ok := s.playlistCreds(r)
@@ -78,7 +135,7 @@ func (s *server) handleDailyMixes(w http.ResponseWriter, r *http.Request) {
 		snapshot := s.navidrome.mixSnapshot(ctx, creds)
 		artists := topArtistKeys(snapshot, 16)
 		similar := s.navidrome.similarByArtists(ctx, creds, artists, 20)
-		mixes := buildDailyMixes(snapshot, similar, owner+"|"+day)
+		mixes := buildDailyMixes(snapshot, similar, owner+"|"+day+"|"+cacheSuffix, exclude)
 		if mixes == nil {
 			mixes = []dailyMix{}
 		}
@@ -87,7 +144,7 @@ func (s *server) handleDailyMixes(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		_ = s.store.putDailyMixJSON(owner, day, string(payload))
+		_ = s.store.putDailyMixJSON(owner, cacheDay, string(payload))
 		return payload, nil
 	})
 	if err != nil {

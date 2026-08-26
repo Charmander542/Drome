@@ -42,6 +42,7 @@ struct NowPlayingView: View {
     @State private var artPages: [ArtStripPage] = []
     @State private var artDragX: CGFloat = 0
     @State private var artSwipeAnimating = false
+    @State private var artSwipeGeneration = 0
     @State private var artContainerWidth: CGFloat = 390
     @State private var showMoreSheet = false
     @State private var showConnect = false
@@ -203,7 +204,8 @@ struct NowPlayingView: View {
             }
             .animation(.easeInOut(duration: 0.2), value: flashMessage)
             .preferredColorScheme(.dark)
-            .background(NowPlayingClearHostBackground())
+            .background(Color.clear)
+            .toolbarBackground(.hidden, for: .navigationBar)
         }
         // Offset the whole stack so swipe reveals Home, not nav chrome.
         .offset(y: dismissY)
@@ -483,21 +485,26 @@ struct NowPlayingView: View {
     }
 
     private func artwork(side: CGFloat, containerWidth: CGFloat) -> some View {
-        let stride = containerWidth
+        let safeSide = Self.finiteSize(side)
+        let safeWidth = Self.finiteSize(containerWidth)
+        let stride = safeWidth
+        let drag = artDragX.isFinite ? artDragX : 0
 
         return ZStack {
-            ForEach(Array(artPages.enumerated()), id: \.element.id) { index, page in
-                coverCard(url: page.url, side: side)
-                    // Fixed center slot = index 1. Neighbors live at ±stride.
-                    .offset(x: CGFloat(index - 1) * stride + artDragX)
+            // Slot identity (0/1/2) stays stable so covers can move next→current
+            // without remounting via a song-id `.id` (that path produced
+            // non-finite frames → EXC_BAD_ACCESS @ 0x10).
+            ForEach(Array(artPages.enumerated()), id: \.offset) { index, page in
+                coverCard(url: page.url, side: safeSide)
+                    .offset(x: CGFloat(index - 1) * stride + drag)
             }
         }
-        .frame(width: containerWidth, height: side)
+        .frame(width: safeWidth, height: safeSide)
         .clipped()
         .contentShape(Rectangle())
-        .onAppear { artContainerWidth = containerWidth }
-        .onChange(of: containerWidth) { _, width in artContainerWidth = width }
-        .gesture(artSwipeGesture(containerWidth: containerWidth))
+        .onAppear { artContainerWidth = safeWidth }
+        .onChange(of: safeWidth) { _, width in artContainerWidth = width }
+        .gesture(artSwipeGesture(containerWidth: safeWidth))
         .simultaneousGesture(swipeUpToLyricsGesture)
         .onChange(of: player.current?.song.id) { _, _ in
             guard !artSwipeAnimating else { return }
@@ -520,8 +527,9 @@ struct NowPlayingView: View {
     }
 
     private func coverCard(url: URL?, side: CGFloat) -> some View {
-        RemoteImage(url: url, holdImageWhileLoading: true)
-            .frame(width: side, height: side)
+        let safeSide = Self.finiteSize(side)
+        return RemoteImage(url: url, holdImageWhileLoading: true)
+            .frame(width: safeSide, height: safeSide)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .shadow(color: .black.opacity(0.5), radius: 20, y: 12)
             .overlay {
@@ -677,8 +685,12 @@ struct NowPlayingView: View {
 
     private func completeArtSwipe(goingNext: Bool, containerWidth: CGFloat) {
         guard artPages.count == 3 else { return }
+        let safeWidth = Self.finiteSize(containerWidth)
+        guard safeWidth > 0 else { return }
         artSwipeAnimating = true
-        let exitX = goingNext ? -containerWidth : containerWidth
+        artSwipeGeneration += 1
+        let generation = artSwipeGeneration
+        let exitX = goingNext ? -safeWidth : safeWidth
 
         // Snapshot before anything moves / playback changes.
         let prev = artPages[0]
@@ -689,7 +701,10 @@ struct NowPlayingView: View {
             artDragX = exitX
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 280_000_000)
+            guard generation == artSwipeGeneration else { return }
+
             // At exitX the neighbor is already visually centered:
             //   next swipe → index 2 at offset 0
             //   prev swipe → index 0 at offset 0
@@ -708,6 +723,7 @@ struct NowPlayingView: View {
             }
 
             player.advanceFromArtSwipe(goingNext: goingNext)
+            guard generation == artSwipeGeneration else { return }
 
             // Fill the new off-screen neighbor; center (index 1) stays put.
             var filled = artPages
@@ -856,10 +872,15 @@ struct NowPlayingView: View {
 
     private var scrubber: some View {
         let total = stableDuration
-        let live = min(max(0, clock.elapsed), total)
+        let rawElapsed = clock.elapsed.isFinite ? clock.elapsed : 0
+        let live = min(max(0, rawElapsed), total)
         let displayed: Double = {
-            if isSeeking { return seekElapsed }
-            if let scrubAnimElapsed { return scrubAnimElapsed }
+            if isSeeking {
+                return seekElapsed.isFinite ? min(max(0, seekElapsed), total) : live
+            }
+            if let scrubAnimElapsed, scrubAnimElapsed.isFinite {
+                return min(max(0, scrubAnimElapsed), total)
+            }
             return live
         }()
 
@@ -869,11 +890,11 @@ struct NowPlayingView: View {
                     get: { displayed },
                     set: { newValue in
                         scrubAnimElapsed = nil
-                        seekElapsed = newValue
+                        seekElapsed = newValue.isFinite ? newValue : 0
                         if !isSeeking { isSeeking = true }
                     }
                 ),
-                in: 0...max(total, 0.1),
+                in: 0...total,
                 onEditingChanged: { editing in
                     if editing {
                         scrubAnimElapsed = nil
@@ -1048,8 +1069,10 @@ struct NowPlayingView: View {
     private var stableDuration: Double {
         let live = clock.duration
         if live.isFinite, live > 0.5 { return live }
-        if let meta = player.current?.song.duration, meta > 0 { return Double(meta) }
-        return max(live, 0.1)
+        if let meta = player.current?.song.duration, meta > 0 {
+            return Double(meta)
+        }
+        return 0.1
     }
 
     private var shuffleColor: Color {
@@ -1082,6 +1105,7 @@ private enum NowPlayingBackdrop {
         var wash: Color = Color(red: 0.12, green: 0.12, blue: 0.14)
     }
 
+    private static let washLock = NSLock()
     private static var washCache: [String: Color] = [:]
 
     struct Body: View {
@@ -1134,6 +1158,8 @@ private enum NowPlayingBackdrop {
                 if let url = layer.url {
                     RemoteImage(url: url, holdImageWhileLoading: true)
                         .scaledToFill()
+                        .frame(minWidth: 1, minHeight: 1)
+                        .clipped()
                         .blur(radius: 72)
                         .opacity(0.42)
                         .allowsHitTesting(false)
@@ -1148,7 +1174,10 @@ private enum NowPlayingBackdrop {
             return Color(red: 0.12, green: 0.12, blue: 0.14)
         }
         let key = url.absoluteString
-        if let cached = washCache[key] { return cached }
+        washLock.lock()
+        let cached = washCache[key]
+        washLock.unlock()
+        if let cached { return cached }
 
         var image = ImageLoader.shared.previewImage(for: url)
         if image == nil {
@@ -1158,7 +1187,13 @@ private enum NowPlayingBackdrop {
             return Color(red: 0.12, green: 0.12, blue: 0.14)
         }
         let color = averageColor(from: image)
+        washLock.lock()
         washCache[key] = color
+        if washCache.count > 64 {
+            washCache.removeAll(keepingCapacity: true)
+            washCache[key] = color
+        }
+        washLock.unlock()
         return color
     }
 
@@ -1166,7 +1201,10 @@ private enum NowPlayingBackdrop {
     static func prefetchWash(for urls: [URL?]) {
         for url in urls.compactMap({ $0 }) {
             let key = url.absoluteString
-            if washCache[key] != nil { continue }
+            washLock.lock()
+            let known = washCache[key] != nil
+            washLock.unlock()
+            if known { continue }
             Task(priority: .utility) {
                 _ = await washColor(for: url)
             }
@@ -1405,48 +1443,5 @@ struct NowPlayingMoreSheet: View {
             }
         }
         .preferredColorScheme(.dark)
-    }
-}
-
-/// One-shot clear of NavigationStack / hosting chrome so swipe-down reveals
-/// Home. Runs once after attach — not every update (that path crashed before).
-private struct NowPlayingClearHostBackground: UIViewRepresentable {
-    final class Coordinator {
-        var didClear = false
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.isUserInteractionEnabled = false
-        view.backgroundColor = .clear
-        return view
-    }
-
-    func updateUIView(_ uiView: UIView, context: Context) {
-        guard !context.coordinator.didClear else { return }
-        context.coordinator.didClear = true
-        DispatchQueue.main.async {
-            Self.clear(from: uiView)
-        }
-    }
-
-    private static func clear(from view: UIView) {
-        var responder: UIResponder? = view.next
-        var hops = 0
-        while let current = responder, hops < 12 {
-            if let nav = current as? UINavigationController {
-                nav.view.backgroundColor = .clear
-                nav.view.isOpaque = false
-                for child in nav.viewControllers {
-                    child.view.backgroundColor = .clear
-                    child.view.isOpaque = false
-                }
-                return
-            }
-            responder = current.next
-            hops += 1
-        }
     }
 }

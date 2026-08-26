@@ -84,7 +84,7 @@ func TestDailyMixesAreDistinctAndCapped(t *testing.T) {
 		"a-nat": {{ID: "disc-nat", Title: "Deep Cut", Artist: "The National", ArtistID: "a-nat", Genre: "Indie"}},
 		"a-ken": {{ID: "disc-ken", Title: "B-side", Artist: "Kendrick Lamar", ArtistID: "a-ken", Genre: "Hip-Hop"}},
 	}
-	mixes := buildDailyMixes(lib, similar, "charlie|2026-08-22")
+	mixes := buildDailyMixes(lib, similar, "charlie|2026-08-22", nil)
 	if len(mixes) < minDailyMixes {
 		t.Fatalf("got %d mixes, want at least %d", len(mixes), minDailyMixes)
 	}
@@ -115,8 +115,8 @@ func TestDailyMixesAreDistinctAndCapped(t *testing.T) {
 
 func TestDailyMixesAreStableForTheDay(t *testing.T) {
 	lib := sampleLibrary()
-	a := buildDailyMixes(lib, nil, "charlie|2026-08-22")
-	b := buildDailyMixes(lib, nil, "charlie|2026-08-22")
+	a := buildDailyMixes(lib, nil, "charlie|2026-08-22", nil)
+	b := buildDailyMixes(lib, nil, "charlie|2026-08-22", nil)
 	if len(a) != len(b) {
 		t.Fatalf("length drift %d vs %d", len(a), len(b))
 	}
@@ -163,7 +163,7 @@ func TestVibeMixPrefersMatchingGenres(t *testing.T) {
 func TestLowRatedTracksExcluded(t *testing.T) {
 	lib := sampleLibrary()
 	lib = append(lib, mixTrack{ID: "skip-me", Title: "Nope", Artist: "X", ArtistID: "a-x", Genre: "Pop", UserRating: 1})
-	mixes := buildDailyMixes(lib, nil, "seed")
+	mixes := buildDailyMixes(lib, nil, "seed", nil)
 	for _, m := range mixes {
 		for _, s := range m.Songs {
 			if s.ID == "skip-me" {

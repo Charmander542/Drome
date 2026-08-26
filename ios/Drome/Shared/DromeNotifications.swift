@@ -3,6 +3,7 @@ import Foundation
 extension Notification.Name {
     static let dromeSessionChanged = Notification.Name("drome.sessionChanged")
     static let dromeOpenNowPlaying = Notification.Name("drome.openNowPlaying")
+    static let dromeNetworkPathChanged = Notification.Name("drome.networkPathChanged")
 }
 
 enum NowPlayingPresenter {

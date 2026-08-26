@@ -114,9 +114,12 @@ func mixRNG(seed string) *rand.Rand {
 	return rand.New(rand.NewPCG(n, n^0x9E3779B97F4A7C15))
 }
 
-func buildDailyMixes(tracks []mixTrack, similar map[string][]mixTrack, seed string) []dailyMix {
+func buildDailyMixes(tracks []mixTrack, similar map[string][]mixTrack, seed string, exclude map[string]struct{}) []dailyMix {
 	rng := mixRNG(seed)
 	pool := usableTracks(tracks)
+	if len(exclude) > 0 {
+		pool = filterExcluded(pool, exclude)
+	}
 	if len(pool) < minClusterSongs {
 		return nil
 	}
@@ -254,6 +257,20 @@ func usableTracks(tracks []mixTrack) []mixTrack {
 			continue
 		}
 		seen[t.ID] = struct{}{}
+		out = append(out, t)
+	}
+	return out
+}
+
+func filterExcluded(tracks []mixTrack, exclude map[string]struct{}) []mixTrack {
+	if len(exclude) == 0 {
+		return tracks
+	}
+	out := make([]mixTrack, 0, len(tracks))
+	for _, t := range tracks {
+		if _, skip := exclude[t.ID]; skip {
+			continue
+		}
 		out = append(out, t)
 	}
 	return out

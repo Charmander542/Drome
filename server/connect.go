@@ -112,12 +112,14 @@ func (s *server) handleConnectDeleteDevice(w http.ResponseWriter, r *http.Reques
 }
 
 // PUT /connect/session — active player publishes full queue snapshot.
+// Ownership only moves via transfer/takeControl commands OR claim=true.
 func (s *server) handleConnectPutSession(w http.ResponseWriter, r *http.Request) {
 	owner := requestUser(r)
 	var body struct {
 		ActiveDeviceID string          `json:"activeDeviceId"`
 		IsPlaying      bool            `json:"isPlaying"`
 		Snapshot       json.RawMessage `json:"snapshot"`
+		Claim          bool            `json:"claim"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -129,6 +131,12 @@ func (s *server) handleConnectPutSession(w http.ResponseWriter, r *http.Request)
 	}
 	if len(body.Snapshot) == 0 {
 		body.Snapshot = json.RawMessage("null")
+	}
+	if existing, err := s.store.getConnectSession(owner); err == nil && existing != nil {
+		if existing.ActiveDeviceID != "" && existing.ActiveDeviceID != body.ActiveDeviceID && !body.Claim {
+			writeError(w, http.StatusConflict, "another device is the active player")
+			return
+		}
 	}
 	sess := connectSession{
 		Owner:          owner,
