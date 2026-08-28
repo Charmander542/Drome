@@ -37,7 +37,7 @@ enum PlaybackPreferences {
     }
 
     /// Cellular stream bitrate (kbps) when `compressOnCellular` is on.
-    static var cellularMaxBitRate: Int { 192 }
+    static var cellularMaxBitRate: Int { 256 }
 }
 
 /// One credited artist under a song — optionally linked to a Navidrome artist id.

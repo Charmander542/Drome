@@ -246,7 +246,7 @@ struct DromeWishlistClient {
     }
 
     func dailyMixes(timeZone: TimeZone = .current,
-                    excludeSongIDs: Set<String> = [],
+                    excludeSongIDs: [String] = [],
                     recencyHours: Double = 72
     ) async throws -> DailyMixResponse {
         var query = [
@@ -254,7 +254,7 @@ struct DromeWishlistClient {
             URLQueryItem(name: "recencyHours", value: String(Int(recencyHours))),
         ]
         if !excludeSongIDs.isEmpty {
-            let joined = excludeSongIDs.prefix(400).joined(separator: ",")
+            let joined = excludeSongIDs.prefix(500).joined(separator: ",")
             query.append(URLQueryItem(name: "exclude", value: joined))
         }
         return try await send(

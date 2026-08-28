@@ -137,13 +137,16 @@ struct HomeView: View {
         if dailyMixes.isEmpty { mixesLoading = true }
         defer { mixesLoading = false }
         let hours = PlaybackPreferences.autoplayRecencyHours
-        let recentIDs = (try? env.database.recentPlayIDs(
+        let recentOrdered = (try? env.database.recentPlayIDsOrdered(
             userKey: session.account.userKey, withinHours: hours)) ?? []
         if session.rotation.songIDs.isEmpty {
             await session.rotation.refresh()
         }
-        var exclude = recentIDs
-        exclude.formUnion(session.rotation.excludedIDs)
+        var exclude = recentOrdered
+        let recentSet = Set(recentOrdered)
+        for id in session.rotation.excludedIDs where !recentSet.contains(id) {
+            exclude.append(id)
+        }
         if let mixes = try? await client.dailyMixes(
             excludeSongIDs: exclude, recencyHours: hours
         ).mixes, !mixes.isEmpty {
@@ -186,10 +189,6 @@ struct HomeView: View {
             guard songs.count >= 8 else { return nil }
             var cleaned = mix
             cleaned.songs = songs
-            if !cleaned.coverArtIds.isEmpty {
-                let keep = Set(songs.compactMap { $0.coverArt ?? $0.albumId ?? $0.id })
-                cleaned.coverArtIds = cleaned.coverArtIds.filter { keep.contains($0) }
-            }
             return cleaned
         }
     }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
 )
 
@@ -39,6 +40,45 @@ func (s *wishlistStore) getDailyMixJSON(owner, day string) (string, bool, error)
 		return "", false, err
 	}
 	return payload, true, nil
+}
+
+// recentDailyMixSongIDs returns every song ID that appeared in stored Daily
+// Mixes on the given radio days (used to enforce multi-day no-repeat).
+func (s *wishlistStore) recentDailyMixSongIDs(owner string, days []string) (map[string]struct{}, error) {
+	out := make(map[string]struct{})
+	for _, day := range days {
+		raw, ok, err := s.getDailyMixJSON(owner, day)
+		if err != nil || !ok {
+			continue
+		}
+		var resp dailyMixResponse
+		if json.Unmarshal([]byte(raw), &resp) != nil {
+			continue
+		}
+		for _, mix := range resp.Mixes {
+			for _, song := range mix.Songs {
+				if song.ID != "" {
+					out[song.ID] = struct{}{}
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+func previousRadioDays(currentDay string, count int) []string {
+	if count <= 0 {
+		return nil
+	}
+	t, err := time.Parse("2006-01-02", currentDay)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, count)
+	for i := 1; i <= count; i++ {
+		out = append(out, t.AddDate(0, 0, -i).Format("2006-01-02"))
+	}
+	return out
 }
 
 func (s *wishlistStore) putDailyMixJSON(owner, day, payload string) error {

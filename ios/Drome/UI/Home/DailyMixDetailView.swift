@@ -154,10 +154,13 @@ struct DailyMixDetailView: View {
                 await session.rotation.refresh()
             }
             let hours = PlaybackPreferences.autoplayRecencyHours
-            let recentIDs = (try? AppEnvironment.shared.database.recentPlayIDs(
+            let recentOrdered = (try? AppEnvironment.shared.database.recentPlayIDsOrdered(
                 userKey: session.account.userKey, withinHours: hours)) ?? []
-            var exclude = recentIDs
-            exclude.formUnion(session.rotation.excludedIDs)
+            var exclude = recentOrdered
+            let recentSet = Set(recentOrdered)
+            for id in session.rotation.excludedIDs where !recentSet.contains(id) {
+                exclude.append(id)
+            }
             let mixes = try await session.wishlist?.dailyMixes(
                 excludeSongIDs: exclude, recencyHours: hours
             ).mixes ?? []

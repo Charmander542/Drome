@@ -28,8 +28,16 @@ struct DromeApp: App {
                 }
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active {
+                switch phase {
+                case .active:
+                    DromeDiagnostics.log("scene active")
                     DeepLink.consumePending(env: env)
+                case .inactive:
+                    DromeDiagnostics.log("scene inactive")
+                case .background:
+                    DromeDiagnostics.log("scene background")
+                @unknown default:
+                    break
                 }
             }
         }

@@ -7,6 +7,25 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// events for a background launch have been handled.
     static var backgroundSessionCompletionHandler: (() -> Void)?
 
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        DromeDiagnostics.install()
+        DromeDiagnostics.log("didFinishLaunching")
+        return true
+    }
+
+    func applicationDidEnterBackground(_ application: UIApplication) {
+        DromeDiagnostics.log("didEnterBackground")
+        Task { @MainActor in
+            if let player = AppEnvironment.shared?.session?.player {
+                DromeDiagnostics.snapshotPlayer(player, note: "background")
+            }
+            DromeDiagnostics.flush()
+        }
+    }
+
     func application(_ application: UIApplication,
                      handleEventsForBackgroundURLSession identifier: String,
                      completionHandler: @escaping () -> Void) {

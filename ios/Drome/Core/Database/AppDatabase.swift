@@ -612,13 +612,23 @@ final class AppDatabase: @unchecked Sendable {
 
     /// Song IDs played within the given lookback window (default 72 hours).
     func recentPlayIDs(userKey: String, withinHours: Double = 72) throws -> Set<String> {
+        Set(try recentPlayIDsOrdered(userKey: userKey, withinHours: withinHours))
+    }
+
+    /// Most recently played first — used so Daily Mix exclude lists prioritize
+    /// fresh plays when capped by URL length.
+    func recentPlayIDsOrdered(userKey: String,
+                              withinHours: Double = 72,
+                              limit: Int = 500) throws -> [String] {
         let cutoff = Date().timeIntervalSince1970 - withinHours * 3600
         return try pool.read { db in
-            let ids = try String.fetchAll(db, sql: """
-                SELECT DISTINCT song_id FROM play_history
+            try String.fetchAll(db, sql: """
+                SELECT song_id FROM play_history
                 WHERE user_key = ? AND played_at >= ?
-                """, arguments: [userKey, cutoff])
-            return Set(ids)
+                GROUP BY song_id
+                ORDER BY MAX(played_at) DESC
+                LIMIT ?
+                """, arguments: [userKey, cutoff, limit])
         }
     }
 

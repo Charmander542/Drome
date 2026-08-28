@@ -1105,8 +1105,45 @@ private enum NowPlayingBackdrop {
         var wash: Color = Color(red: 0.12, green: 0.12, blue: 0.14)
     }
 
-    private static let washLock = NSLock()
-    private static var washCache: [String: Color] = [:]
+    private static let defaultWash = Color(red: 0.12, green: 0.12, blue: 0.14)
+    /// Serializes wash cache + dedupes concurrent prefetches (was crashing with NSLock).
+    private static let washStore = WashStore()
+
+    private actor WashStore {
+        private var cache: [String: Color] = [:]
+        private var inflight: [String: Task<Color, Never>] = [:]
+
+        func washColor(for url: URL?) async -> Color {
+            guard let url else { return NowPlayingBackdrop.defaultWash }
+            let key = url.absoluteString
+            if let cached = cache[key] { return cached }
+            if let existing = inflight[key] { return await existing.value }
+
+            let task = Task<Color, Never> {
+                var image = ImageLoader.shared.previewImage(for: url)
+                if image == nil {
+                    image = await ImageLoader.shared.image(for: url)
+                }
+                guard let image else { return NowPlayingBackdrop.defaultWash }
+                return NowPlayingBackdrop.averageColor(from: image)
+            }
+            inflight[key] = task
+            let color = await task.value
+            inflight.removeValue(forKey: key)
+            cache[key] = color
+            if cache.count > 64 {
+                cache.removeAll(keepingCapacity: true)
+                cache[key] = color
+            }
+            return color
+        }
+
+        func prefetch(urls: [URL?]) {
+            for url in urls.compactMap({ $0 }) {
+                Task(priority: .utility) { _ = await washColor(for: url) }
+            }
+        }
+    }
 
     struct Body: View {
         let front: Layer
@@ -1170,44 +1207,13 @@ private enum NowPlayingBackdrop {
     }
 
     static func washColor(for url: URL?) async -> Color {
-        guard let url else {
-            return Color(red: 0.12, green: 0.12, blue: 0.14)
-        }
-        let key = url.absoluteString
-        washLock.lock()
-        let cached = washCache[key]
-        washLock.unlock()
-        if let cached { return cached }
-
-        var image = ImageLoader.shared.previewImage(for: url)
-        if image == nil {
-            image = await ImageLoader.shared.image(for: url)
-        }
-        guard let image else {
-            return Color(red: 0.12, green: 0.12, blue: 0.14)
-        }
-        let color = averageColor(from: image)
-        washLock.lock()
-        washCache[key] = color
-        if washCache.count > 64 {
-            washCache.removeAll(keepingCapacity: true)
-            washCache[key] = color
-        }
-        washLock.unlock()
-        return color
+        await washStore.washColor(for: url)
     }
 
     /// Warm wash colors for neighbors so the next crossfade starts immediately.
     static func prefetchWash(for urls: [URL?]) {
-        for url in urls.compactMap({ $0 }) {
-            let key = url.absoluteString
-            washLock.lock()
-            let known = washCache[key] != nil
-            washLock.unlock()
-            if known { continue }
-            Task(priority: .utility) {
-                _ = await washColor(for: url)
-            }
+        Task(priority: .utility) {
+            await washStore.prefetch(urls: urls)
         }
     }
 
@@ -1215,11 +1221,11 @@ private enum NowPlayingBackdrop {
     private static func averageColor(from image: UIImage) -> Color {
         guard let sample = image.preparingThumbnail(of: CGSize(width: 24, height: 24)),
               let cg = sample.cgImage else {
-            return Color(red: 0.12, green: 0.12, blue: 0.14)
+            return defaultWash
         }
         let w = cg.width, h = cg.height
         guard w > 0, h > 0 else {
-            return Color(red: 0.12, green: 0.12, blue: 0.14)
+            return defaultWash
         }
         var data = [UInt8](repeating: 0, count: w * h * 4)
         guard let ctx = CGContext(
@@ -1227,7 +1233,7 @@ private enum NowPlayingBackdrop {
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         else {
-            return Color(red: 0.12, green: 0.12, blue: 0.14)
+            return defaultWash
         }
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
 
@@ -1247,7 +1253,7 @@ private enum NowPlayingBackdrop {
             weight += sampleWeight
         }
         guard weight > 0 else {
-            return Color(red: 0.12, green: 0.12, blue: 0.14)
+            return defaultWash
         }
         r /= weight; g /= weight; b /= weight
         // Lift midtones a bit so dark covers still tint the room.

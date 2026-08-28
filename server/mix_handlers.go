@@ -125,7 +125,8 @@ func filterDailyMixResponse(raw []byte, exclude map[string]struct{}) ([]byte, bo
 			continue
 		}
 		mix.Songs = songs
-		mix.CoverArtIDs = mixCovers(songs)
+		// Cover art is fixed at build time — do not recompute when filtering
+		// played songs mid-day (that rotated the collage on every reload).
 		out = append(out, mix)
 	}
 	if !changed {
@@ -143,13 +144,22 @@ func (s *server) handleDailyMixes(w http.ResponseWriter, r *http.Request) {
 	owner := requestUser(r)
 	day := radioDay(time.Now(), requestTZ(r))
 	exclude := requestExcludeIDs(r)
-	_ = requestRecencyHours(r) // client still sends it; used via exclude list at first build
+	recencyHours := requestRecencyHours(r)
 
 	if creds, ok := s.playlistCreds(r); ok {
 		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 		oor := s.navidrome.outOfRotationIDs(ctx, creds)
 		cancel()
 		exclude = mergeExclude(exclude, oor)
+	}
+
+	// Songs that appeared in recent Daily Mixes (even if never played) stay out
+	// for the same window as client play history — fixes day-to-day repeats.
+	recentDays := previousRadioDays(day, recencyHours/24)
+	if len(recentDays) > 0 {
+		if recentMixSongs, err := s.store.recentDailyMixSongIDs(owner, recentDays); err == nil {
+			exclude = mergeExclude(exclude, recentMixSongs)
+		}
 	}
 
 	// Cache key is the radio day only — exclude/recency must NOT rotate mixes

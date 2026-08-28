@@ -569,27 +569,24 @@ func mixSubtitle(c mixCluster) string {
 	return names[0] + ", " + names[1] + ", and more"
 }
 
+// mixCovers returns a single stable cover ID for the mix tile — the first
+// track's artist image (Navidrome artist cover art ID).
 func mixCovers(songs []mixTrack) []string {
-	seen := map[string]struct{}{}
-	var ids []string
-	for _, t := range songs {
-		id := t.CoverArt
-		if id == "" {
-			id = t.AlbumID
-		}
-		if id == "" {
-			id = t.ID
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
-		if len(ids) == 4 {
-			break
-		}
+	if len(songs) == 0 {
+		return nil
 	}
-	return ids
+	t := songs[0]
+	id := t.ArtistID
+	if id == "" {
+		id = t.CoverArt
+	}
+	if id == "" {
+		id = t.AlbumID
+	}
+	if id == "" {
+		id = t.ID
+	}
+	return []string{id}
 }
 
 func weightedShuffle(tracks []mixTrack, rng *rand.Rand) {

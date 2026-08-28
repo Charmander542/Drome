@@ -137,6 +137,30 @@ func TestDailyMixesAreStableForTheDay(t *testing.T) {
 	}
 }
 
+func TestPreviousRadioDays(t *testing.T) {
+	days := previousRadioDays("2026-08-28", 3)
+	want := []string{"2026-08-27", "2026-08-26", "2026-08-25"}
+	if len(days) != len(want) {
+		t.Fatalf("got %v want %v", days, want)
+	}
+	for i := range want {
+		if days[i] != want[i] {
+			t.Fatalf("day %d: got %s want %s", i, days[i], want[i])
+		}
+	}
+}
+
+func TestMixCoversUsesFirstArtist(t *testing.T) {
+	songs := []mixTrack{
+		{ID: "s1", ArtistID: "art-1", CoverArt: "cov-1"},
+		{ID: "s2", ArtistID: "art-2", CoverArt: "cov-2"},
+	}
+	ids := mixCovers(songs)
+	if len(ids) != 1 || ids[0] != "art-1" {
+		t.Fatalf("got %v want [art-1]", ids)
+	}
+}
+
 func TestVibeMixPrefersMatchingGenres(t *testing.T) {
 	lib := sampleLibrary()
 	mix := buildVibeMix(lib, nil, "hype", "seed")

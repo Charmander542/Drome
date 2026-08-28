@@ -44,10 +44,27 @@ struct DailyMixCard: View {
 
     @EnvironmentObject private var session: AppSession
 
+    private var cover: some View {
+        Group {
+            if let first = mix.songs.first {
+                let coverId = mix.coverArtIds.first
+                    ?? first.artistId
+                    ?? first.coverArt
+                    ?? first.albumId
+                    ?? first.id
+                RemoteImage(url: session.artworkURL(id: coverId, size: 300),
+                            placeholderSymbol: "music.note")
+            } else {
+                Color(DromeTheme.elevated2)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack {
-                collage
+                cover
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 LinearGradient(
                     colors: [
@@ -89,29 +106,6 @@ struct DailyMixCard: View {
                 .lineLimit(1)
         }
         .hoverEffectDisabled()
-    }
-
-    private var collage: some View {
-        let ids = mix.coverArtIds.isEmpty
-            ? mix.songs.prefix(4).compactMap { $0.coverArt ?? $0.albumId ?? $0.id }
-            : mix.coverArtIds
-        return VStack(spacing: 1) {
-            HStack(spacing: 1) {
-                tile(ids, 0)
-                tile(ids, 1)
-            }
-            HStack(spacing: 1) {
-                tile(ids, 2)
-                tile(ids, 3)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func tile(_ ids: [String], _ index: Int) -> some View {
-        let id = index < ids.count ? ids[index] : ids.first
-        RemoteImage(url: session.artworkURL(id: id, size: 200))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

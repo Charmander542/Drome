@@ -44,6 +44,8 @@ final class ConnectivityMonitor: ObservableObject {
         if online {
             isOnline = true
             if cellularChanged {
+                DromeDiagnostics.logNetwork(
+                    "path cellular=\(cellular) expensive=\(expensive)")
                 NotificationCenter.default.post(
                     name: .dromeNetworkPathChanged, object: nil)
             }

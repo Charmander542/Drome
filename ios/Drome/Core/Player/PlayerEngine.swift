@@ -190,6 +190,25 @@ final class PlayerEngine: ObservableObject {
     /// Wire per-account persistence for Recently Played + cold-start resume.
     func attachSessionStore(_ store: PlaybackSessionStore) {
         sessionStore = store
+        DromeDiagnostics.logPlayer("session store attached")
+    }
+
+    /// One-line player state for the diagnostics log.
+    func diagnosticStateLine() -> String {
+        let song = current?.song
+        return [
+            "track=\(song?.id ?? "nil")",
+            "«\(song?.title ?? "—")»",
+            "\(Int(elapsed))/\(Int(duration))s",
+            isPlaying ? "playing" : "paused",
+            "rebuild:\(isRebuilding)/d:\(rebuildDepth)",
+            "pendingNext:\(pendingNextCount)",
+            "pendingAdvance:\(pendingAdvanceAfterRebuild)",
+            "handlingEnd:\(isHandlingTrackEnd)",
+            "window:\(window.count)",
+            "cellular:\(shouldCompressForCellular)",
+            "airPlay:\(isAirPlayRouteActive)",
+        ].joined(separator: " ")
     }
 
     /// Rebuild the last listening session after launch (paused) so the mini
@@ -198,6 +217,7 @@ final class PlayerEngine: ObservableObject {
     func restorePersistedSessionIfNeeded() -> Bool {
         guard current == nil else { return false }
         guard var snap = sessionStore?.latest() else { return false }
+        DromeDiagnostics.logPlayer("restore session track=\(snap.currentSong.id) elapsed=\(Int(snap.elapsed))")
         // After song-end crashes we often saved the *next* track with the
         // previous playhead (~⅓). Cold launch always starts that track at 0.
         snap.elapsed = 0
@@ -210,6 +230,7 @@ final class PlayerEngine: ObservableObject {
         let airPlay = isAirPlayRouteActive
         guard airPlay != lastAirPlayActive else { return }
         lastAirPlayActive = airPlay
+        DromeDiagnostics.logPlayer("airPlay route → \(airPlay)")
         scheduleStreamFormatRebuild(pending: \.pendingAirPlayRebuild)
     }
 
@@ -217,6 +238,7 @@ final class PlayerEngine: ObservableObject {
         let compressed = shouldCompressForCellular
         guard compressed != lastCellularCompressed else { return }
         lastCellularCompressed = compressed
+        DromeDiagnostics.logPlayer("cellular compress → \(compressed) (next track)")
         // Do NOT rebuild mid-track. Format applies on the next `setCurrent`.
         // Mid-song tear-down + seek was making cellular playback jump around.
     }
@@ -224,6 +246,7 @@ final class PlayerEngine: ObservableObject {
     /// User toggled Compress on cellular — rebuild current item once.
     private func rebuildForStreamPreferenceChange() {
         lastCellularCompressed = shouldCompressForCellular
+        DromeDiagnostics.logPlayer("stream preference changed → rebuild")
         scheduleStreamFormatRebuild(pending: \.pendingNetworkRebuild)
     }
 
@@ -243,6 +266,7 @@ final class PlayerEngine: ObservableObject {
         pendingAirPlayRebuild = false
         pendingNetworkRebuild = false
         guard current != nil else { return }
+        DromeDiagnostics.logPlayer("stream format rebuild \(diagnosticStateLine())")
         let resume = wantsToPlay
         let position = max(0, elapsed)
         rebuildWindow(startPlaying: resume)
@@ -254,6 +278,7 @@ final class PlayerEngine: ObservableObject {
     private func finishRebuildSideEffects() {
         if pendingNextCount > 0 {
             let skips = pendingNextCount
+            DromeDiagnostics.logPlayer("rebuild done → coalesced advanceBy(\(skips))")
             pendingNextCount = 0
             pendingAdvanceAfterRebuild = false
             pendingConnectApply = nil
@@ -263,6 +288,7 @@ final class PlayerEngine: ObservableObject {
             return
         }
         if pendingAdvanceAfterRebuild {
+            DromeDiagnostics.logPlayer("rebuild done → advanceAfterCurrentEnds")
             pendingAdvanceAfterRebuild = false
             pendingConnectApply = nil
             DispatchQueue.main.async { [weak self] in
@@ -526,12 +552,14 @@ final class PlayerEngine: ObservableObject {
         if isHandlingTrackEnd || isRebuilding || rebuildDepth > 0 || itemReadyCancellable != nil {
             pendingNextCount += 1
             pendingAdvanceAfterRebuild = true
+            DromeDiagnostics.logPlayer("next coalesced (pending=\(pendingNextCount)) \(diagnosticStateLine())")
             return
         }
         // Drop leading low-rated tracks when the user opted into global skip.
         drainLowRatedFromQueues(resyncWindow: false)
         let skips = 1 + pendingNextCount
         pendingNextCount = 0
+        DromeDiagnostics.logPlayer("next advanceBy(\(skips))")
         advanceBy(skips, playImmediately: keepPlaying)
     }
 
@@ -571,6 +599,7 @@ final class PlayerEngine: ObservableObject {
         }
 
         if let landed {
+            DromeDiagnostics.logPlayer("advanceBy(\(count)) → \(landed.song.id) «\(landed.song.title)»")
             setCurrent(landed, startPlaying: playImmediately)
             if !playImmediately {
                 pinPlayheadToStart()
@@ -1254,6 +1283,8 @@ final class PlayerEngine: ObservableObject {
 
         current = playItem
         setPlayhead(elapsed: 0, duration: TimeInterval(playItem.song.duration ?? 0))
+        DromeDiagnostics.logPlayer(
+            "setCurrent \(playItem.song.id) «\(playItem.song.title)» play=\(startPlaying) \(diagnosticStateLine())")
         // Pin the new track at 0 before rebuild so a crash mid-rebuild doesn't
         // restore the next song at the previous playhead (~⅓).
         persistSessionNow(force: true)
@@ -1442,6 +1473,7 @@ final class PlayerEngine: ObservableObject {
     private func rebuildWindowStreaming(startPlaying: Bool) {
         rebuildDepth += 1
         isRebuilding = true
+        DromeDiagnostics.logPlayer("rebuildWindow start play=\(startPlaying) \(diagnosticStateLine())")
         itemReadyGeneration += 1
         prefetchTask?.cancel()
         itemReadyCancellable?.cancel()
@@ -1465,6 +1497,7 @@ final class PlayerEngine: ObservableObject {
             if rebuildDepth == 0 {
                 isRebuilding = false
                 pushNowPlayingInfo()
+                DromeDiagnostics.logPlayer("rebuildWindow done \(diagnosticStateLine())")
                 finishRebuildSideEffects()
             }
         }
@@ -1558,7 +1591,9 @@ final class PlayerEngine: ObservableObject {
         NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.persistSessionNow()
+                guard let self else { return }
+                DromeDiagnostics.snapshotPlayer(self, note: "player-background")
+                self.persistSessionNow()
             }
             .store(in: &cancellables)
     }
@@ -1755,8 +1790,10 @@ final class PlayerEngine: ObservableObject {
         }
         if isRebuilding || rebuildDepth > 0 {
             pendingAdvanceAfterRebuild = true
+            DromeDiagnostics.logPlayer("track ended during rebuild → deferred")
             return
         }
+        DromeDiagnostics.logPlayer("track ended → advance")
         advanceAfterCurrentEnds(playImmediately: true)
     }
 

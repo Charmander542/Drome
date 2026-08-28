@@ -148,6 +148,17 @@ struct SettingsView: View {
             .listRowBackground(DromeTheme.elevated)
 
             Section {
+                NavigationLink {
+                    DiagnosticsView()
+                } label: {
+                    Label("Diagnostics", systemImage: "ladybug")
+                }
+            } footer: {
+                Text("Playback event log for troubleshooting crashes. Copy or share after a crash to help debug.")
+            }
+            .listRowBackground(DromeTheme.elevated)
+
+            Section {
                 Button {
                     Task { await refreshLibrary() }
                 } label: {
