@@ -9,6 +9,7 @@ struct HomeView: View {
     @State private var frequent: [Album] = []
     @State private var newest: [Album] = []
     @State private var dailyMixes: [DailyMix] = []
+    @State private var dailyMixesDate: String?
     @State private var mixesLoading = false
     @State private var isLoading = false
     @State private var error: String?
@@ -24,7 +25,7 @@ struct HomeView: View {
                 VibeTuner()
                     .padding(.top, 4)
 
-                if hasCompanion && (!dailyMixes.isEmpty || mixesLoading) {
+                if hasCompanion {
                     DailyMixRail(mixes: dailyMixes, isLoading: mixesLoading)
                 }
 
@@ -136,23 +137,27 @@ struct HomeView: View {
         }
         if dailyMixes.isEmpty { mixesLoading = true }
         defer { mixesLoading = false }
-        let hours = PlaybackPreferences.autoplayRecencyHours
-        let recentOrdered = (try? env.database.recentPlayIDsOrdered(
-            userKey: session.account.userKey, withinHours: hours)) ?? []
         if session.rotation.songIDs.isEmpty {
             await session.rotation.refresh()
         }
-        var exclude = recentOrdered
-        let recentSet = Set(recentOrdered)
-        for id in session.rotation.excludedIDs where !recentSet.contains(id) {
-            exclude.append(id)
-        }
-        if let mixes = try? await client.dailyMixes(
-            excludeSongIDs: exclude, recencyHours: hours
-        ).mixes, !mixes.isEmpty {
-            dailyMixes = Self.withoutOutOfRotation(mixes, excluded: session.rotation.excludedIDs)
+        // OOR only for display fetch — play history applies on the next day's
+        // build, not by shrinking today's cached mixes after each listen.
+        let exclude = Array(session.rotation.excludedIDs)
+        if let response = try? await client.dailyMixes(
+            excludeSongIDs: exclude, recencyHours: PlaybackPreferences.autoplayRecencyHours
+        ), !response.mixes.isEmpty {
+            let cleaned = Self.withoutOutOfRotation(
+                response.mixes, excluded: session.rotation.excludedIDs)
+            if dailyMixesDate == response.date,
+               !dailyMixes.isEmpty,
+               cleaned.count < dailyMixes.count {
+                return
+            }
+            dailyMixes = cleaned
+            dailyMixesDate = response.date
         } else if dailyMixes.isEmpty {
             dailyMixes = []
+            dailyMixesDate = nil
         }
     }
 
@@ -180,13 +185,13 @@ struct HomeView: View {
         return Array(ordered.prefix(20))
     }
 
-    /// Drop Out of Rotation tracks from mixes; omit mixes that empty out.
+    /// Drop Out of Rotation tracks from mixes; keep the mix card even if short.
     private static func withoutOutOfRotation(_ mixes: [DailyMix],
                                              excluded: Set<String>) -> [DailyMix] {
         guard !excluded.isEmpty else { return mixes }
         return mixes.compactMap { mix in
             let songs = mix.songs.filter { !excluded.contains($0.id) }
-            guard songs.count >= 8 else { return nil }
+            guard !songs.isEmpty else { return nil }
             var cleaned = mix
             cleaned.songs = songs
             return cleaned

@@ -1,7 +1,13 @@
 import Foundation
 
-/// Opens `drome://track/{id}` and HTTPS share cards (`/s/{token}?song=`).
+/// Opens `drome://track/{id}`, `drome://play?resume=…`, and HTTPS share cards.
 enum DeepLink {
+    struct ContextPlay {
+        var resumeKey: String
+        var entryId: String
+        var songId: String?
+    }
+
     static func songID(from url: URL) -> String? {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         if let song = items.first(where: { $0.name == "song" })?.value, !song.isEmpty {
@@ -18,6 +24,19 @@ enum DeepLink {
             }
         }
         return nil
+    }
+
+    static func contextPlay(from url: URL) -> ContextPlay? {
+        guard url.scheme == "drome", url.host == "play" else { return nil }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard let resume = items.first(where: { $0.name == "resume" })?.value,
+              let entry = items.first(where: { $0.name == "entry" })?.value
+        else { return nil }
+        let song = items.first(where: { $0.name == "song" })?.value
+        return ContextPlay(
+            resumeKey: resume.removingPercentEncoding ?? resume,
+            entryId: entry.removingPercentEncoding ?? entry,
+            songId: song?.removingPercentEncoding ?? song)
     }
 
     static func isShareCard(_ url: URL) -> Bool {

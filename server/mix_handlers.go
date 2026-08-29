@@ -165,18 +165,18 @@ func (s *server) handleDailyMixes(w http.ResponseWriter, r *http.Request) {
 	// Cache key is the radio day only — exclude/recency must NOT rotate mixes
 	// mid-day (that made Daily Mixes reshuffle every time you played a song).
 	if raw, ok, err := s.store.getDailyMixJSON(owner, day); err == nil && ok {
-		body, _ := filterDailyMixResponse([]byte(raw), exclude)
+		// Return the day's cached lineup unchanged. Stripping played songs on
+		// every fetch was removing entire mixes from the home rail.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
+		_, _ = w.Write([]byte(raw))
 		return
 	}
 
 	key := owner + "|daily|" + day
 	body, err := s.mixOnce(key, func() ([]byte, error) {
 		if raw, ok, err := s.store.getDailyMixJSON(owner, day); err == nil && ok {
-			filtered, _ := filterDailyMixResponse([]byte(raw), exclude)
-			return filtered, nil
+			return []byte(raw), nil
 		}
 		creds, ok := s.playlistCreds(r)
 		if !ok {

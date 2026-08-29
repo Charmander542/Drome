@@ -48,6 +48,11 @@ struct PlayInDromeIntent: AudioPlaybackIntent {
 }
 
 struct DromeShortcuts: AppShortcutsProvider {
+    static var shortcutTileColor: ShortcutTileColor { .orange }
+
+    /// Listed statically so compile-time metadata extraction can register them (dynamic arrays export zero shortcuts).
+    /// iOS allows at most 10 App Shortcuts.
+    @AppShortcutsBuilder
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: PlayInDromeIntent(),
@@ -59,6 +64,96 @@ struct DromeShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Play in Drome",
             systemImageName: "play.fill"
+        )
+        AppShortcut(
+            intent: PlayFourStarsAndUpIntent(),
+            phrases: [
+                "Play 4 stars and up in \(.applicationName)",
+                "Play four stars and up in \(.applicationName)",
+                "Play my highly rated music in \(.applicationName)",
+            ],
+            shortTitle: "Play 4 Stars & Up",
+            systemImageName: "star.leadinghalf.filled"
+        )
+        AppShortcut(
+            intent: PlayRandomIntent(),
+            phrases: [
+                "Play random in \(.applicationName)",
+                "Shuffle my library in \(.applicationName)",
+                "Play something random in \(.applicationName)",
+            ],
+            shortTitle: "Play Random",
+            systemImageName: "shuffle"
+        )
+        AppShortcut(
+            intent: PlayMostRecentIntent(),
+            phrases: [
+                "Play most recent in \(.applicationName)",
+                "Resume in \(.applicationName)",
+                "Continue listening in \(.applicationName)",
+            ],
+            shortTitle: "Play Most Recent",
+            systemImageName: "clock.arrow.circlepath"
+        )
+        AppShortcut(
+            intent: PlayHypeIntent(),
+            phrases: [
+                "Play Hype in \(.applicationName)",
+                "Start Hype in \(.applicationName)",
+                "Play the Hype vibe in \(.applicationName)",
+            ],
+            shortTitle: "Play Hype",
+            systemImageName: "bolt.fill"
+        )
+        AppShortcut(
+            intent: PlayChillIntent(),
+            phrases: [
+                "Play Chill in \(.applicationName)",
+                "Start Chill in \(.applicationName)",
+                "Play the Chill vibe in \(.applicationName)",
+            ],
+            shortTitle: "Play Chill",
+            systemImageName: "leaf"
+        )
+        AppShortcut(
+            intent: PlayFeelGoodIntent(),
+            phrases: [
+                "Play Feel-Good in \(.applicationName)",
+                "Play Feel Good in \(.applicationName)",
+                "Start Feel-Good in \(.applicationName)",
+            ],
+            shortTitle: "Play Feel-Good",
+            systemImageName: "sun.max.fill"
+        )
+        AppShortcut(
+            intent: PlayLateNightIntent(),
+            phrases: [
+                "Play Late Night in \(.applicationName)",
+                "Start Late Night in \(.applicationName)",
+                "Play the Late Night vibe in \(.applicationName)",
+            ],
+            shortTitle: "Play Late Night",
+            systemImageName: "moon.stars.fill"
+        )
+        AppShortcut(
+            intent: PlayFocusIntent(),
+            phrases: [
+                "Play Focus in \(.applicationName)",
+                "Start Focus in \(.applicationName)",
+                "Play the Focus vibe in \(.applicationName)",
+            ],
+            shortTitle: "Play Focus",
+            systemImageName: "metronome.fill"
+        )
+        AppShortcut(
+            intent: PlayHeartbreakIntent(),
+            phrases: [
+                "Play Heartbreak in \(.applicationName)",
+                "Start Heartbreak in \(.applicationName)",
+                "Play the Heartbreak vibe in \(.applicationName)",
+            ],
+            shortTitle: "Play Heartbreak",
+            systemImageName: "heart.fill"
         )
     }
 }

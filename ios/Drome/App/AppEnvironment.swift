@@ -24,6 +24,9 @@ final class AppEnvironment: ObservableObject {
         if let account = accounts.activeAccount {
             activate(account)
         }
+        #if os(iOS)
+        PhoneWatchSession.shared.pushFromStoredSnapshot()
+        #endif
     }
 
     func activate(_ account: Account) {
@@ -34,6 +37,7 @@ final class AppEnvironment: ObservableObject {
         accounts.setActive(account)
         NotificationCenter.default.post(name: .dromeSessionChanged, object: nil)
         #if os(iOS)
+        PhoneWatchSession.shared.pushFromStoredSnapshot()
         consumePendingDeepLink()
         #endif
     }
@@ -78,6 +82,12 @@ final class AppEnvironment: ObservableObject {
             isHandlingDeepLink = false
         }
         guard let session else { return }
+
+        if let url, let context = DeepLink.contextPlay(from: url) {
+            await playContextDeepLink(context, session: session)
+            return
+        }
+
         let pending = MessagesShareBridge.consumePendingOpen()
         var songId = url.flatMap { DeepLink.songID(from: $0) } ?? pending?.id
         if songId == nil, let url, DeepLink.isShareCard(url) {
@@ -122,6 +132,101 @@ final class AppEnvironment: ObservableObject {
                 context: PlaybackContext(label: song.title, kind: .search))
             NowPlayingPresenter.open()
         }
+    }
+
+    private func playContextDeepLink(_ context: DeepLink.ContextPlay, session: AppSession) async {
+        let player = session.player
+        if player.resumeSession(forKey: context.resumeKey) {
+            NowPlayingPresenter.open()
+            return
+        }
+
+        let entryId = context.entryId
+        let startSongId = context.songId
+
+        if entryId.hasPrefix("playlist:") {
+            let id = String(entryId.dropFirst("playlist:".count))
+            guard let playlist = try? await session.client.playlist(id: id),
+                  !playlist.songs.isEmpty else { return }
+            LibraryDetailCache.store(playlist: playlist)
+            let start = startSongId.flatMap { sid in playlist.songs.firstIndex(where: { $0.id == sid }) } ?? 0
+            let kind: PlaybackContext.Kind = playlist.name == RotationManager.playlistName
+                ? .outOfRotation
+                : .playlist(id: id)
+            player.play(playlist.songs, startAt: start,
+                        context: PlaybackContext(label: playlist.name, kind: kind))
+            NowPlayingPresenter.open()
+            return
+        }
+
+        if entryId.hasPrefix("album:") {
+            let id = String(entryId.dropFirst("album:".count))
+            guard let album = try? await session.client.album(id: id),
+                  !album.songs.isEmpty else { return }
+            let start = startSongId.flatMap { sid in album.songs.firstIndex(where: { $0.id == sid }) } ?? 0
+            player.play(album.songs, startAt: start,
+                        context: PlaybackContext(label: album.name, kind: .album(id: id)))
+            NowPlayingPresenter.open()
+            return
+        }
+
+        if entryId.hasPrefix("song:") {
+            let id = String(entryId.dropFirst("song:".count))
+            if let song = try? await session.client.song(id: id) {
+                player.play([song], startAt: 0,
+                            context: PlaybackContext(label: song.title, kind: .search))
+                NowPlayingPresenter.open()
+            }
+            return
+        }
+
+        if entryId.hasPrefix("mix:") {
+            let mixKey = String(entryId.dropFirst("mix:".count))
+            if mixKey.hasPrefix("genre:") {
+                let name = String(mixKey.dropFirst("genre:".count))
+                let songs = (try? await session.client.songsByGenre(name, count: 200)) ?? []
+                guard !songs.isEmpty else { return }
+                player.play(songs, startAt: 0,
+                            context: PlaybackContext(label: name, kind: .genre))
+                NowPlayingPresenter.open()
+                return
+            }
+            if mixKey.hasPrefix("artist:") {
+                let artistId = String(mixKey.dropFirst("artist:".count))
+                let songs = (try? await session.client.topSongs(artistName: artistId, count: 40)) ?? []
+                guard !songs.isEmpty else { return }
+                player.play(songs, startAt: 0,
+                            context: PlaybackContext(label: artistId, kind: .artist(id: artistId)))
+                NowPlayingPresenter.open()
+                return
+            }
+            if mixKey.hasPrefix("outOfRotation"), let playlistID = session.rotation.playlist?.id {
+                await playContextDeepLink(
+                    DeepLink.ContextPlay(resumeKey: "outOfRotation", entryId: "playlist:\(playlistID)", songId: startSongId),
+                    session: session)
+                return
+            }
+            if player.resumeSession(forKey: context.resumeKey) {
+                NowPlayingPresenter.open()
+            }
+        }
+    }
+
+    func playWatchContext(resumeKey: String, entryId: String, songId: String?) async {
+        guard let session else { return }
+        await playContextDeepLink(
+            DeepLink.ContextPlay(resumeKey: resumeKey, entryId: entryId, songId: songId),
+            session: session)
+    }
+
+    func playWatchPlaylist(id: String) async {
+        guard let session else { return }
+        await playContextDeepLink(
+            DeepLink.ContextPlay(
+                resumeKey: "playlist:\(id)",
+                entryId: "playlist:\(id)",
+                songId: nil),
+            session: session)
     }
 
     private func fetchShareSongID(from url: URL) async -> String? {
@@ -255,13 +360,6 @@ final class AppSession: ObservableObject, Identifiable {
             }
             _ = player.restorePersistedSessionIfNeeded()
         }
-        // History writes must never contend with the audio render path.
-        player.onTrackStarted = { [player] song in
-            let context = player.context
-            Task.detached(priority: .utility) {
-                try? database.recordPlay(userKey: userKey, song: song, context: context)
-            }
-        }
         player.autoplayProvider = AutoplayProvider(
             client: client, ratings: ratings, rotation: rotation,
             database: database, userKey: userKey)
@@ -308,10 +406,72 @@ final class AppSession: ObservableObject, Identifiable {
                 self?.objectWillChange.send()
             }
             .store(in: &playbackSideEffectCancellables)
+
+        // History writes must never contend with the audio render path.
+        player.onTrackStarted = { [weak self, player] song in
+            guard let self else { return }
+            let context = player.context
+            Task.detached(priority: .utility) {
+                try? database.recordPlay(userKey: userKey, song: song, context: context)
+                await MainActor.run {
+                    WidgetRecentSync.refresh(session: self, database: database)
+                }
+            }
+        }
+
+        WidgetRecentSync.refresh(session: self, database: database)
+        WidgetRecentSync.bindPlayback(session: self, database: database)
+        WidgetCommandBridge.startObserving { [weak self] command in
+            self?.handleWidgetCommand(command)
+        }
+    }
+
+    func handleWidgetCommand(_ command: WidgetCommand) {
+        let remote = connect?.isRemote == true
+        switch command {
+        case .togglePlay:
+            if remote {
+                let playing = connect?.remoteSession?.isPlaying == true
+                Task {
+                    await connect?.sendRemote(
+                        playing ? ConnectCommandType.pause : ConnectCommandType.play)
+                }
+            } else {
+                player.playPause()
+            }
+        case .next:
+            if remote {
+                Task { await connect?.sendRemote(ConnectCommandType.next) }
+            } else {
+                player.next()
+            }
+        case .previous:
+            if remote {
+                Task { await connect?.sendRemote(ConnectCommandType.previous) }
+            } else {
+                player.previous(preferPreviousTrack: true)
+            }
+        case .toggleLike:
+            guard let song = player.current?.song else { return }
+            let current = ratings.rating(for: song)
+            ratings.setRating(current >= 5 ? 0 : 5, for: song)
+            WidgetRecentSync.refresh(session: self, database: database)
+        case .toggleOutOfRotation:
+            guard let song = player.current?.song else { return }
+            Task {
+                if rotation.contains(song.id) {
+                    await rotation.remove(song, manual: true)
+                } else {
+                    await rotation.add(song, manual: true)
+                }
+                WidgetRecentSync.refresh(session: self, database: database)
+            }
+        }
     }
 
     func teardown() {
         playbackSideEffectCancellables.removeAll()
+        WidgetCommandBridge.stopObserving()
         connect?.stop()
         player.shutdown()
         lyricsIndexer.stop()

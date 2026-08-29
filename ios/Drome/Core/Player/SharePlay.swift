@@ -59,7 +59,9 @@ struct SharePlaySnapshot: Codable, Equatable {
     }
 
     static func == (lhs: SharePlaySnapshot, rhs: SharePlaySnapshot) -> Bool {
-        lhs.current == rhs.current && lhs.upcoming == rhs.upcoming
+        lhs.current == rhs.current
+            && lhs.upcoming == rhs.upcoming
+            && lhs.isPlaying == rhs.isPlaying
     }
 }
 

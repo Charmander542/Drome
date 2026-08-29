@@ -1,6 +1,7 @@
 import UIKit
 import CarPlay
 import Intents
+import AppIntents
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
     /// Stored so the background download session can tell the system when all
@@ -13,6 +14,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     ) -> Bool {
         DromeDiagnostics.install()
         DromeDiagnostics.log("didFinishLaunching")
+        DromeShortcuts.updateAppShortcutParameters()
+        PhoneWatchSession.shared.activate()
         return true
     }
 

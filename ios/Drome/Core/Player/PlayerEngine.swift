@@ -2306,6 +2306,13 @@ final class PlayerEngine: ObservableObject {
             contextQueue.removeAll()
             lastSharePlaySnapshot = snapshot
             resyncUpcomingWindow()
+            if snapshot.isPlaying != wantsToPlay {
+                if snapshot.isPlaying {
+                    resume(bypassConnectGate: true)
+                } else {
+                    pause()
+                }
+            }
             return
         }
 

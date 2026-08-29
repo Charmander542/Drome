@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
    LastUpgradeVersion = "2600"
-   version = "1.8">
+   version = "1.7">
    <BuildAction
       parallelizeBuildables = "YES"
       buildImplicitDependencies = "YES">
@@ -77,11 +77,6 @@
             ReferencedContainer = "container:Drome.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
-      <AdditionalOption
-         key = "WKCompanionAppBundleIdentifierToLaunch"
-         value = "drome.app.watchkitapp"
-         isEnabled = "YES">
-      </AdditionalOption>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"

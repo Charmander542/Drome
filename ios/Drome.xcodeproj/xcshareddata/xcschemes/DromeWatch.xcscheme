@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
    LastUpgradeVersion = "2600"
-   version = "1.8">
+   version = "1.7">
    <BuildAction
       parallelizeBuildables = "YES"
       buildImplicitDependencies = "YES">
@@ -17,20 +17,6 @@
                BlueprintIdentifier = "D00DE0000000000000000006"
                BuildableName = "Drome.app"
                BlueprintName = "Drome"
-               ReferencedContainer = "container:Drome.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "YES"
-            buildForProfiling = "YES"
-            buildForArchiving = "YES"
-            buildForAnalyzing = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "D00DE0000000000000000066"
-               BuildableName = "DromeWidgetExtension.appex"
-               BlueprintName = "DromeWidgetExtension"
                ReferencedContainer = "container:Drome.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -71,17 +57,12 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "D00DE0000000000000000006"
-            BuildableName = "Drome.app"
-            BlueprintName = "Drome"
+            BlueprintIdentifier = "D00DE0000000000000000084"
+            BuildableName = "DromeWatch.app"
+            BlueprintName = "DromeWatch"
             ReferencedContainer = "container:Drome.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
-      <AdditionalOption
-         key = "WKCompanionAppBundleIdentifierToLaunch"
-         value = "drome.app.watchkitapp"
-         isEnabled = "YES">
-      </AdditionalOption>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"
@@ -93,9 +74,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "D00DE0000000000000000006"
-            BuildableName = "Drome.app"
-            BlueprintName = "Drome"
+            BlueprintIdentifier = "D00DE0000000000000000084"
+            BuildableName = "DromeWatch.app"
+            BlueprintName = "DromeWatch"
             ReferencedContainer = "container:Drome.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

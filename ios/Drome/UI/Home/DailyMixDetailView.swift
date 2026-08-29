@@ -153,17 +153,12 @@ struct DailyMixDetailView: View {
             if session.rotation.songIDs.isEmpty {
                 await session.rotation.refresh()
             }
-            let hours = PlaybackPreferences.autoplayRecencyHours
-            let recentOrdered = (try? AppEnvironment.shared.database.recentPlayIDsOrdered(
-                userKey: session.account.userKey, withinHours: hours)) ?? []
-            var exclude = recentOrdered
-            let recentSet = Set(recentOrdered)
-            for id in session.rotation.excludedIDs where !recentSet.contains(id) {
-                exclude.append(id)
-            }
-            let mixes = try await session.wishlist?.dailyMixes(
-                excludeSongIDs: exclude, recencyHours: hours
-            ).mixes ?? []
+            let exclude = Array(session.rotation.excludedIDs)
+            let response = try await session.wishlist?.dailyMixes(
+                excludeSongIDs: exclude,
+                recencyHours: PlaybackPreferences.autoplayRecencyHours
+            )
+            let mixes = response?.mixes ?? []
             if let found = mixes.first(where: { $0.title == want || $0.id == mix?.id }) {
                 if let cleaned = Self.cleaned(found, excluded: session.rotation.excludedIDs) {
                     resolved = cleaned

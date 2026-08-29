@@ -20,6 +20,11 @@ struct DailyMixRail: View {
                         ForEach(0..<4, id: \.self) { _ in
                             DailyMixPlaceholder()
                         }
+                    } else if mixes.isEmpty {
+                        Text("Couldn’t load Daily Mixes. Check Settings → Wishlist companion and make sure the server is running.")
+                            .font(.caption)
+                            .foregroundStyle(DromeTheme.muted)
+                            .frame(width: 220, alignment: .leading)
                     } else {
                         ForEach(mixes) { mix in
                             NavigationLink {

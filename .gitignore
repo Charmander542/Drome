@@ -4,6 +4,7 @@
 # Xcode
 ios/.dd/
 ios/build/
+ios/.derivedData*/
 *.xcuserdatad/
 xcuserdata/
 DerivedData/
