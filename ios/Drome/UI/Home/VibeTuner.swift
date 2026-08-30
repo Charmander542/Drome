@@ -1,4 +1,5 @@
 import SwiftUI
+import WidgetKit
 
 /// Radio dial for moods. Stations sit on a slow→loud spectrum; play builds
 /// a queue on-device from tempo and genre (not Daily Mix collages / ratings).
@@ -6,7 +7,7 @@ struct VibeTuner: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
 
-    @State private var selected: MoodVibe = Self.vibeForHour()
+    @State private var selected: MoodVibe = WidgetVibeStore.selectedVibe
     @State private var spinning: MoodVibe?
     @State private var error: String?
 
@@ -36,6 +37,10 @@ struct VibeTuner: View {
         .hoverEffectDisabled()
         .animation(.spring(response: 0.38, dampingFraction: 0.84), value: selected)
         .sensoryFeedback(.selection, trigger: selected)
+        .onChange(of: selected) { _, vibe in
+            WidgetVibeStore.selectedVibe = vibe
+            WidgetCenter.shared.reloadTimelines(ofKind: "VibeTunerWidget")
+        }
     }
 
     private var header: some View {
@@ -201,6 +206,7 @@ struct VibeTuner: View {
         let vibe = vibes[clamped]
         if vibe != selected {
             selected = vibe
+            WidgetVibeStore.selectedVibe = vibe
         }
     }
 
@@ -211,15 +217,6 @@ struct VibeTuner: View {
         await MoodPlayer.play(vibe, session: session)
         if player.current == nil {
             error = "Couldn't find tracks for that vibe — try another, or add more music."
-        }
-    }
-
-    private static func vibeForHour() -> MoodVibe {
-        switch Calendar.current.component(.hour, from: Date()) {
-        case 5..<11: return .focus
-        case 11..<17: return .feelGood
-        case 17..<21: return .hype
-        default: return .lateNight
         }
     }
 }

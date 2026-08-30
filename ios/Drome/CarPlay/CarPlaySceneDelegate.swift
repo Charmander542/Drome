@@ -612,8 +612,9 @@ final class CarPlaySceneDelegate: UIResponder,
                 trimmed, artistCount: 12, albumCount: 12, songCount: 24))
                 ?? SearchResult3(artist: nil, album: nil, song: nil)
             guard !Task.isCancelled else { return }
+            let filtered = await self.filterSearchResult(result, session: session)
             list.updateSections(self.makeSearchSections(
-                from: result, query: trimmed, session: session))
+                from: filtered, query: trimmed, session: session))
         }
     }
 
@@ -677,9 +678,10 @@ final class CarPlaySceneDelegate: UIResponder,
                 return
             }
 
+            let filtered = await self.filterSearchResult(result, session: session)
             // CPSearchTemplate is a flat list and only keeps a short prefix —
             // put artists/albums first so they aren't buried under songs.
-            let items = self.makeFlatSearchItems(from: result, session: session, limit: 20)
+            let items = self.makeFlatSearchItems(from: filtered, session: session, limit: 20)
             completionHandler(items)
         }
     }
@@ -891,7 +893,8 @@ final class CarPlaySceneDelegate: UIResponder,
         let result = (try? await session.client.search(
             query, artistCount: 12, albumCount: 12, songCount: 24))
             ?? SearchResult3(artist: nil, album: nil, song: nil)
-        let sections = makeSearchSections(from: result, query: query, session: session)
+        let filtered = await filterSearchResult(result, session: session)
+        let sections = makeSearchSections(from: filtered, query: query, session: session)
         let list = CPListTemplate(title: title, sections: sections)
         interfaceController.pushTemplate(list, animated: true, completion: nil)
     }
@@ -1653,7 +1656,7 @@ final class CarPlaySceneDelegate: UIResponder,
     private func showArtistsBrowse(session: AppSession) async {
         guard let interfaceController else { return }
         let indexes = (try? await session.client.artists()) ?? []
-        let artists = Self.artistsWithEmptyAlbumsLast(indexes.flatMap(\.artists))
+        let artists = await filteredBrowseArtists(indexes.flatMap(\.artists), session: session)
         CarPlayArtwork.prefetch(
             ids: artists.prefix(40).map { $0.coverArt ?? $0.id },
             session: session)
@@ -1887,6 +1890,24 @@ final class CarPlaySceneDelegate: UIResponder,
             if aEmpty != bEmpty { return !aEmpty && bEmpty }
             return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
         }
+    }
+
+    private func filteredBrowseArtists(_ artists: [Artist], session: AppSession) async -> [Artist] {
+        guard LibraryArtistFilter.hideCreditOnlyArtists else {
+            return Self.artistsWithEmptyAlbumsLast(artists)
+        }
+        let ownership = await session.artistOwnershipStats()
+        let songsIndexed = await session.songsIndexComplete()
+        return Self.artistsWithEmptyAlbumsLast(
+            LibraryArtistFilter.filter(artists, ownership: ownership, songsIndexed: songsIndexed))
+    }
+
+    private func filterSearchResult(_ result: SearchResult3, session: AppSession) async -> SearchResult3 {
+        guard LibraryArtistFilter.hideCreditOnlyArtists else { return result }
+        let ownership = await session.artistOwnershipStats()
+        let songsIndexed = await session.songsIndexComplete()
+        let artists = LibraryArtistFilter.filter(result.artists, ownership: ownership, songsIndexed: songsIndexed)
+        return SearchResult3(artist: artists, album: result.album, song: result.song)
     }
 }
 

@@ -1,20 +1,10 @@
 import SwiftUI
 
-private enum DownloadsGroupMode: String, CaseIterable, Identifiable {
-    case album = "Album"
-    case artist = "Artist"
-    case playlist = "Playlist"
-
-    var id: String { rawValue }
-}
-
 struct DownloadsView: View {
     var isOfflineMode: Bool = false
 
     @EnvironmentObject private var downloads: DownloadManager
     @EnvironmentObject private var player: PlayerEngine
-
-    @State private var groupMode: DownloadsGroupMode = .album
 
     private var active: [DownloadRecord] {
         downloads.records.filter {
@@ -22,49 +12,21 @@ struct DownloadsView: View {
         }
     }
 
-    private var doneRecords: [DownloadRecord] {
-        downloads.records.filter { $0.state == "done" }
+    private var downloadedSongs: [Song] {
+        downloads.records
+            .filter { $0.state == "done" }
+            .compactMap(song(from:))
+            .sorted {
+                $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
     }
 
-    private var sections: [(id: String, name: String, songs: [Song])] {
-        switch groupMode {
-        case .album:
-            return groupByAlbum()
-        case .artist:
-            return groupByArtist()
-        case .playlist:
-            return groupByPlaylist()
-        }
+    private var playbackContext: PlaybackContext {
+        PlaybackContext(label: isOfflineMode ? "Offline Library" : "Downloaded", kind: .mix)
     }
 
     var body: some View {
         List {
-            Section {
-                Picker("Group by", selection: $groupMode) {
-                    ForEach(DownloadsGroupMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                .listRowBackground(Color.clear)
-
-                HStack {
-                    Text(doneRecords.count == 1 ? "1 song" : "\(doneRecords.count) songs")
-                    Spacer()
-                    Text(Formatters.fileSize(downloads.totalBytesUsed))
-                        .foregroundStyle(DromeTheme.muted)
-                }
-                if !isOfflineMode, !doneRecords.isEmpty {
-                    Button(role: .destructive) {
-                        downloads.removeAll()
-                    } label: {
-                        Label("Remove All Downloads", systemImage: "trash")
-                    }
-                }
-            }
-            .listRowBackground(DromeTheme.elevated)
-
             if !active.isEmpty {
                 Section("In progress") {
                     ForEach(active, id: \.songId) { record in
@@ -76,26 +38,61 @@ struct DownloadsView: View {
                 }
             }
 
-            ForEach(sections, id: \.id) { section in
-                Section {
+            Section {
+                downloadsHeader
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 8, trailing: 16))
+
+                HStack(spacing: 12) {
                     Button {
-                        player.play(
-                            section.songs, startAt: 0,
-                            context: PlaybackContext(label: section.name, kind: .mix))
+                        player.play(downloadedSongs, startAt: 0, context: playbackContext)
                     } label: {
-                        Label("Play All", systemImage: "play.fill")
+                        Label("Play", systemImage: "play.fill")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(DromeTheme.accent)
                     .foregroundStyle(.white)
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .disabled(downloadedSongs.isEmpty)
 
-                    ForEach(Array(section.songs.enumerated()), id: \.element.id) { index, song in
+                    Button {
+                        player.playShuffled(downloadedSongs, context: playbackContext)
+                    } label: {
+                        Label("Shuffle", systemImage: "shuffle")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.white)
+                    .disabled(downloadedSongs.isEmpty)
+                }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+
+                if !isOfflineMode, !downloadedSongs.isEmpty {
+                    Button(role: .destructive) {
+                        downloads.removeAll()
+                    } label: {
+                        Label("Remove All Downloads", systemImage: "trash")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .listRowBackground(DromeTheme.elevated)
+                }
+            }
+
+            Section {
+                if downloadedSongs.isEmpty {
+                    EmptyStateView(
+                        title: isOfflineMode ? "No downloads available" : "No downloads yet",
+                        systemImage: "arrow.down.circle",
+                        message: isOfflineMode
+                            ? "Connect to your server, then download albums or playlists for offline listening."
+                            : "Download albums or playlists from their detail screens for offline listening.")
+                        .listRowBackground(Color.clear)
+                } else {
+                    ForEach(Array(downloadedSongs.enumerated()), id: \.element.id) { index, song in
                         SongRow(
                             song: song,
-                            showAlbum: groupMode != .album,
+                            showAlbum: true,
                             trailing: isOfflineMode ? nil : AnyView(
                                 Button(role: .destructive) {
                                     downloads.remove(songId: song.id)
@@ -106,96 +103,58 @@ struct DownloadsView: View {
                             ),
                             onPlay: {
                                 player.play(
-                                    section.songs, startAt: index,
-                                    context: PlaybackContext(label: section.name, kind: .mix))
+                                    downloadedSongs, startAt: index,
+                                    context: playbackContext)
                             }
                         )
                         .listRowBackground(DromeTheme.background)
                         .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                     }
-                } header: {
-                    Text(section.name)
                 }
             }
-
-            if downloads.records.isEmpty {
-                EmptyStateView(
-                    title: isOfflineMode ? "No downloads available" : "No downloads yet",
-                    systemImage: "arrow.down.circle",
-                    message: isOfflineMode
-                        ? "Connect to your server, then download albums or playlists for offline listening."
-                        : "Download albums or playlists from their detail screens for offline listening.")
-                    .listRowBackground(Color.clear)
-            }
         }
-        .listStyle(.insetGrouped)
+        .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .dromeMiniPlayerClearance()
-        .navigationTitle(isOfflineMode ? "Offline Library" : "Downloads")
+        .navigationTitle(isOfflineMode ? "Offline Library" : "Downloaded")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
-    // MARK: - Grouping
-
-    private func groupByAlbum() -> [(id: String, name: String, songs: [Song])] {
-        let grouped = Dictionary(grouping: doneRecords) {
-            $0.albumName.isEmpty ? "Tracks" : $0.albumName
-        }
-        return grouped.keys.sorted().compactMap { name in
-            let songs = (grouped[name] ?? []).compactMap(song(from:))
-            guard !songs.isEmpty else { return nil }
-            return (id: "album:\(name)", name: name, songs: songs)
-        }
-    }
-
-    private func groupByArtist() -> [(id: String, name: String, songs: [Song])] {
-        let grouped = Dictionary(grouping: doneRecords) {
-            $0.artist.isEmpty ? "Unknown Artist" : $0.artist
-        }
-        return grouped.keys.sorted().compactMap { name in
-            let songs = (grouped[name] ?? []).compactMap(song(from:))
-            guard !songs.isEmpty else { return nil }
-            return (id: "artist:\(name)", name: name, songs: songs)
-        }
-    }
-
-    private func groupByPlaylist() -> [(id: String, name: String, songs: [Song])] {
-        let memberships = downloads.playlistMemberships
-        let byPlaylist = Dictionary(grouping: memberships) { $0.playlistId }
-
-        var sections: [(id: String, name: String, songs: [Song])] = byPlaylist.keys.compactMap { playlistId in
-            let rows = byPlaylist[playlistId] ?? []
-            let name = rows.first?.playlistName.isEmpty == false
-                ? (rows.first?.playlistName ?? "Playlist")
-                : "Playlist"
-            let songs = rows.compactMap { membership -> Song? in
-                song(fromSongId: membership.songId)
+    private var downloadsHeader: some View {
+        VStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(DromeTheme.elevated2)
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 56, weight: .semibold))
+                    .foregroundStyle(DromeTheme.accent)
             }
-            guard !songs.isEmpty else { return nil }
-            return (id: "playlist:\(playlistId)", name: name, songs: songs)
-        }
-        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .frame(width: 180, height: 180)
+            .shadow(color: .black.opacity(0.35), radius: 18, y: 10)
 
-        let memberSongIDs = Set(memberships.map(\.songId))
-        let ungrouped = doneRecords
-            .filter { !memberSongIDs.contains($0.songId) }
-            .compactMap(song(from:))
-        if !ungrouped.isEmpty {
-            sections.append((id: "playlist:__none__", name: "Not in a playlist", songs: ungrouped))
+            VStack(spacing: 6) {
+                Text(isOfflineMode ? "Offline Library" : "Downloaded")
+                    .font(.title2.bold())
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+
+                Text(headerSubtitle)
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.muted)
+            }
         }
-        return sections
+    }
+
+    private var headerSubtitle: String {
+        let count = downloadedSongs.count
+        let songs = count == 1 ? "1 song" : "\(count) songs"
+        let size = Formatters.fileSize(downloads.totalBytesUsed)
+        return count == 0 ? size : "\(songs) · \(size)"
     }
 
     private func song(from record: DownloadRecord) -> Song? {
         downloads.song(forDownloadedId: record.songId)
             ?? (try? JSONDecoder().decode(Song.self, from: Data(record.songJSON.utf8)))
-    }
-
-    private func song(fromSongId songId: String) -> Song? {
-        downloads.song(forDownloadedId: songId)
-    }
-
-    private func title(for record: DownloadRecord) -> String {
-        song(from: record)?.title ?? record.songId
     }
 }
 

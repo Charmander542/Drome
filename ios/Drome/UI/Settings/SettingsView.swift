@@ -159,6 +159,12 @@ struct SettingsView: View {
             .listRowBackground(DromeTheme.elevated)
 
             Section {
+                Toggle(isOn: Binding(
+                    get: { LibraryArtistFilter.hideCreditOnlyArtists },
+                    set: { LibraryArtistFilter.hideCreditOnlyArtists = $0 }
+                )) {
+                    Label("Hide feature credits", systemImage: "person.crop.circle.badge.minus")
+                }
                 Button {
                     Task { await refreshLibrary() }
                 } label: {
@@ -179,7 +185,7 @@ struct SettingsView: View {
             } header: {
                 Text("Library")
             } footer: {
-                Text("Triggers a Navidrome library rescan on the server, then reloads local lists.")
+                Text("Hide feature credits removes artists with no albums who only appear on other people's tracks. Refresh Library triggers a Navidrome rescan and reloads local lists.")
             }
             .listRowBackground(DromeTheme.elevated)
 

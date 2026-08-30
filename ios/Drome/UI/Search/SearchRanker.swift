@@ -26,13 +26,15 @@ enum SearchRanker {
     /// merely contain the query — so "adele" surfaces Adele the artist first.
     static func rank(query: String,
                      result: SearchResult3,
-                     lyrics: [LyricsSearchMatch] = []) -> [SearchHit] {
+                     lyrics: [LyricsSearchMatch] = [],
+                     artistFilter: ((Artist) -> Bool)? = nil) -> [SearchHit] {
         let q = normalize(query)
         guard !q.isEmpty else { return [] }
 
         var hits: [SearchHit] = []
 
         for artist in result.artists {
+            if let artistFilter, !artistFilter(artist) { continue }
             let score = matchScore(name: artist.name, query: q, kind: .artist)
             guard score > 0 else { continue }
             hits.append(SearchHit(

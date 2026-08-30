@@ -6,12 +6,14 @@ enum WidgetCommand: String, Codable {
     case previous
     case toggleLike
     case toggleOutOfRotation
+    case playVibe
 }
 
 /// App Group bridge for widget button taps → main app playback.
 enum WidgetCommandBridge {
     static let appGroupID = WidgetRecentStore.appGroupID
     private static let commandKey = "widget-command"
+    private static let playVibeKey = "widget-play-vibe"
     private static let notificationName = CFNotificationName("com.drome.widget.command" as CFString)
     private static var observerBox: ObserverBox?
     private static var isObserving = false
@@ -24,12 +26,23 @@ enum WidgetCommandBridge {
             nil, nil, true)
     }
 
+    static func postPlayVibe(_ vibeID: String) {
+        UserDefaults(suiteName: appGroupID)?.set(vibeID, forKey: playVibeKey)
+        post(.playVibe)
+    }
+
     static func consume() -> WidgetCommand? {
         guard let raw = UserDefaults(suiteName: appGroupID)?.string(forKey: commandKey),
               let command = WidgetCommand(rawValue: raw)
         else { return nil }
         UserDefaults(suiteName: appGroupID)?.removeObject(forKey: commandKey)
         return command
+    }
+
+    static func consumePlayVibeID() -> String? {
+        guard let raw = UserDefaults(suiteName: appGroupID)?.string(forKey: playVibeKey) else { return nil }
+        UserDefaults(suiteName: appGroupID)?.removeObject(forKey: playVibeKey)
+        return raw
     }
 
     static func startObserving(handler: @escaping (WidgetCommand) -> Void) {

@@ -182,10 +182,12 @@
 		D00DE0000000000000000074 /* Exceptions for "Drome" folder in "DromeWidgetExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				Shared/MoodVibe.swift,
 				Shared/WidgetArtWash.swift,
 				Shared/WidgetCommandBridge.swift,
 				Shared/WidgetIntents.swift,
 				Shared/WidgetRecentData.swift,
+				Shared/WidgetVibeStore.swift,
 			);
 			target = D00DE0000000000000000066 /* DromeWidgetExtension */;
 		};

@@ -3,13 +3,6 @@ import SwiftUI
 import UIKit
 import AppIntents
 
-@main
-struct DromeWidgetBundle: WidgetBundle {
-    var body: some Widget {
-        RecentPlaysWidget()
-    }
-}
-
 struct RecentPlaysWidget: Widget {
     let kind = "RecentPlaysWidget"
 
@@ -123,6 +116,27 @@ struct RecentPlaysWidgetView: View {
 }
 
 // MARK: - Medium playing (Spotify-style)
+
+private enum WidgetIdleMetrics {
+    static let compactArt: CGFloat = 48
+    static let columnSpacing: CGFloat = 8
+    static let horizontalPadding: CGFloat = 28
+    static let verticalPadding: CGFloat = 28
+    static let sectionSpacing: CGFloat = 10
+    static let captionHeight: CGFloat = 14
+
+    /// One size for every idle tile — halfway between 48pt and a full grid cell, capped so hero + grid fit.
+    static func artSize(width: CGFloat, height: CGFloat, columnCount: Int) -> CGFloat {
+        let columns = CGFloat(max(columnCount, 1))
+        let innerWidth = width - horizontalPadding
+        let innerHeight = height - verticalPadding
+        let gaps = columnSpacing * (columns - 1)
+        let gridCell = floor((innerWidth - gaps) / columns)
+        let preferred = floor((compactArt + gridCell) / 2)
+        let maxByHeight = floor((innerHeight - sectionSpacing - captionHeight) / 2)
+        return min(preferred, maxByHeight, gridCell)
+    }
+}
 
 private struct MediumPlayingView: View {
     let nowPlaying: WidgetNowPlaying
@@ -254,24 +268,29 @@ private struct SmallCoverView: View {
 private struct MediumIdleView: View {
     let items: [WidgetRecentItem]
 
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
+    private let gridColumns = 5
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            RecentHeroHeader(item: items.first)
+        GeometryReader { geo in
+            let artSize = WidgetIdleMetrics.artSize(
+                width: geo.size.width, height: geo.size.height, columnCount: gridColumns)
+            let columns = Array(repeating: GridItem(.fixed(artSize), spacing: 8), count: gridColumns)
+            VStack(alignment: .leading, spacing: 10) {
+                RecentHeroHeader(item: items.first, artSize: artSize)
 
-            if items.isEmpty {
-                EmptyWidgetView(message: "Play something in Drome")
-                    .frame(maxHeight: .infinity)
-            } else {
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                    ForEach(Array(items.dropFirst().prefix(4))) { item in
-                        RecentSquareTile(item: item, showTitle: true)
+                if items.isEmpty {
+                    EmptyWidgetView(message: "Play something in Drome")
+                        .frame(maxHeight: .infinity)
+                } else {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+                        ForEach(Array(items.dropFirst().prefix(gridColumns))) { item in
+                            RecentSquareTile(item: item, showTitle: true, artSize: artSize)
+                        }
                     }
                 }
             }
+            .padding(14)
         }
-        .padding(14)
     }
 }
 
@@ -280,29 +299,33 @@ private struct MediumIdleView: View {
 private struct LargeCompactRecentsView: View {
     let items: [WidgetRecentItem]
 
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            RecentHeroHeader(item: items.first)
+        GeometryReader { geo in
+            let artSize = WidgetIdleMetrics.artSize(
+                width: geo.size.width, height: geo.size.height, columnCount: 4)
+            let columns = Array(repeating: GridItem(.fixed(artSize), spacing: 8), count: 4)
+            VStack(alignment: .leading, spacing: 10) {
+                RecentHeroHeader(item: items.first, artSize: artSize)
 
-            if items.isEmpty {
-                EmptyWidgetView(message: "Recently played shows up here")
-                    .frame(maxHeight: .infinity)
-            } else {
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                    ForEach(Array(items.dropFirst().prefix(12))) { item in
-                        RecentSquareTile(item: item, showTitle: true)
+                if items.isEmpty {
+                    EmptyWidgetView(message: "Recently played shows up here")
+                        .frame(maxHeight: .infinity)
+                } else {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+                        ForEach(Array(items.dropFirst().prefix(12))) { item in
+                            RecentSquareTile(item: item, showTitle: true, artSize: artSize)
+                        }
                     }
                 }
             }
+            .padding(14)
         }
-        .padding(14)
     }
 }
 
 private struct RecentHeroHeader: View {
     let item: WidgetRecentItem?
+    var artSize: CGFloat
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -310,7 +333,7 @@ private struct RecentHeroHeader: View {
                 Link(destination: URL(string: item.deepLink)!) {
                     HStack(alignment: .top, spacing: 10) {
                         WidgetArtwork(file: item.artworkFile, cornerRadius: WidgetColors.albumCornerRadius)
-                            .frame(width: 48, height: 48)
+                            .frame(width: artSize, height: artSize)
                         Text(item.title)
                             .font(.subheadline.weight(.bold))
                             .foregroundStyle(.white)
@@ -328,12 +351,13 @@ private struct RecentHeroHeader: View {
 private struct RecentSquareTile: View {
     let item: WidgetRecentItem
     var showTitle: Bool = false
+    var artSize: CGFloat
 
     var body: some View {
         Link(destination: URL(string: item.deepLink)!) {
             VStack(alignment: .leading, spacing: 4) {
                 WidgetArtwork(file: item.artworkFile, cornerRadius: WidgetColors.albumCornerRadius)
-                    .aspectRatio(1, contentMode: .fill)
+                    .frame(width: artSize, height: artSize)
                 if showTitle {
                     Text(item.title)
                         .font(.caption2.weight(.semibold))
@@ -523,37 +547,6 @@ private struct WashBackground: View {
             ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing)
-    }
-}
-
-/// Six-bar Drome mark drawn in SwiftUI (JPEG LaunchLogo is not template-safe).
-private struct DromeBarMark: View {
-    var size: CGFloat = 18
-    var color: Color = .white
-
-    private static let glyphs: [(kind: Int, height: CGFloat)] = [
-        (0, 10), (1, 4.5), (0, 16.5), (0, 20), (0, 10), (1, 3.8),
-    ]
-
-    var body: some View {
-        let barW = size * 0.16
-        let spacing = size * 0.08
-        HStack(alignment: .center, spacing: spacing) {
-            ForEach(0..<Self.glyphs.count, id: \.self) { i in
-                let g = Self.glyphs[i]
-                if g.kind == 0 {
-                    Capsule()
-                        .fill(color)
-                        .frame(width: barW, height: size * (g.height / 22))
-                } else {
-                    Circle()
-                        .fill(color)
-                        .frame(width: size * (g.height / 22), height: size * (g.height / 22))
-                }
-            }
-        }
-        .frame(width: size * 1.35, height: size)
-        .accessibilityHidden(true)
     }
 }
 

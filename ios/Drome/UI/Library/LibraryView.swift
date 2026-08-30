@@ -34,6 +34,7 @@ struct LibraryView: View {
 
     @State private var filter: LibraryFilter = .playlists
     @State private var playlists: [Playlist] = []
+    @State private var isReorderingPlaylists = false
     @State private var albumWindow: [LibraryLetterSection<Album>] = []
     @State private var albumLetters: [String] = []
     @State private var albumRevealCount = 80
@@ -100,7 +101,9 @@ struct LibraryView: View {
                 .accessibilityLabel("Wishlist")
             }
             ToolbarItem(placement: .topBarTrailing) {
-                if filter == .playlists {
+                if filter == .playlists, isReorderingPlaylists {
+                    Button("Done") { isReorderingPlaylists = false }
+                } else if filter == .playlists {
                     Button {
                         newPlaylistName = ""
                         showCreatePlaylist = true
@@ -120,6 +123,18 @@ struct LibraryView: View {
         }
         .refreshable {
             await refreshLibrary(triggerScan: true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: LibraryArtistFilter.preferenceDidChange)) { _ in
+            Task {
+                session.invalidateArtistOwnershipCache()
+                guard filter == .artists else { return }
+                artistLetters = await indexLetters(.artists)
+                if let letter = artistScrollTarget ?? artistLetters.first {
+                    await showArtistLetter(letter)
+                } else {
+                    artistWindow = []
+                }
+            }
         }
         .alert("New Playlist", isPresented: $showCreatePlaylist) {
             TextField("Playlist name", text: $newPlaylistName)
@@ -245,6 +260,9 @@ struct LibraryView: View {
             .onAppear { visitedFilters.insert(filter) }
             .onChange(of: filter) { _, newValue in
                 visitedFilters.insert(newValue)
+                if newValue != .playlists {
+                    isReorderingPlaylists = false
+                }
             }
         }
     }
@@ -353,52 +371,27 @@ struct LibraryView: View {
                         .listRowBackground(Color.clear)
                 }
                 ForEach(playlists) { playlist in
-                    NavigationLink {
-                        PlaylistDetailView(playlistID: playlist.id, placeholder: playlist) {
-                            playlists.removeAll { $0.id == playlist.id }
-                        }
-                    } label: {
-                        HStack(spacing: 12) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 4)
-                                    .fill(DromeTheme.elevated2)
-                                if rotation.isSystemPlaylist(playlist) {
-                                    Image(systemName: "lock.fill")
-                                        .foregroundStyle(DromeTheme.muted)
-                                } else {
-                                    RemoteImage(url: session.client.coverArtURL(id: playlist.coverArt ?? playlist.id, size: 96),
-                                                placeholderSymbol: "music.note.list")
+                    Group {
+                        if isReorderingPlaylists {
+                            playlistRow(playlist)
+                        } else {
+                            NavigationLink {
+                                PlaylistDetailView(playlistID: playlist.id, placeholder: playlist) {
+                                    playlists.removeAll { $0.id == playlist.id }
+                                    persistPlaylistOrder()
                                 }
-                            }
-                            .frame(width: 56, height: 56)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 6) {
-                                    Text(playlist.name)
-                                        .font(DromeTheme.rowTitle)
-                                    if rotation.isSystemPlaylist(playlist) {
-                                        Image(systemName: "lock.fill")
-                                            .font(.caption2)
-                                            .foregroundStyle(DromeTheme.muted)
-                                    }
-                                    if downloads.isPlaylistFullyDownloaded(
-                                        playlistId: playlist.id,
-                                        expectedCount: playlist.songCount ?? 0)
-                                    {
-                                        Image(systemName: "arrow.down.circle.fill")
-                                            .font(.caption)
-                                            .foregroundStyle(DromeTheme.accent)
-                                            .accessibilityLabel("Downloaded")
-                                    }
-                                }
-                                Text(playlistSubtitle(playlist))
-                                    .font(.caption)
-                                    .foregroundStyle(DromeTheme.muted)
+                            } label: {
+                                playlistRow(playlist)
                             }
                         }
                     }
                     .listRowBackground(DromeTheme.background)
+                    .simultaneousGesture(
+                        LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+                            guard !rotation.isSystemPlaylist(playlist) else { return }
+                            isReorderingPlaylists = true
+                        }
+                    )
                     .contextMenu {
                         if !rotation.isSystemPlaylist(playlist) {
                             Button {
@@ -406,6 +399,11 @@ struct LibraryView: View {
                                 playlistToRename = playlist
                             } label: {
                                 Label("Rename", systemImage: "pencil")
+                            }
+                            Button {
+                                isReorderingPlaylists = true
+                            } label: {
+                                Label("Reorder Playlists", systemImage: "line.3.horizontal")
                             }
                             Button(role: .destructive) {
                                 playlistToDelete = playlist
@@ -431,8 +429,10 @@ struct LibraryView: View {
                         }
                     }
                 }
+                .onMove(perform: isReorderingPlaylists ? movePlaylist : nil)
             }
         }
+        .environment(\.editMode, .constant(isReorderingPlaylists ? .active : .inactive))
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
@@ -776,6 +776,63 @@ struct LibraryView: View {
         ImageLoader.shared.prefetch(urls, limit: 48)
     }
 
+    private func playlistRow(_ playlist: Playlist) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(DromeTheme.elevated2)
+                if rotation.isSystemPlaylist(playlist) {
+                    Image(systemName: "lock.fill")
+                        .foregroundStyle(DromeTheme.muted)
+                } else {
+                    RemoteImage(url: session.client.coverArtURL(id: playlist.coverArt ?? playlist.id, size: 96),
+                                placeholderSymbol: "music.note.list")
+                }
+            }
+            .frame(width: 56, height: 56)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(playlist.name)
+                        .font(DromeTheme.rowTitle)
+                    if rotation.isSystemPlaylist(playlist) {
+                        Image(systemName: "lock.fill")
+                            .font(.caption2)
+                            .foregroundStyle(DromeTheme.muted)
+                    }
+                    if downloads.isPlaylistFullyDownloaded(
+                        playlistId: playlist.id,
+                        expectedCount: playlist.songCount ?? 0)
+                    {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(DromeTheme.accent)
+                            .accessibilityLabel("Downloaded")
+                    }
+                }
+                Text(playlistSubtitle(playlist))
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.muted)
+            }
+        }
+    }
+
+    private func applyPlaylists(_ list: [Playlist]) {
+        playlists = PlaylistOrderStore.ordered(list, serverKey: session.account.serverKey)
+    }
+
+    private func persistPlaylistOrder() {
+        let key = session.account.serverKey
+        PlaylistOrderStore.save(playlists.map(\.id), serverKey: key)
+        LibraryListCatalog.storePlaylists(playlists, serverKey: key)
+    }
+
+    private func movePlaylist(from source: IndexSet, to destination: Int) {
+        playlists.move(fromOffsets: source, toOffset: destination)
+        persistPlaylistOrder()
+    }
+
     private func playlistSubtitle(_ playlist: Playlist) -> String {
         var parts: [String] = []
         if let owner = playlist.owner { parts.append(owner) }
@@ -797,7 +854,7 @@ struct LibraryView: View {
         if playlists.isEmpty,
            let cached = LibraryListCatalog.playlists(serverKey: serverKey),
            !cached.isEmpty {
-            playlists = cached
+            applyPlaylists(cached)
         }
     }
 
@@ -887,12 +944,13 @@ struct LibraryView: View {
                    playlists.isEmpty,
                    let cached = LibraryListCatalog.playlists(serverKey: session.account.serverKey),
                    !cached.isEmpty {
-                    playlists = cached
+                    applyPlaylists(cached)
                 }
                 if forceNetwork || playlists.isEmpty {
                     let fresh = try await session.client.playlists()
-                    playlists = fresh
-                    LibraryListCatalog.storePlaylists(fresh, serverKey: session.account.serverKey)
+                    applyPlaylists(fresh)
+                    LibraryListCatalog.storePlaylists(playlists, serverKey: session.account.serverKey)
+                    persistPlaylistOrder()
                 }
                 await rotation.refresh()
             case .albums:
@@ -916,6 +974,14 @@ struct LibraryView: View {
     private func indexLetters(_ kind: LibraryIndexKind) async -> [String] {
         let key = serverKey()
         let index = session.library
+        if kind == .artists, LibraryArtistFilter.hideCreditOnlyArtists {
+            let ownership = await session.artistOwnershipStats()
+            let songsIndexed = await session.songsIndexComplete()
+            return await Task.detached(priority: .utility) {
+                (try? index.visibleArtistLetters(
+                    serverKey: key, ownership: ownership, songsIndexed: songsIndexed)) ?? []
+            }.value
+        }
         return await Task.detached(priority: .utility) {
             (try? index.letters(kind: kind, serverKey: key)) ?? []
         }.value
@@ -993,12 +1059,16 @@ struct LibraryView: View {
     private func loadArtistSections(_ letters: [String]) async -> [LibraryLetterSection<Artist>] {
         let key = serverKey()
         let index = session.library
+        let ownership = await session.artistOwnershipStats()
+        let songsIndexed = await session.songsIndexComplete()
         var loaded: [(Int, LibraryLetterSection<Artist>)] = []
         await withTaskGroup(of: (Int, String, [Artist]).self) { group in
             for (offset, letter) in letters.enumerated() {
                 group.addTask {
                     let items = (try? index.artists(serverKey: key, letter: letter)) ?? []
-                    return (offset, letter, items)
+                    let visible = LibraryArtistFilter.filter(
+                        items, ownership: ownership, songsIndexed: songsIndexed)
+                    return (offset, letter, visible)
                 }
             }
             for await (offset, letter, items) in group where !items.isEmpty {
@@ -1537,9 +1607,16 @@ struct LibraryView: View {
             }
 
             if complete {
+                session.invalidateArtistOwnershipCache()
                 Task {
                     await Task.yield()
                     session.ratings.ingest(page)
+                    if filter == .artists {
+                        artistLetters = await indexLetters(.artists)
+                        if let letter = artistScrollTarget ?? artistLetters.first {
+                            await showArtistLetter(letter)
+                        }
+                    }
                 }
             }
         } catch {
@@ -1614,6 +1691,7 @@ struct LibraryView: View {
             try? await Task.detached {
                 try index.replaceSongs(collected, serverKey: key, isComplete: true)
             }.value
+            session.invalidateArtistOwnershipCache()
             session.ratings.ingest(collected)
         }
     }
@@ -1665,8 +1743,8 @@ struct LibraryView: View {
         let active = filter
         if active != .playlists {
             if let fresh = try? await session.client.playlists() {
-                playlists = fresh
-                LibraryListCatalog.storePlaylists(fresh, serverKey: session.account.serverKey)
+                applyPlaylists(fresh)
+                LibraryListCatalog.storePlaylists(playlists, serverKey: session.account.serverKey)
             }
         }
         if active != .artists {
@@ -1722,7 +1800,7 @@ struct LibraryView: View {
             await load(forceNetwork: true)
             if !playlists.contains(where: { $0.id == created.id }) {
                 playlists.insert(created.asPlaylist, at: 0)
-                LibraryListCatalog.storePlaylists(playlists, serverKey: session.account.serverKey)
+                persistPlaylistOrder()
             }
         } catch {
             self.error = error.localizedDescription
@@ -1748,7 +1826,7 @@ struct LibraryView: View {
         do {
             try await session.client.deletePlaylist(id: playlist.id)
             playlists.removeAll { $0.id == playlist.id }
-            LibraryListCatalog.storePlaylists(playlists, serverKey: session.account.serverKey)
+            persistPlaylistOrder()
         } catch {
             self.error = error.localizedDescription
         }

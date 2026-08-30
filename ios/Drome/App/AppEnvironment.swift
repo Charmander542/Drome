@@ -278,8 +278,37 @@ final class AppSession: ObservableObject, Identifiable {
     let connectivity: ConnectivityMonitor
     let connect: ConnectController?
     private var playbackSideEffectCancellables = Set<AnyCancellable>()
+    private var artistOwnershipCache: [String: ArtistOwnership]?
+    private var artistOwnershipServerKey: String?
 
     var id: UUID { account.id }
+
+    func songsIndexComplete() async -> Bool {
+        let key = account.serverKey
+        let index = library
+        return await Task.detached(priority: .utility) {
+            (try? index.isComplete(kind: .songs, serverKey: key)) ?? false
+        }.value
+    }
+
+    func artistOwnershipStats(forceRefresh: Bool = false) async -> [String: ArtistOwnership] {
+        let key = account.serverKey
+        if !forceRefresh, artistOwnershipServerKey == key, let artistOwnershipCache {
+            return artistOwnershipCache
+        }
+        let index = library
+        let stats = await Task.detached(priority: .utility) {
+            (try? index.buildArtistOwnershipStats(serverKey: key)) ?? [:]
+        }.value
+        artistOwnershipCache = stats
+        artistOwnershipServerKey = key
+        return stats
+    }
+
+    func invalidateArtistOwnershipCache() {
+        artistOwnershipCache = nil
+        artistOwnershipServerKey = nil
+    }
 
     /// Prefer locally downloaded cover art when present (offline-safe).
     func artworkURL(id: String?, size: Int = 600) -> URL? {
@@ -464,6 +493,13 @@ final class AppSession: ObservableObject, Identifiable {
                 } else {
                     await rotation.add(song, manual: true)
                 }
+                WidgetRecentSync.refresh(session: self, database: database)
+            }
+        case .playVibe:
+            guard let raw = WidgetCommandBridge.consumePlayVibeID(),
+                  let vibe = MoodVibe(rawValue: raw) else { return }
+            Task {
+                await MoodPlayer.play(vibe, session: self)
                 WidgetRecentSync.refresh(session: self, database: database)
             }
         }

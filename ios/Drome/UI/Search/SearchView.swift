@@ -688,6 +688,9 @@ struct SearchView: View {
         let index = session.library
         let db = session.database
         let wantLyrics = includeLyrics
+        let ownership = await session.artistOwnershipStats()
+        let songsIndexed = await session.songsIndexComplete()
+        let hideCredits = LibraryArtistFilter.hideCreditOnlyArtists
         let ranked = await Task.detached(priority: .userInitiated) {
             let metadata = (try? index.search(serverKey: serverKey, query: q))
                 ?? SearchResult3(artist: nil, album: nil, song: nil)
@@ -697,7 +700,11 @@ struct SearchView: View {
             } else {
                 lyrics = []
             }
-            return SearchRanker.rank(query: q, result: metadata, lyrics: lyrics)
+            let artistFilter: ((Artist) -> Bool)? = hideCredits
+                ? { LibraryArtistFilter.isVisible($0, ownership: ownership[$0.id], songsIndexed: songsIndexed) }
+                : nil
+            return SearchRanker.rank(
+                query: q, result: metadata, lyrics: lyrics, artistFilter: artistFilter)
         }.value
         guard !Task.isCancelled else { return }
         hits = ranked
@@ -718,6 +725,9 @@ struct SearchView: View {
             let db = session.database
             let wantLyrics = includeLyrics
             let client = session.client
+            let ownership = await session.artistOwnershipStats()
+            let songsIndexed = await session.songsIndexComplete()
+            let hideCredits = LibraryArtistFilter.hideCreditOnlyArtists
             let ranked = try await Task.detached(priority: .userInitiated) {
                 let metadata = try await client.search(q, artistCount: 20, albumCount: 20, songCount: 40)
                 let lyrics: [LyricsSearchMatch]
@@ -726,7 +736,11 @@ struct SearchView: View {
                 } else {
                     lyrics = []
                 }
-                return (SearchRanker.rank(query: q, result: metadata, lyrics: lyrics), metadata.songs)
+                let artistFilter: ((Artist) -> Bool)? = hideCredits
+                    ? { LibraryArtistFilter.isVisible($0, ownership: ownership[$0.id], songsIndexed: songsIndexed) }
+                    : nil
+                return (SearchRanker.rank(
+                    query: q, result: metadata, lyrics: lyrics, artistFilter: artistFilter), metadata.songs)
             }.value
             guard !Task.isCancelled else { return }
             hits = ranked.0

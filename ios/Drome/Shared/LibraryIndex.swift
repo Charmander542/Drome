@@ -87,6 +87,50 @@ struct LibraryIndex: Sendable {
             .compactMap { Self.decode(Artist.self, $0) }
     }
 
+    /// Scans the local song/album index to see who actually owns music vs only appearing as a credit.
+    func buildArtistOwnershipStats(serverKey: String) throws -> [String: ArtistOwnership] {
+        var stats: [String: ArtistOwnership] = [:]
+
+        let songJSONs = try database.allLibraryJSON(kind: .songs, serverKey: serverKey)
+        for json in songJSONs {
+            guard let song = Self.decode(Song.self, json) else { continue }
+            if let id = song.artistId?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
+                stats[id, default: ArtistOwnership()].primarySongCount += 1
+            }
+            for credit in ArtistCredits.credits(for: song) {
+                guard let id = credit.artistId?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !id.isEmpty else { continue }
+                if id == song.artistId { continue }
+                stats[id, default: ArtistOwnership()].creditSongCount += 1
+            }
+        }
+
+        let albumJSONs = try database.allLibraryJSON(kind: .albums, serverKey: serverKey)
+        for json in albumJSONs {
+            guard let album = Self.decode(Album.self, json) else { continue }
+            if let id = album.artistId?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
+                stats[id, default: ArtistOwnership()].albumArtistAlbumCount += 1
+            }
+        }
+
+        return stats
+    }
+
+    func visibleArtistLetters(
+        serverKey: String,
+        ownership: [String: ArtistOwnership],
+        songsIndexed: Bool
+    ) throws -> [String] {
+        let letters = try letters(kind: .artists, serverKey: serverKey)
+        guard LibraryArtistFilter.hideCreditOnlyArtists else { return letters }
+        return letters.filter { letter in
+            let artists = (try? self.artists(serverKey: serverKey, letter: letter)) ?? []
+            return artists.contains {
+                LibraryArtistFilter.isVisible($0, ownership: ownership[$0.id], songsIndexed: songsIndexed)
+            }
+        }
+    }
+
     // MARK: - Shared queries
 
     func letters(kind: LibraryIndexKind, serverKey: String) throws -> [String] {
@@ -206,6 +250,15 @@ struct LibraryIndexRow {
 }
 
 extension AppDatabase {
+    fileprivate func allLibraryJSON(kind: LibraryIndexKind, serverKey: String) throws -> [String] {
+        let names = table(for: kind)
+        return try pool.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT \(names.json) FROM \(names.table) WHERE server_key = ?
+                """, arguments: [serverKey])
+        }
+    }
+
     fileprivate func table(for kind: LibraryIndexKind) -> (table: String, json: String) {
         switch kind {
         case .songs: return ("library_songs", "song_json")
