@@ -50,6 +50,8 @@ struct PlaybackSessionSnapshot: Codable, Equatable {
             kindCase = "mix"; kindId = nil
         case .outOfRotation:
             kindCase = "outOfRotation"; kindId = nil
+        case .podcast(let showID):
+            kindCase = "podcast"; kindId = showID
         }
         self.currentSong = currentSong
         self.elapsed = elapsed
@@ -79,6 +81,8 @@ struct PlaybackSessionSnapshot: Codable, Equatable {
             kind = .search
         case "outOfRotation":
             kind = .outOfRotation
+        case "podcast":
+            kind = .podcast(showID: kindId ?? "")
         default:
             kind = .mix
         }

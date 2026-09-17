@@ -106,18 +106,46 @@ final class TVPlaybackCache {
         return false
     }
 
-    private static func download(song: Song, client: SubsonicClient, directory: URL) async throws -> URL {
-        let remote: URL?
-        if isAlreadyMP3(song) {
-            remote = client.downloadURL(songId: song.id) ?? client.streamURL(songId: song.id, format: "raw", maxBitRate: nil)
-        } else {
-            remote = client.streamURL(songId: song.id, format: "mp3", maxBitRate: 320)
-        }
-        guard let remote else { throw URLError(.badURL) }
+    func invalidate(for song: Song) {
+        let url = destination(for: song)
+        try? FileManager.default.removeItem(at: url)
+    }
 
+    private static func remoteURLs(for song: Song, client: SubsonicClient) -> [URL] {
+        var urls: [URL] = []
+        if isAlreadyMP3(song) {
+            if let url = client.downloadURL(songId: song.id) { urls.append(url) }
+            if let url = client.streamURL(songId: song.id, format: "mp3", maxBitRate: 320) { urls.append(url) }
+            if let url = client.streamURL(songId: song.id, format: "raw", maxBitRate: nil) { urls.append(url) }
+        } else {
+            if let url = client.streamURL(songId: song.id, format: "mp3", maxBitRate: 320) { urls.append(url) }
+            if let url = client.streamURL(songId: song.id, format: "mp3", maxBitRate: 192) { urls.append(url) }
+        }
+        return urls
+    }
+
+    private static func download(song: Song, client: SubsonicClient, directory: URL) async throws -> URL {
         let dest = destination(for: song, in: directory)
+        var lastError: Error = URLError(.badURL)
+        for remote in remoteURLs(for: song, client: client) {
+            do {
+                return try await downloadFrom(remote: remote, dest: dest, client: client)
+            } catch {
+                lastError = error
+                try? FileManager.default.removeItem(at: dest)
+            }
+        }
+        throw lastError
+    }
+
+    private static func downloadFrom(
+        remote: URL,
+        dest: URL,
+        client: SubsonicClient
+    ) async throws -> URL {
         let (temp, response) = try await client.session.download(from: remote)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            try? FileManager.default.removeItem(at: temp)
             throw URLError(.badServerResponse)
         }
         let handle = try FileHandle(forReadingFrom: temp)
@@ -127,7 +155,6 @@ final class TVPlaybackCache {
             try? FileManager.default.removeItem(at: temp)
             throw URLError(.cannotDecodeContentData)
         }
-        // Prefer MPEG, but keep the file if the server sent a transcode we can try.
         try? FileManager.default.removeItem(at: dest)
         try FileManager.default.moveItem(at: temp, to: dest)
         return dest

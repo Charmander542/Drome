@@ -118,23 +118,60 @@ struct RecentPlaysWidgetView: View {
 // MARK: - Medium playing (Spotify-style)
 
 private enum WidgetIdleMetrics {
-    static let compactArt: CGFloat = 48
-    static let columnSpacing: CGFloat = 8
-    static let horizontalPadding: CGFloat = 28
-    static let verticalPadding: CGFloat = 28
-    static let sectionSpacing: CGFloat = 10
-    static let captionHeight: CGFloat = 14
+    static let columnSpacing: CGFloat = 9
+    static let horizontalPadding: CGFloat = 16
+    static let verticalPadding: CGFloat = 12
+    static let captionSpacing: CGFloat = 4
+    static let gridCaptionHeight: CGFloat = 24
+    static let sectionSpacing: CGFloat = 11
 
-    /// One size for every idle tile — halfway between 48pt and a full grid cell, capped so hero + grid fit.
+    struct MediumIdleLayout {
+        let heroArtSize: CGFloat
+        let gridArtSize: CGFloat
+        let gridCellWidth: CGFloat
+        let gridCellHeight: CGFloat
+    }
+
+    /// Split vertical space between a featured last-played row and a uniform recents grid.
+    static func mediumIdleLayout(
+        width: CGFloat,
+        height: CGFloat,
+        gridColumns: Int
+    ) -> MediumIdleLayout {
+        let columns = CGFloat(max(gridColumns, 1))
+        let innerWidth = width - horizontalPadding * 2
+        let innerHeight = height - verticalPadding * 2
+        let gridCaptionBlock = captionSpacing + gridCaptionHeight
+        let gridGaps = columnSpacing * (columns - 1)
+        let gridArtByWidth = floor((innerWidth - gridGaps) / columns)
+
+        // Hero + grid share one square size so art stays 1:1 and fits vertically.
+        let verticalBudget = innerHeight - sectionSpacing - gridCaptionBlock
+        let artByHeight = floor(verticalBudget / 2)
+        let gridArt = max(34, min(gridArtByWidth, artByHeight))
+
+        return MediumIdleLayout(
+            heroArtSize: gridArt,
+            gridArtSize: gridArt,
+            gridCellWidth: gridArt,
+            gridCellHeight: gridArt + captionSpacing + gridCaptionHeight)
+    }
+
+    /// Equal square art for every tile in a fixed-column idle grid (large widget).
     static func artSize(width: CGFloat, height: CGFloat, columnCount: Int) -> CGFloat {
         let columns = CGFloat(max(columnCount, 1))
-        let innerWidth = width - horizontalPadding
-        let innerHeight = height - verticalPadding
+        let innerWidth = width - horizontalPadding * 2
+        let innerHeight = height - verticalPadding * 2
+        let captionBlock = captionSpacing + gridCaptionHeight
         let gaps = columnSpacing * (columns - 1)
-        let gridCell = floor((innerWidth - gaps) / columns)
-        let preferred = floor((compactArt + gridCell) / 2)
-        let maxByHeight = floor((innerHeight - sectionSpacing - captionHeight) / 2)
-        return min(preferred, maxByHeight, gridCell)
+        let byWidth = floor((innerWidth - gaps) / columns)
+        let byHeight = floor(innerHeight - captionBlock)
+        return max(36, min(byWidth, byHeight))
+    }
+
+    static func cellWidth(artSize: CGFloat) -> CGFloat { artSize }
+    static func cellHeight(artSize: CGFloat) -> CGFloat {
+        artSize + captionSpacing + gridCaptionHeight
     }
 }
 
@@ -143,10 +180,12 @@ private struct MediumPlayingView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let artSide = min(geo.size.height - 24, geo.size.width * 0.40)
-            HStack(spacing: 10) {
+            let pad: CGFloat = 14
+            let artSide = geo.size.height - pad * 2
+            HStack(alignment: .center, spacing: 10) {
                 WidgetArtwork(file: nowPlaying.artworkFile, cornerRadius: WidgetColors.albumCornerRadius)
                     .frame(width: artSide, height: artSide)
+                    .fixedSize()
 
                 VStack(alignment: .leading, spacing: 0) {
                     DromeBarMark(size: 16, color: WidgetPalette.foreground(for: nowPlaying))
@@ -174,7 +213,8 @@ private struct MediumPlayingView: View {
                 .padding(.vertical, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, pad)
+            .padding(.vertical, pad)
         }
     }
 }
@@ -263,7 +303,7 @@ private struct SmallCoverView: View {
     }
 }
 
-// MARK: - Medium idle (Spotify-style recents)
+// MARK: - Medium idle (last played + recents row)
 
 private struct MediumIdleView: View {
     let items: [WidgetRecentItem]
@@ -272,24 +312,46 @@ private struct MediumIdleView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let artSize = WidgetIdleMetrics.artSize(
-                width: geo.size.width, height: geo.size.height, columnCount: gridColumns)
-            let columns = Array(repeating: GridItem(.fixed(artSize), spacing: 8), count: gridColumns)
-            VStack(alignment: .leading, spacing: 10) {
-                RecentHeroHeader(item: items.first, artSize: artSize)
+            let layout = WidgetIdleMetrics.mediumIdleLayout(
+                width: geo.size.width,
+                height: geo.size.height,
+                gridColumns: gridColumns)
+            let gridItems = Array(items.dropFirst().prefix(gridColumns))
 
-                if items.isEmpty {
-                    EmptyWidgetView(message: "Play something in Drome")
-                        .frame(maxHeight: .infinity)
-                } else {
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                        ForEach(Array(items.dropFirst().prefix(gridColumns))) { item in
-                            RecentSquareTile(item: item, showTitle: true, artSize: artSize)
+            ZStack(alignment: .topTrailing) {
+                VStack(alignment: .leading, spacing: WidgetIdleMetrics.sectionSpacing) {
+                    if let hero = items.first {
+                        RecentHeroHeader(item: hero, artSize: layout.heroArtSize)
+                    }
+
+                    if items.isEmpty {
+                        EmptyWidgetView(message: "Play something in Drome")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if gridItems.isEmpty {
+                        Spacer(minLength: 0)
+                    } else {
+                        HStack(alignment: .top, spacing: WidgetIdleMetrics.columnSpacing) {
+                            ForEach(gridItems) { item in
+                                RecentSquareTile(
+                                    item: item,
+                                    showTitle: true,
+                                    artSize: layout.gridArtSize,
+                                    captionHeight: WidgetIdleMetrics.gridCaptionHeight)
+                                    .frame(
+                                        width: layout.gridCellWidth,
+                                        height: layout.gridCellHeight,
+                                        alignment: .topLeading)
+                            }
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+                DromeBarMark(size: 14, color: .white.opacity(0.9))
+                    .padding(.top, 1)
             }
-            .padding(14)
+            .padding(.horizontal, WidgetIdleMetrics.horizontalPadding)
+            .padding(.vertical, WidgetIdleMetrics.verticalPadding)
         }
     }
 }
@@ -328,22 +390,32 @@ private struct RecentHeroHeader: View {
     var artSize: CGFloat
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            if let item {
-                Link(destination: URL(string: item.deepLink)!) {
-                    HStack(alignment: .top, spacing: 10) {
-                        WidgetArtwork(file: item.artworkFile, cornerRadius: WidgetColors.albumCornerRadius)
-                            .frame(width: artSize, height: artSize)
+        if let item {
+            Link(destination: URL(string: item.deepLink)!) {
+                HStack(alignment: .center, spacing: 12) {
+                    WidgetArtwork(file: item.artworkFile, cornerRadius: WidgetColors.albumCornerRadius)
+                        .frame(width: artSize, height: artSize)
+                        .fixedSize()
+
+                    VStack(alignment: .leading, spacing: 3) {
                         Text(item.title)
                             .font(.subheadline.weight(.bold))
                             .foregroundStyle(.white)
                             .lineLimit(2)
+                            .minimumScaleFactor(0.88)
                             .multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if !item.subtitle.isEmpty {
+                            Text(item.subtitle)
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.68))
+                                .lineLimit(1)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.trailing, 22)
                 }
             }
-            DromeBarMark(size: 18, color: .white)
         }
     }
 }
@@ -352,18 +424,22 @@ private struct RecentSquareTile: View {
     let item: WidgetRecentItem
     var showTitle: Bool = false
     var artSize: CGFloat
+    var captionHeight: CGFloat = 14
 
     var body: some View {
         Link(destination: URL(string: item.deepLink)!) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: WidgetIdleMetrics.captionSpacing) {
                 WidgetArtwork(file: item.artworkFile, cornerRadius: WidgetColors.albumCornerRadius)
                     .frame(width: artSize, height: artSize)
+                    .fixedSize()
                 if showTitle {
                     Text(item.title)
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                        .foregroundStyle(.white.opacity(0.92))
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.75)
+                        .multilineTextAlignment(.leading)
+                        .frame(width: artSize, height: captionHeight, alignment: .topLeading)
                 }
             }
         }

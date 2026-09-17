@@ -72,7 +72,6 @@ struct GenreDetailView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
-                .dromeMiniPlayerClearance()
             }
         }
         .navigationTitle(genre.displayName)

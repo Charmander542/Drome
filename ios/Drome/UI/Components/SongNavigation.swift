@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Shared “View Album” / “View Artist” destinations for song context menus.
 enum SongNavigation {
@@ -125,10 +126,23 @@ final class SongNavigator: ObservableObject {
             artistRoute = route
         }
     }
+
+    func popToRoot() {
+        albumRoute = nil
+        artistRoute = nil
+    }
 }
 
 private struct SongNavigatorKey: EnvironmentKey {
     static let defaultValue: SongNavigator? = nil
+}
+
+private struct TabPopToRootTriggerKey: EnvironmentKey {
+    static let defaultValue: Int = 0
+}
+
+private struct TabScrollToTopTriggerKey: EnvironmentKey {
+    static let defaultValue: Int = 0
 }
 
 extension EnvironmentValues {
@@ -136,6 +150,18 @@ extension EnvironmentValues {
     var songNavigator: SongNavigator? {
         get { self[SongNavigatorKey.self] }
         set { self[SongNavigatorKey.self] = newValue }
+    }
+
+    /// Bumped when the user re-taps the selected tab (used to reset root chrome).
+    var tabPopToRootTrigger: Int {
+        get { self[TabPopToRootTriggerKey.self] }
+        set { self[TabPopToRootTriggerKey.self] = newValue }
+    }
+
+    /// Bumped only when the selected tab is already at its root — scroll to top.
+    var tabScrollToTopTrigger: Int {
+        get { self[TabScrollToTopTriggerKey.self] }
+        set { self[TabScrollToTopTriggerKey.self] = newValue }
     }
 }
 
@@ -178,12 +204,37 @@ extension View {
 
 /// Wraps tab/root content so song Go-to destinations live outside Lists.
 struct SongNavigationStack<Content: View>: View {
+    /// Bumped by the tab bar when the user re-taps the selected tab.
+    var popToRootTrigger: Int = 0
     @StateObject private var navigator = SongNavigator()
+    @State private var path = NavigationPath()
+    /// Remount clears destination `NavigationLink` pushes (playlists, etc.) that
+    /// are not reflected in `path`.
+    @State private var stackID = UUID()
+    @State private var navigationDepth = 0
+    @State private var scrollToTopTrigger = 0
     @ViewBuilder var content: () -> Content
 
+    init(popToRootTrigger: Int = 0, @ViewBuilder content: @escaping () -> Content) {
+        self.popToRootTrigger = popToRootTrigger
+        self.content = content
+    }
+
+    private var isDeep: Bool {
+        navigationDepth > 0
+            || !path.isEmpty
+            || navigator.albumRoute != nil
+            || navigator.artistRoute != nil
+    }
+
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             content()
+                .background {
+                    NavigationDepthReader(depth: $navigationDepth)
+                        .frame(width: 0, height: 0)
+                        .accessibilityHidden(true)
+                }
                 .navigationDestination(item: Binding(
                     get: { navigator.albumRoute },
                     set: { navigator.albumRoute = $0 }
@@ -197,9 +248,90 @@ struct SongNavigationStack<Content: View>: View {
                     ArtistDetailView(artistID: route.artistId, placeholderName: route.name)
                 }
         }
+        .id(stackID)
         // Critical: inject on the stack, not only the root page, so pushed
         // Album/Playlist/Artist detail views still see SongNavigator.
         .environmentObject(navigator)
         .environment(\.songNavigator, navigator)
+        .environment(\.tabPopToRootTrigger, popToRootTrigger)
+        .environment(\.tabScrollToTopTrigger, scrollToTopTrigger)
+        // TabView + outer safeAreaInset often fails to extend List scroll insets;
+        // pad here only while the mini player is visible.
+        .dromeMiniPlayerClearance()
+        .onChange(of: popToRootTrigger) { _, trigger in
+            guard trigger > 0 else { return }
+            if isDeep {
+                // Destination NavigationLinks (playlists, downloads, …) are not in
+                // `path` — remount when UIKit reports pushed pages. Album/artist
+                // item routes clear via the navigator alone when depth is 0.
+                let shouldRemount = navigationDepth > 0 || !path.isEmpty
+                path = NavigationPath()
+                navigator.popToRoot()
+                if shouldRemount {
+                    stackID = UUID()
+                }
+                navigationDepth = 0
+            } else {
+                scrollToTopTrigger += 1
+            }
+        }
+    }
+}
+
+/// Reports how many pages are pushed on the hosting `UINavigationController`.
+private struct NavigationDepthReader: UIViewControllerRepresentable {
+    @Binding var depth: Int
+
+    func makeUIViewController(context: Context) -> ProbeController {
+        ProbeController(depth: $depth)
+    }
+
+    func updateUIViewController(_ controller: ProbeController, context: Context) {
+        controller.depth = $depth
+        DispatchQueue.main.async { controller.publish() }
+    }
+
+    final class ProbeController: UIViewController {
+        var depth: Binding<Int>
+        private var observation: NSKeyValueObservation?
+
+        init(depth: Binding<Int>) {
+            self.depth = depth
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError() }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            publish()
+            startObserving()
+        }
+
+        override func didMove(toParent parent: UIViewController?) {
+            super.didMove(toParent: parent)
+            publish()
+            startObserving()
+        }
+
+        func publish() {
+            let count = navigationController?.viewControllers.count ?? 1
+            let next = max(0, count - 1)
+            if depth.wrappedValue != next {
+                depth.wrappedValue = next
+            }
+        }
+
+        private func startObserving() {
+            observation?.invalidate()
+            observation = navigationController?.observe(\.viewControllers, options: [.new]) { [weak self] _, _ in
+                DispatchQueue.main.async { self?.publish() }
+            }
+        }
+
+        deinit {
+            observation?.invalidate()
+        }
     }
 }

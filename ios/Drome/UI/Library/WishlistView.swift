@@ -159,7 +159,6 @@ struct WishlistView: View {
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
-        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
     }
 
     @ViewBuilder

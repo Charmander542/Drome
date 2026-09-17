@@ -8,6 +8,8 @@ struct HorizontalSongRail: View {
     @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var ratings: RatingsStore
+    @State private var pendingPlayIndex: Int?
+    @State private var showReplaceQueueConfirm = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -24,12 +26,24 @@ struct HorizontalSongRail: View {
                 .padding(.horizontal, 16)
             }
         }
+        .confirmReplaceUserQueue(
+            isPresented: $showReplaceQueueConfirm,
+            queueCount: player.userQueue.count,
+            onClearAndPlay: {
+                if let index = pendingPlayIndex { commitPlay(index: index, clearUserQueue: true) }
+                pendingPlayIndex = nil
+            },
+            onKeepAndPlay: {
+                if let index = pendingPlayIndex { commitPlay(index: index, clearUserQueue: false) }
+                pendingPlayIndex = nil
+            },
+            onCancel: { pendingPlayIndex = nil }
+        )
     }
 
     private func songCard(_ song: Song, index: Int) -> some View {
         Button {
-            player.play(songs, startAt: index,
-                        context: PlaybackContext(label: song.title, kind: .search))
+            requestPlay(index: index)
         } label: {
             VStack(alignment: .leading, spacing: 8) {
                 RemoteImage(url: session.client.coverArtURL(
@@ -51,5 +65,22 @@ struct HorizontalSongRail: View {
         }
         .buttonStyle(.plain)
         .hoverEffectDisabled()
+    }
+
+    private func requestPlay(index: Int) {
+        guard songs.indices.contains(index) else { return }
+        if !player.userQueue.isEmpty {
+            pendingPlayIndex = index
+            showReplaceQueueConfirm = true
+            return
+        }
+        commitPlay(index: index, clearUserQueue: true)
+    }
+
+    private func commitPlay(index: Int, clearUserQueue: Bool) {
+        let song = songs[index]
+        player.play(songs, startAt: index,
+                    context: PlaybackContext(label: song.title, kind: .search),
+                    clearUserQueue: clearUserQueue)
     }
 }

@@ -73,7 +73,6 @@ struct RatedLibraryView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
     }
 }
 
@@ -145,7 +144,6 @@ struct RatedCollectionDetailView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
-                .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
                 .overlay(alignment: .top) {
                     if isRefreshing {
                         ProgressView()

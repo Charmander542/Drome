@@ -110,7 +110,6 @@ struct DailyMixDetailView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .dromeMiniPlayerClearance()
     }
 
     private func header(_ mix: DailyMix) -> some View {

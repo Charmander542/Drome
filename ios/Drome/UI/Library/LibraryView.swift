@@ -31,6 +31,7 @@ struct LibraryView: View {
     @EnvironmentObject private var rotation: RotationManager
     @EnvironmentObject private var downloads: DownloadManager
     @EnvironmentObject private var player: PlayerEngine
+    @Environment(\.tabPopToRootTrigger) private var tabPopToRootTrigger
 
     @State private var filter: LibraryFilter = .playlists
     @State private var playlists: [Playlist] = []
@@ -123,6 +124,13 @@ struct LibraryView: View {
         }
         .refreshable {
             await refreshLibrary(triggerScan: true)
+        }
+        .onChange(of: tabPopToRootTrigger) { _, trigger in
+            guard trigger > 0 else { return }
+            // Re-tap while deep already remounted us at root; only reset chrome
+            // here when already on the library root (second-tap / filter reset).
+            filter = .playlists
+            isReorderingPlaylists = false
         }
         .onReceive(NotificationCenter.default.publisher(for: LibraryArtistFilter.preferenceDidChange)) { _ in
             Task {
@@ -435,7 +443,6 @@ struct LibraryView: View {
         .environment(\.editMode, .constant(isReorderingPlaylists ? .active : .inactive))
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
     }
 
     private var albumsList: some View {
@@ -1868,7 +1875,6 @@ struct GenreBrowserView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
-                .dromeMiniPlayerClearance()
             }
         }
         .navigationTitle(showsTitle ? "Genres" : "")

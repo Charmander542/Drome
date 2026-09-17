@@ -93,6 +93,7 @@ struct MiniPlayerBar: View {
             }
             .padding(.horizontal, 8)
             .id(current.id)
+            .accessibilityIdentifier("music-mini-player")
         }
     }
 

@@ -4,6 +4,9 @@ struct TVTabView: View {
     @EnvironmentObject private var env: AppEnvironment
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
+    @EnvironmentObject private var podcastManager: PodcastManager
+    @EnvironmentObject private var podcastPlayer: PodcastPlayer
+    @StateObject private var chrome = TVChromeState()
     @State private var tab: String = "home"
 
     private var switchPromptBinding: Binding<Bool> {
@@ -35,10 +38,20 @@ struct TVTabView: View {
             .tabItem { Text("Library") }
             .tag("library")
 
+            NavigationStack {
+                TVPodcastsView()
+                    .environmentObject(podcastManager)
+                    .environmentObject(podcastPlayer)
+            }
+            .tabItem { Text("Podcasts") }
+            .tag("podcasts")
+
             TVNowPlayingView()
                 .tabItem { Text("Playing") }
                 .tag("playing")
         }
+        .toolbar(chrome.hidesTabBar ? .hidden : .visible, for: .tabBar)
+        .environmentObject(chrome)
         .alert(
             "Switch playback?",
             isPresented: switchPromptBinding

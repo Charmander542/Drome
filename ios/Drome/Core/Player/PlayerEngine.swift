@@ -48,6 +48,8 @@ final class PlayerEngine: ObservableObject {
     /// When true, assigning `shuffleMode` does not reshuffle the existing queue
     /// (used when starting a fresh Play or restoring a saved session).
     private var suppressShuffleReorder = false
+    /// When true, the next `play` / `playShuffled` keeps `userQueue` instead of clearing it.
+    private var preserveUserQueueOnce = false
     @Published var autoplayEnabled: Bool = UserDefaults.standard.object(forKey: "drome.autoplay") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(autoplayEnabled, forKey: "drome.autoplay")
@@ -79,6 +81,10 @@ final class PlayerEngine: ObservableObject {
     private var rebuildDepth = 0
     /// Prevents didPlayToEndTime + currentItem KVO from both advancing the queue.
     private var isHandlingTrackEnd = false
+    #if !os(tvOS)
+    /// Queue row tied to the active AVPlayerItem — ignores stale end notifications.
+    private var iosActivePlaybackItemID: UUID?
+    #endif
     /// Natural end arrived while a rebuild was in flight — flush when safe.
     private var pendingAdvanceAfterRebuild = false
     /// Coalesced Next taps while a rebuild is in flight (one setCurrent later).
@@ -106,6 +112,9 @@ final class PlayerEngine: ObservableObject {
     private let tvAudio = TVNowPlayingAudio()
     private var tvUsingAudioPlayer = false
     private var tvRebuildGeneration = 0
+    private var tvLoadTask: Task<Void, Never>?
+    /// Queue row that owns the active tvAudio session — ignores stale finish callbacks.
+    private var tvActivePlaybackItemID: UUID?
     #endif
     private var lastPublishedElapsed: TimeInterval = -1
     /// Tracks AirPlay so we only rebuild when the route actually flips.
@@ -159,7 +168,10 @@ final class PlayerEngine: ObservableObject {
         player.allowsExternalPlayback = false
         player.actionAtItemEnd = .pause
         tvAudio.onFinished = { [weak self] in
-            self?.advanceAfterCurrentEnds(playImmediately: true)
+            Task { @MainActor in
+                await Task.yield()
+                self?.handleTVTrackEnded()
+            }
         }
         #else
         // Always pause at end and advance ourselves. AVQueuePlayer `.advance` into
@@ -275,7 +287,7 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
-    private func finishRebuildSideEffects() {
+    private func finishRebuildSideEffects() -> Bool {
         if pendingNextCount > 0 {
             let skips = pendingNextCount
             DromeDiagnostics.logPlayer("rebuild done → coalesced advanceBy(\(skips))")
@@ -285,16 +297,16 @@ final class PlayerEngine: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 self?.advanceBy(skips, playImmediately: true)
             }
-            return
+            return true
         }
         if pendingAdvanceAfterRebuild {
             DromeDiagnostics.logPlayer("rebuild done → advanceAfterCurrentEnds")
             pendingAdvanceAfterRebuild = false
             pendingConnectApply = nil
             DispatchQueue.main.async { [weak self] in
-                self?.advanceAfterCurrentEnds(playImmediately: true)
+                self?.advanceAfterCurrentEnds(playImmediately: self?.wantsToPlay == true)
             }
-            return
+            return true
         }
         if let pending = pendingConnectApply {
             pendingConnectApply = nil
@@ -303,13 +315,51 @@ final class PlayerEngine: ObservableObject {
                               startPlaying: pending.startPlaying,
                               recordPlay: pending.recordPlay)
             }
-            return
+            return true
         }
         if pendingAirPlayRebuild || pendingNetworkRebuild {
             DispatchQueue.main.async { [weak self] in
                 self?.performStreamFormatRebuild()
             }
+            return true
         }
+        return false
+    }
+
+    /// True when the user expects audio to run after a rebuild/advance.
+    private func shouldEngagePlayback(startPlaying: Bool) -> Bool {
+        startPlaying || wantsToPlay
+    }
+
+    #if os(tvOS)
+    /// Single front door for natural track end on Apple TV.
+    private func handleTVTrackEnded() {
+        guard let current else { return }
+        guard tvActivePlaybackItemID == current.id else { return }
+        tvActivePlaybackItemID = nil
+
+        if isRebuilding || rebuildDepth > 0 || isHandlingTrackEnd {
+            pendingAdvanceAfterRebuild = true
+            DromeDiagnostics.logPlayer("tv track ended during rebuild → deferred")
+            return
+        }
+        DromeDiagnostics.logPlayer("tv track ended → advance")
+        advanceAfterCurrentEnds(playImmediately: wantsToPlay)
+    }
+    #endif
+
+    /// AVPlayer / TV audio can land paused after a skip — re-assert play when intent says so.
+    private func kickPlaybackIfNeeded() {
+        guard shouldEngagePlayback(startPlaying: true), current != nil, !isRebuilding else { return }
+        #if os(tvOS)
+        if tvUsingAudioPlayer {
+            if !tvAudio.isPlaying { tvAudio.play() }
+            if !isPlaying { isPlaying = true }
+            pushNowPlayingInfo()
+            return
+        }
+        #endif
+        playCurrentWhenReady()
     }
 
     private func observeNetworkStreamChanges() {
@@ -341,6 +391,9 @@ final class PlayerEngine: ObservableObject {
         itemReadyTimeout = nil
         #if os(tvOS)
         tvRebuildGeneration += 1
+        tvLoadTask?.cancel()
+        tvLoadTask = nil
+        tvActivePlaybackItemID = nil
         tvAudio.stop()
         tvUsingAudioPlayer = false
         #endif
@@ -359,8 +412,12 @@ final class PlayerEngine: ObservableObject {
 
     /// Play a collection starting at the tapped index, always in order
     /// (Play turns shuffle off; use `playShuffled` for shuffle).
-    func play(_ songs: [Song], startAt index: Int = 0, context: PlaybackContext) {
+    /// - Parameter clearUserQueue: When false, keeps explicitly queued tracks.
+    func play(_ songs: [Song], startAt index: Int = 0, context: PlaybackContext,
+              clearUserQueue: Bool = true) {
         guard songs.indices.contains(index) else { return }
+        let shouldClearUserQueue = clearUserQueue && !preserveUserQueueOnce
+        preserveUserQueueOnce = false
         runLocalPlayback { [self] in
             pushSessionUndoIfNeeded()
             cancelAutoplayWork()
@@ -376,7 +433,9 @@ final class PlayerEngine: ObservableObject {
             let startSong = songs[index]
             originalContextOrder = Array(songs[(index + 1)...]).map { QueueItem(song: $0) }
             contextQueue = originalContextOrder
-            userQueue.removeAll()
+            if shouldClearUserQueue {
+                userQueue.removeAll()
+            }
             history.removeAll()
             // Direct user tap — always honor the chosen track even if low-rated.
             setCurrent(QueueItem(song: startSong), startPlaying: true, allowLowRated: true)
@@ -386,10 +445,19 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
+    /// Runs `action` so any nested `play` / `playShuffled` keeps the user queue.
+    func performPreservingUserQueue(_ action: () -> Void) {
+        preserveUserQueueOnce = true
+        action()
+        preserveUserQueueOnce = false
+    }
+
     /// Shuffle-button entry point: enables shuffle (smart by default) and
     /// picks the opening track from the weighted pool too.
-    func playShuffled(_ songs: [Song], context: PlaybackContext) {
+    func playShuffled(_ songs: [Song], context: PlaybackContext, clearUserQueue: Bool = true) {
         guard !songs.isEmpty else { return }
+        let shouldClearUserQueue = clearUserQueue && !preserveUserQueueOnce
+        preserveUserQueueOnce = false
         runLocalPlayback { [self] in
             pushSessionUndoIfNeeded()
             cancelAutoplayWork()
@@ -406,7 +474,9 @@ final class PlayerEngine: ObservableObject {
                 fullContextSongs = songs
                 originalContextOrder = Array(songs.dropFirst()).map { QueueItem(song: $0) }
                 contextQueue = originalContextOrder
-                userQueue.removeAll()
+                if shouldClearUserQueue {
+                    userQueue.removeAll()
+                }
                 history.removeAll()
                 if let song = songs.first {
                     setCurrent(QueueItem(song: song), startPlaying: true, allowLowRated: true)
@@ -417,7 +487,9 @@ final class PlayerEngine: ObservableObject {
             }
             originalContextOrder = songs.filter { $0.id != first.id }.map { QueueItem(song: $0) }
             contextQueue = pool.dropFirst().map { QueueItem(song: $0) }
-            userQueue.removeAll()
+            if shouldClearUserQueue {
+                userQueue.removeAll()
+            }
             history.removeAll()
             setCurrent(QueueItem(song: first), startPlaying: true, allowLowRated: true)
             ensureAutoplayBuffer()
@@ -723,6 +795,8 @@ final class PlayerEngine: ObservableObject {
         if item.status == .failed {
             itemReadyCancellable = nil
             itemReadyTimeout?.cancel()
+            DromeDiagnostics.logPlayer("current item failed → skip")
+            advanceAfterCurrentEnds(playImmediately: wantsToPlay)
             return
         }
         if itemIsSafeToStart(item) {
@@ -780,6 +854,8 @@ final class PlayerEngine: ObservableObject {
             if item.status == .failed {
                 self.itemReadyTimeout?.cancel()
                 self.itemReadyCancellable = nil
+                DromeDiagnostics.logPlayer("item failed while waiting → skip")
+                self.advanceAfterCurrentEnds(playImmediately: self.wantsToPlay)
                 return
             }
             if self.itemIsSafeToStart(item) {
@@ -872,10 +948,9 @@ final class PlayerEngine: ObservableObject {
             guard let url = try? await self.tvCache.fileURL(for: song) else { return }
             guard self.current?.id == queueItem?.id else { return }
             do {
-                self.player.pause()
-                self.player.removeAllItems()
-                self.window.removeAll()
+                self.tvActivePlaybackItemID = nil
                 try self.tvAudio.start(url: url)
+                self.tvActivePlaybackItemID = queueItem?.id
                 self.tvUsingAudioPlayer = true
                 self.setPlaybackIntent(true)
             } catch {
@@ -1412,11 +1487,13 @@ final class PlayerEngine: ObservableObject {
         itemReadyTimeout?.cancel()
         itemReadyTimeout = nil
         tvRebuildGeneration += 1
+        tvLoadTask?.cancel()
+        tvLoadTask = nil
+        tvActivePlaybackItemID = nil
         tvAudio.stop()
         tvUsingAudioPlayer = false
-        player.pause()
-        player.rate = 0
-        player.removeAllItems()
+        // Do not touch AVQueuePlayer here — removeAllItems() at every track
+        // boundary was crashing FigFilePlayer on HDMI (err -12864).
         window.removeAll()
         sharePlayBridge.reset()
         guard let current else {
@@ -1425,46 +1502,101 @@ final class PlayerEngine: ObservableObject {
         }
         let song = current.song
         let queueItem = current
-        setPlaybackIntent(startPlaying)
+        let engagePlayback = shouldEngagePlayback(startPlaying: startPlaying)
+        setPlaybackIntent(engagePlayback)
         activateAudioSession()
-
-        // Cached complete MP3 → Audio Queue (no FigFilePlayer).
-        if let cached = tvCache.cachedURL(for: song) {
-            do {
-                try tvAudio.start(url: cached)
-                if !startPlaying { tvAudio.pause() }
-                tvUsingAudioPlayer = true
-                isRebuilding = false
-                let duration = tvAudio.duration > 0 ? tvAudio.duration : TimeInterval(song.duration ?? 0)
-                setPlayhead(elapsed: 0, duration: duration)
-                pushNowPlayingInfo()
-                if let next = peekUpcoming(limit: 1).first {
-                    tvCache.prefetch(next.song)
-                }
-                return
-            } catch {
-                tvAudio.stop()
-                tvUsingAudioPlayer = false
-            }
-        }
-
-        // Start MP3 HTTP immediately so we aren't silent while a full file copies.
-        guard let url = tvHTTPStreamURL(for: song) else {
-            isRebuilding = false
-            return
-        }
-        let playerItem = makePlayerItem(for: song, url: url)
-        window.append((playerItem, queueItem))
-        player.insert(playerItem, after: nil)
-        updateActionAtItemEnd()
-        isRebuilding = false
         pushNowPlayingInfo()
-        if startPlaying {
-            playCurrentWhenReady()
-        }
-        tvCache.prefetch(song)
+
         if let next = peekUpcoming(limit: 1).first {
             tvCache.prefetch(next.song)
+        }
+
+        tvLoadTask = Task { @MainActor in
+            await self.loadTVPlayback(
+                song: song,
+                queueItem: queueItem,
+                generation: self.tvRebuildGeneration,
+                engagePlayback: engagePlayback)
+        }
+    }
+
+    /// Apple TV must never stream through AVPlayer/FigFilePlayer — it crashes on
+    /// many formats (FLAC/ALAC/WAV, err -12864). Cache a complete MP3 first.
+    @MainActor
+    private func loadTVPlayback(
+        song: Song,
+        queueItem: QueueItem,
+        generation: Int,
+        engagePlayback: Bool
+    ) async {
+        func stillCurrent() -> Bool {
+            generation == tvRebuildGeneration && current?.id == queueItem.id
+        }
+
+        if pendingNextCount > 0 || pendingAdvanceAfterRebuild {
+            isRebuilding = false
+            _ = finishRebuildSideEffects()
+            return
+        }
+
+        if let cached = tvCache.cachedURL(for: song),
+           startTVAudioFile(cached, song: song, queueItem: queueItem, generation: generation,
+                            engagePlayback: engagePlayback) {
+            return
+        }
+
+        do {
+            let url = try await tvCache.fileURL(for: song)
+            try Task.checkCancellation()
+            guard stillCurrent() else { return }
+            if pendingNextCount > 0 || pendingAdvanceAfterRebuild {
+                isRebuilding = false
+                _ = finishRebuildSideEffects()
+                return
+            }
+            if startTVAudioFile(url, song: song, queueItem: queueItem, generation: generation,
+                                engagePlayback: engagePlayback) {
+                return
+            }
+            tvCache.invalidate(for: song)
+        } catch {
+            guard stillCurrent() else { return }
+        }
+
+        guard stillCurrent() else { return }
+        isRebuilding = false
+        advanceAfterCurrentEnds(playImmediately: wantsToPlay)
+    }
+
+    @discardableResult
+    private func startTVAudioFile(
+        _ url: URL,
+        song: Song,
+        queueItem: QueueItem,
+        generation: Int,
+        engagePlayback: Bool
+    ) -> Bool {
+        guard generation == tvRebuildGeneration, current?.id == queueItem.id else { return false }
+        do {
+            try tvAudio.start(url: url)
+            tvActivePlaybackItemID = queueItem.id
+            setPlaybackIntent(engagePlayback)
+            if !engagePlayback { tvAudio.pause() }
+            tvUsingAudioPlayer = true
+            isRebuilding = false
+            let duration = tvAudio.duration > 0 ? tvAudio.duration : TimeInterval(song.duration ?? 0)
+            setPlayhead(elapsed: 0, duration: duration)
+            pushNowPlayingInfo()
+            let dispatched = finishRebuildSideEffects()
+            if engagePlayback, !dispatched {
+                kickPlaybackIfNeeded()
+            }
+            return true
+        } catch {
+            tvAudio.stop()
+            tvUsingAudioPlayer = false
+            try? FileManager.default.removeItem(at: url)
+            return false
         }
     }
     #endif
@@ -1473,7 +1605,8 @@ final class PlayerEngine: ObservableObject {
     private func rebuildWindowStreaming(startPlaying: Bool) {
         rebuildDepth += 1
         isRebuilding = true
-        DromeDiagnostics.logPlayer("rebuildWindow start play=\(startPlaying) \(diagnosticStateLine())")
+        let engagePlayback = shouldEngagePlayback(startPlaying: startPlaying)
+        DromeDiagnostics.logPlayer("rebuildWindow start play=\(engagePlayback) \(diagnosticStateLine())")
         itemReadyGeneration += 1
         prefetchTask?.cancel()
         itemReadyCancellable?.cancel()
@@ -1485,10 +1618,11 @@ final class PlayerEngine: ObservableObject {
         let suspension = sharePlaySession.map { _ in
             player.playbackCoordinator.beginSuspension(for: .dromeRebuilding)
         }
+        iosActivePlaybackItemID = nil
+        window.removeAll()
         player.pause()
         player.rate = 0
         player.removeAllItems()
-        window.removeAll()
         sharePlayBridge.reset()
 
         defer {
@@ -1498,7 +1632,10 @@ final class PlayerEngine: ObservableObject {
                 isRebuilding = false
                 pushNowPlayingInfo()
                 DromeDiagnostics.logPlayer("rebuildWindow done \(diagnosticStateLine())")
-                finishRebuildSideEffects()
+                let dispatched = finishRebuildSideEffects()
+                if engagePlayback, !dispatched {
+                    kickPlaybackIfNeeded()
+                }
             }
         }
 
@@ -1510,12 +1647,12 @@ final class PlayerEngine: ObservableObject {
         }
         window.append((playerItem, current))
         player.insert(playerItem, after: nil)
+        iosActivePlaybackItemID = current.id
         updateActionAtItemEnd()
 
-        if startPlaying {
+        if engagePlayback {
             activateAudioSession()
             setPlaybackIntent(true)
-            playCurrentWhenReady()
         } else {
             setPlaybackIntent(false)
         }
@@ -1698,6 +1835,7 @@ final class PlayerEngine: ObservableObject {
                 guard let failed = notification.object as? AVPlayerItem,
                       failed === self.player.currentItem else { return }
                 #if os(tvOS)
+                guard !self.tvUsingAudioPlayer else { return }
                 self.retryCurrentAfterDecodeFailure()
                 #endif
             }
@@ -1781,20 +1919,37 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func handleItemDidEnd(_ item: AVPlayerItem?) {
+        #if os(tvOS)
+        if tvUsingAudioPlayer { return }
+        #endif
         guard let item, item === window.first?.playerItem else { return }
-        if repeatMode == .one {
-            player.seek(to: .zero)
-            playCurrentWhenReady()
-            if let song = current?.song { scrobbleSubmission(song) }
+        guard let current, window.first?.queueItem.id == current.id else { return }
+        #if !os(tvOS)
+        guard iosActivePlaybackItemID == current.id else { return }
+        // removeAllItems() during rebuild echoes didPlayToEndTime for the track
+        // we already advanced away from — never queue a second advance from that.
+        if isRebuilding || rebuildDepth > 0 {
+            DromeDiagnostics.logPlayer("track ended during rebuild → ignored (spurious)")
             return
         }
+        #else
         if isRebuilding || rebuildDepth > 0 {
             pendingAdvanceAfterRebuild = true
             DromeDiagnostics.logPlayer("track ended during rebuild → deferred")
             return
         }
+        #endif
+        if repeatMode == .one {
+            player.seek(to: .zero)
+            playCurrentWhenReady()
+            scrobbleSubmission(current.song)
+            return
+        }
+        #if !os(tvOS)
+        iosActivePlaybackItemID = nil
+        #endif
         DromeDiagnostics.logPlayer("track ended → advance")
-        advanceAfterCurrentEnds(playImmediately: true)
+        advanceAfterCurrentEnds(playImmediately: wantsToPlay)
     }
 
     /// Start the next queued song on a fresh player item. Used for Next and
@@ -1814,7 +1969,11 @@ final class PlayerEngine: ObservableObject {
         scrobbleSubmission(finished.song)
         if repeatMode == .all, !fullContextSongs.isEmpty, let context {
             history.append(finished)
-            play(fullContextSongs, startAt: 0, context: context)
+            if shuffleMode != .off {
+                playShuffled(fullContextSongs, context: context)
+            } else {
+                play(fullContextSongs, startAt: 0, context: context)
+            }
             return
         }
         history.append(finished)
@@ -1829,6 +1988,7 @@ final class PlayerEngine: ObservableObject {
         }
         // Infinite Shuffle must keep going — never silently stop at the end.
         if autoplayEnabled, repeatMode == .off {
+            setPlaybackIntent(true)
             setPlayhead(elapsed: duration)
             pushNowPlayingInfo()
             continueWithAutoplayIfNeeded(playImmediately: true)
@@ -2005,8 +2165,9 @@ final class PlayerEngine: ObservableObject {
         var excluding = Set(history.suffix(60).map(\.song.id))
         excluding.formUnion(userQueue.map(\.song.id))
         excluding.formUnion(contextQueue.map(\.song.id))
-        let seeds = history.suffix(8).map(\.song)
-        let songs = await provider.nextBatch(seeds: seeds, excluding: excluding, count: 20)
+        if let currentID = current?.song.id { excluding.insert(currentID) }
+        let seeds = history.suffix(8).map(\.song) + [current?.song].compactMap { $0 }
+        var songs = await provider.nextBatch(seeds: seeds, excluding: excluding, count: 20)
         guard !Task.isCancelled, autoplayGeneration == generation else { return }
         guard !songs.isEmpty else {
             if playImmediately {

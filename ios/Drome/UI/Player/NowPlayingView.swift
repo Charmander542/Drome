@@ -934,7 +934,10 @@ struct NowPlayingView: View {
 
     private var transport: some View {
         HStack {
-            Button { player.cycleShuffleMode() } label: {
+            Button {
+                player.cycleShuffleMode()
+                flash(player.shuffleMode.userLabel)
+            } label: {
                 Image(systemName: "shuffle")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(shuffleColor)
@@ -948,6 +951,8 @@ struct NowPlayingView: View {
                         }
                     }
             }
+            .accessibilityLabel(player.shuffleMode.userLabel)
+            .accessibilityHint(player.shuffleMode.userHint)
 
             Spacer(minLength: 0)
 
@@ -1035,13 +1040,16 @@ struct NowPlayingView: View {
 
             Button {
                 player.autoplayEnabled.toggle()
+                flash(player.autoplayEnabled ? "\(AutoplayMode.label) on" : "\(AutoplayMode.label) off")
             } label: {
                 Image(systemName: "infinity")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(player.autoplayEnabled ? DromeTheme.accent : Color.white.opacity(0.45))
                     .frame(width: 44, height: 44)
             }
-            .accessibilityLabel("Autoplay")
+            .accessibilityLabel(
+                player.autoplayEnabled ? "\(AutoplayMode.label) on" : "\(AutoplayMode.label) off")
+            .accessibilityHint(AutoplayMode.hint)
 
             Spacer()
 
@@ -1099,7 +1107,7 @@ struct NowPlayingView: View {
 
 /// Album-tinted Now Playing wash. Two full layers crossfade so color and blur
 /// morph together instead of snapping under a fixed black gradient.
-private enum NowPlayingBackdrop {
+enum NowPlayingBackdrop {
     struct Layer: Equatable {
         var url: URL? = nil
         var wash: Color = Color(red: 0.12, green: 0.12, blue: 0.14)

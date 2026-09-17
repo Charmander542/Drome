@@ -487,6 +487,10 @@ final class AppDatabase: @unchecked Sendable {
             kind = "outOfRotation"
             contextId = "outOfRotation"
             label = context?.label ?? RotationManager.playlistName
+        case .podcast(let showID):
+            kind = "podcast"
+            contextId = showID
+            label = context?.label
         case .none:
             kind = nil
             contextId = nil

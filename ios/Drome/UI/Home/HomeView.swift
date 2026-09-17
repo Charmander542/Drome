@@ -3,6 +3,8 @@ import SwiftUI
 struct HomeView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var env: AppEnvironment
+    @Environment(\.tabPopToRootTrigger) private var tabPopToRootTrigger
+    @Environment(\.tabScrollToTopTrigger) private var tabScrollToTopTrigger
 
     @State private var recentEntries: [RecentPlayEntry] = []
     @State private var homePlaylists: [Playlist] = []
@@ -16,49 +18,68 @@ struct HomeView: View {
     @State private var showAccounts = false
     @State private var showSettings = false
     @State private var showTVPairing = false
+    @State private var scrollToTopToken = 0
 
     private var hasCompanion: Bool { session.wishlist != nil }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                VibeTuner()
-                    .padding(.top, 4)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 28) {
+                    Color.clear.frame(height: 0).id("home-top")
 
-                if hasCompanion {
-                    DailyMixRail(mixes: dailyMixes, isLoading: mixesLoading)
-                }
+                    VibeTuner()
+                        .padding(.top, 4)
 
-                if !recentEntries.isEmpty {
-                    HorizontalRecentRail(
-                        title: "Recently played",
-                        entries: recentEntries,
-                        dailyMixes: dailyMixes)
-                }
-                if !homePlaylists.isEmpty {
-                    HorizontalPlaylistRail(title: "Playlists", playlists: homePlaylists)
-                }
-                if !frequent.isEmpty {
-                    HorizontalAlbumRail(title: "Jump back in", albums: frequent)
-                }
-                if !newest.isEmpty {
-                    HorizontalAlbumRail(title: "New in your library", albums: newest)
-                }
+                    if hasCompanion {
+                        DailyMixRail(mixes: dailyMixes, isLoading: mixesLoading)
+                    }
 
-                if let error, recentEntries.isEmpty && frequent.isEmpty && newest.isEmpty {
-                    ErrorStateView(message: error) { Task { await loadAll() } }
-                } else if !isLoading && recentEntries.isEmpty && frequent.isEmpty
-                            && newest.isEmpty && dailyMixes.isEmpty {
-                    EmptyStateView(title: "Your library is empty",
-                                   message: "Add music to Navidrome and pull to refresh.")
-                        .frame(height: 220)
+                    if !recentEntries.isEmpty {
+                        HorizontalRecentRail(
+                            title: "Recently played",
+                            entries: recentEntries,
+                            dailyMixes: dailyMixes)
+                    }
+                    if !homePlaylists.isEmpty {
+                        HorizontalPlaylistRail(title: "Playlists", playlists: homePlaylists)
+                    }
+                    if !frequent.isEmpty {
+                        HorizontalAlbumRail(title: "Jump back in", albums: frequent)
+                    }
+                    if !newest.isEmpty {
+                        HorizontalAlbumRail(title: "New in your library", albums: newest)
+                    }
+
+                    if let error, recentEntries.isEmpty && frequent.isEmpty && newest.isEmpty {
+                        ErrorStateView(message: error) { Task { await loadAll() } }
+                    } else if !isLoading && recentEntries.isEmpty && frequent.isEmpty
+                                && newest.isEmpty && dailyMixes.isEmpty {
+                        EmptyStateView(title: "Your library is empty",
+                                       message: "Add music to Navidrome and pull to refresh.")
+                            .frame(height: 220)
+                    }
+                }
+                .padding(.vertical, 12)
+                .padding(.bottom, 72)
+            }
+            .onChange(of: scrollToTopToken) { _, _ in
+                withAnimation(.easeOut(duration: 0.25)) {
+                    proxy.scrollTo("home-top", anchor: .top)
                 }
             }
-            .padding(.vertical, 12)
-            .padding(.bottom, 72)
         }
         .task(id: session.id) { await loadAll() }
         .refreshable { await loadAll() }
+        .onChange(of: tabPopToRootTrigger) { _, trigger in
+            guard trigger > 0 else { return }
+            dismissHomeSheets()
+        }
+        .onChange(of: tabScrollToTopTrigger) { _, trigger in
+            guard trigger > 0 else { return }
+            dismissHomeSheets()
+            scrollToTopToken += 1
+        }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -98,6 +119,12 @@ struct HomeView: View {
                     .environmentObject(env)
             }
         }
+    }
+
+    private func dismissHomeSheets() {
+        showAccounts = false
+        showSettings = false
+        showTVPairing = false
     }
 
     private func loadAll() async {

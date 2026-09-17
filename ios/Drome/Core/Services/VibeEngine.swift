@@ -39,7 +39,8 @@ enum VibeEngine {
         case .focus:
             return Taste(
                 prefer: ["Jazz", "Classical", "Ambient", "Soundtrack", "Blues"],
-                avoid: ["Hip-Hop", "Dance", "Pop", "Metal", "Punk", "Country", "Rock"],
+                avoid: ["Hip-Hop", "Dance", "Pop", "Metal", "Punk", "Country", "Rock",
+                        "Electronic", "Indie", "Alternative"],
                 fetch: ["Jazz", "Cool Jazz", "Smooth Jazz", "Bebop", "Instrumental",
                         "Classical", "Soundtrack", "Ambient", "Piano", "Score",
                         "Minimal", "Modern Classical", "New Age", "Blues"],
@@ -135,13 +136,15 @@ enum VibeEngine {
             return Array(pool.shuffled().prefix(mixLength))
         }
         let spec = taste(for: vibe)
-        var scored = pool.compactMap { song -> (Song, Double)? in
+        let eligible = pool.filter { passesHardGate($0, spec: spec) }
+        let candidatePool = eligible.isEmpty ? pool : eligible
+        var scored = candidatePool.compactMap { song -> (Song, Double)? in
             let s = score(song, spec: spec)
             return s > 0.35 ? (song, s) : nil
         }
-        if scored.count < 12 {
+        if scored.count < 12, vibe != .focus {
             // Relax: keep anything that isn't in the avoid set.
-            scored = pool.compactMap { song -> (Song, Double)? in
+            scored = candidatePool.compactMap { song -> (Song, Double)? in
                 let g = normalizedGenre(song)
                 if let g, spec.avoid.contains(g) { return nil }
                 return (song, max(0.2, score(song, spec: spec)))
@@ -150,6 +153,23 @@ enum VibeEngine {
         // Weighted random sample — not "always the same top band shuffled".
         // Each Play draws a new queue from the fit pool.
         return weightedSample(scored, count: mixLength)
+    }
+
+    /// Hard filters so relax paths can't pull hype/pop/electronic into Focus.
+    private static func passesHardGate(_ song: Song, spec: Taste) -> Bool {
+        let genre = normalizedGenre(song)
+        if let genre, spec.avoid.contains(genre) { return false }
+
+        let energy = estimatedEnergy(song, genre: genre)
+        if energy > spec.energy.upperBound + 0.06 { return false }
+
+        if spec.vocals == .instrumental {
+            let hay = haystack(song)
+            if !looksInstrumental(hay, genre: genre) {
+                return false
+            }
+        }
+        return true
     }
 
     /// Sample `count` songs without replacement, weighted by fit score.

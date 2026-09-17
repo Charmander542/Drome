@@ -113,7 +113,6 @@ struct AlbumDetailView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {

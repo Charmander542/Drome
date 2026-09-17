@@ -127,6 +127,7 @@ struct TVArtistDetailView: View {
             .padding(.vertical, 36)
         }
         .background(TVTheme.canvas.ignoresSafeArea())
+        .toolbar(.hidden, for: .navigationBar)
         .task {
             do {
                 artist = try await session.client.artist(id: artistID)
@@ -213,5 +214,6 @@ struct TVSongList: View {
             }
         }
         .background(TVTheme.canvas.ignoresSafeArea())
+        .toolbar(.hidden, for: .navigationBar)
     }
 }

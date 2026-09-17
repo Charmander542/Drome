@@ -8,6 +8,8 @@ struct TVRootView: View {
             if let session = env.session {
                 TVTabView()
                     .dromeSession(session)
+                    .environmentObject(env.podcastManager)
+                    .environmentObject(env.podcastPlayer)
                     .id(session.id)
             } else {
                 TVLoginView()

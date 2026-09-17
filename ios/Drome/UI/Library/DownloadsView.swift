@@ -115,7 +115,6 @@ struct DownloadsView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .dromeMiniPlayerClearance()
         .navigationTitle(isOfflineMode ? "Offline Library" : "Downloaded")
         .navigationBarTitleDisplayMode(.inline)
     }

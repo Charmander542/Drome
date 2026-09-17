@@ -62,16 +62,17 @@ enum MoodPlayer {
                     return batch
                 }
             }
-            // Untagged randoms keep discovery from collapsing to the same
-            // handful of well-tagged tracks.
-            group.addTask {
-                (try? await client.randomSongs(size: 80)) ?? []
+            // Untagged randoms widen discovery, but they pollute Focus with off-vibe tracks.
+            if vibe != .focus {
+                group.addTask {
+                    (try? await client.randomSongs(size: 80)) ?? []
+                }
             }
             for await batch in group {
                 pool.append(contentsOf: batch)
             }
         }
-        if pool.count < 40 {
+        if pool.count < 40, vibe != .focus {
             pool += (try? await client.randomSongs(size: 120)) ?? []
         }
         return pool.uniquedByID()

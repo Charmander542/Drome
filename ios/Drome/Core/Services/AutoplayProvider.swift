@@ -21,10 +21,22 @@ final class AutoplayProvider {
         self.userKey = userKey
     }
 
-    func nextBatch(seeds: [Song], excluding: Set<String>, count: Int = 15) async -> [Song] {
+    func nextBatch(seeds: [Song], excluding: Set<String>, count: Int = 15, relaxed: Bool = false) async -> [Song] {
+        let batch = await buildBatch(seeds: seeds, excluding: excluding, count: count, relaxed: relaxed)
+        if !batch.isEmpty { return batch }
+        guard !relaxed else { return await lastResortBatch(excluding: excluding, count: count) }
+        return await nextBatch(seeds: seeds, excluding: excluding, count: count, relaxed: true)
+    }
+
+    private func buildBatch(
+        seeds: [Song],
+        excluding: Set<String>,
+        count: Int,
+        relaxed: Bool
+    ) async -> [Song] {
         let excludedRotation = rotation.excludedIDs
-        let recentPlays = (try? database.recentPlayIDs(
-            userKey: userKey, withinHours: PlaybackPreferences.autoplayRecencyHours)) ?? []
+        let recentPlays: Set<String> = relaxed ? [] : ((try? database.recentPlayIDs(
+            userKey: userKey, withinHours: PlaybackPreferences.autoplayRecencyHours)) ?? [])
         let isAllowed: (Song) -> Bool = { song in
             !excluding.contains(song.id)
                 && !excludedRotation.contains(song.id)
@@ -89,6 +101,19 @@ final class AutoplayProvider {
             if !advanced { break }
         }
         return Array(result.prefix(count))
+    }
+
+    /// When metadata filters empty the pool, still keep Infinite Shuffle going.
+    private func lastResortBatch(excluding: Set<String>, count: Int) async -> [Song] {
+        let excludedRotation = rotation.excludedIDs
+        let pool = ((try? await client.randomSongs(size: 120)) ?? [])
+            .filter { song in
+                !excluding.contains(song.id)
+                    && !excludedRotation.contains(song.id)
+                    && !Self.isLowRatedExcluded(song, ratings: ratings)
+            }
+            .uniquedByID()
+        return Array(pool.shuffled().prefix(count))
     }
 
     /// Low-rated tracks are always kept out of Infinite Shuffle pools.

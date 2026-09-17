@@ -68,6 +68,8 @@
 	<array>
 		<string>_drome-pair._tcp</string>
 	</array>
+	<key>UIDesignRequiresCompatibility</key>
+	<true/>
 </dict>
 </plist>
 

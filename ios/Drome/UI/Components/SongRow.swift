@@ -21,6 +21,7 @@ struct SongRow: View {
     @Environment(\.session) private var session
 
     @State private var showAddToPlaylist = false
+    @State private var showReplaceQueueConfirm = false
 
     @Environment(\.songNavigator) private var songNavigator
 
@@ -53,6 +54,12 @@ struct SongRow: View {
         .accessibilityHint(playsOnTap ? "Plays this song" : "")
         .contextMenu { contextMenu }
         .modifier(ConditionalSongSwipe(enabled: enablesSwipeActions && !lightweight, song: song))
+        .confirmReplaceUserQueue(
+            isPresented: $showReplaceQueueConfirm,
+            queueCount: player.userQueue.count,
+            onClearAndPlay: { commitPlay(clearUserQueue: true) },
+            onKeepAndPlay: { commitPlay(clearUserQueue: false) }
+        )
         .sheet(isPresented: $showAddToPlaylist) {
             if let session {
                 NavigationStack {
@@ -71,11 +78,24 @@ struct SongRow: View {
 
     private func playTapped() {
         guard playsOnTap else { return }
+        if !player.userQueue.isEmpty {
+            showReplaceQueueConfirm = true
+            return
+        }
+        commitPlay(clearUserQueue: true)
+    }
+
+    private func commitPlay(clearUserQueue: Bool) {
         if let onPlay {
-            onPlay()
+            if clearUserQueue {
+                onPlay()
+            } else {
+                player.performPreservingUserQueue(onPlay)
+            }
         } else {
             player.play([song], startAt: 0,
-                        context: PlaybackContext(label: song.title, kind: .search))
+                        context: PlaybackContext(label: song.title, kind: .search),
+                        clearUserQueue: clearUserQueue)
         }
     }
 

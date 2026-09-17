@@ -315,7 +315,6 @@ struct PlaylistDetailView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environment(\.editMode, .constant(isEditing ? .active : .inactive))
-        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
     }
 
     private func playlistHeader(_ playlist: PlaylistWithSongs) -> some View {

@@ -8,6 +8,7 @@ struct SearchView: View {
 
     @EnvironmentObject private var session: AppSession
     @Environment(\.songNavigator) private var songNavigator
+    @Environment(\.tabPopToRootTrigger) private var tabPopToRootTrigger
 
     @State private var source: Source = .library
     @State private var query = ""
@@ -51,6 +52,10 @@ struct SearchView: View {
                 hasCompletedSearch = false
                 scheduleSearch(query)
             }
+            .onChange(of: tabPopToRootTrigger) { _, trigger in
+                guard trigger > 0 else { return }
+                resetToDefault()
+            }
             .task {
                 let loaded = await Task.detached(priority: .utility) {
                     RecentSearchesStore.load()
@@ -62,6 +67,21 @@ struct SearchView: View {
                 isSearchPresented = true
             }
             .scrollDismissesKeyboard(.interactively)
+    }
+
+    private func resetToDefault() {
+        debounceTask?.cancel()
+        source = .library
+        query = ""
+        includeLyrics = false
+        isSearching = false
+        hasCompletedSearch = false
+        hits = []
+        spotifyHits = []
+        error = nil
+        isSearchPresented = false
+        matchedSongs = [:]
+        matchedAlbums = [:]
     }
 
     /// Stays visible while the search field is focused (unlike nav toolbar items).
@@ -136,7 +156,6 @@ struct SearchView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.interactively)
-        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
         .overlay {
             if trimmed.isEmpty && recentItems.isEmpty {
                 EmptyStateView(
@@ -205,7 +224,6 @@ struct SearchView: View {
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .scrollDismissesKeyboard(.interactively)
-            .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
             .overlay {
                 if trimmed.isEmpty {
                     EmptyStateView(

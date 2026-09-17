@@ -8,6 +8,8 @@ struct RootView: View {
             if let session = env.session {
                 MainTabView()
                     .dromeSession(session)
+                    .environmentObject(env.podcastManager)
+                    .environmentObject(env.podcastPlayer)
                     .id(session.id)
             } else {
                 LoginView()

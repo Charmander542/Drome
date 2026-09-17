@@ -32,6 +32,25 @@ extension Color {
     }
 }
 
+/// Extra bottom safe-area padding when the mini player is visible.
+/// Nested `List`/`ScrollView` inside `TabView` + `NavigationStack` often ignore
+/// the outer `safeAreaInset`, so tab content opts in via this environment value.
+private struct MiniPlayerClearanceKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+    var miniPlayerClearance: CGFloat {
+        get { self[MiniPlayerClearanceKey.self] }
+        set { self[MiniPlayerClearanceKey.self] = newValue }
+    }
+}
+
+enum MiniPlayerMetrics {
+    /// Art (48) + vertical padding (16) + gap above the tab bar (4).
+    static let clearanceHeight: CGFloat = 68
+}
+
 extension View {
     func dromeScreen() -> some View {
         self
@@ -40,8 +59,45 @@ extension View {
             .preferredColorScheme(.dark)
     }
 
-    /// Clears space above the floating mini player + tab bar.
-    func dromeMiniPlayerClearance(_ height: CGFloat = 84) -> some View {
-        safeAreaInset(edge: .bottom) { Color.clear.frame(height: height) }
+    /// Adds bottom safe-area padding while the mini player is showing so the
+    /// last list rows can scroll clear of it. No-op when clearance is 0.
+    func dromeMiniPlayerClearance(_ height: CGFloat? = nil) -> some View {
+        modifier(MiniPlayerClearanceModifier(overrideHeight: height))
+    }
+
+}
+
+private struct MiniPlayerClearanceModifier: ViewModifier {
+    var overrideHeight: CGFloat?
+    @Environment(\.miniPlayerClearance) private var clearance
+
+    func body(content: Content) -> some View {
+        let amount = overrideHeight ?? clearance
+        content.safeAreaPadding(.bottom, amount)
+    }
+}
+
+extension View {
+    /// Confirms before a play action that would replace an existing user queue.
+    func confirmReplaceUserQueue(
+        isPresented: Binding<Bool>,
+        queueCount: Int,
+        onClearAndPlay: @escaping () -> Void,
+        onKeepAndPlay: @escaping () -> Void,
+        onCancel: (() -> Void)? = nil
+    ) -> some View {
+        confirmationDialog(
+            "Replace queue?",
+            isPresented: isPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Clear Queue & Play") { onClearAndPlay() }
+            Button("Keep Queue & Play") { onKeepAndPlay() }
+            Button("Cancel", role: .cancel) { onCancel?() }
+        } message: {
+            Text(queueCount == 1
+                  ? "You have 1 song queued. Clear it, or keep it and play this song now?"
+                  : "You have \(queueCount) songs queued. Clear them, or keep them and play this song now?")
+        }
     }
 }

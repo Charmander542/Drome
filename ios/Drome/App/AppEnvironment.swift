@@ -11,6 +11,9 @@ final class AppEnvironment: ObservableObject {
 
     let accounts: AccountStore
     let database: AppDatabase
+    let podcastStore: PodcastStore
+    let podcastManager: PodcastManager
+    let podcastPlayer: PodcastPlayer
 
     @Published private(set) var session: AppSession?
     private var pendingDeepLink: URL?
@@ -19,6 +22,9 @@ final class AppEnvironment: ObservableObject {
     init() {
         accounts = AccountStore()
         database = AppDatabase.makeShared()
+        podcastStore = PodcastStore.makeDefault()
+        podcastManager = PodcastManager(store: podcastStore)
+        podcastPlayer = PodcastPlayer(store: podcastStore)
         AppEnvironment.shared = self
         SharePlayRuntime.shared.startListening()
         if let account = accounts.activeAccount {
@@ -27,6 +33,22 @@ final class AppEnvironment: ObservableObject {
         #if os(iOS)
         PhoneWatchSession.shared.pushFromStoredSnapshot()
         #endif
+
+        // Music ↔ podcast exclusivity on the shared audio session.
+        podcastPlayer.onWillStartPlayback = { [weak self] in
+            // Pause music so podcast owns audio; mini chrome swaps via
+            // MiniPlayerKind (podcast episode takes priority over music current).
+            self?.session?.player.pause()
+        }
+        NotificationCenter.default.addObserver(
+            forName: .podcastPlayerSeek, object: nil, queue: .main
+        ) { [weak self] note in
+            Task { @MainActor in
+                if let time = note.userInfo?["time"] as? TimeInterval {
+                    self?.podcastPlayer.seek(to: time)
+                }
+            }
+        }
     }
 
     func activate(_ account: Account) {
@@ -35,6 +57,18 @@ final class AppEnvironment: ObservableObject {
         session = AppSession(account: account, password: password, database: database)
         SharePlayRuntime.shared.bind(session?.player)
         accounts.setActive(account)
+
+        // Starting music should yield to the music engine.
+        if let session {
+            let previous = session.player.onTrackStarted
+            session.player.onTrackStarted = { [weak self] song in
+                // Starting music fully yields the podcast session so the music
+                // mini player replaces the podcast one.
+                self?.podcastPlayer.stop()
+                previous?(song)
+            }
+        }
+
         NotificationCenter.default.post(name: .dromeSessionChanged, object: nil)
         #if os(iOS)
         PhoneWatchSession.shared.pushFromStoredSnapshot()
@@ -442,19 +476,24 @@ final class AppSession: ObservableObject, Identifiable {
             let context = player.context
             Task.detached(priority: .utility) {
                 try? database.recordPlay(userKey: userKey, song: song, context: context)
+                #if os(iOS)
                 await MainActor.run {
                     WidgetRecentSync.refresh(session: self, database: database)
                 }
+                #endif
             }
         }
 
+        #if os(iOS)
         WidgetRecentSync.refresh(session: self, database: database)
         WidgetRecentSync.bindPlayback(session: self, database: database)
         WidgetCommandBridge.startObserving { [weak self] command in
             self?.handleWidgetCommand(command)
         }
+        #endif
     }
 
+    #if os(iOS)
     func handleWidgetCommand(_ command: WidgetCommand) {
         let remote = connect?.isRemote == true
         switch command {
@@ -504,10 +543,13 @@ final class AppSession: ObservableObject, Identifiable {
             }
         }
     }
+    #endif
 
     func teardown() {
         playbackSideEffectCancellables.removeAll()
+        #if os(iOS)
         WidgetCommandBridge.stopObserving()
+        #endif
         connect?.stop()
         player.shutdown()
         lyricsIndexer.stop()

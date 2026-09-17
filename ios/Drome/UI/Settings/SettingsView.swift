@@ -87,7 +87,7 @@ struct SettingsView: View {
             .listRowBackground(DromeTheme.elevated)
 
             Section {
-                Toggle("Autoplay / Infinite Shuffle", isOn: $player.autoplayEnabled)
+                Toggle("Keep playing (∞ adds songs when the queue ends)", isOn: $player.autoplayEnabled)
                 Toggle("Skip low-rated songs everywhere", isOn: Binding(
                     get: { PlaybackPreferences.skipLowRatedEverywhere },
                     set: { PlaybackPreferences.skipLowRatedEverywhere = $0 }

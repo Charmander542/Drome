@@ -16,6 +16,7 @@ struct TVNowPlayingView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject private var ratings: RatingsStore
+    @EnvironmentObject private var chrome: TVChromeState
 
     @Namespace private var playerFocus
     @FocusState private var focus: NPFocus?
@@ -55,6 +56,7 @@ struct TVNowPlayingView: View {
             } else if new != nil {
                 idleTick += 1
             }
+            syncTabBarChrome()
         }
         .onChange(of: player.isPlaying) { _, playing in
             if playing {
@@ -71,7 +73,21 @@ struct TVNowPlayingView: View {
         }
         .onAppear {
             if focus == nil { focus = .picker }
+            syncTabBarChrome()
         }
+        .onDisappear {
+            chrome.hidesTabBar = false
+        }
+        .onChange(of: cinemaMode) { _, _ in
+            syncTabBarChrome()
+        }
+        .onChange(of: player.current?.id) { _, _ in
+            syncTabBarChrome()
+        }
+    }
+
+    private func syncTabBarChrome() {
+        chrome.hidesTabBar = cinemaMode && player.current != nil
     }
 
     private func enterCinema(from source: NPFocus? = nil) {
@@ -223,11 +239,10 @@ struct TVNowPlayingView: View {
             .padding(.top, 4)
 
             HStack(spacing: 14) {
-                TVTransportIcon(
+                TVModeControl(
                     system: "shuffle",
-                    size: 22,
-                    hit: 64,
-                    tint: player.shuffleMode == .off ? .white.opacity(0.7) : TVTheme.accent,
+                    label: player.shuffleMode.userLabel,
+                    active: player.shuffleMode != .off,
                     badge: player.shuffleMode == .smart ? "star.fill" : nil)
                 {
                     player.cycleShuffleMode()
@@ -237,11 +252,10 @@ struct TVNowPlayingView: View {
                     moveSongFocus(direction, from: .shuffle)
                 }
 
-                TVTransportIcon(
+                TVModeControl(
                     system: player.repeatMode == .one ? "repeat.1" : "repeat",
-                    size: 22,
-                    hit: 64,
-                    tint: player.repeatMode == .off ? .white.opacity(0.7) : TVTheme.accent)
+                    label: repeatModeLabel,
+                    active: player.repeatMode != .off)
                 {
                     player.cycleRepeatMode()
                 }
@@ -250,11 +264,10 @@ struct TVNowPlayingView: View {
                     moveSongFocus(direction, from: .repeatMode)
                 }
 
-                TVTransportIcon(
+                TVModeControl(
                     system: "infinity",
-                    size: 22,
-                    hit: 64,
-                    tint: player.autoplayEnabled ? TVTheme.accent : .white.opacity(0.7))
+                    label: AutoplayMode.label,
+                    active: player.autoplayEnabled)
                 {
                     player.autoplayEnabled.toggle()
                 }
@@ -280,6 +293,14 @@ struct TVNowPlayingView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .focusSection()
+    }
+
+    private var repeatModeLabel: String {
+        switch player.repeatMode {
+        case .off: return "Repeat off"
+        case .all: return "Repeat all"
+        case .one: return "Repeat one"
+        }
     }
 
     private func moveSongFocus(_ direction: MoveCommandDirection, from: NPFocus) {
@@ -502,6 +523,35 @@ private struct TVPlayGlyph: View {
                 .offset(x: isPlaying ? 0 : 2)
         }
         .frame(width: 112, height: 112)
+    }
+}
+
+private struct TVModeControl: View {
+    let system: String
+    let label: String
+    var active: Bool = false
+    var badge: String? = nil
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                TVTransportGlyph(
+                    system: system,
+                    size: 22,
+                    hit: 64,
+                    tint: active ? TVTheme.accent : .white.opacity(0.7),
+                    badge: badge)
+                Text(label)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(active ? TVTheme.accent : TVTheme.dim)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(width: 92)
+            }
+        }
+        .buttonStyle(TVQuietButtonStyle())
+        .focusEffectDisabled()
     }
 }
 

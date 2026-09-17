@@ -25,6 +25,7 @@ struct PlaybackContext: Equatable {
         case search
         case mix
         case outOfRotation
+        case podcast(showID: String)
     }
 
     var label: String
@@ -55,6 +56,8 @@ struct PlaybackContext: Equatable {
         case .search:
             if let id = fallbackSong?.id { return "song:\(id)" }
             return "search:\(label)"
+        case .podcast(let showID):
+            return "podcast:\(showID)"
         }
     }
 }
@@ -65,8 +68,29 @@ enum ShuffleMode: String {
     case smart
     /// Uniform random.
     case random
+
+    var userLabel: String {
+        switch self {
+        case .off: return "In order"
+        case .smart: return "Smart shuffle"
+        case .random: return "Shuffle"
+        }
+    }
+
+    var userHint: String {
+        switch self {
+        case .off: return "Plays the queue in list order"
+        case .smart: return "Shuffles the queue, favoring higher-rated tracks"
+        case .random: return "Shuffles the queue randomly"
+        }
+    }
 }
 
 enum RepeatMode {
     case off, all, one
+}
+
+enum AutoplayMode {
+    static let label = "Keep playing"
+    static let hint = "Adds similar songs when the queue runs out"
 }

@@ -39,6 +39,7 @@ final class TVNowPlayingAudio: NSObject, AVAudioPlayerDelegate {
     }
 
     func stop() {
+        player?.delegate = nil
         player?.stop()
         player = nil
     }
@@ -49,6 +50,7 @@ final class TVNowPlayingAudio: NSObject, AVAudioPlayerDelegate {
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        guard flag, player === self.player else { return }
         Task { @MainActor in
             self.onFinished?()
         }
