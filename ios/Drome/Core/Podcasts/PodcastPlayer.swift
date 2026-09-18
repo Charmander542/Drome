@@ -18,11 +18,19 @@ final class PodcastPlayer: ObservableObject {
     @Published var elapsed: TimeInterval = 0
     @Published var duration: TimeInterval = 0
     @Published var errorMessage: String?
+    @Published var chapters: [PodcastChapter] = []
     @Published var playbackSpeed: Double = 1.0 {
         didSet {
             if isPlaying { player.rate = Float(playbackSpeed) }
             UserDefaults.standard.set(playbackSpeed, forKey: "podcast.playbackSpeed")
         }
+    }
+
+    /// Active chapter for the current playhead (if chapters are available).
+    var currentChapter: PodcastChapter? {
+        guard let idx = PodcastChapterResolver.currentIndex(in: chapters, at: elapsed),
+              chapters.indices.contains(idx) else { return nil }
+        return chapters[idx]
     }
 
     /// Called before podcast audio starts so music can yield the session.
@@ -81,6 +89,7 @@ final class PodcastPlayer: ObservableObject {
         activateAudioSession()
 
         currentEpisode = episode
+        chapters = episode.chapters.filter(\.toc).sorted { $0.startTime < $1.startTime }
         errorMessage = nil
         elapsed = 0
         duration = episode.duration ?? 0
@@ -105,6 +114,25 @@ final class PodcastPlayer: ObservableObject {
 
         updateNowPlaying(for: episode, startPosition: startPosition, rate: 0)
         waitUntilReadyThenPlay(item, generation: generation)
+        Task { await self.resolveChapters(for: episode, generation: generation) }
+    }
+
+    private func resolveChapters(for episode: PodcastEpisode, generation: Int) async {
+        let resolved = await PodcastChapterResolver.resolve(for: episode)
+        guard generation == playGeneration else { return }
+        chapters = resolved
+        if var current = currentEpisode, current.id == episode.id {
+            current.chapters = resolved
+            currentEpisode = current
+            // Persist so the next open is instant.
+            if !resolved.isEmpty {
+                try? store?.updateChapters(
+                    episodeID: episode.id,
+                    showFeedURL: episode.showID,
+                    chaptersURL: episode.chaptersURL,
+                    chapters: resolved)
+            }
+        }
     }
 
     func playPause() {
@@ -163,6 +191,7 @@ final class PodcastPlayer: ObservableObject {
         player.pause()
         player.replaceCurrentItem(with: nil)
         currentEpisode = nil
+        chapters = []
         isPlaying = false
         wantsToPlay = false
         elapsed = 0

@@ -12,20 +12,50 @@ struct PodcastShowView: View {
     @State private var showUnsubscribeAlert = false
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                // Show header
-                showHeader
+        Group {
+            if isLoading {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let error {
+                errorView(error)
+            } else {
+                List {
+                    Section {
+                        showHeader
+                            .listRowInsets(EdgeInsets())
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                    }
 
-                // Episodes list
-                if isLoading {
-                    ProgressView()
-                        .padding(.top, 40)
-                } else if let error {
-                    errorView(error)
-                } else {
-                    episodesList
+                    Section {
+                        ForEach(episodes) { episode in
+                            episodeRow(episode)
+                                .listRowBackground(DromeTheme.background)
+                                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    starSwipeButton(for: episode)
+                                }
+                                .contextMenu {
+                                    Button {
+                                        toggleStar(episode)
+                                    } label: {
+                                        Label(
+                                            episode.isStarred ? "Remove Star" : "Star Episode",
+                                            systemImage: episode.isStarred ? "star.slash" : "star")
+                                    }
+                                    Button {
+                                        podcastPlayer.play(episode, resumeFromSaved: true)
+                                    } label: {
+                                        Label("Play", systemImage: "play.fill")
+                                    }
+                                }
+                        }
+                    } header: {
+                        Text("Episodes")
+                    }
                 }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
             }
         }
         .navigationTitle(show.title)
@@ -48,10 +78,16 @@ struct PodcastShowView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("You'll still have downloaded episodes, but won't get new ones.")
+            Text("You'll still have starred episodes, but won't get new ones.")
         }
         .task {
             await loadEpisodes()
+        }
+        .onChange(of: podcastManager.starsRevision) { _, _ in
+            // Keep row star badges in sync if starred elsewhere.
+            if let refreshed = try? podcastManager.episodes(for: show.feedURL) {
+                episodes = refreshed
+            }
         }
     }
 
@@ -59,20 +95,13 @@ struct PodcastShowView: View {
 
     private var showHeader: some View {
         VStack(spacing: 12) {
-            AsyncImage(url: show.imageURL) { image in
-                image.resizable().aspectRatio(contentMode: .fill)
-            } placeholder: {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color.gray.opacity(0.3))
-                    .overlay {
-                        Image(systemName: "headphones")
-                            .font(.system(size: 48))
-                            .foregroundStyle(.secondary)
-                    }
-            }
-            .frame(width: 120, height: 120)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .padding(.top, 16)
+            RemoteImage(
+                url: show.imageURL,
+                placeholderSymbol: "headphones",
+                holdImageWhileLoading: true)
+                .frame(width: 120, height: 120)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(.top, 16)
 
             if let author = show.author {
                 Text(author)
@@ -106,7 +135,6 @@ struct PodcastShowView: View {
                 }
             }
 
-            // Subscribe/Unsubscribe button
             Button {
                 if podcastManager.isSubscribed(feedURL: show.feedURL) {
                     showUnsubscribeAlert = true
@@ -118,7 +146,8 @@ struct PodcastShowView: View {
             } label: {
                 Label(
                     podcastManager.isSubscribed(feedURL: show.feedURL) ? "Subscribed" : "Subscribe",
-                    systemImage: podcastManager.isSubscribed(feedURL: show.feedURL) ? "checkmark.circle.fill" : "plus.circle.fill"
+                    systemImage: podcastManager.isSubscribed(feedURL: show.feedURL)
+                        ? "checkmark.circle.fill" : "plus.circle.fill"
                 )
                 .font(.subheadline.weight(.semibold))
                 .frame(maxWidth: .infinity)
@@ -138,51 +167,41 @@ struct PodcastShowView: View {
             .buttonStyle(.plain)
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
-
-            Divider()
         }
-    }
-
-    // MARK: - Episodes List
-
-    private var episodesList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Episodes")
-                .font(.headline)
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
-
-            ForEach(episodes) { episode in
-                episodeRow(episode)
+        .frame(maxWidth: .infinity)
+        .onAppear {
+            if let url = show.imageURL {
+                ImageLoader.shared.prefetch([url], limit: 1)
             }
         }
     }
+
+    // MARK: - Episode Row
 
     private func episodeRow(_ episode: PodcastEpisode) -> some View {
         Button {
             podcastPlayer.play(episode, resumeFromSaved: true)
         } label: {
             HStack(spacing: 12) {
-                // Episode image
-                AsyncImage(url: episode.imageURL ?? show.imageURL) { image in
-                    image.resizable().aspectRatio(contentMode: .fill)
-                } placeholder: {
-                    Rectangle().fill(Color.gray.opacity(0.2))
-                        .overlay {
-                            Image(systemName: "play.circle.fill")
-                                .font(.title2)
-                                .foregroundStyle(.secondary)
-                        }
-                }
-                .frame(width: 56, height: 56)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                RemoteImage(
+                    url: show.imageURL,
+                    placeholderSymbol: "headphones",
+                    holdImageWhileLoading: true)
+                    .frame(width: 56, height: 56)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
-                // Episode info
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(episode.title)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(2)
+                    HStack(spacing: 6) {
+                        Text(episode.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(2)
+                        if episode.isStarred {
+                            Image(systemName: "star.fill")
+                                .font(.caption2)
+                                .foregroundStyle(DromeTheme.accent)
+                        }
+                    }
 
                     if let description = episode.description {
                         Text(description)
@@ -205,46 +224,67 @@ struct PodcastShowView: View {
                     .foregroundStyle(.secondary)
                 }
 
-                Spacer()
+                Spacer(minLength: 0)
 
-                // Podcast progress: ring + remaining time (not a music %/bar).
-                if episode.isFullyPlayed {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                } else if episode.playbackPosition > 0 {
-                    VStack(spacing: 4) {
-                        ZStack {
-                            Circle()
-                                .stroke(Color.white.opacity(0.12), lineWidth: 2.5)
-                            Circle()
-                                .trim(from: 0, to: episode.progressFraction)
-                                .stroke(DromeTheme.accent, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                                .rotationEffect(.degrees(-90))
-                            Image(systemName: "play.fill")
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(.white)
-                                .offset(x: 0.5)
-                        }
-                        .frame(width: 32, height: 32)
-
-                        if let remaining = episode.remainingText {
-                            Text(remaining.replacingOccurrences(of: " left", with: ""))
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(DromeTheme.accent)
-                                .lineLimit(1)
-                        }
-                    }
-                } else {
-                    Image(systemName: "play.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(.secondary)
-                }
+                episodeTrailing(episode)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func episodeTrailing(_ episode: PodcastEpisode) -> some View {
+        if episode.isFullyPlayed {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+        } else if episode.playbackPosition > 0 {
+            VStack(spacing: 4) {
+                ZStack {
+                    Circle()
+                        .stroke(Color.white.opacity(0.12), lineWidth: 2.5)
+                    Circle()
+                        .trim(from: 0, to: episode.progressFraction)
+                        .stroke(DromeTheme.accent, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                    Image(systemName: "play.fill")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                        .offset(x: 0.5)
+                }
+                .frame(width: 32, height: 32)
+
+                if let remaining = episode.remainingText {
+                    Text(remaining.replacingOccurrences(of: " left", with: ""))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(DromeTheme.accent)
+                        .lineLimit(1)
+                }
+            }
+        } else {
+            Image(systemName: "play.circle.fill")
+                .font(.title2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func starSwipeButton(for episode: PodcastEpisode) -> some View {
+        Button {
+            toggleStar(episode)
+        } label: {
+            Label(
+                episode.isStarred ? "Unstar" : "Star",
+                systemImage: episode.isStarred ? "star.slash.fill" : "star.fill")
+        }
+        .tint(episode.isStarred ? DromeTheme.elevated2 : DromeTheme.accent)
+    }
+
+    private func toggleStar(_ episode: PodcastEpisode) {
+        let next = podcastManager.toggleStar(episode)
+        if let idx = episodes.firstIndex(where: { $0.id == episode.id }) {
+            episodes[idx].isStarred = next
+        }
     }
 
     // MARK: - Helpers

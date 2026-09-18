@@ -61,8 +61,16 @@ struct PodcastEpisode: Codable, Identifiable, Hashable, Equatable {
     var fileSize: Int64?
     var mimeType: String?
 
+    /// External Podcasting 2.0 chapters JSON URL (`podcast:chapters`).
+    var chaptersURL: URL?
+    /// Inline / resolved chapter markers (PSC, JSON, or description timestamps).
+    var chapters: [PodcastChapter] = []
+
     /// Playback position in seconds (persisted per episode).
     var playbackPosition: TimeInterval = 0
+
+    /// Saved / starred for later (persisted in `podcast_stars`).
+    var isStarred: Bool = false
 
     var durationText: String {
         guard let duration else { return "Unknown" }
@@ -103,6 +111,40 @@ struct PodcastEpisode: Codable, Identifiable, Hashable, Equatable {
         let remMins = minutes % 60
         if remMins == 0 { return "\(hours) hr left" }
         return "\(hours) hr \(remMins) min left"
+    }
+}
+
+// MARK: - Podcast Chapter
+
+/// A titled segment within an episode (Podlove / Podcasting 2.0 / show-notes).
+struct PodcastChapter: Codable, Identifiable, Hashable, Equatable {
+    var id: String { "\(Int(startTime * 1000))-\(title)" }
+    var startTime: TimeInterval
+    var title: String
+    var endTime: TimeInterval?
+    var imageURL: URL?
+    var linkURL: URL?
+    /// When false, hide from TOC (Podcasting 2.0 `toc: false`).
+    var toc: Bool
+
+    init(
+        startTime: TimeInterval,
+        title: String,
+        endTime: TimeInterval? = nil,
+        imageURL: URL? = nil,
+        linkURL: URL? = nil,
+        toc: Bool = true
+    ) {
+        self.startTime = startTime
+        self.title = title
+        self.endTime = endTime
+        self.imageURL = imageURL
+        self.linkURL = linkURL
+        self.toc = toc
+    }
+
+    var startTimeText: String {
+        Formatters.playbackTime(startTime)
     }
 }
 

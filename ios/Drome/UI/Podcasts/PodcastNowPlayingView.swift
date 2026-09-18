@@ -1,8 +1,9 @@
 import SwiftUI
 import UIKit
 
-/// Full-screen podcast Now Playing — same visual language as music `NowPlayingView`,
-/// with podcast transport (15s back / 30s forward) and playback speed.
+/// Full-screen podcast Now Playing.
+/// Progress is remaining-first (one time story) — inspired by Spotify’s long-form
+/// center remaining, without stacking elapsed + −remaining + “X left”.
 struct PodcastNowPlayingView: View {
     @EnvironmentObject private var podcastPlayer: PodcastPlayer
     @EnvironmentObject private var podcastManager: PodcastManager
@@ -21,13 +22,16 @@ struct PodcastNowPlayingView: View {
     @State private var backdropFrontOpacity: Double = 1
     @State private var backdropGeneration = 0
     @State private var showSpeedPicker = false
+    /// When true, show classic elapsed under the playhead while seeking / after tap.
+    @State private var showPreciseTime = false
+    @State private var showChapters = false
 
     var body: some View {
         NavigationStack {
             GeometryReader { geo in
                 let width = Self.finiteSize(geo.size.width)
                 let height = Self.finiteSize(geo.size.height)
-                let chromeReserve: CGFloat = 100
+                let chromeReserve: CGFloat = 88
                 let paneHeight = max(0, height - chromeReserve)
 
                 ZStack {
@@ -36,9 +40,9 @@ struct PodcastNowPlayingView: View {
                         .clipped()
 
                     VStack(spacing: 0) {
-                        dismissChrome(width: width)
+                        dismissChrome
                             .modifier(PodcastDismissGesture(
-                                enabled: !isDismissClosing && !showSpeedPicker,
+                                enabled: !isDismissClosing && !showSpeedPicker && !showChapters,
                                 gesture: dismissGesture))
 
                         episodePane(width: width, height: paneHeight)
@@ -56,7 +60,7 @@ struct PodcastNowPlayingView: View {
                 }
             }
             .modifier(PodcastDismissGesture(
-                enabled: !isDismissClosing && !showSpeedPicker,
+                enabled: !isDismissClosing && !showSpeedPicker && !showChapters,
                 gesture: dismissGesture))
             .ignoresSafeArea(edges: .bottom)
             .toolbar(.hidden, for: .navigationBar)
@@ -83,6 +87,12 @@ struct PodcastNowPlayingView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
+            .sheet(isPresented: $showChapters) {
+                chaptersSheet
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                    .preferredColorScheme(.dark)
+            }
             .preferredColorScheme(.dark)
             .background(Color.clear)
         }
@@ -94,22 +104,21 @@ struct PodcastNowPlayingView: View {
 
     // MARK: - Chrome
 
-    private func dismissChrome(width: CGFloat) -> some View {
+    private var dismissChrome: some View {
         VStack(spacing: 0) {
             Capsule()
                 .fill(Color.white.opacity(0.5))
                 .frame(width: 40, height: 5)
                 .padding(.top, 12)
-                .padding(.bottom, 22)
+                .padding(.bottom, 16)
                 .frame(maxWidth: .infinity)
                 .contentShape(Rectangle())
 
             Text(headerSubtitle)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(Color.white.opacity(0.7))
+                .foregroundStyle(Color.white.opacity(0.65))
                 .lineLimit(1)
-                .frame(height: 16)
-                .padding(.bottom, 8)
+                .padding(.bottom, 4)
         }
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
@@ -117,7 +126,7 @@ struct PodcastNowPlayingView: View {
 
     private var headerSubtitle: String {
         if let show = currentShow {
-            return "Playing from \(show.title)"
+            return show.title
         }
         return "Podcast"
     }
@@ -125,6 +134,15 @@ struct PodcastNowPlayingView: View {
     private var currentShow: PodcastShow? {
         guard let episode = podcastPlayer.currentEpisode else { return nil }
         return podcastManager.subscribedShows.first(where: { $0.feedURL == episode.showID })
+    }
+
+    private var artworkURL: URL? {
+        currentShow?.imageURL ?? podcastPlayer.currentEpisode?.imageURL
+    }
+
+    private var episodeIsStarred: Bool {
+        guard let episode = podcastPlayer.currentEpisode else { return false }
+        return episode.isStarred || podcastManager.isStarred(episode)
     }
 
     // MARK: - Background
@@ -136,13 +154,13 @@ struct PodcastNowPlayingView: View {
             frontOpacity: backdropFrontOpacity
         )
         .onAppear { syncBackground(animated: false) }
-        .onChange(of: podcastPlayer.currentEpisode?.imageURL?.absoluteString) { _, _ in
+        .onChange(of: artworkURL?.absoluteString) { _, _ in
             syncBackground(animated: true)
         }
     }
 
     private func syncBackground(animated: Bool) {
-        let nextURL = podcastPlayer.currentEpisode?.imageURL
+        let nextURL = artworkURL
         guard nextURL != backdropFront.url else { return }
 
         backdropGeneration += 1
@@ -171,52 +189,58 @@ struct PodcastNowPlayingView: View {
     // MARK: - Episode pane
 
     private func episodePane(width: CGFloat, height: CGFloat) -> some View {
-        let horizontalPad: CGFloat = 24
+        let horizontalPad: CGFloat = 28
         let contentWidth = max(0, width - horizontalPad * 2)
         let screenH = UIScreen.main.bounds.height
-        let estimatedPane = max(400, (screenH.isFinite ? screenH : 800) - 220)
-        let artSide = min(contentWidth, max(180, estimatedPane * 0.38))
+        let estimatedPane = max(400, (screenH.isFinite ? screenH : 800) - 200)
+        let artSide = min(contentWidth, max(200, estimatedPane * 0.42))
         let paneHeight = max(0, height)
 
         return VStack(spacing: 0) {
-            Spacer(minLength: 4)
+            Spacer(minLength: 8)
 
-            coverCard(url: podcastPlayer.currentEpisode?.imageURL, side: artSide)
+            coverCard(url: artworkURL, side: artSide)
 
-            Spacer(minLength: 16)
+            Spacer(minLength: 20)
 
             metadataBlock
                 .frame(width: contentWidth, alignment: .leading)
                 .id(podcastPlayer.currentEpisode?.id)
 
-            Spacer(minLength: 16)
+            Spacer(minLength: 22)
 
-            scrubber
+            progressBlock
                 .frame(width: contentWidth)
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 18)
 
             transport
                 .frame(width: contentWidth)
-
-            Spacer(minLength: 10)
-
-            bottomBar
-                .frame(width: contentWidth)
-                .padding(.bottom, 24)
+                .padding(.bottom, 28)
         }
         .frame(width: max(0, width), height: paneHeight)
+        .overlay(alignment: .bottom) {
+            if let message = podcastPlayer.errorMessage {
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.red.opacity(0.9))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 8)
+            }
+        }
     }
 
     private func coverCard(url: URL?, side: CGFloat) -> some View {
         let safeSide = Self.finiteSize(side)
         return RemoteImage(url: url, holdImageWhileLoading: true)
             .frame(width: safeSide, height: safeSide)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .shadow(color: .black.opacity(0.5), radius: 20, y: 12)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .shadow(color: .black.opacity(0.45), radius: 24, y: 14)
             .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
             }
     }
 
@@ -224,34 +248,45 @@ struct PodcastNowPlayingView: View {
         let episode = podcastPlayer.currentEpisode
         let title = cleaned(episode?.title) ?? "Episode"
         let showName = cleaned(currentShow?.title) ?? "Podcast"
-        let titleLineHeight = UIFont.preferredFont(forTextStyle: .title3).lineHeight + 2
 
-        return VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.title3.weight(.bold))
+                .font(.title2.weight(.bold))
                 .foregroundStyle(.white)
-                .lineLimit(2)
+                .lineLimit(3)
                 .minimumScaleFactor(0.85)
-                .frame(maxWidth: .infinity, minHeight: titleLineHeight, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
 
-            Text(showName)
-                .font(.subheadline)
-                .foregroundStyle(Color.white.opacity(0.7))
-                .lineLimit(1)
+            HStack(spacing: 8) {
+                Text(showName)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Color.white.opacity(0.7))
+                    .lineLimit(1)
 
-            if let episode, let date = episode.pubDate {
-                Text(date.formatted(date: .abbreviated, time: .omitted))
-                    .font(.caption2.weight(.semibold))
+                if let date = episode?.pubDate {
+                    Text("·")
+                        .foregroundStyle(Color.white.opacity(0.35))
+                    Text(date.formatted(date: .abbreviated, time: .omitted))
+                        .font(.subheadline)
+                        .foregroundStyle(Color.white.opacity(0.45))
+                        .lineLimit(1)
+                }
+            }
+
+            if let chapter = podcastPlayer.currentChapter, podcastPlayer.chapters.count >= 2 {
+                Text(chapter.title)
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(DromeTheme.accent.opacity(0.95))
+                    .lineLimit(1)
+                    .padding(.top, 2)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(minHeight: 56, alignment: .topLeading)
     }
 
-    // MARK: - Scrubber
+    // MARK: - Progress (one time story)
 
-    private var scrubber: some View {
+    private var progressBlock: some View {
         let total = stableDuration
         let rawElapsed = podcastPlayer.elapsed.isFinite ? podcastPlayer.elapsed : 0
         let live = min(max(0, rawElapsed), total)
@@ -262,24 +297,37 @@ struct PodcastNowPlayingView: View {
             return live
         }()
         let fraction = total > 0 ? displayed / total : 0
+        let remaining = max(0, total - displayed)
+        let percent = Int((fraction * 100).rounded(.down))
 
-        return VStack(spacing: 8) {
+        return VStack(spacing: 10) {
             GeometryReader { geo in
                 let width = max(0, geo.size.width)
                 let fill = max(0, min(width, width * fraction))
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(Color.white.opacity(0.22))
-                        .frame(height: 6)
+                        .fill(Color.white.opacity(0.18))
+                        .frame(height: 5)
                     Capsule()
                         .fill(Color.white)
-                        .frame(width: max(6, fill), height: 6)
-                    // Vertical playhead — podcast scrubber language vs music Slider knob.
-                    Capsule()
+                        .frame(width: max(5, fill), height: 5)
+
+                    // Chapter markers along the scrubber.
+                    if total > 1 {
+                        ForEach(podcastPlayer.chapters.dropFirst()) { chapter in
+                            let x = CGFloat(chapter.startTime / total) * width
+                            Capsule()
+                                .fill(Color.white.opacity(0.55))
+                                .frame(width: 2, height: 10)
+                                .offset(x: max(0, min(width - 2, x - 1)))
+                        }
+                    }
+
+                    Circle()
                         .fill(Color.white)
-                        .frame(width: 3, height: 16)
-                        .offset(x: max(0, fill - 1.5))
-                        .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+                        .frame(width: 14, height: 14)
+                        .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
+                        .offset(x: max(0, fill - 7))
                 }
                 .frame(maxHeight: .infinity, alignment: .center)
                 .contentShape(Rectangle())
@@ -297,7 +345,7 @@ struct PodcastNowPlayingView: View {
                             let target = (x / width) * total
                             seekElapsed = target
                             podcastPlayer.seek(to: target)
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                                 isSeeking = false
                             }
                         }
@@ -305,23 +353,63 @@ struct PodcastNowPlayingView: View {
             }
             .frame(height: 28)
 
-            HStack {
-                Text(Formatters.playbackTime(displayed))
-                    .frame(minWidth: 40, alignment: .leading)
-                Spacer()
-                Text(remainingLabel(displayed: displayed, total: total))
-                    .frame(minWidth: 40, alignment: .trailing)
+            // Single primary readout — remaining in human words.
+            // Tap toggles a precise elapsed peek (for scrubbing).
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    showPreciseTime.toggle()
+                }
+            } label: {
+                VStack(spacing: 3) {
+                    if isSeeking || showPreciseTime {
+                        Text(Formatters.playbackTime(displayed))
+                            .font(.caption.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(Color.white.opacity(0.55))
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
+
+                    Text(friendlyRemaining(remaining))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+
+                    if total > 1 {
+                        Text("\(percent)% through")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(Color.white.opacity(0.45))
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
             }
-            .font(.caption.monospacedDigit().weight(.semibold))
-            .foregroundStyle(Color.white.opacity(0.7))
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(friendlyRemaining(remaining)), \(percent) percent through. Tap for exact time.")
+
+            if podcastPlayer.chapters.count >= 2 {
+                Button {
+                    showChapters = true
+                } label: {
+                    Label("\(podcastPlayer.chapters.count) chapters", systemImage: "list.bullet")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(Capsule().fill(Color.white.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 2)
+            }
         }
-        .frame(height: 52)
     }
 
-    private func remainingLabel(displayed: Double, total: Double) -> String {
-        guard total > 0 else { return Formatters.playbackTime(0) }
-        let left = max(0, total - displayed)
-        return "-\(Formatters.playbackTime(left))"
+    private func friendlyRemaining(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        if s < 60 { return "\(max(1, s)) sec left" }
+        let minutes = (s + 30) / 60
+        if minutes < 60 { return "\(minutes) min left" }
+        let hours = minutes / 60
+        let remMins = minutes % 60
+        if remMins == 0 { return "\(hours) hr left" }
+        return "\(hours) hr \(remMins) min left"
     }
 
     // MARK: - Transport
@@ -334,9 +422,13 @@ struct PodcastNowPlayingView: View {
                 Text(speedLabel(podcastPlayer.playbackSpeed))
                     .font(.subheadline.weight(.bold).monospacedDigit())
                     .foregroundStyle(podcastPlayer.playbackSpeed == 1.0
-                                     ? Color.white.opacity(0.45)
+                                     ? Color.white.opacity(0.5)
                                      : DromeTheme.accent)
                     .frame(width: 48, height: 44)
+                    .background(
+                        Capsule()
+                            .fill(Color.white.opacity(podcastPlayer.playbackSpeed == 1.0 ? 0.08 : 0.14))
+                    )
             }
             .accessibilityLabel("Playback speed \(speedLabel(podcastPlayer.playbackSpeed))")
 
@@ -348,18 +440,18 @@ struct PodcastNowPlayingView: View {
                 Image(systemName: "gobackward.15")
                     .font(.title2)
                     .foregroundStyle(.white)
-                    .frame(width: 48, height: 48)
+                    .frame(width: 52, height: 52)
             }
 
             Button {
                 podcastPlayer.playPause()
             } label: {
                 ZStack {
-                    Circle().fill(Color.white).frame(width: 62, height: 62)
+                    Circle().fill(Color.white).frame(width: 68, height: 68)
                     Image(systemName: podcastPlayer.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.title2.weight(.bold))
+                        .font(.title.weight(.bold))
                         .foregroundStyle(.black)
-                        .frame(width: 62, height: 62)
+                        .offset(x: podcastPlayer.isPlaying ? 0 : 2)
                 }
             }
             .buttonStyle(PodcastScaleButtonStyle())
@@ -370,48 +462,81 @@ struct PodcastNowPlayingView: View {
                 Image(systemName: "goforward.30")
                     .font(.title2)
                     .foregroundStyle(.white)
-                    .frame(width: 48, height: 48)
+                    .frame(width: 52, height: 52)
             }
 
             Spacer(minLength: 0)
 
             Button {
-                podcastPlayer.cycleSpeed()
-                flash(speedLabel(podcastPlayer.playbackSpeed))
+                toggleStar()
             } label: {
-                Image(systemName: "gauge.with.dots.needle.67percent")
+                Image(systemName: episodeIsStarred ? "star.fill" : "star")
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(podcastPlayer.playbackSpeed == 1.0
-                                     ? Color.white.opacity(0.45)
-                                     : DromeTheme.accent)
+                    .foregroundStyle(episodeIsStarred ? DromeTheme.accent : Color.white.opacity(0.55))
                     .frame(width: 48, height: 44)
+                    .background(
+                        Capsule()
+                            .fill(Color.white.opacity(0.08))
+                    )
             }
-            .accessibilityLabel("Cycle playback speed")
+            .accessibilityLabel(episodeIsStarred ? "Remove star" : "Star episode")
         }
-        .frame(height: 68)
+        .frame(height: 72)
     }
 
-    private var bottomBar: some View {
-        HStack {
-            if let episode = podcastPlayer.currentEpisode {
-                let remaining = max(0, stableDuration - podcastPlayer.elapsed)
-                Text(remaining > 0
-                      ? "\(Formatters.playbackTime(remaining)) left"
-                      : episode.durationText)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.white.opacity(0.55))
+    private var chaptersSheet: some View {
+        NavigationStack {
+            List {
+                ForEach(Array(podcastPlayer.chapters.enumerated()), id: \.element.id) { index, chapter in
+                    let isCurrent = PodcastChapterResolver.currentIndex(
+                        in: podcastPlayer.chapters,
+                        at: podcastPlayer.elapsed) == index
+                    Button {
+                        podcastPlayer.seek(to: chapter.startTime)
+                        showChapters = false
+                    } label: {
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(chapter.title)
+                                    .font(.body.weight(isCurrent ? .semibold : .regular))
+                                    .foregroundStyle(isCurrent ? DromeTheme.accent : .primary)
+                                    .multilineTextAlignment(.leading)
+                                Text(chapter.startTimeText)
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                            if isCurrent {
+                                Image(systemName: "waveform")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(DromeTheme.accent)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(Color.clear)
+                }
             }
-
-            Spacer()
-
-            if let message = podcastPlayer.errorMessage {
-                Text(message)
-                    .font(.caption2)
-                    .foregroundStyle(.red.opacity(0.9))
-                    .lineLimit(1)
+            .listStyle(.plain)
+            .navigationTitle("Chapters")
+            #if !os(tvOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { showChapters = false }
+                }
             }
         }
-        .frame(height: 44)
+    }
+
+    private func toggleStar() {
+        guard var episode = podcastPlayer.currentEpisode else { return }
+        let next = podcastManager.toggleStar(episode)
+        episode.isStarred = next
+        podcastPlayer.currentEpisode = episode
+        flash(next ? "Starred" : "Removed star")
     }
 
     // MARK: - Dismiss

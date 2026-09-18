@@ -7,6 +7,8 @@ final class PodcastManager: ObservableObject {
     @Published var subscribedShows: [PodcastShow] = []
     @Published var isRefreshing = false
     @Published var refreshError: String?
+    /// Bumped when stars change so Podcasts tab / lists refresh.
+    @Published private(set) var starsRevision = 0
 
     private let store: PodcastStore
 
@@ -134,6 +136,28 @@ final class PodcastManager: ObservableObject {
 
     func inProgressEpisodes() -> [PodcastStore.InProgressEpisode] {
         (try? store.inProgressEpisodes()) ?? []
+    }
+
+    // MARK: - Stars
+
+    func starredEpisodes() -> [PodcastStore.StarredEpisode] {
+        (try? store.starredEpisodes()) ?? []
+    }
+
+    func isStarred(_ episode: PodcastEpisode) -> Bool {
+        (try? store.isStarred(episodeID: episode.id, showFeedURL: episode.showID)) ?? false
+    }
+
+    @discardableResult
+    func toggleStar(_ episode: PodcastEpisode) -> Bool {
+        do {
+            let next = try store.toggleStarred(episodeID: episode.id, showFeedURL: episode.showID)
+            starsRevision &+= 1
+            return next
+        } catch {
+            print("[PodcastManager] Failed to toggle star: \(error)")
+            return episode.isStarred
+        }
     }
 
     // MARK: - Discover

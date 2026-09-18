@@ -15,7 +15,10 @@ struct PodcastMiniPlayerBar: View {
             HStack(spacing: 12) {
                 Button(action: onOpen) {
                     HStack(spacing: 12) {
-                        RemoteImage(url: episode.imageURL, holdImageWhileLoading: true)
+                        RemoteImage(
+                            url: artworkURL(for: episode),
+                            placeholderSymbol: "headphones",
+                            holdImageWhileLoading: true)
                             .frame(width: 48, height: 48)
                             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
@@ -92,6 +95,13 @@ struct PodcastMiniPlayerBar: View {
             return show.title
         }
         return "Podcast"
+    }
+
+    private func artworkURL(for episode: PodcastEpisode) -> URL? {
+        if let show = podcastManager.subscribedShows.first(where: { $0.feedURL == episode.showID }) {
+            return show.imageURL ?? episode.imageURL
+        }
+        return episode.imageURL
     }
 
     private var progress: CGFloat {

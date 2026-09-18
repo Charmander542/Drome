@@ -47,6 +47,7 @@ struct MainTabView: View {
 
                     SongNavigationStack(popToRootTrigger: tabPopTriggers[1]) {
                         SearchView()
+                            .environmentObject(podcastManager)
                     }
                     .tag(1)
 

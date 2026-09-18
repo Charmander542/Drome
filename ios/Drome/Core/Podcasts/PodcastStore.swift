@@ -95,6 +95,29 @@ final class PodcastStore: @unchecked Sendable {
                 CREATE INDEX podcast_playback_last ON podcast_playback(last_played DESC);
                 """)
         }
+        migrator.registerMigration("podcasts_v2_stars") { db in
+            try db.execute(sql: """
+                CREATE TABLE podcast_stars (
+                    episode_id      TEXT NOT NULL,
+                    show_feed_url   TEXT NOT NULL,
+                    starred_at      REAL NOT NULL,
+                    PRIMARY KEY (episode_id, show_feed_url),
+                    FOREIGN KEY (episode_id, show_feed_url)
+                        REFERENCES podcast_episodes(id, show_feed_url) ON DELETE CASCADE
+                );
+                """)
+            try db.execute(sql: """
+                CREATE INDEX podcast_stars_starred_at ON podcast_stars(starred_at DESC);
+                """)
+        }
+        migrator.registerMigration("podcasts_v3_chapters") { db in
+            try db.execute(sql: """
+                ALTER TABLE podcast_episodes ADD COLUMN chapters_url TEXT;
+                """)
+            try db.execute(sql: """
+                ALTER TABLE podcast_episodes ADD COLUMN chapters_json TEXT;
+                """)
+        }
         return migrator
     }
 
@@ -210,9 +233,14 @@ final class PodcastStore: @unchecked Sendable {
     func episodes(for feedURL: String, limit: Int = 200) throws -> [PodcastEpisode] {
         try db.read { db in
             let rows = try Row.fetchAll(db, sql: """
-                SELECT e.*, COALESCE(p.position, 0) as playback_position
+                SELECT e.*,
+                       COALESCE(p.position, 0) as playback_position,
+                       CASE WHEN s.episode_id IS NULL THEN 0 ELSE 1 END as is_starred
                 FROM podcast_episodes e
-                LEFT JOIN podcast_playback p ON e.id = p.episode_id AND e.show_feed_url = p.show_feed_url
+                LEFT JOIN podcast_playback p
+                    ON e.id = p.episode_id AND e.show_feed_url = p.show_feed_url
+                LEFT JOIN podcast_stars s
+                    ON e.id = s.episode_id AND e.show_feed_url = s.show_feed_url
                 WHERE e.show_feed_url = ?
                 ORDER BY e.pub_date DESC
                 LIMIT ?
@@ -233,6 +261,9 @@ final class PodcastStore: @unchecked Sendable {
                 let fileSize: Int64? = row["file_size"]
                 let mimeType: String? = row["mime_type"]
                 let playbackPosition: Double = row["playback_position"]
+                let isStarredInt: Int = row["is_starred"]
+                let chaptersURLString: String? = row["chapters_url"]
+                let chaptersJSON: String? = row["chapters_json"]
 
                 var episode = PodcastEpisode(
                     id: row["id"],
@@ -248,9 +279,12 @@ final class PodcastStore: @unchecked Sendable {
                     episodeType: episodeType,
                     explicit: explicitInt == 1,
                     fileSize: fileSize,
-                    mimeType: mimeType
+                    mimeType: mimeType,
+                    chaptersURL: chaptersURLString.flatMap { RSSPodcastParser.isHTTPURL($0) ? URL(string: $0) : nil },
+                    chapters: Self.decodeChapters(chaptersJSON)
                 )
                 episode.playbackPosition = playbackPosition
+                episode.isStarred = isStarredInt == 1
                 return episode
             }
         }
@@ -264,8 +298,8 @@ final class PodcastStore: @unchecked Sendable {
                     INSERT INTO podcast_episodes (id, show_feed_url, title, description, pub_date,
                                                   duration, audio_url, image_url, episode_number,
                                                   season_number, episode_type, explicit, file_size,
-                                                  mime_type)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                                  mime_type, chapters_url, chapters_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (id, show_feed_url) DO UPDATE SET
                         title = excluded.title,
                         description = excluded.description,
@@ -278,7 +312,9 @@ final class PodcastStore: @unchecked Sendable {
                         episode_type = excluded.episode_type,
                         explicit = excluded.explicit,
                         file_size = excluded.file_size,
-                        mime_type = excluded.mime_type
+                        mime_type = excluded.mime_type,
+                        chapters_url = excluded.chapters_url,
+                        chapters_json = COALESCE(excluded.chapters_json, podcast_episodes.chapters_json)
                     """, arguments: StatementArguments([
                         episode.id, episode.showID, episode.title,
                         episode.description, episode.pubDate?.timeIntervalSince1970,
@@ -286,9 +322,49 @@ final class PodcastStore: @unchecked Sendable {
                         episode.imageURL?.absoluteString,
                         episode.episodeNumber, episode.seasonNumber,
                         episode.episodeType, episode.explicit ? 1 : 0,
-                        episode.fileSize, episode.mimeType
+                        episode.fileSize, episode.mimeType,
+                        episode.chaptersURL?.absoluteString,
+                        Self.encodeChapters(episode.chapters)
                     ]) ?? [])
             }
+        }
+    }
+
+    private static func encodeChapters(_ chapters: [PodcastChapter]) -> String? {
+        guard !chapters.isEmpty,
+              let data = try? JSONEncoder().encode(chapters),
+              let json = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return json
+    }
+
+    private static func decodeChapters(_ json: String?) -> [PodcastChapter] {
+        guard let json, let data = json.data(using: .utf8),
+              let chapters = try? JSONDecoder().decode([PodcastChapter].self, from: data) else {
+            return []
+        }
+        return PodcastChapterResolver.normalize(chapters)
+    }
+
+    func updateChapters(
+        episodeID: String,
+        showFeedURL: String,
+        chaptersURL: URL?,
+        chapters: [PodcastChapter]
+    ) throws {
+        try db.write { db in
+            try db.execute(sql: """
+                UPDATE podcast_episodes
+                SET chapters_url = COALESCE(?, chapters_url),
+                    chapters_json = ?
+                WHERE id = ? AND show_feed_url = ?
+                """, arguments: [
+                    chaptersURL?.absoluteString,
+                    Self.encodeChapters(chapters),
+                    episodeID,
+                    showFeedURL
+                ])
         }
     }
 
@@ -374,6 +450,108 @@ final class PodcastStore: @unchecked Sendable {
                     showFeedURL: row["show_feed_url"],
                     position: row["position"],
                     lastPlayed: Date(timeIntervalSince1970: row["last_played"]),
+                    episode: episode
+                )
+            }
+        }
+    }
+
+    // MARK: - Stars
+
+    func isStarred(episodeID: String, showFeedURL: String) throws -> Bool {
+        try db.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT 1 FROM podcast_stars
+                WHERE episode_id = ? AND show_feed_url = ?
+                """, arguments: [episodeID, showFeedURL]) != nil
+        }
+    }
+
+    func setStarred(episodeID: String, showFeedURL: String, starred: Bool) throws {
+        try db.write { db in
+            if starred {
+                try db.execute(sql: """
+                    INSERT INTO podcast_stars (episode_id, show_feed_url, starred_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT (episode_id, show_feed_url) DO UPDATE SET
+                        starred_at = excluded.starred_at
+                    """, arguments: [episodeID, showFeedURL, Date().timeIntervalSince1970])
+            } else {
+                try db.execute(sql: """
+                    DELETE FROM podcast_stars
+                    WHERE episode_id = ? AND show_feed_url = ?
+                    """, arguments: [episodeID, showFeedURL])
+            }
+        }
+    }
+
+    @discardableResult
+    func toggleStarred(episodeID: String, showFeedURL: String) throws -> Bool {
+        let currently = try isStarred(episodeID: episodeID, showFeedURL: showFeedURL)
+        let next = !currently
+        try setStarred(episodeID: episodeID, showFeedURL: showFeedURL, starred: next)
+        return next
+    }
+
+    struct StarredEpisode: Identifiable {
+        var id: String { "\(showFeedURL)|\(episodeID)" }
+        let episodeID: String
+        let showFeedURL: String
+        let starredAt: Date
+        let episode: PodcastEpisode
+    }
+
+    func starredEpisodes(limit: Int = 40) throws -> [StarredEpisode] {
+        try db.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT s.episode_id, s.show_feed_url, s.starred_at,
+                       e.title, e.description, e.pub_date, e.duration, e.audio_url,
+                       e.image_url, e.episode_number, e.season_number, e.explicit,
+                       COALESCE(p.position, 0) as playback_position
+                FROM podcast_stars s
+                JOIN podcast_episodes e
+                    ON s.episode_id = e.id AND s.show_feed_url = e.show_feed_url
+                LEFT JOIN podcast_playback p
+                    ON s.episode_id = p.episode_id AND s.show_feed_url = p.show_feed_url
+                ORDER BY s.starred_at DESC
+                LIMIT ?
+                """, arguments: [limit])
+
+            return rows.compactMap { row -> StarredEpisode? in
+                let audioURLString: String = row["audio_url"]
+                guard RSSPodcastParser.isHTTPURL(audioURLString),
+                      let audioURL = URL(string: audioURLString) else { return nil }
+                let imageURLString: String? = row["image_url"]
+                let pubDateDouble: Double? = row["pub_date"]
+                let duration: Double? = row["duration"]
+                let episodeNumber: Int? = row["episode_number"]
+                let seasonNumber: Int? = row["season_number"]
+                let explicitInt: Int = row["explicit"]
+                let playbackPosition: Double = row["playback_position"]
+
+                var episode = PodcastEpisode(
+                    id: row["episode_id"],
+                    showID: row["show_feed_url"],
+                    title: row["title"],
+                    description: row["description"],
+                    pubDate: pubDateDouble.map { Date(timeIntervalSince1970: $0) },
+                    duration: duration,
+                    audioURL: audioURL,
+                    imageURL: imageURLString.flatMap { RSSPodcastParser.isHTTPURL($0) ? URL(string: $0) : nil },
+                    episodeNumber: episodeNumber,
+                    seasonNumber: seasonNumber,
+                    episodeType: nil,
+                    explicit: explicitInt == 1,
+                    fileSize: nil,
+                    mimeType: nil
+                )
+                episode.playbackPosition = playbackPosition
+                episode.isStarred = true
+
+                return StarredEpisode(
+                    episodeID: row["episode_id"],
+                    showFeedURL: row["show_feed_url"],
+                    starredAt: Date(timeIntervalSince1970: row["starred_at"]),
                     episode: episode
                 )
             }

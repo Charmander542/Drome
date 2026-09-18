@@ -88,6 +88,7 @@ private final class FeedParserDelegate: NSObject, XMLParserDelegate {
     private var inItem = false
     private var inChannel = false
     private var inRSSImage = false
+    private var inPSCChapters = false
 
     // Channel-level accumulators
     private var channelTitle = ""
@@ -129,6 +130,34 @@ private final class FeedParserDelegate: NSObject, XMLParserDelegate {
                 if let href = attributeDict["href"], RSSPodcastParser.isHTTPURL(href) {
                     currentEpisode?.imageURL = URL(string: href)
                 }
+            } else if local == "chapters", elementName.contains("podcast") || elementName.hasPrefix("podcast:") {
+                // Podcasting 2.0: <podcast:chapters url="..." type="application/json+chapters" />
+                if let urlString = attributeDict["url"], RSSPodcastParser.isHTTPURL(urlString) {
+                    currentEpisode?.chaptersURL = URL(string: urlString)
+                }
+            } else if local == "chapters", elementName.contains("psc") || elementName.hasPrefix("psc:") {
+                inPSCChapters = true
+            } else if inPSCChapters, local == "chapter" {
+                // Podlove Simple Chapters: <psc:chapter start="3:07" title="Intro" href="..." />
+                if let startRaw = attributeDict["start"],
+                   let start = PodcastChapterResolver.parseClock(startRaw) {
+                    let title = (attributeDict["title"] ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !title.isEmpty {
+                        let href = attributeDict["href"].flatMap {
+                            RSSPodcastParser.isHTTPURL($0) ? URL(string: $0) : nil
+                        }
+                        let image = attributeDict["image"].flatMap {
+                            RSSPodcastParser.isHTTPURL($0) ? URL(string: $0) : nil
+                        }
+                        currentEpisode?.pscChapters.append(PodcastChapter(
+                            startTime: start,
+                            title: title,
+                            imageURL: image,
+                            linkURL: href
+                        ))
+                    }
+                }
             }
         } else if inChannel {
             if elementName == "itunes:image" || (local == "image" && elementName.contains("itunes")) {
@@ -166,6 +195,7 @@ private final class FeedParserDelegate: NSObject, XMLParserDelegate {
             }
             currentEpisode = nil
             inItem = false
+            inPSCChapters = false
         } else if local == "channel" {
             inChannel = false
             show = PodcastShow(
@@ -189,6 +219,7 @@ private final class FeedParserDelegate: NSObject, XMLParserDelegate {
         }
 
         if local == "image" { inRSSImage = false }
+        if local == "chapters" { inPSCChapters = false }
         currentElement = ""
         textBuffer = ""
     }
@@ -286,6 +317,8 @@ private final class PodcastEpisodeBuilder {
     var seasonNumber: Int?
     var episodeType: String?
     var explicit = false
+    var chaptersURL: URL?
+    var pscChapters: [PodcastChapter] = []
 
     func build(feedURL: String, showImageURL: URL?) -> PodcastEpisode? {
         guard let audioURLString = enclosureURL,
@@ -297,12 +330,20 @@ private final class PodcastEpisodeBuilder {
         let pubDateParsed = Self.parsePubDate(pubDate)
         let duration = Self.parseDuration(rawDuration)
         let episodeID = guid.isEmpty ? audioURLString : guid
+        let strippedDescription = description.isEmpty ? nil : Self.stripHTML(description)
+
+        // Prefer PSC; otherwise scrape Spotify-style timestamps from show notes.
+        var chapters = PodcastChapterResolver.normalize(pscChapters)
+        if chapters.count < 2,
+           let fromNotes = PodcastChapterResolver.parseDescriptionTimestamps(strippedDescription) {
+            chapters = fromNotes
+        }
 
         return PodcastEpisode(
             id: episodeID,
             showID: feedURL,
             title: title.isEmpty ? "Untitled Episode" : title,
-            description: description.isEmpty ? nil : Self.stripHTML(description),
+            description: strippedDescription,
             pubDate: pubDateParsed,
             duration: duration,
             audioURL: audioURL,
@@ -312,7 +353,9 @@ private final class PodcastEpisodeBuilder {
             episodeType: episodeType,
             explicit: explicit,
             fileSize: enclosureLength,
-            mimeType: enclosureType
+            mimeType: enclosureType,
+            chaptersURL: chaptersURL,
+            chapters: chapters
         )
     }
 
