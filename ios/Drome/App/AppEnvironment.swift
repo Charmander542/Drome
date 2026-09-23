@@ -58,12 +58,14 @@ final class AppEnvironment: ObservableObject {
         SharePlayRuntime.shared.bind(session?.player)
         accounts.setActive(account)
 
-        // Starting music should yield to the music engine.
+        // Starting / resuming music should fully yield the podcast session.
         if let session {
+            session.player.onWillStartPlayback = { [weak self] in
+                self?.podcastPlayer.stop()
+            }
             let previous = session.player.onTrackStarted
             session.player.onTrackStarted = { [weak self] song in
-                // Starting music fully yields the podcast session so the music
-                // mini player replaces the podcast one.
+                AudioFocus.shared.claim(.music)
                 self?.podcastPlayer.stop()
                 previous?(song)
             }

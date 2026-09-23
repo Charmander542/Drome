@@ -170,7 +170,6 @@ struct RatedCollectionDetailView: View {
                         }
                     }
                     .padding(16)
-                    .padding(.bottom, 72)
                 }
             }
         }

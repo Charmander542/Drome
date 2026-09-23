@@ -25,3 +25,6 @@ server/data/
 .env
 data/
 ios/PodcastKit/Sources/
+
+# Local scratch / screenshots
+tmp/

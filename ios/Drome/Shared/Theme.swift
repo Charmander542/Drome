@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 enum DromeTheme {
     static let background = Color(red: 0.07, green: 0.07, blue: 0.08)
@@ -47,8 +48,8 @@ extension EnvironmentValues {
 }
 
 enum MiniPlayerMetrics {
-    /// Art (48) + vertical padding (16) + gap above the tab bar (4).
-    static let clearanceHeight: CGFloat = 68
+    /// Art (48) + vertical padding (16) + gap above the tab bar (4) + slack.
+    static let clearanceHeight: CGFloat = 76
 }
 
 extension View {
@@ -59,12 +60,11 @@ extension View {
             .preferredColorScheme(.dark)
     }
 
-    /// Adds bottom safe-area padding while the mini player is showing so the
-    /// last list rows can scroll clear of it. No-op when clearance is 0.
+    /// Keeps scrollable content clear of the mini player. No-op when clearance is 0.
+    /// Prefer applying once per navigation stack; also safe on individual lists.
     func dromeMiniPlayerClearance(_ height: CGFloat? = nil) -> some View {
         modifier(MiniPlayerClearanceModifier(overrideHeight: height))
     }
-
 }
 
 private struct MiniPlayerClearanceModifier: ViewModifier {
@@ -72,8 +72,91 @@ private struct MiniPlayerClearanceModifier: ViewModifier {
     @Environment(\.miniPlayerClearance) private var clearance
 
     func body(content: Content) -> some View {
-        let amount = overrideHeight ?? clearance
-        content.safeAreaPadding(.bottom, amount)
+        let amount = max(0, overrideHeight ?? clearance)
+        content
+            // Push UIKit additionalSafeAreaInsets onto the hosting navigation
+            // controller so every page (root + NavigationLink pushes) clears
+            // the mini player. TabView children ignore the outer safeAreaInset.
+            .background {
+                MiniPlayerSafeAreaSync(bottomInset: amount)
+                    .frame(width: 0, height: 0)
+                    .accessibilityHidden(true)
+            }
+    }
+}
+
+/// Pushes `additionalSafeAreaInsets` onto the hosting navigation stack so every
+/// pushed page (including destination `NavigationLink`s) clears the mini player.
+private struct MiniPlayerSafeAreaSync: UIViewControllerRepresentable {
+    var bottomInset: CGFloat
+
+    func makeUIViewController(context: Context) -> Controller {
+        Controller(bottomInset: bottomInset)
+    }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.bottomInset = bottomInset
+        DispatchQueue.main.async { controller.apply() }
+    }
+
+    final class Controller: UIViewController {
+        var bottomInset: CGFloat
+        private var observation: NSKeyValueObservation?
+        private weak var observedNav: UINavigationController?
+
+        init(bottomInset: CGFloat) {
+            self.bottomInset = bottomInset
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError() }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            apply()
+            startObserving()
+        }
+
+        override func didMove(toParent parent: UIViewController?) {
+            super.didMove(toParent: parent)
+            apply()
+            startObserving()
+        }
+
+        func apply() {
+            guard let nav = nearestNavigationController() else { return }
+            var insets = nav.additionalSafeAreaInsets
+            guard abs(insets.bottom - bottomInset) > 0.5 else { return }
+            insets.bottom = bottomInset
+            nav.additionalSafeAreaInsets = insets
+        }
+
+        private func nearestNavigationController() -> UINavigationController? {
+            if let nav = navigationController { return nav }
+            var current: UIViewController? = parent
+            while let page = current {
+                if let nav = page as? UINavigationController { return nav }
+                if let nav = page.navigationController { return nav }
+                current = page.parent
+            }
+            return nil
+        }
+
+        private func startObserving() {
+            let nav = nearestNavigationController()
+            guard observedNav !== nav else { return }
+            observation?.invalidate()
+            observedNav = nav
+            observation = nav?.observe(\.viewControllers, options: [.new]) { [weak self] _, _ in
+                DispatchQueue.main.async { self?.apply() }
+            }
+        }
+
+        deinit {
+            observation?.invalidate()
+            // Don't clear insets here — another sync probe may still be active.
+        }
     }
 }
 

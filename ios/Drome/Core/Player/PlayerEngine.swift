@@ -64,13 +64,17 @@ final class PlayerEngine: ObservableObject {
     var autoplayProvider: AutoplayProvider?
     /// Fired when a track becomes current (explicit `setCurrent` or gapless advance).
     var onTrackStarted: ((Song) -> Void)?
+    /// Called before music audio starts so podcast can yield the session.
+    var onWillStartPlayback: (() -> Void)?
     /// Connect gate: run `action` immediately and return `true`, or defer and return `false`.
     var localPlaybackGate: ((@escaping () -> Void) -> Bool)?
 
     // MARK: Private state
 
-    private let player = AVQueuePlayer()
-    /// Parallel bookkeeping of which AVPlayerItem belongs to which queue item.
+    /// Captured across AVAudioSession interruptions so only the engine that
+    /// was actually playing resumes after Bluetooth connect/disconnect.
+    private var resumeAfterInterruption = false
+    private let player = AVQueuePlayer()    /// Parallel bookkeeping of which AVPlayerItem belongs to which queue item.
     private var window: [(playerItem: AVPlayerItem, queueItem: QueueItem)] = []
     /// Original (unshuffled) order of the remaining context, for un-shuffling.
     private var originalContextOrder: [QueueItem] = []
@@ -582,8 +586,11 @@ final class PlayerEngine: ObservableObject {
 
     func resume(bypassConnectGate: Bool = false) {
         let body = { [self] in
+            AudioFocus.shared.claim(.music)
+            onWillStartPlayback?()
             clearRemotePlayheadMirror()
             setPlaybackIntent(true)
+            resumeAfterInterruption = false
             activateAudioSession()
             #if os(tvOS)
             if tvUsingAudioPlayer {
@@ -604,6 +611,7 @@ final class PlayerEngine: ObservableObject {
 
     func pause() {
         setPlaybackIntent(false)
+        resumeAfterInterruption = false
         #if os(tvOS)
         tvAudio.pause()
         #endif
@@ -1363,6 +1371,11 @@ final class PlayerEngine: ObservableObject {
         // Pin the new track at 0 before rebuild so a crash mid-rebuild doesn't
         // restore the next song at the previous playhead (~⅓).
         persistSessionNow(force: true)
+        if startPlaying {
+            AudioFocus.shared.claim(.music)
+            onWillStartPlayback?()
+            resumeAfterInterruption = false
+        }
         rebuildWindow(startPlaying: startPlaying)
         loadArtwork(for: playItem.song)
         if recordPlay {
@@ -1855,6 +1868,7 @@ final class PlayerEngine: ObservableObject {
                 let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
                     .flatMap(AVAudioSession.RouteChangeReason.init)
                 if reason == .oldDeviceUnavailable {
+                    self.resumeAfterInterruption = false
                     self.pause()
                     return
                 }
@@ -2237,11 +2251,26 @@ final class PlayerEngine: ObservableObject {
 
     private func configureRemoteCommands() {
         nowPlaying.configureCommands()
-        nowPlaying.onPlay = { [weak self] in self?.playPause() }
-        nowPlaying.onPause = { [weak self] in self?.pause() }
-        nowPlaying.onNext = { [weak self] in self?.next() }
-        nowPlaying.onPrevious = { [weak self] in self?.previous() }
-        nowPlaying.onSeek = { [weak self] time in self?.seek(to: time) }
+        nowPlaying.onPlay = { [weak self] in
+            guard AudioFocus.shared.owner != .podcast else { return }
+            self?.playPause()
+        }
+        nowPlaying.onPause = { [weak self] in
+            guard AudioFocus.shared.owner != .podcast else { return }
+            self?.pause()
+        }
+        nowPlaying.onNext = { [weak self] in
+            guard AudioFocus.shared.owner != .podcast else { return }
+            self?.next()
+        }
+        nowPlaying.onPrevious = { [weak self] in
+            guard AudioFocus.shared.owner != .podcast else { return }
+            self?.previous()
+        }
+        nowPlaying.onSeek = { [weak self] time in
+            guard AudioFocus.shared.owner != .podcast else { return }
+            self?.seek(to: time)
+        }
     }
 
     private func pushNowPlayingInfo() {
@@ -2291,10 +2320,30 @@ final class PlayerEngine: ObservableObject {
               let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
         switch type {
         case .began:
-            if !sharePlayActive { pause() }
+            if sharePlayActive { return }
+            // Capture intent before pause() clears wantsToPlay.
+            resumeAfterInterruption = wantsToPlay || isPlaying
+            if resumeAfterInterruption {
+                setPlaybackIntent(false)
+                #if os(tvOS)
+                tvAudio.pause()
+                #endif
+                player.pause()
+                persistSessionNow()
+            }
         case .ended:
-            if let optionsRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt,
-               AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume) {
+            let shouldResume = {
+                if let optionsRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt {
+                    return AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume)
+                }
+                return false
+            }()
+            let canResume = resumeAfterInterruption
+                && shouldResume
+                && AudioFocus.shared.isOwner(.music)
+                && current != nil
+            resumeAfterInterruption = false
+            if canResume {
                 resume()
             }
         @unknown default:

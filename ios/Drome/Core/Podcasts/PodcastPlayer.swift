@@ -38,6 +38,9 @@ final class PodcastPlayer: ObservableObject {
 
     // MARK: Private state
 
+    /// Captured across AVAudioSession interruptions so only the engine that
+    /// was actually playing resumes after Bluetooth connect/disconnect.
+    private var resumeAfterInterruption = false
     private let player = AVPlayer()
     private var timeObserver: Any?
     private var statusObserver: NSKeyValueObservation?
@@ -85,6 +88,7 @@ final class PodcastPlayer: ObservableObject {
         }()
 
         // Yield the shared audio session to podcasts.
+        AudioFocus.shared.claim(.podcast)
         onWillStartPlayback?()
         activateAudioSession()
 
@@ -94,6 +98,7 @@ final class PodcastPlayer: ObservableObject {
         elapsed = 0
         duration = episode.duration ?? 0
         wantsToPlay = true
+        resumeAfterInterruption = false
         pendingSeek = startPosition > 1 ? startPosition : nil
 
         let item = makePlayerItem(url: episode.audioURL)
@@ -145,8 +150,11 @@ final class PodcastPlayer: ObservableObject {
 
     func resume() {
         guard currentEpisode != nil else { return }
+        AudioFocus.shared.claim(.podcast)
+        onWillStartPlayback?()
         activateAudioSession()
         wantsToPlay = true
+        resumeAfterInterruption = false
         if let item = player.currentItem, item.status == .readyToPlay {
             player.play()
             player.rate = Float(playbackSpeed)
@@ -158,6 +166,7 @@ final class PodcastPlayer: ObservableObject {
 
     func pause() {
         wantsToPlay = false
+        resumeAfterInterruption = false
         player.pause()
         isPlaying = false
         saveCurrentPosition()
@@ -194,9 +203,11 @@ final class PodcastPlayer: ObservableObject {
         chapters = []
         isPlaying = false
         wantsToPlay = false
+        resumeAfterInterruption = false
         elapsed = 0
         duration = 0
         pendingSeek = nil
+        AudioFocus.shared.release(.podcast)
         nowPlaying.clearNowPlaying()
     }
 
@@ -371,6 +382,15 @@ final class PodcastPlayer: ObservableObject {
                 self?.handleInterruption(note)
             }
         }
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] note in
+            Task { @MainActor [weak self] in
+                self?.handleRouteChange(note)
+            }
+        }
         #endif
     }
 
@@ -409,14 +429,47 @@ final class PodcastPlayer: ObservableObject {
               let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
         switch type {
         case .began:
-            pause()
+            // Capture intent before pause() clears wantsToPlay.
+            resumeAfterInterruption = wantsToPlay || isPlaying
+            if resumeAfterInterruption {
+                wantsToPlay = false
+                player.pause()
+                isPlaying = false
+                saveCurrentPosition()
+                if let episode = currentEpisode {
+                    updateNowPlaying(for: episode, startPosition: elapsed, rate: 0)
+                }
+            }
         case .ended:
-            if let optionsRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt,
-               AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume) {
+            let shouldResume = {
+                if let optionsRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt {
+                    return AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume)
+                }
+                return false
+            }()
+            let canResume = resumeAfterInterruption
+                && shouldResume
+                && AudioFocus.shared.isOwner(.podcast)
+                && currentEpisode != nil
+            resumeAfterInterruption = false
+            if canResume {
                 resume()
             }
         @unknown default:
             break
+        }
+    }
+
+    private func handleRouteChange(_ notification: Notification) {
+        let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
+            .flatMap(AVAudioSession.RouteChangeReason.init)
+        // Car Bluetooth unplug / route loss — stay paused; do not auto-resume
+        // when a new device appears (that path races with interruptions).
+        if reason == .oldDeviceUnavailable {
+            resumeAfterInterruption = false
+            if wantsToPlay || isPlaying {
+                pause()
+            }
         }
     }
     #endif
@@ -541,28 +594,34 @@ private final class PodcastNowPlayingCenter {
         let center = MPRemoteCommandCenter.shared()
 
         center.playCommand.addTarget { _ in
+            guard AudioFocus.shared.owner != .music else { return .success }
             NotificationCenter.default.post(name: .podcastPlayerResume, object: nil)
             return .success
         }
         center.pauseCommand.addTarget { _ in
+            guard AudioFocus.shared.owner != .music else { return .success }
             NotificationCenter.default.post(name: .podcastPlayerPause, object: nil)
             return .success
         }
         center.togglePlayPauseCommand.addTarget { _ in
+            guard AudioFocus.shared.owner != .music else { return .success }
             NotificationCenter.default.post(name: .podcastPlayerToggle, object: nil)
             return .success
         }
         center.skipForwardCommand.preferredIntervals = [30]
         center.skipForwardCommand.addTarget { _ in
+            guard AudioFocus.shared.owner != .music else { return .success }
             NotificationCenter.default.post(name: .podcastPlayerSkipForward, object: nil)
             return .success
         }
         center.skipBackwardCommand.preferredIntervals = [15]
         center.skipBackwardCommand.addTarget { _ in
+            guard AudioFocus.shared.owner != .music else { return .success }
             NotificationCenter.default.post(name: .podcastPlayerSkipBackward, object: nil)
             return .success
         }
         center.changePlaybackPositionCommand.addTarget { event in
+            guard AudioFocus.shared.owner != .music else { return .success }
             guard let event = event as? MPChangePlaybackPositionCommandEvent else {
                 return .commandFailed
             }

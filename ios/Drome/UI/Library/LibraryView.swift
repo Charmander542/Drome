@@ -497,7 +497,6 @@ struct LibraryView: View {
                             .frame(maxWidth: .infinity)
                     }
                 }
-                .padding(.bottom, 72)
             }
             .onScrollGeometryChange(for: Bool.self) { geo in
                 geo.contentOffset.y <= geo.contentInsets.top + 24
@@ -582,7 +581,6 @@ struct LibraryView: View {
                         }
                     }
                 }
-                .padding(.bottom, 72)
             }
             .onScrollGeometryChange(for: Bool.self) { geo in
                 geo.contentOffset.y <= geo.contentInsets.top + 24
@@ -660,7 +658,6 @@ struct LibraryView: View {
                             .frame(maxWidth: .infinity)
                     }
                 }
-                .padding(.bottom, 72)
             }
             .onScrollGeometryChange(for: Bool.self) { geo in
                 geo.contentOffset.y <= geo.contentInsets.top + 24

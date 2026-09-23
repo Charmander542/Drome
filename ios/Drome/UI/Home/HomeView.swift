@@ -61,7 +61,6 @@ struct HomeView: View {
                     }
                 }
                 .padding(.vertical, 12)
-                .padding(.bottom, 72)
             }
             .onChange(of: scrollToTopToken) { _, _ in
                 withAnimation(.easeOut(duration: 0.25)) {
