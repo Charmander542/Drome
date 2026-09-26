@@ -31,6 +31,16 @@ final class AppEnvironment: ObservableObject {
             activate(account)
         }
         #if os(iOS)
+        // Simulator screenshot hook: land on MainTabView with podcast mini chrome
+        // even when no real Navidrome account is saved on the device.
+        if session == nil,
+           ProcessInfo.processInfo.arguments.contains("-UITestPodcastMini") {
+            let account = Account(
+                serverURL: URL(string: "http://127.0.0.1:9")!,
+                username: "uitest",
+                allowSelfSigned: true)
+            signIn(account: account, password: "uitest")
+        }
         PhoneWatchSession.shared.pushFromStoredSnapshot()
         #endif
 

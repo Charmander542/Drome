@@ -171,6 +171,11 @@
 				UI/Player/MiniPlayerBar.swift,
 				UI/Player/NowPlayingView.swift,
 				UI/Player/QueueView.swift,
+				UI/Podcasts/PodcastDiscoverView.swift,
+				UI/Podcasts/PodcastMiniPlayerBar.swift,
+				UI/Podcasts/PodcastNowPlayingView.swift,
+				UI/Podcasts/PodcastShowView.swift,
+				UI/Podcasts/PodcastsView.swift,
 				UI/RootView.swift,
 				UI/Search/RecentSearchesStore.swift,
 				UI/Search/SearchView.swift,
@@ -795,6 +800,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Drome;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Drome connects to your Navidrome server and companion wishlist server on your local network.";
+				INFOPLIST_KEY_NSSiriUsageDescription = "Drome uses Siri so you can play songs from your library, or add missing tracks to your wishlist.";
 				INFOPLIST_KEY_UIDesignRequiresCompatibility = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
@@ -826,6 +832,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Drome;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Drome connects to your Navidrome server and companion wishlist server on your local network.";
+				INFOPLIST_KEY_NSSiriUsageDescription = "Drome uses Siri so you can play songs from your library, or add missing tracks to your wishlist.";
 				INFOPLIST_KEY_UIDesignRequiresCompatibility = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;

@@ -15,24 +15,25 @@
 			</array>
 		</dict>
 	</array>
+	<key>INIntentsSupported</key>
+	<array>
+		<string>INPlayMediaIntent</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_drome-pair._tcp</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<true/>
 		<key>UISceneConfigurations</key>
 		<dict>
-			<key>UIWindowSceneSessionRoleApplication</key>
-			<array>
-				<dict>
-					<key>UISceneConfigurationName</key>
-					<string>Default Configuration</string>
-				</dict>
-			</array>
 			<key>CPTemplateApplicationSceneSessionRoleApplication</key>
 			<array>
 				<dict>
@@ -42,6 +43,13 @@
 					<string>$(PRODUCT_MODULE_NAME).CarPlaySceneDelegate</string>
 				</dict>
 			</array>
+			<key>UIWindowSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneConfigurationName</key>
+					<string>Default Configuration</string>
+				</dict>
+			</array>
 		</dict>
 	</dict>
 	<key>UIBackgroundModes</key>
@@ -49,6 +57,8 @@
 		<string>audio</string>
 		<string>fetch</string>
 	</array>
+	<key>UIDesignRequiresCompatibility</key>
+	<true/>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>
@@ -58,18 +68,5 @@
 		<key>UIImageRespectsSafeAreaInsets</key>
 		<false/>
 	</dict>
-	<key>NSSiriUsageDescription</key>
-	<string>Drome uses Siri so you can play songs from your library, or add missing tracks to your wishlist.</string>
-	<key>INIntentsSupported</key>
-	<array>
-		<string>INPlayMediaIntent</string>
-	</array>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_drome-pair._tcp</string>
-	</array>
-	<key>UIDesignRequiresCompatibility</key>
-	<true/>
 </dict>
 </plist>
-

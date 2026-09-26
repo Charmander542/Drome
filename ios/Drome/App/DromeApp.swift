@@ -5,7 +5,7 @@ struct DromeApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var env = AppEnvironment()
-    @State private var showSplash = true
+    @State private var showSplash = !ProcessInfo.processInfo.arguments.contains("-UITestPodcastMini")
 
     var body: some Scene {
         WindowGroup {

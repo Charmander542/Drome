@@ -78,12 +78,10 @@ struct PodcastMiniPlayerBar: View {
             .background {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(.ultraThinMaterial)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(Color.black.opacity(0.35))
-                    }
             }
             .padding(.horizontal, 8)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
             .id(episode.id)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("podcast-mini-player")

@@ -255,9 +255,6 @@ struct SongNavigationStack<Content: View>: View {
         .environment(\.songNavigator, navigator)
         .environment(\.tabPopToRootTrigger, popToRootTrigger)
         .environment(\.tabScrollToTopTrigger, scrollToTopTrigger)
-        // TabView ignores the outer mini-player safeAreaInset for nested Lists —
-        // sync UIKit insets + scroll margins for every page in this stack.
-        .dromeMiniPlayerClearance()
         .onChange(of: popToRootTrigger) { _, trigger in
             guard trigger > 0 else { return }
             if isDeep {
