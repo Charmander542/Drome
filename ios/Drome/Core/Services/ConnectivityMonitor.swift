@@ -21,8 +21,12 @@ final class ConnectivityMonitor: ObservableObject {
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "com.drome.connectivity")
     private var offlineTask: Task<Void, Never>?
+    /// Debounce wifi↔wifi+cell flaps so the player isn't spammed mid-track.
+    private var onlineNotifyTask: Task<Void, Never>?
     private var lastStatus: NWPath.Status?
     private var lastSummary: String?
+    private var lastPublishedCellular: Bool?
+    private var lastPublishedSummary: String?
 
     init() {
         monitor.pathUpdateHandler = { [weak self] path in
@@ -49,8 +53,6 @@ final class ConnectivityMonitor: ObservableObject {
         summary: String,
         status: NWPath.Status
     ) {
-        let cellularChanged = isCellular != cellular
-        let summaryChanged = interfaceSummary != summary
         let wasOnline = isOnline
         isExpensive = expensive
         isCellular = cellular
@@ -66,22 +68,47 @@ final class ConnectivityMonitor: ObservableObject {
             let regained = !wasOnline || lastStatus != .satisfied
             isOnline = true
             Self.lastIsOnline = true
-            if cellularChanged || summaryChanged || regained {
-                DromeDiagnostics.logNetwork(
-                    "path \(summary) cellular=\(cellular) expensive=\(expensive) regained=\(regained)")
-                NotificationCenter.default.post(
-                    name: .dromeNetworkPathChanged, object: nil,
-                    userInfo: [
-                        "cellular": cellular,
-                        "expensive": expensive,
-                        "summary": summary,
-                        "regained": regained,
-                    ])
-            }
             lastStatus = status
             lastSummary = summary
+
+            let cellularChanged = lastPublishedCellular.map { $0 != cellular } ?? true
+            let summaryChanged = lastPublishedSummary.map { $0 != summary } ?? true
+            guard cellularChanged || summaryChanged || regained else { return }
+
+            // Publish regain immediately so stalled playback can recover.
+            // Debounce pure wifi↔cell interface flaps (~1s) — dual-stack
+            // phones otherwise flip resilient mode several times a minute.
+            onlineNotifyTask?.cancel()
+            if regained {
+                publishOnlinePath(
+                    cellular: cellular,
+                    expensive: expensive,
+                    summary: summary,
+                    regained: true)
+            } else {
+                onlineNotifyTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    guard !Task.isCancelled else { return }
+                    // Re-read latest flags after the quiet period.
+                    let latestCellular = self.isCellular
+                    let latestExpensive = self.isExpensive
+                    let latestSummary = self.interfaceSummary
+                    let stillChanged =
+                        self.lastPublishedCellular != latestCellular
+                        || self.lastPublishedSummary != latestSummary
+                    guard stillChanged else { return }
+                    self.publishOnlinePath(
+                        cellular: latestCellular,
+                        expensive: latestExpensive,
+                        summary: latestSummary,
+                        regained: false)
+                }
+            }
             return
         }
+
+        onlineNotifyTask?.cancel()
+        onlineNotifyTask = nil
 
         // Brief grace so flaky handoffs don't yank the whole UI offline.
         DromeDiagnostics.logNetwork("path unsatisfied (\(summary)) — grace 1.2s")
@@ -91,6 +118,8 @@ final class ConnectivityMonitor: ObservableObject {
             isOnline = false
             Self.lastIsOnline = false
             lastStatus = status
+            lastPublishedCellular = cellular
+            lastPublishedSummary = summary
             NotificationCenter.default.post(
                 name: .dromeNetworkPathChanged, object: nil,
                 userInfo: [
@@ -101,6 +130,26 @@ final class ConnectivityMonitor: ObservableObject {
                     "offline": true,
                 ])
         }
+    }
+
+    private func publishOnlinePath(
+        cellular: Bool,
+        expensive: Bool,
+        summary: String,
+        regained: Bool
+    ) {
+        lastPublishedCellular = cellular
+        lastPublishedSummary = summary
+        DromeDiagnostics.logNetwork(
+            "path \(summary) cellular=\(cellular) expensive=\(expensive) regained=\(regained)")
+        NotificationCenter.default.post(
+            name: .dromeNetworkPathChanged, object: nil,
+            userInfo: [
+                "cellular": cellular,
+                "expensive": expensive,
+                "summary": summary,
+                "regained": regained,
+            ])
     }
 
     /// Nonisolated — called from the NWPathMonitor queue.

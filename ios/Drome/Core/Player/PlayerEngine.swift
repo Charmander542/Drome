@@ -136,8 +136,14 @@ final class PlayerEngine: ObservableObject {
     private let streamCache: StreamCache
     /// Coalesce stall recoveries so we don't rebuild in a loop.
     private var stallRecoveryTask: Task<Void, Never>?
+    /// Escalation to rebuild — kept separate so soft seeks can't cancel it.
+    private var stallRebuildTask: Task<Void, Never>?
     private var lastStallRecoveryAt: Date = .distantPast
     private var stallStartedAt: Date?
+    /// Soft seeks attempted for the current stall episode.
+    private var stallSoftSeekCount = 0
+    /// After a stall rebuild, keep using MP3/cache until the next track.
+    private var stallForcedResilient = false
     /// Counts consecutive "playing but buffer empty" ticks (Bluetooth silence).
     private var silentBufferTicks = 0
     #endif
@@ -470,9 +476,7 @@ final class PlayerEngine: ObservableObject {
         tvAudio.stop()
         tvUsingAudioPlayer = false
         #else
-        stallRecoveryTask?.cancel()
-        stallRecoveryTask = nil
-        stallStartedAt = nil
+        clearStallRecoveryState(resetForcedResilient: true)
         #endif
         player.pause()
         player.rate = 0
@@ -876,8 +880,7 @@ final class PlayerEngine: ObservableObject {
         if item.status == .failed {
             itemReadyCancellable = nil
             itemReadyTimeout?.cancel()
-            DromeDiagnostics.logPlayer("current item failed → skip")
-            advanceAfterCurrentEnds(playImmediately: wantsToPlay)
+            if recoverFailedItemOrSkip(reason: "current-item-failed") { return }
             return
         }
         if itemIsSafeToStart(item) {
@@ -936,8 +939,10 @@ final class PlayerEngine: ObservableObject {
             if item.status == .failed {
                 self.itemReadyTimeout?.cancel()
                 self.itemReadyCancellable = nil
-                DromeDiagnostics.logPlayer("item failed while waiting → skip")
-                self.advanceAfterCurrentEnds(playImmediately: self.wantsToPlay)
+                if self.recoverFailedItemOrSkip(reason: "item-failed-waiting") {
+                    self.flushPendingSharePlaySnapshotIfNeeded()
+                    return
+                }
                 self.flushPendingSharePlaySnapshotIfNeeded()
                 return
             }
@@ -1449,6 +1454,9 @@ final class PlayerEngine: ObservableObject {
 
         current = playItem
         setPlayhead(elapsed: 0, duration: TimeInterval(playItem.song.duration ?? 0))
+        #if !os(tvOS)
+        clearStallRecoveryState(resetForcedResilient: true)
+        #endif
         DromeDiagnostics.logPlayer(
             "setCurrent \(playItem.song.id) «\(playItem.song.title)» play=\(startPlaying) \(diagnosticStateLine())")
         // Pin the new track at 0 before rebuild so a crash mid-rebuild doesn't
@@ -1510,6 +1518,9 @@ final class PlayerEngine: ObservableObject {
         #if os(tvOS)
         return false
         #else
+        // Stall recovery forces MP3/cache for the rest of this track so a
+        // rebuild doesn't just reattach the same dying HTTP pipe.
+        if stallForcedResilient { return true }
         if PlaybackPreferences.compressOnCellular, ConnectivityMonitor.lastIsCellular {
             return true
         }
@@ -1540,9 +1551,10 @@ final class PlayerEngine: ObservableObject {
         if !airPlay, !sharePlayActive, let local = downloads.localURL(songId: song.id) {
             return local
         }
-        // Prefer a warm stream-cache file — survives Tailscale blips.
-        if !airPlay, !bluetooth, !sharePlayActive, shouldUseResilientStream,
-           let cached = streamCache.cachedURL(for: song.id) {
+        // Prefer a warm stream-cache file whenever we have one — including over
+        // Bluetooth. Blocking A2DP from cache left AirPods on HTTP MP3 even
+        // after streamCache ready, which is what made cell/wifi stalls audible.
+        if !airPlay, !sharePlayActive, let cached = streamCache.cachedURL(for: song.id) {
             return cached
         }
         // AirPlay, Bluetooth, and SharePlay prefer server-side MP3 — faster to
@@ -1805,9 +1817,10 @@ final class PlayerEngine: ObservableObject {
         }
         prefetchUpcomingIntoCache()
         // Warm the current track into the disk cache in the background so a
-        // later Tailscale blip can rebuild onto a local file.
+        // later Tailscale / BT blip can rebuild onto a local file.
         let song = current.song
-        if shouldUseResilientStream, streamCache.cachedURL(for: song.id) == nil {
+        let shouldWarm = shouldUseResilientStream || isBluetoothRouteActive
+        if shouldWarm, streamCache.cachedURL(for: song.id) == nil {
             Task { [weak self] in
                 _ = try? await self?.streamCache.fileURL(
                     for: song, maxBitRate: PlaybackPreferences.cellularMaxBitRate)
@@ -1912,7 +1925,13 @@ final class PlayerEngine: ObservableObject {
                     self.wantsToPlay = true
                     if !self.isPlaying { self.isPlaying = true }
                     #if !os(tvOS)
-                    self.stallStartedAt = nil
+                    // Healthy playback ends the stall episode, but keep any
+                    // armed rebuild escalation only while still recovering.
+                    if self.player.currentItem?.isPlaybackLikelyToKeepUp == true {
+                        self.clearStallRecoveryState(resetForcedResilient: false)
+                    } else {
+                        self.stallStartedAt = nil
+                    }
                     #endif
                 case .waitingToPlayAtSpecifiedRate:
                     // Buffering — keep the button on the sticky intent.
@@ -1923,6 +1942,7 @@ final class PlayerEngine: ObservableObject {
                     if self.wantsToPlay {
                         if self.stallStartedAt == nil {
                             self.stallStartedAt = Date()
+                            self.stallSoftSeekCount = 0
                             DromeDiagnostics.logPlayer("stall begin \(self.diagnosticStateLine())")
                         }
                         self.scheduleStallRecovery(reason: "waiting")
@@ -1930,7 +1950,11 @@ final class PlayerEngine: ObservableObject {
                     #endif
                 case .paused:
                     #if !os(tvOS)
-                    self.stallStartedAt = nil
+                    if !self.isRebuilding, !self.wantsToPlay {
+                        self.clearStallRecoveryState(resetForcedResilient: false)
+                    } else {
+                        self.stallStartedAt = nil
+                    }
                     #endif
                     if self.isRebuilding || self.wantsToPlay {
                         // Transient pause during skip/rebuild — do not flip UI.
@@ -2576,6 +2600,26 @@ final class PlayerEngine: ObservableObject {
     }
 
     #if !os(tvOS)
+    /// One resilient rebuild before skipping a failed item. Avoids dumping the
+    /// rest of a track after a long underrun killed the HTTP AVPlayerItem.
+    @discardableResult
+    private func recoverFailedItemOrSkip(reason: String) -> Bool {
+        guard wantsToPlay, current != nil, !isRebuilding else {
+            DromeDiagnostics.logPlayer("\(reason) → skip")
+            advanceAfterCurrentEnds(playImmediately: wantsToPlay)
+            return true
+        }
+        if !stallForcedResilient {
+            let position = max(0, accurateElapsed())
+            DromeDiagnostics.logPlayer("\(reason) → resilient rebuild")
+            rebuildFromCacheOrStream(position: position, reason: reason)
+            return true
+        }
+        DromeDiagnostics.logPlayer("\(reason) → skip")
+        advanceAfterCurrentEnds(playImmediately: wantsToPlay)
+        return true
+    }
+
     /// After Tailscale / cell blips, AVPlayer often sits in `.waiting` forever.
     /// Recover by: (1) waiting briefly, (2) soft seek to flush the pipe,
     /// (3) swapping onto a cached MP3 file, (4) full item rebuild.
@@ -2584,7 +2628,10 @@ final class PlayerEngine: ObservableObject {
         if !force, let started = stallStartedAt, Date().timeIntervalSince(started) < 2.5 {
             return
         }
-        if Date().timeIntervalSince(lastStallRecoveryAt) < 4, !force { return }
+        // Coalesce even forced recovers — playbackStalled used to fire every
+        // ~400ms with force:true, cancelling the rebuild escalation forever.
+        let minInterval: TimeInterval = force ? 1.6 : 4
+        if Date().timeIntervalSince(lastStallRecoveryAt) < minInterval { return }
         stallRecoveryTask?.cancel()
         stallRecoveryTask = Task { [weak self] in
             // Give the buffer a moment on transient waits.
@@ -2607,41 +2654,70 @@ final class PlayerEngine: ObservableObject {
             && item != nil
             && (item?.isPlaybackBufferEmpty == true || item?.isPlaybackLikelyToKeepUp == false)
         if player.timeControlStatus == .playing, !silentPlaying, reason != "silent-buffer" {
-            stallStartedAt = nil
+            clearStallRecoveryState(resetForcedResilient: false)
             return
         }
         lastStallRecoveryAt = Date()
         let position = max(0, accurateElapsed())
         DromeDiagnostics.logPlayer(
-            "stall recover (\(reason)) pos=\(Int(position))s \(diagnosticStateLine())")
+            "stall recover (\(reason)) pos=\(Int(position))s softSeek=\(stallSoftSeekCount) \(diagnosticStateLine())")
 
         // Bluetooth silence: re-seat session + soft seek first.
         activateAudioSession()
 
-        // 1) Soft seek — often restarts a dead HTTP connection / audio graph.
-        if player.currentItem != nil,
-           player.currentItem?.status != .failed,
-           streamCache.cachedURL(for: current.song.id) == nil {
+        // Soft seek at most once per stall episode. Further stalls / failed
+        // items / silent-buffer go straight to a cache-or-MP3 rebuild. Keep the
+        // escalation timer on a separate task so another playbackStalled can't
+        // cancel it by re-entering scheduleStallRecovery.
+        let canSoftSeek = player.currentItem != nil
+            && player.currentItem?.status != .failed
+            && streamCache.cachedURL(for: current.song.id) == nil
+            && stallSoftSeekCount < 1
+            && reason != "failedToEnd"
+            && reason != "silent-buffer"
+
+        if canSoftSeek {
+            stallSoftSeekCount += 1
             seek(to: position)
             playCurrentWhenReady()
-            // If still stuck shortly, fall through to cache/rebuild below.
-            stallRecoveryTask?.cancel()
-            stallRecoveryTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 3_500_000_000)
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    guard let self, self.wantsToPlay else { return }
-                    let stillSilent = self.player.timeControlStatus != .playing
-                        || self.player.currentItem?.isPlaybackBufferEmpty == true
-                        || self.player.currentItem?.isPlaybackLikelyToKeepUp == false
-                    guard stillSilent else { return }
-                    self.rebuildFromCacheOrStream(position: position, reason: "\(reason)-retry")
-                }
-            }
+            armStallRebuildEscalation(position: position, reason: reason)
             return
         }
 
         rebuildFromCacheOrStream(position: position, reason: reason)
+    }
+
+    /// Follow-up rebuild if a soft seek didn't unstick playback.
+    private func armStallRebuildEscalation(position: TimeInterval, reason: String) {
+        guard stallRebuildTask == nil else { return }
+        stallRebuildTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self else { return }
+                self.stallRebuildTask = nil
+                guard self.wantsToPlay, !self.isRebuilding else { return }
+                let stillSilent = self.player.timeControlStatus != .playing
+                    || self.player.currentItem?.isPlaybackBufferEmpty == true
+                    || self.player.currentItem?.isPlaybackLikelyToKeepUp == false
+                    || self.player.currentItem?.status == .failed
+                guard stillSilent else { return }
+                self.rebuildFromCacheOrStream(position: position, reason: "\(reason)-retry")
+            }
+        }
+    }
+
+    private func clearStallRecoveryState(resetForcedResilient: Bool) {
+        stallRecoveryTask?.cancel()
+        stallRecoveryTask = nil
+        stallRebuildTask?.cancel()
+        stallRebuildTask = nil
+        stallStartedAt = nil
+        stallSoftSeekCount = 0
+        silentBufferTicks = 0
+        if resetForcedResilient {
+            stallForcedResilient = false
+        }
     }
 
     /// Bluetooth often keeps `timeControlStatus == .playing` with no audible
@@ -2669,7 +2745,13 @@ final class PlayerEngine: ObservableObject {
     private func rebuildFromCacheOrStream(position: TimeInterval, reason: String) {
         guard wantsToPlay, let song = current?.song else { return }
         DromeDiagnostics.logPlayer("stall rebuild (\(reason))")
-        // Force resilient URL selection for the rebuild.
+        stallRecoveryTask?.cancel()
+        stallRecoveryTask = nil
+        stallRebuildTask?.cancel()
+        stallRebuildTask = nil
+        stallSoftSeekCount = 0
+        // Force resilient URL selection for the rebuild (and rest of track).
+        stallForcedResilient = true
         lastCellularCompressed = true
         let resume = wantsToPlay
         rebuildWindow(startPlaying: resume)
@@ -2688,7 +2770,11 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func prefetchUpcomingIntoCache() {
-        guard shouldUseResilientStream || ConnectivityMonitor.lastIsCellular else { return }
+        // Warm cache on cellular / resilient / Bluetooth — A2DP is where
+        // HTTP underruns hurt most, and local MP3 survives path flaps.
+        guard shouldUseResilientStream
+                || ConnectivityMonitor.lastIsCellular
+                || isBluetoothRouteActive else { return }
         var songs: [Song] = []
         if let current { songs.append(current.song) }
         songs.append(contentsOf: peekUpcoming(limit: 3).map(\.song))
