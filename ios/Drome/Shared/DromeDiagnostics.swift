@@ -9,6 +9,7 @@ enum DromeDiagnostics {
     enum Category: String {
         case app = "app"
         case player = "player"
+        case podcast = "podcast"
         case network = "net"
         case session = "session"
     }
@@ -51,6 +52,10 @@ enum DromeDiagnostics {
 
     static func logNetwork(_ message: String) {
         log(message, category: .network)
+    }
+
+    static func logPodcast(_ message: String) {
+        log(message, category: .podcast)
     }
 
     static func flush() {

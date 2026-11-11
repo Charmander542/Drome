@@ -96,6 +96,10 @@ struct SettingsView: View {
                     get: { PlaybackPreferences.compressOnCellular },
                     set: { PlaybackPreferences.compressOnCellular = $0 }
                 ))
+                Toggle("Resilient streaming away from home", isOn: Binding(
+                    get: { PlaybackPreferences.resilientRemoteStreaming },
+                    set: { PlaybackPreferences.resilientRemoteStreaming = $0 }
+                ))
                 Picker("Shuffle", selection: Binding(
                     get: { player.shuffleMode },
                     set: { player.shuffleMode = $0 }
@@ -116,7 +120,7 @@ struct SettingsView: View {
             } header: {
                 Text("Playback")
             } footer: {
-                Text("Compress on cellular uses MP3 over LTE/5G (format switches only between songs). Autoplay recency also keeps Daily Mixes from repeating songs you’ve heard in that window.")
+                Text("Compress on cellular uses MP3 over LTE/5G. Resilient streaming caches compressed tracks when your Navidrome URL is Tailscale/remote so Wi‑Fi ↔ cell handoffs don’t kill playback. Format switches between songs (or after a stall recovery). Autoplay recency also keeps Daily Mixes from repeating songs you’ve heard in that window.")
             }
             .listRowBackground(DromeTheme.elevated)
 

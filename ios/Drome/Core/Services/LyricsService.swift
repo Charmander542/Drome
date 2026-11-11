@@ -4,6 +4,25 @@ struct LyricsDocument {
     var lines: [LRCParser.Line]
     var synced: Bool
     var source: String
+    /// Extra shift applied after parse (Navidrome structured offset, duration
+    /// scale residue, etc.) — informational for the UI.
+    var timingOffsetMs: Int
+    /// LRCLIB / sidecar duration used for scaling, when known.
+    var matchedDurationSec: Int?
+
+    init(
+        lines: [LRCParser.Line],
+        synced: Bool,
+        source: String,
+        timingOffsetMs: Int = 0,
+        matchedDurationSec: Int? = nil
+    ) {
+        self.lines = lines
+        self.synced = synced
+        self.source = source
+        self.timingOffsetMs = timingOffsetMs
+        self.matchedDurationSec = matchedDurationSec
+    }
 }
 
 /// Lyrics lookup pipeline, in priority order:
@@ -12,18 +31,20 @@ struct LyricsDocument {
 ///    or sidecar `.lrc` files next to the music)
 /// 3. LRCLIB public API (matched by artist/title/duration)
 ///
-/// Every network result — including "nothing found" — is cached, and synced
-/// hits are added to the FTS index for deep search.
+/// Timestamps are aligned to the local file: LRC `[offset:]` tags, OpenSubsonic
+/// `offset`, and mild duration scaling when the matched master is a near-cut.
 actor LyricsService {
     private let database: AppDatabase
     private let client: SubsonicClient
     private let lrclib: LRCLIBClient
     private let serverKey: String
 
-    /// Bumped when LRCLIB matching rules change so old fuzzy hits
-    /// (e.g. short titles like "2007") are refetched once.
-    private static let lrclibSource = "lrclib.v2"
-    private static let legacyLRCLIBSources: Set<String> = ["lrclib"]
+    /// Bumped when matching / alignment rules change so old hits refetch once.
+    private static let lrclibSource = "lrclib.v3"
+    private static let navidromeSource = "navidrome.v2"
+    private static let legacySources: Set<String> = [
+        "lrclib", "lrclib.v2", "navidrome",
+    ]
 
     init(database: AppDatabase, client: SubsonicClient, serverKey: String) {
         self.database = database
@@ -37,11 +58,15 @@ actor LyricsService {
             if cached.source == "none" {
                 return nil
             }
-            // Ignore pre-match-fix LRCLIB rows — they may be the wrong song.
-            if Self.legacyLRCLIBSources.contains(cached.source) {
+            // Ignore pre-alignment-fix rows — they may be wrong song or unscaled.
+            if Self.legacySources.contains(cached.source) {
                 // Fall through to refetch.
             } else {
-                return document(from: cached.content, synced: cached.synced, source: cached.source)
+                return document(
+                    from: cached.content,
+                    synced: cached.synced,
+                    source: cached.source,
+                    songDuration: song.duration)
             }
         }
         guard allowNetwork else { return nil }
@@ -63,31 +88,57 @@ actor LyricsService {
         // 1. Navidrome (embedded tags / .lrc sidecar files, served as
         //    OpenSubsonic structured lyrics).
         if let structured = try? await client.lyrics(songId: song.id),
-           let best = structured.first(where: { $0.synced == true }) ?? structured.first,
+           let best = preferSynced(structured),
            let lines = best.line, !lines.isEmpty {
             let synced = (best.synced ?? false) || lines.contains { $0.start != nil }
-            let content = LRCParser.serialize(lines: lines.map { ($0.start, $0.value) })
-            store(song: song, synced: synced, content: content, source: "navidrome")
-            return document(from: content, synced: synced, source: "navidrome")
+            let offsetMs = best.offset ?? 0
+            let content = LRCParser.serialize(
+                lines: lines.map { ($0.start, $0.value) },
+                offsetMs: offsetMs)
+            store(song: song, synced: synced, content: content, source: Self.navidromeSource)
+            return document(
+                from: content,
+                synced: synced,
+                source: Self.navidromeSource,
+                songDuration: song.duration,
+                structuredOffsetMs: offsetMs)
         }
 
         // 2. LRCLIB fallback.
         if let artist = song.artist,
-           let result = try? await lrclib.lyrics(artist: artist, title: song.title,
-                                                 album: song.album, duration: song.duration) {
+           let result = try? await lrclib.lyrics(
+            artist: artist, title: song.title,
+            album: song.album, duration: song.duration) {
+            let matchedDuration = result.duration.map { Int($0.rounded()) }
             if let lrc = result.syncedLyrics, !lrc.isEmpty {
                 store(song: song, synced: true, content: lrc, source: Self.lrclibSource)
-                return document(from: lrc, synced: true, source: Self.lrclibSource)
+                return document(
+                    from: lrc,
+                    synced: true,
+                    source: Self.lrclibSource,
+                    songDuration: song.duration,
+                    matchedDurationSec: matchedDuration)
             }
             if let plain = result.plainLyrics, !plain.isEmpty {
                 store(song: song, synced: false, content: plain, source: Self.lrclibSource)
-                return document(from: plain, synced: false, source: Self.lrclibSource)
+                return document(
+                    from: plain,
+                    synced: false,
+                    source: Self.lrclibSource,
+                    songDuration: song.duration,
+                    matchedDurationSec: matchedDuration)
             }
         }
 
         // Negative cache so the indexer and repeated plays don't refetch.
         try? database.storeLyrics(negativeEntry(for: song))
         return nil
+    }
+
+    private func preferSynced(_ items: [StructuredLyrics]) -> StructuredLyrics? {
+        items.first(where: { $0.synced == true })
+            ?? items.first(where: { $0.line?.contains(where: { $0.start != nil }) == true })
+            ?? items.first
     }
 
     private func store(song: Song, synced: Bool, content: String, source: String) {
@@ -103,7 +154,36 @@ actor LyricsService {
                      synced: false, content: "", source: "none")
     }
 
-    private func document(from content: String, synced: Bool, source: String) -> LyricsDocument {
-        LyricsDocument(lines: LRCParser.parse(content), synced: synced, source: source)
+    private func document(
+        from content: String,
+        synced: Bool,
+        source: String,
+        songDuration: Int?,
+        structuredOffsetMs: Int = 0,
+        matchedDurationSec: Int? = nil
+    ) -> LyricsDocument {
+        // Embedded `[offset:]` is applied inside the parser. Structured offset
+        // is also written into the serialized LRC when caching from Navidrome.
+        var lines = LRCParser.parse(content, applyEmbeddedOffset: true)
+
+        // Duration scale only when we know the remote master's length (LRCLIB).
+        // Never invent a scale from the last lyric stamp — sidecar / embedded
+        // LRC is already timed for this file and stretching it causes mid-song drift.
+        if synced,
+           let songDuration, songDuration > 0,
+           let fromSec = matchedDurationSec, fromSec > 0 {
+            lines = LRCParser.scale(
+                lines,
+                fromDurationMs: fromSec * 1000,
+                toDurationMs: songDuration * 1000)
+        }
+
+        return LyricsDocument(
+            lines: lines,
+            synced: synced,
+            source: source,
+            timingOffsetMs: structuredOffsetMs,
+            matchedDurationSec: matchedDurationSec)
     }
+
 }

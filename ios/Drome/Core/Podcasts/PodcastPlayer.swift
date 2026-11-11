@@ -35,6 +35,9 @@ final class PodcastPlayer: ObservableObject {
 
     /// Called before podcast audio starts so music can yield the session.
     var onWillStartPlayback: (() -> Void)?
+    /// Refresh the show feed and return an updated episode (fresh enclosure URL).
+    /// Used when the cached audio URL 404s after CDN / tracking redirects expire.
+    var onRefreshEpisode: ((PodcastEpisode) async -> PodcastEpisode?)?
 
     // MARK: Private state
 
@@ -51,11 +54,16 @@ final class PodcastPlayer: ObservableObject {
     private var playGeneration = 0
     private var wantsToPlay = false
     private var pendingSeek: TimeInterval?
+    private var didAttemptFreshURL = false
     private let nowPlaying = PodcastNowPlayingCenter()
     private let store: PodcastStore?
 
     static let speedPresets: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
-    private static let userAgent = "Drome/1.0 (Podcast; iOS)"
+    /// Prefer Apple's public UA key + CoreMedia-like string. The old private
+    /// `AVURLAssetHTTPHeaderFieldsKey` broke Podtrac/Art19 redirect chains and
+    /// surfaced as "The requested URL was not found on this server".
+    private static let userAgent =
+        "AppleCoreMedia/1.0.0 (Drome; like iPhone; podcast)"
 
     init(store: PodcastStore? = nil) {
         self.store = store
@@ -79,6 +87,7 @@ final class PodcastPlayer: ObservableObject {
         itemReadyCancellable?.cancel()
         itemReadyTimeout?.cancel()
         itemStatusObserver?.invalidate()
+        didAttemptFreshURL = false
 
         let startPosition: TimeInterval = {
             if resumeFromSaved, let store {
@@ -100,26 +109,129 @@ final class PodcastPlayer: ObservableObject {
         wantsToPlay = true
         resumeAfterInterruption = false
         pendingSeek = startPosition > 1 ? startPosition : nil
+        DromeDiagnostics.logPodcast(
+            "play «\(episode.title)» resume=\(Int(startPosition))s gen=\(generation)")
 
-        let item = makePlayerItem(url: episode.audioURL)
+        // Resolve tracking redirects first so AVPlayer gets a stable media URL.
+        // Podtrac / Spotify prefix / Art19 chains often 404 when AVPlayer follows
+        // them with private header overrides.
+        Task { @MainActor [weak self] in
+            guard let self, generation == self.playGeneration else { return }
+            let resolved = await Self.resolvePlayableURL(episode.audioURL) ?? episode.audioURL
+            guard generation == self.playGeneration else { return }
+            DromeDiagnostics.logPodcast("stream \(resolved.host ?? "?")…")
+            self.startItem(url: resolved, episode: episode, generation: generation, startPosition: startPosition)
+        }
+        Task { await self.resolveChapters(for: episode, generation: generation) }
+    }
+
+    private func startItem(
+        url: URL,
+        episode: PodcastEpisode,
+        generation: Int,
+        startPosition: TimeInterval
+    ) {
+        let item = makePlayerItem(url: url)
         player.replaceCurrentItem(with: item)
 
         itemStatusObserver = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             Task { @MainActor [weak self] in
                 guard let self, generation == self.playGeneration else { return }
                 if item.status == .failed {
-                    let message = item.error?.localizedDescription ?? "Couldn't play this episode"
-                    self.errorMessage = message
-                    self.wantsToPlay = false
-                    self.isPlaying = false
-                    print("[PodcastPlayer] item failed: \(message)")
+                    await self.handleItemFailure(
+                        item.error,
+                        episode: episode,
+                        generation: generation,
+                        startPosition: startPosition)
                 }
             }
         }
 
         updateNowPlaying(for: episode, startPosition: startPosition, rate: 0)
         waitUntilReadyThenPlay(item, generation: generation)
-        Task { await self.resolveChapters(for: episode, generation: generation) }
+    }
+
+    private func handleItemFailure(
+        _ error: Error?,
+        episode: PodcastEpisode,
+        generation: Int,
+        startPosition: TimeInterval
+    ) async {
+        let message = error?.localizedDescription ?? "Couldn't play this episode"
+        DromeDiagnostics.logPodcast("item failed: \(message)")
+
+        // One automatic recovery: refresh the feed for a fresh enclosure URL.
+        if !didAttemptFreshURL, let onRefreshEpisode {
+            didAttemptFreshURL = true
+            errorMessage = "Refreshing episode link…"
+            if let fresh = await onRefreshEpisode(episode),
+               generation == playGeneration {
+                let urlChanged = fresh.audioURL != episode.audioURL
+                DromeDiagnostics.logPodcast(
+                    "retry after refresh urlChanged=\(urlChanged)")
+                currentEpisode = fresh
+                let resolved = await Self.resolvePlayableURL(fresh.audioURL) ?? fresh.audioURL
+                guard generation == playGeneration else { return }
+                errorMessage = nil
+                wantsToPlay = true
+                pendingSeek = startPosition > 1 ? startPosition : pendingSeek
+                startItem(
+                    url: resolved,
+                    episode: fresh,
+                    generation: generation,
+                    startPosition: startPosition)
+                return
+            }
+        }
+
+        errorMessage = Self.friendlyError(message)
+        wantsToPlay = false
+        isPlaying = false
+    }
+
+    private static func friendlyError(_ raw: String) -> String {
+        let lower = raw.lowercased()
+        if lower.contains("not found") || lower.contains("404") {
+            return "Episode audio link expired — pull to refresh the show and try again"
+        }
+        return raw
+    }
+
+    /// Follow redirects with URLSession so AVPlayer doesn't have to walk the
+    /// tracking chain (Podtrac → pdst → vpixl → CDN) itself.
+    private static func resolvePlayableURL(_ url: URL) async -> URL? {
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 12
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+
+        if let resolved = await performResolve(request) {
+            return resolved
+        }
+        // Some CDNs reject HEAD — fall back to a ranged GET.
+        var get = request
+        get.httpMethod = "GET"
+        get.setValue("bytes=0-1", forHTTPHeaderField: "Range")
+        return await performResolve(get)
+    }
+
+    private static func performResolve(_ request: URLRequest) async -> URL? {
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return nil }
+            guard let final = http.url else { return nil }
+            // Accept 2xx and 3xx-followed finals; reject obvious HTML error pages.
+            if (200...399).contains(http.statusCode) {
+                let type = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+                if type.contains("text/html") { return nil }
+                return final
+            }
+            return nil
+        } catch {
+            DromeDiagnostics.logPodcast("resolve failed: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     private func resolveChapters(for episode: PodcastEpisode, generation: Int) async {
@@ -208,7 +320,10 @@ final class PodcastPlayer: ObservableObject {
         duration = 0
         pendingSeek = nil
         AudioFocus.shared.release(.podcast)
+        // Episode is gone — don't sticky-block music remote Play.
+        AudioFocus.shared.forgetLastOwner(.podcast)
         nowPlaying.clearNowPlaying()
+        DromeDiagnostics.logPodcast("stopped")
     }
 
     /// Seeds mini-player / now-playing chrome without starting AVPlayer.
@@ -244,14 +359,16 @@ final class PodcastPlayer: ObservableObject {
     // MARK: Item creation
 
     private func makePlayerItem(url: URL) -> AVPlayerItem {
-        // Many hosts (Art19, Megaphone, etc.) reject empty / default User-Agents.
-        let asset = AVURLAsset(url: url, options: [
-            "AVURLAssetHTTPHeaderFieldsKey": [
-                "User-Agent": Self.userAgent,
-                "Accept": "*/*",
-            ],
+        // Use the public UA key only — never AVURLAssetHTTPHeaderFieldsKey.
+        // That private API drops/breaks headers across podcast CDN redirects
+        // and commonly returns Apache "URL was not found" HTML to AVPlayer.
+        var options: [String: Any] = [
             AVURLAssetPreferPreciseDurationAndTimingKey: false,
-        ])
+        ]
+        if #available(iOS 16.0, tvOS 16.0, *) {
+            options[AVURLAssetHTTPUserAgentKey] = Self.userAgent
+        }
+        let asset = AVURLAsset(url: url, options: options)
         let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = 25
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = true
@@ -391,6 +508,40 @@ final class PodcastPlayer: ObservableObject {
                 self?.handleRouteChange(note)
             }
         }
+        NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.playbackStalledNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      let stalled = note.object as? AVPlayerItem,
+                      stalled === self.player.currentItem,
+                      self.wantsToPlay else { return }
+                DromeDiagnostics.logPodcast("stalled → soft seek")
+                let pos = self.elapsed
+                self.seek(to: pos)
+                self.player.play()
+                self.player.rate = Float(self.playbackSpeed)
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .dromeNetworkPathChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      (note.userInfo?["regained"] as? Bool) == true,
+                      self.wantsToPlay,
+                      self.currentEpisode != nil,
+                      AudioFocus.shared.isOwner(.podcast) else { return }
+                DromeDiagnostics.logPodcast("network regained → resume")
+                self.activateAudioSession()
+                self.player.play()
+                self.player.rate = Float(self.playbackSpeed)
+            }
+        }
         #endif
     }
 
@@ -431,6 +582,7 @@ final class PodcastPlayer: ObservableObject {
         case .began:
             // Capture intent before pause() clears wantsToPlay.
             resumeAfterInterruption = wantsToPlay || isPlaying
+            DromeDiagnostics.logPodcast("interruption began resumeAfter=\(resumeAfterInterruption)")
             if resumeAfterInterruption {
                 wantsToPlay = false
                 player.pause()
@@ -452,6 +604,7 @@ final class PodcastPlayer: ObservableObject {
                 && AudioFocus.shared.isOwner(.podcast)
                 && currentEpisode != nil
             resumeAfterInterruption = false
+            DromeDiagnostics.logPodcast("interruption ended canResume=\(canResume)")
             if canResume {
                 resume()
             }
@@ -515,6 +668,7 @@ final class PodcastPlayer: ObservableObject {
     // MARK: Now Playing
 
     private func updateNowPlaying(for episode: PodcastEpisode, startPosition: TimeInterval, rate: Float) {
+        guard AudioFocus.shared.isOwner(.podcast) else { return }
         nowPlaying.updateNowPlaying(
             episode: episode,
             duration: duration > 0 ? duration : (episode.duration ?? 0),
@@ -532,6 +686,7 @@ private final class PodcastNowPlayingCenter {
 
     func updateNowPlaying(episode: PodcastEpisode, duration: TimeInterval, position: TimeInterval, speed: Double) {
         #if !os(tvOS)
+        guard AudioFocus.shared.isOwner(.podcast) else { return }
         var info: [String: Any] = [:]
         info[MPMediaItemPropertyTitle] = episode.title
         info[MPMediaItemPropertyAlbumTitle] = "Podcast"
@@ -543,12 +698,14 @@ private final class PodcastNowPlayingCenter {
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         setupRemoteCommands()
+        AudioFocus.shared.applyRemoteCommandSurface()
 
         artworkTask?.cancel()
         guard let imageURL = episode.imageURL,
               let scheme = imageURL.scheme?.lowercased(),
               scheme == "http" || scheme == "https" else { return }
 
+        let episodeID = episode.id
         artworkTask = Task.detached(priority: .utility) {
             var request = URLRequest(url: imageURL)
             request.setValue("Drome/1.0 (Podcast; iOS)", forHTTPHeaderField: "User-Agent")
@@ -560,7 +717,11 @@ private final class PodcastNowPlayingCenter {
             let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
             await MainActor.run {
                 guard !Task.isCancelled else { return }
-                var current = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+                guard AudioFocus.shared.isOwner(.podcast) else { return }
+                guard var current = MPNowPlayingInfoCenter.default().nowPlayingInfo,
+                      current[MPMediaItemPropertyTitle] as? String != nil else { return }
+                // Drop stale art if focus already moved on.
+                _ = episodeID
                 current[MPMediaItemPropertyArtwork] = artwork
                 MPNowPlayingInfoCenter.default().nowPlayingInfo = current
             }
@@ -570,6 +731,7 @@ private final class PodcastNowPlayingCenter {
 
     func updateElapsedTime(_ elapsed: TimeInterval, duration: TimeInterval, rate: Float) {
         #if !os(tvOS)
+        guard AudioFocus.shared.isOwner(.podcast) else { return }
         guard var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
         info[MPMediaItemPropertyPlaybackDuration] = duration
@@ -581,7 +743,10 @@ private final class PodcastNowPlayingCenter {
     func clearNowPlaying() {
         #if !os(tvOS)
         artworkTask?.cancel()
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        // Never wipe music's tile when podcast is yielding focus.
+        if AudioFocus.shared.isOwner(.podcast) || AudioFocus.shared.owner == .none {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        }
         #endif
     }
 
@@ -593,35 +758,39 @@ private final class PodcastNowPlayingCenter {
         commandsConfigured = true
         let center = MPRemoteCommandCenter.shared()
 
+        // Strict `isOwner(.podcast)` — see NowPlayingCenter. Soft `!= .music`
+        // let both engines handle the same event when focus was `.none`.
         center.playCommand.addTarget { _ in
-            guard AudioFocus.shared.owner != .music else { return .success }
+            guard AudioFocus.shared.allowsRemotePlayback(for: .podcast) else {
+                return .commandFailed
+            }
             NotificationCenter.default.post(name: .podcastPlayerResume, object: nil)
             return .success
         }
         center.pauseCommand.addTarget { _ in
-            guard AudioFocus.shared.owner != .music else { return .success }
+            guard AudioFocus.shared.isOwner(.podcast) else { return .commandFailed }
             NotificationCenter.default.post(name: .podcastPlayerPause, object: nil)
             return .success
         }
         center.togglePlayPauseCommand.addTarget { _ in
-            guard AudioFocus.shared.owner != .music else { return .success }
+            guard AudioFocus.shared.allowsRemotePlayback(for: .podcast) else {
+                return .commandFailed
+            }
             NotificationCenter.default.post(name: .podcastPlayerToggle, object: nil)
             return .success
         }
-        center.skipForwardCommand.preferredIntervals = [30]
         center.skipForwardCommand.addTarget { _ in
-            guard AudioFocus.shared.owner != .music else { return .success }
+            guard AudioFocus.shared.isOwner(.podcast) else { return .commandFailed }
             NotificationCenter.default.post(name: .podcastPlayerSkipForward, object: nil)
             return .success
         }
-        center.skipBackwardCommand.preferredIntervals = [15]
         center.skipBackwardCommand.addTarget { _ in
-            guard AudioFocus.shared.owner != .music else { return .success }
+            guard AudioFocus.shared.isOwner(.podcast) else { return .commandFailed }
             NotificationCenter.default.post(name: .podcastPlayerSkipBackward, object: nil)
             return .success
         }
         center.changePlaybackPositionCommand.addTarget { event in
-            guard AudioFocus.shared.owner != .music else { return .success }
+            guard AudioFocus.shared.isOwner(.podcast) else { return .commandFailed }
             guard let event = event as? MPChangePlaybackPositionCommandEvent else {
                 return .commandFailed
             }
@@ -631,6 +800,7 @@ private final class PodcastNowPlayingCenter {
                 userInfo: ["time": event.positionTime])
             return .success
         }
+        AudioFocus.shared.applyRemoteCommandSurface()
         #endif
     }
 }

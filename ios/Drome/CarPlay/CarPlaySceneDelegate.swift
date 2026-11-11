@@ -48,6 +48,10 @@ final class CarPlaySceneDelegate: UIResponder,
         NotificationCenter.default.addObserver(
             self, selector: #selector(sessionChanged),
             name: .dromeSessionChanged, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(audioFocusChanged),
+            name: AudioFocus.didChangeNotification, object: nil)
+        DromeDiagnostics.log("carplay connected", category: .session)
     }
 
     func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene,
@@ -64,6 +68,7 @@ final class CarPlaySceneDelegate: UIResponder,
         self.interfaceController = nil
         tabBar = nil
         NotificationCenter.default.removeObserver(self)
+        DromeDiagnostics.log("carplay disconnected", category: .session)
     }
 
     func sessionConfiguration(
@@ -77,6 +82,10 @@ final class CarPlaySceneDelegate: UIResponder,
 
     @objc private func sessionChanged() {
         rebuildRoot()
+    }
+
+    @objc private func audioFocusChanged() {
+        refreshNowPlayingButtons()
     }
 
     // MARK: - Root
@@ -99,7 +108,8 @@ final class CarPlaySceneDelegate: UIResponder,
         let home = makeHomeTemplate(session: session)
         let search = makeSearchTab(session: session)
         let library = makeLibraryTemplate(session: session)
-        let tabs = CPTabBarTemplate(templates: [home, search, library])
+        let podcasts = makePodcastsTemplate()
+        let tabs = CPTabBarTemplate(templates: [home, search, library, podcasts])
         tabs.delegate = self
         tabBar = tabs
         searchTabTemplate = search
@@ -115,12 +125,49 @@ final class CarPlaySceneDelegate: UIResponder,
     // MARK: - Now Playing
 
     private func configureNowPlayingTemplate() {
+        // Buttons are rebuilt in refreshNowPlayingButtons based on audio focus
+        // (music shuffle/rate vs podcast skip ±30).
         let np = CPNowPlayingTemplate.shared
         np.add(self)
+        refreshNowPlayingButtons()
+    }
+
+    private func refreshNowPlayingButtons() {
+        let np = CPNowPlayingTemplate.shared
+        let podcastOwns = AudioFocus.shared.isOwner(.podcast)
+            || (AudioFocus.shared.owner == .none
+                && AppEnvironment.shared?.podcastPlayer.currentEpisode != nil
+                && AppEnvironment.shared?.session?.player.isPlaying != true)
+
+        if podcastOwns {
+            np.isUpNextButtonEnabled = false
+            np.isAlbumArtistButtonEnabled = false
+            let backImage = UIImage(systemName: "gobackward.15") ?? UIImage()
+            let back = CPNowPlayingImageButton(image: backImage) { _ in
+                AppEnvironment.shared?.podcastPlayer.skipBackward(seconds: 15)
+            }
+            let forwardImage = UIImage(systemName: "goforward.30") ?? UIImage()
+            let forward = CPNowPlayingImageButton(image: forwardImage) { _ in
+                AppEnvironment.shared?.podcastPlayer.skipForward(seconds: 30)
+            }
+            let speedImage = UIImage(systemName: "gauge.with.dots.needle.67percent") ?? UIImage()
+            let speed = CPNowPlayingImageButton(image: speedImage) { [weak self] _ in
+                AppEnvironment.shared?.podcastPlayer.cycleSpeed()
+                self?.refreshNowPlayingButtons()
+            }
+            np.updateNowPlayingButtons([back, forward, speed])
+            return
+        }
+
+        guard let session = AppEnvironment.shared?.session else {
+            np.updateNowPlayingButtons([])
+            return
+        }
         np.isUpNextButtonEnabled = true
         np.upNextTitle = "Queue"
         np.isAlbumArtistButtonEnabled = true
 
+        let player = session.player
         let rateImage = UIImage(systemName: "star.fill") ?? UIImage()
         let rate = CPNowPlayingImageButton(image: rateImage) { [weak self] _ in
             self?.showRatingPicker()
@@ -145,14 +192,9 @@ final class CarPlaySceneDelegate: UIResponder,
         }
 
         np.updateNowPlayingButtons([rate, shuffle, repeatButton, autoplay, artist])
-        refreshNowPlayingButtons()
-    }
 
-    private func refreshNowPlayingButtons() {
-        guard let session = AppEnvironment.shared?.session else { return }
-        let player = session.player
         let rating = player.current.map { session.ratings.rating(for: $0.song) } ?? 0
-        let buttons = CPNowPlayingTemplate.shared.nowPlayingButtons
+        let buttons = np.nowPlayingButtons
         for button in buttons {
             if button is CPNowPlayingShuffleButton {
                 button.isSelected = player.shuffleMode != .off
@@ -166,10 +208,12 @@ final class CarPlaySceneDelegate: UIResponder,
     }
 
     func nowPlayingTemplateUpNextButtonTapped(_ nowPlayingTemplate: CPNowPlayingTemplate) {
+        if AudioFocus.shared.isOwner(.podcast) { return }
         showQueue()
     }
 
     func nowPlayingTemplateAlbumArtistButtonTapped(_ nowPlayingTemplate: CPNowPlayingTemplate) {
+        if AudioFocus.shared.isOwner(.podcast) { return }
         Task { await openNowPlayingAlbum() }
     }
 
@@ -896,6 +940,132 @@ final class CarPlaySceneDelegate: UIResponder,
         let filtered = await filterSearchResult(result, session: session)
         let sections = makeSearchSections(from: filtered, query: query, session: session)
         let list = CPListTemplate(title: title, sections: sections)
+        interfaceController.pushTemplate(list, animated: true, completion: nil)
+    }
+
+    // MARK: - Podcasts
+
+    private func makePodcastsTemplate() -> CPListTemplate {
+        let template = CPListTemplate(title: "Podcasts", sections: [
+            CPListSection(items: [CPListItem(text: "Loading…", detailText: nil)])
+        ])
+        template.tabTitle = "Podcasts"
+        template.tabImage = UIImage(systemName: "headphones")
+
+        Task { @MainActor in
+            template.updateSections(self.podcastSections())
+        }
+        return template
+    }
+
+    private func podcastSections() -> [CPListSection] {
+        guard let env = AppEnvironment.shared else {
+            return [CPListSection(items: [
+                CPListItem(text: "Open Drome on iPhone", detailText: "Podcasts sync from your phone")
+            ])]
+        }
+        let manager = env.podcastManager
+        let player = env.podcastPlayer
+        var sections: [CPListSection] = []
+
+        if let current = player.currentEpisode {
+            let detail: String
+            if player.isPlaying {
+                detail = "Playing · tap for Now Playing"
+            } else {
+                detail = "Paused · tap to resume"
+            }
+            let row = CPListItem(text: current.title, detailText: detail)
+            if let image = UIImage(systemName: "play.circle.fill") {
+                row.setImage(image)
+            }
+            row.handler = { [weak self] _, completion in
+                if player.currentEpisode?.id == current.id, !player.isPlaying {
+                    player.resume()
+                }
+                self?.pushNowPlaying()
+                self?.refreshNowPlayingButtons()
+                completion()
+            }
+            sections.append(CPListSection(
+                items: [row], header: "Now Playing", sectionIndexTitle: nil))
+        }
+
+        let inProgress = manager.inProgressEpisodes()
+        if !inProgress.isEmpty {
+            let items: [CPListItem] = inProgress.prefix(12).map { entry in
+                let remaining = entry.episode.remainingText ?? entry.episode.durationText
+                let item = CPListItem(
+                    text: entry.episode.title,
+                    detailText: remaining)
+                item.handler = { [weak self] _, completion in
+                    player.play(entry.episode, resumeFromSaved: true)
+                    self?.pushNowPlaying()
+                    self?.refreshNowPlayingButtons()
+                    completion()
+                }
+                return item
+            }
+            sections.append(CPListSection(
+                items: Array(items), header: "Continue Listening", sectionIndexTitle: nil))
+        }
+
+        let shows = manager.subscribedShows
+        if shows.isEmpty {
+            sections.append(CPListSection(items: [
+                CPListItem(
+                    text: "No subscriptions yet",
+                    detailText: "Subscribe on your iPhone")
+            ], header: "Shows", sectionIndexTitle: nil))
+        } else {
+            let items: [CPListItem] = shows.map { show in
+                let item = CPListItem(
+                    text: show.title,
+                    detailText: show.author ?? "\(show.episodeCount) episodes")
+                item.accessoryType = .disclosureIndicator
+                item.handler = { [weak self] _, completion in
+                    self?.showPodcastEpisodes(show: show, manager: manager, player: player)
+                    completion()
+                }
+                return item
+            }
+            sections.append(CPListSection(
+                items: items, header: "Shows", sectionIndexTitle: nil))
+        }
+        return sections
+    }
+
+    private func showPodcastEpisodes(
+        show: PodcastShow,
+        manager: PodcastManager,
+        player: PodcastPlayer
+    ) {
+        guard let interfaceController else { return }
+        let episodes = (try? manager.episodes(for: show.feedURL)) ?? []
+        let items: [CPListItem] = episodes.prefix(40).map { episode in
+            var detailParts: [String] = []
+            if let remaining = episode.remainingText, episode.playbackPosition > 1 {
+                detailParts.append(remaining)
+            } else {
+                detailParts.append(episode.durationText)
+            }
+            if episode.isFullyPlayed { detailParts.append("Played") }
+            let item = CPListItem(
+                text: episode.title,
+                detailText: detailParts.joined(separator: " · "))
+            item.handler = { [weak self] _, completion in
+                player.play(episode, resumeFromSaved: true)
+                self?.pushNowPlaying()
+                self?.refreshNowPlayingButtons()
+                completion()
+            }
+            return item
+        }
+        let list = CPListTemplate(
+            title: show.title,
+            sections: [CPListSection(items: items.isEmpty
+                                     ? [CPListItem(text: "No episodes", detailText: "Refresh on iPhone")]
+                                     : Array(items))])
         interfaceController.pushTemplate(list, animated: true, completion: nil)
     }
 

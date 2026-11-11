@@ -35,7 +35,10 @@ enum RSSPodcastParser {
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
-        request.setValue("Drome/1.0 (Podcast)", forHTTPHeaderField: "User-Agent")
+        // Browser-like UA — some hosts 404 bare "Drome/1.0" feed scrapers.
+        request.setValue(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Drome/1.0",
+            forHTTPHeaderField: "User-Agent")
         request.setValue("application/rss+xml, application/xml, text/xml, */*", forHTTPHeaderField: "Accept")
 
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -119,13 +122,25 @@ private final class FeedParserDelegate: NSObject, XMLParserDelegate {
             currentEpisode = PodcastEpisodeBuilder()
         } else if inItem {
             if local == "enclosure" {
-                if let url = attributeDict["url"], RSSPodcastParser.isHTTPURL(url) {
-                    currentEpisode?.enclosureURL = url
+                currentEpisode?.considerEnclosure(
+                    url: attributeDict["url"],
+                    type: attributeDict["type"],
+                    length: attributeDict["length"],
+                    preferAudio: true)
+            } else if local == "content",
+                      elementName.contains("media") || elementName.hasPrefix("media:") {
+                // <media:content url="..." type="audio/mpeg" medium="audio" />
+                let medium = (attributeDict["medium"] ?? "").lowercased()
+                let type = attributeDict["type"]
+                let isAudio = medium == "audio"
+                    || (type?.lowercased().hasPrefix("audio/") == true)
+                if isAudio || currentEpisode?.enclosureURL == nil {
+                    currentEpisode?.considerEnclosure(
+                        url: attributeDict["url"],
+                        type: type,
+                        length: attributeDict["fileSize"] ?? attributeDict["length"],
+                        preferAudio: isAudio)
                 }
-                if let length = attributeDict["length"], let size = Int64(length) {
-                    currentEpisode?.enclosureLength = size
-                }
-                currentEpisode?.enclosureType = attributeDict["type"]
             } else if elementName == "itunes:image" || (local == "image" && elementName.contains("itunes")) {
                 if let href = attributeDict["href"], RSSPodcastParser.isHTTPURL(href) {
                     currentEpisode?.imageURL = URL(string: href)
@@ -319,6 +334,35 @@ private final class PodcastEpisodeBuilder {
     var explicit = false
     var chaptersURL: URL?
     var pscChapters: [PodcastChapter] = []
+
+    /// Prefer real audio enclosures; keep the first HTTP URL as a fallback.
+    func considerEnclosure(url raw: String?, type: String?, length: String?, preferAudio: Bool) {
+        guard let raw else { return }
+        let cleaned = Self.decodeURLEntities(raw)
+        guard RSSPodcastParser.isHTTPURL(cleaned) else { return }
+        let typeValue = type ?? enclosureType
+        let isAudio = (typeValue?.lowercased().hasPrefix("audio/") == true)
+            || cleaned.lowercased().contains(".mp3")
+            || cleaned.lowercased().contains(".m4a")
+            || cleaned.lowercased().contains(".aac")
+        if enclosureURL == nil || (preferAudio && isAudio && enclosureType?.lowercased().hasPrefix("audio/") != true) {
+            enclosureURL = cleaned
+            enclosureType = typeValue
+            if let length, let size = Int64(length) {
+                enclosureLength = size
+            }
+        } else if preferAudio, isAudio, enclosureType?.lowercased().hasPrefix("audio/") != true {
+            enclosureURL = cleaned
+            enclosureType = typeValue
+        }
+    }
+
+    private static func decodeURLEntities(_ raw: String) -> String {
+        raw.replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&#38;", with: "&")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     func build(feedURL: String, showImageURL: URL?) -> PodcastEpisode? {
         guard let audioURLString = enclosureURL,

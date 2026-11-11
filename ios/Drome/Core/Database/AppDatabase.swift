@@ -10,7 +10,7 @@ struct CachedLyrics {
     var synced: Bool
     /// Raw lyrics text: LRC when synced, plain text otherwise.
     var content: String
-    var source: String // "navidrome" | "lrclib" | "lrclib.v2" | "none"
+    var source: String // "navidrome.v2" | "lrclib.v3" | legacy | "none"
 }
 
 struct LyricsSearchMatch: Identifiable {

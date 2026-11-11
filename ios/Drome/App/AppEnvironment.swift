@@ -48,7 +48,20 @@ final class AppEnvironment: ObservableObject {
         podcastPlayer.onWillStartPlayback = { [weak self] in
             // Pause music so podcast owns audio; mini chrome swaps via
             // MiniPlayerKind (podcast episode takes priority over music current).
+            // Keep the music queue — only pause — so returning from a podcast
+            // (or CarPlay disconnect) can resume the same track.
+            DromeDiagnostics.logPlayer("podcast will start → pause music")
             self?.session?.player.pause()
+        }
+        // Stale Podtrac/Art19 enclosure URLs → refresh feed and retry once.
+        podcastPlayer.onRefreshEpisode = { [weak self] episode in
+            guard let self else { return nil }
+            await self.podcastManager.refreshFeed(feedURL: episode.showID)
+            let episodes = (try? self.podcastManager.episodes(for: episode.showID)) ?? []
+            return episodes.first(where: { $0.id == episode.id })
+                ?? episodes.first(where: {
+                    $0.title == episode.title && $0.pubDate == episode.pubDate
+                })
         }
         NotificationCenter.default.addObserver(
             forName: .podcastPlayerSeek, object: nil, queue: .main
@@ -71,6 +84,7 @@ final class AppEnvironment: ObservableObject {
         // Starting / resuming music should fully yield the podcast session.
         if let session {
             session.player.onWillStartPlayback = { [weak self] in
+                DromeDiagnostics.logPlayer("music will start → stop podcast")
                 self?.podcastPlayer.stop()
             }
             let previous = session.player.onTrackStarted

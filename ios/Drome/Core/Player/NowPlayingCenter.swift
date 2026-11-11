@@ -10,6 +10,7 @@ import UIKit
 final class NowPlayingCenter {
     var onPlay: (() -> Void)?
     var onPause: (() -> Void)?
+    var onToggle: (() -> Void)?
     var onNext: (() -> Void)?
     var onPrevious: (() -> Void)?
     var onSeek: ((TimeInterval) -> Void)?
@@ -17,29 +18,55 @@ final class NowPlayingCenter {
     private var artwork: MPMediaItemArtwork?
     private var artworkSongID: String?
     private var artworkImage: UIImage?
+    private var commandsConfigured = false
 
     func configureCommands() {
+        guard !commandsConfigured else { return }
+        commandsConfigured = true
         let center = MPRemoteCommandCenter.shared()
+
+        // Strict ownership checks — both music and podcast register handlers on
+        // the shared center; previously `!= .other` let both fire when focus
+        // was `.none`, which flipped transport + Now Playing after CarPlay /
+        // Bluetooth handoffs.
         center.playCommand.addTarget { [weak self] _ in
-            self?.onPlay?(); return .success
+            guard Self.musicCommandsAllowed else { return .commandFailed }
+            self?.onPlay?()
+            return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            self?.onPause?(); return .success
+            guard AudioFocus.shared.isOwner(.music) else { return .commandFailed }
+            self?.onPause?()
+            return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            self?.onPlay?(); return .success
+            guard Self.musicCommandsAllowed else { return .commandFailed }
+            if let onToggle = self?.onToggle {
+                onToggle()
+            } else {
+                self?.onPlay?()
+            }
+            return .success
         }
         center.nextTrackCommand.addTarget { [weak self] _ in
-            self?.onNext?(); return .success
+            guard AudioFocus.shared.isOwner(.music) else { return .commandFailed }
+            self?.onNext?()
+            return .success
         }
         center.previousTrackCommand.addTarget { [weak self] _ in
-            self?.onPrevious?(); return .success
+            guard AudioFocus.shared.isOwner(.music) else { return .commandFailed }
+            self?.onPrevious?()
+            return .success
         }
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
-            guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            guard AudioFocus.shared.isOwner(.music) else { return .commandFailed }
+            guard let event = event as? MPChangePlaybackPositionCommandEvent else {
+                return .commandFailed
+            }
             self?.onSeek?(event.positionTime)
             return .success
         }
+        AudioFocus.shared.applyRemoteCommandSurface()
     }
 
     func setArtwork(_ image: UIImage?, songID: String?) {
@@ -64,9 +91,14 @@ final class NowPlayingCenter {
 
     func update(song: Song?, elapsed: TimeInterval, duration: TimeInterval, isPlaying: Bool) {
         guard let song else {
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            // Only clear the system tile when music still owns focus — otherwise
+            // a music pause/yield would wipe the podcast Now Playing card.
+            if AudioFocus.shared.isOwner(.music) || AudioFocus.shared.owner == .none {
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            }
             return
         }
+        guard AudioFocus.shared.isOwner(.music) else { return }
 
         // Merge into existing info so a transient update can't drop other keys,
         // but always re-assert (or clear) artwork for the active song.
@@ -77,6 +109,7 @@ final class NowPlayingCenter {
         info[MPMediaItemPropertyPlaybackDuration] = duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
         info[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.audio.rawValue
 
         if let artwork, artworkSongID == song.id {
@@ -86,6 +119,10 @@ final class NowPlayingCenter {
         }
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    private static var musicCommandsAllowed: Bool {
+        AudioFocus.shared.allowsRemotePlayback(for: .music)
     }
 
     /// Square, letterboxed image at the size CarPlay/Lock Screen asked for.

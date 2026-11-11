@@ -14,6 +14,7 @@ struct LyricsView: View {
     @State private var error: String?
     @State private var activeIndex: Int = 0
     @State private var elapsedMs: Int = 0
+    @State private var userOffsetMs: Int = 0
     @State private var userScrolling = false
     @State private var reenableFollowTask: Task<Void, Never>?
     @State private var lastScrolledIndex: Int = -1
@@ -21,6 +22,10 @@ struct LyricsView: View {
     private enum LineState {
         case past, active, upcoming
     }
+
+    /// Playhead adjusted by the per-song sync nudge. Positive = lyrics were
+    /// late (highlight earlier); negative = lyrics were early.
+    private var syncElapsedMs: Int { max(0, elapsedMs + userOffsetMs) }
 
     var body: some View {
         Group {
@@ -41,6 +46,7 @@ struct LyricsView: View {
             activeIndex = 0
             lastScrolledIndex = -1
             userScrolling = false
+            userOffsetMs = Self.loadOffset(songId: song.id)
             await load(force: false)
         }
         // Drive the playhead from a background ticker so the ScrollView itself
@@ -60,7 +66,7 @@ struct LyricsView: View {
         let ms = Int(player.accurateElapsed() * 1000)
         elapsedMs = ms
         guard let document, document.synced else { return }
-        let idx = activeLineIndex(at: ms, in: document)
+        let idx = activeLineIndex(at: syncElapsedMs, in: document)
         if idx != activeIndex {
             activeIndex = idx
         }
@@ -75,7 +81,7 @@ struct LyricsView: View {
                         KaraokeLine(
                             line: line,
                             state: lineState(index: index, active: activeIndex, synced: document.synced),
-                            elapsedMs: elapsedMs
+                            elapsedMs: syncElapsedMs
                         )
                         .id(line.id)
                         .padding(.vertical, 10)
@@ -84,7 +90,8 @@ struct LyricsView: View {
                             if let start = line.startMs {
                                 userScrolling = false
                                 lastScrolledIndex = index
-                                player.seek(to: Double(start) / 1000.0)
+                                let seekTo = max(0, Double(start - userOffsetMs) / 1000.0)
+                                player.seek(to: seekTo)
                                 activeIndex = index
                             }
                         }
@@ -128,11 +135,80 @@ struct LyricsView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            Text(sourceLabel(document.source))
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(Color.white.opacity(0.4))
-                .padding(.bottom, 10)
+            if document.synced {
+                syncChrome(document)
+            } else {
+                Text(sourceLabel(document.source))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Color.white.opacity(0.4))
+                    .padding(.bottom, 10)
+            }
         }
+    }
+
+    private func syncChrome(_ document: LyricsDocument) -> some View {
+        HStack(spacing: 14) {
+            Button {
+                nudgeOffset(by: -500)
+            } label: {
+                Image(systemName: "minus.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(Color.white.opacity(0.75))
+            }
+            .accessibilityLabel("Running early")
+            .accessibilityHint("Delay the highlight when lyrics appear ahead of the vocal")
+
+            VStack(spacing: 2) {
+                Text(offsetLabel)
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(Color.white.opacity(0.85))
+                Text(sourceLabel(document.source))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Color.white.opacity(0.4))
+            }
+            .onLongPressGesture {
+                userOffsetMs = 0
+                Self.saveOffset(0, songId: song.id)
+                tick()
+            }
+            .accessibilityHint("Long press to reset sync")
+
+            Button {
+                nudgeOffset(by: 500)
+            } label: {
+                Image(systemName: "plus.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(Color.white.opacity(0.75))
+            }
+            .accessibilityLabel("Running late")
+            .accessibilityHint("Advance the highlight when lyrics lag behind the vocal")
+
+            Button {
+                Task { await load(force: true) }
+            } label: {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(Color.white.opacity(0.55))
+            }
+            .accessibilityLabel("Reload lyrics")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: Capsule())
+        .padding(.bottom, 12)
+    }
+
+    private var offsetLabel: String {
+        if userOffsetMs == 0 { return "Sync" }
+        let seconds = Double(userOffsetMs) / 1000.0
+        return String(format: "%+.1fs", seconds)
+    }
+
+    private func nudgeOffset(by delta: Int) {
+        // Clamp to ±8s — beyond that the match is probably wrong.
+        userOffsetMs = min(8_000, max(-8_000, userOffsetMs + delta))
+        Self.saveOffset(userOffsetMs, songId: song.id)
+        tick()
     }
 
     private func scrollToActive(proxy: ScrollViewProxy, document: LyricsDocument, index: Int, animated: Bool) {
@@ -168,8 +244,8 @@ struct LyricsView: View {
 
     private func sourceLabel(_ source: String) -> String {
         switch source {
-        case "navidrome": return "From your library"
-        case "lrclib", "lrclib.v2": return "From LRCLIB"
+        case "navidrome", "navidrome.v2": return "From your library"
+        case "lrclib", "lrclib.v2", "lrclib.v3": return "From LRCLIB"
         default: return ""
         }
     }
@@ -184,7 +260,23 @@ struct LyricsView: View {
             document = await session.lyricsService.lyrics(for: song)
         }
         if let document, document.synced {
-            activeIndex = activeLineIndex(at: Int(player.accurateElapsed() * 1000), in: document)
+            activeIndex = activeLineIndex(at: syncElapsedMs, in: document)
+        }
+    }
+
+    private static func offsetKey(songId: String) -> String {
+        "drome.lyricsSyncOffset.\(songId)"
+    }
+
+    private static func loadOffset(songId: String) -> Int {
+        UserDefaults.standard.integer(forKey: offsetKey(songId: songId))
+    }
+
+    private static func saveOffset(_ ms: Int, songId: String) {
+        if ms == 0 {
+            UserDefaults.standard.removeObject(forKey: offsetKey(songId: songId))
+        } else {
+            UserDefaults.standard.set(ms, forKey: offsetKey(songId: songId))
         }
     }
 

@@ -124,9 +124,23 @@ final class PlayerEngine: ObservableObject {
     /// Tracks AirPlay so we only rebuild when the route actually flips.
     private var lastAirPlayActive = false
     private var pendingAirPlayRebuild = false
-    /// Cellular vs Wi‑Fi stream format (compress-on-cellular).
+    /// Bluetooth / car audio — FLAC over A2DP often goes silent after the
+    /// initial buffer (~45–60s); we switch to MP3 like AirPlay.
+    private var lastBluetoothRoute = false
+    private var pendingBluetoothRebuild = false
+    /// Cellular / remote resilient stream format.
     private var lastCellularCompressed = false
     private var pendingNetworkRebuild = false
+    #if !os(tvOS)
+    /// Disk cache of compressed MP3 for Tailscale / cellular resilience.
+    private let streamCache: StreamCache
+    /// Coalesce stall recoveries so we don't rebuild in a loop.
+    private var stallRecoveryTask: Task<Void, Never>?
+    private var lastStallRecoveryAt: Date = .distantPast
+    private var stallStartedAt: Date?
+    /// Counts consecutive "playing but buffer empty" ticks (Bluetooth silence).
+    private var silentBufferTicks = 0
+    #endif
     private let sharePlayBridge = SharePlayCoordinatorBridge()
     private let groupStateObserver = GroupStateObserver()
     private var sharePlaySession: GroupSession<DromeListenTogether>?
@@ -135,6 +149,8 @@ final class PlayerEngine: ObservableObject {
     private var applyingSharePlay = false
     private var lastSharePlaySnapshot: SharePlaySnapshot?
     private var pendingSharePlaySnapshot: SharePlaySnapshot?
+    /// True once we've applied a remote jam snapshot (or we seeded one as host).
+    private var sharePlayDidSync = false
     /// True while AVPlayer is mid tear-down / buffer-wait — Connect/SharePlay must wait.
     private var isPlayerTransitioning: Bool {
         isRebuilding || isHandlingTrackEnd || rebuildDepth > 0 || itemReadyCancellable != nil
@@ -164,6 +180,8 @@ final class PlayerEngine: ObservableObject {
         self.downloads = downloads
         #if os(tvOS)
         self.tvCache = TVPlaybackCache(client: client)
+        #else
+        self.streamCache = StreamCache(client: client)
         #endif
 
         // Prefer stalling briefly over underrunning / glitching on hiccups.
@@ -190,7 +208,8 @@ final class PlayerEngine: ObservableObject {
         observeAppLifecycle()
         observeNetworkStreamChanges()
         lastAirPlayActive = isAirPlayRouteActive
-        lastCellularCompressed = shouldCompressForCellular
+        lastBluetoothRoute = isBluetoothRouteActive
+        lastCellularCompressed = shouldUseResilientStream
 
         #if os(iOS)
         player.playbackCoordinator.delegate = sharePlayBridge
@@ -212,7 +231,7 @@ final class PlayerEngine: ObservableObject {
     /// One-line player state for the diagnostics log.
     func diagnosticStateLine() -> String {
         let song = current?.song
-        return [
+        var parts = [
             "track=\(song?.id ?? "nil")",
             "«\(song?.title ?? "—")»",
             "\(Int(elapsed))/\(Int(duration))s",
@@ -222,9 +241,14 @@ final class PlayerEngine: ObservableObject {
             "pendingAdvance:\(pendingAdvanceAfterRebuild)",
             "handlingEnd:\(isHandlingTrackEnd)",
             "window:\(window.count)",
-            "cellular:\(shouldCompressForCellular)",
+            "resilient:\(shouldUseResilientStream)",
             "airPlay:\(isAirPlayRouteActive)",
-        ].joined(separator: " ")
+            "bt:\(isBluetoothRouteActive)",
+        ]
+        #if !os(tvOS)
+        parts.append("path:\(ConnectivityMonitor.lastInterfaceSummary)")
+        #endif
+        return parts.joined(separator: " ")
     }
 
     /// Rebuild the last listening session after launch (paused) so the mini
@@ -250,18 +274,50 @@ final class PlayerEngine: ObservableObject {
         scheduleStreamFormatRebuild(pending: \.pendingAirPlayRebuild)
     }
 
-    private func handlePossibleCellularStreamChange() {
-        let compressed = shouldCompressForCellular
-        guard compressed != lastCellularCompressed else { return }
-        lastCellularCompressed = compressed
-        DromeDiagnostics.logPlayer("cellular compress → \(compressed) (next track)")
-        // Do NOT rebuild mid-track. Format applies on the next `setCurrent`.
-        // Mid-song tear-down + seek was making cellular playback jump around.
+    /// Bluetooth / car audio — prefer compressed MP3 and re-seat the audio
+    /// session so we don't go silent after the first buffer (~45–60s).
+    private func handlePossibleBluetoothRouteChange() {
+        #if os(tvOS)
+        return
+        #else
+        let bluetooth = isBluetoothRouteActive
+        guard bluetooth != lastBluetoothRoute else { return }
+        lastBluetoothRoute = bluetooth
+        DromeDiagnostics.logPlayer(
+            "bluetooth route → \(bluetooth) outputs=\(Self.routeSummary)")
+        configureAudioSession()
+        if bluetooth {
+            // Clears leftover spokenAudio from podcasts and moves FLAC streams
+            // onto an A2DP-friendly MP3 item.
+            scheduleStreamFormatRebuild(pending: \.pendingBluetoothRebuild)
+        } else if wantsToPlay {
+            playCurrentWhenReady()
+        }
+        #endif
     }
 
-    /// User toggled Compress on cellular — rebuild current item once.
+    private func handlePossibleCellularStreamChange(regained: Bool = false) {
+        let compressed = shouldUseResilientStream
+        if compressed != lastCellularCompressed {
+            lastCellularCompressed = compressed
+            DromeDiagnostics.logPlayer("resilient stream → \(compressed) (next track)")
+            // Do NOT rebuild mid-track for a format flip. Applies on next setCurrent.
+        }
+        #if !os(tvOS)
+        if regained, wantsToPlay {
+            DromeDiagnostics.logPlayer("network regained → stall check \(diagnosticStateLine())")
+            scheduleStallRecovery(reason: "network-regained")
+        }
+        // Keep warm-caching upcoming tracks whenever the path is usable.
+        if ConnectivityMonitor.lastIsOnline {
+            prefetchUpcomingIntoCache()
+        }
+        #endif
+    }
+
+    /// User toggled Compress / resilient prefs — rebuild current item once.
     private func rebuildForStreamPreferenceChange() {
-        lastCellularCompressed = shouldCompressForCellular
+        lastCellularCompressed = shouldUseResilientStream
         DromeDiagnostics.logPlayer("stream preference changed → rebuild")
         scheduleStreamFormatRebuild(pending: \.pendingNetworkRebuild)
     }
@@ -281,8 +337,10 @@ final class PlayerEngine: ObservableObject {
     private func performStreamFormatRebuild() {
         pendingAirPlayRebuild = false
         pendingNetworkRebuild = false
+        pendingBluetoothRebuild = false
         guard current != nil else { return }
         DromeDiagnostics.logPlayer("stream format rebuild \(diagnosticStateLine())")
+        configureAudioSession()
         let resume = wantsToPlay
         let position = max(0, elapsed)
         rebuildWindow(startPlaying: resume)
@@ -321,7 +379,7 @@ final class PlayerEngine: ObservableObject {
             }
             return true
         }
-        if pendingAirPlayRebuild || pendingNetworkRebuild {
+        if pendingAirPlayRebuild || pendingNetworkRebuild || pendingBluetoothRebuild {
             DispatchQueue.main.async { [weak self] in
                 self?.performStreamFormatRebuild()
             }
@@ -367,11 +425,11 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func observeNetworkStreamChanges() {
-        // Path changes only update the sticky cellular flag for *next* track.
         NotificationCenter.default.publisher(for: .dromeNetworkPathChanged)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.handlePossibleCellularStreamChange()
+            .sink { [weak self] note in
+                let regained = (note.userInfo?["regained"] as? Bool) ?? false
+                self?.handlePossibleCellularStreamChange(regained: regained)
             }
             .store(in: &cancellables)
 
@@ -381,6 +439,17 @@ final class PlayerEngine: ObservableObject {
                 self?.rebuildForStreamPreferenceChange()
             }
             .store(in: &cancellables)
+
+        #if !os(tvOS)
+        NotificationCenter.default.publisher(for: AudioFocus.didChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                // Re-assert Now Playing + remote surface after podcast ↔ music swaps.
+                guard let self, AudioFocus.shared.isOwner(.music) else { return }
+                self.pushNowPlayingInfo()
+            }
+            .store(in: &cancellables)
+        #endif
     }
 
     func shutdown() {
@@ -400,6 +469,10 @@ final class PlayerEngine: ObservableObject {
         tvActivePlaybackItemID = nil
         tvAudio.stop()
         tvUsingAudioPlayer = false
+        #else
+        stallRecoveryTask?.cancel()
+        stallRecoveryTask = nil
+        stallStartedAt = nil
         #endif
         player.pause()
         player.rate = 0
@@ -846,6 +919,7 @@ final class PlayerEngine: ObservableObject {
                 } else if item.status != .failed {
                     self.player.play()
                 }
+                self.flushPendingSharePlaySnapshotIfNeeded()
             }
         }
         itemReadyCancellable = Publishers.Merge3(
@@ -864,12 +938,14 @@ final class PlayerEngine: ObservableObject {
                 self.itemReadyCancellable = nil
                 DromeDiagnostics.logPlayer("item failed while waiting → skip")
                 self.advanceAfterCurrentEnds(playImmediately: self.wantsToPlay)
+                self.flushPendingSharePlaySnapshotIfNeeded()
                 return
             }
             if self.itemIsSafeToStart(item) {
                 self.itemReadyTimeout?.cancel()
                 self.itemReadyCancellable = nil
                 self.player.play()
+                self.flushPendingSharePlaySnapshotIfNeeded()
             }
         }
     }
@@ -894,7 +970,14 @@ final class PlayerEngine: ObservableObject {
                 return end - nowSec
             }
             .max() ?? 0
-        let minBuffer: TimeInterval = (current?.song.needsSoloStream == true) ? 3.5 : 1.75
+        let minBuffer: TimeInterval
+        if sharePlayActive {
+            minBuffer = 0.75
+        } else if current?.song.needsSoloStream == true {
+            minBuffer = 3.5
+        } else {
+            minBuffer = 1.75
+        }
         return bufferedAhead >= minBuffer
     }
 
@@ -1400,15 +1483,43 @@ final class PlayerEngine: ObservableObject {
         #endif
     }
 
-    /// Cellular / expensive path and user opted into compression.
-    /// Only real WWAN — `isExpensive` flaps on Low Data Mode / hotspot and was
-    /// flipping stream format mid-song (seek jumps that felt like skipping).
-    private var shouldCompressForCellular: Bool {
+    /// Bluetooth A2DP / HFP / LE headphones and car audio.
+    private var isBluetoothRouteActive: Bool {
         #if os(tvOS)
         return false
         #else
-        guard PlaybackPreferences.compressOnCellular else { return false }
-        return ConnectivityMonitor.lastIsCellular
+        let types: Set<AVAudioSession.Port> = [
+            .bluetoothA2DP, .bluetoothHFP, .bluetoothLE, .carAudio,
+        ]
+        return AVAudioSession.sharedInstance().currentRoute.outputs.contains {
+            types.contains($0.portType)
+        }
+        #endif
+    }
+
+    private static var routeSummary: String {
+        AVAudioSession.sharedInstance().currentRoute.outputs
+            .map { "\($0.portType.rawValue):\($0.portName)" }
+            .joined(separator: ",")
+    }
+
+    /// Prefer compressed MP3 when on cellular, or when streaming from a
+    /// Tailscale / non-LAN host with resilient mode on. Raw FLAC over a flaky
+    /// VPN is what made "music dies after a network hop" feel permanent.
+    private var shouldUseResilientStream: Bool {
+        #if os(tvOS)
+        return false
+        #else
+        if PlaybackPreferences.compressOnCellular, ConnectivityMonitor.lastIsCellular {
+            return true
+        }
+        if PlaybackPreferences.resilientRemoteStreaming {
+            let host = client.account.serverURL.host
+            if !PlaybackPreferences.isLocalNetworkHost(host) {
+                return true
+            }
+        }
+        return false
         #endif
     }
 
@@ -1422,11 +1533,24 @@ final class PlayerEngine: ObservableObject {
         return tvHTTPStreamURL(for: song)
         #else
         let airPlay = isAirPlayRouteActive
-        if !airPlay, let local = downloads.localURL(songId: song.id) { return local }
-        if airPlay {
+        let bluetooth = isBluetoothRouteActive
+        // Local files decode on-device — fine over A2DP. AirPlay still needs a
+        // remote MP3 (can't ship local FLAC to the Apple TV / speaker).
+        // SharePlay also prefers remote MP3 so both phones buffer at similar rates.
+        if !airPlay, !sharePlayActive, let local = downloads.localURL(songId: song.id) {
+            return local
+        }
+        // Prefer a warm stream-cache file — survives Tailscale blips.
+        if !airPlay, !bluetooth, !sharePlayActive, shouldUseResilientStream,
+           let cached = streamCache.cachedURL(for: song.id) {
+            return cached
+        }
+        // AirPlay, Bluetooth, and SharePlay prefer server-side MP3 — faster to
+        // start, and A2DP/coordination stay reliable past the first buffer.
+        if airPlay || bluetooth || sharePlayActive {
             return client.streamURL(songId: song.id, compatibleWithAirPlay: true)
         }
-        if shouldCompressForCellular {
+        if shouldUseResilientStream {
             return client.streamURL(
                 songId: song.id,
                 format: "mp3",
@@ -1462,16 +1586,25 @@ final class PlayerEngine: ObservableObject {
         // what made playback sound grainy / staticy.
         if isFile {
             item.preferredForwardBufferDuration = 4
+        } else if sharePlayActive {
+            // Coordinated playback waits for every phone — keep the buffer lean
+            // so one slow FLAC fill doesn't stall the whole jam.
+            item.preferredForwardBufferDuration = 12
         } else if song.needsSoloStream {
             item.preferredForwardBufferDuration = 90
+        } else if shouldUseResilientStream {
+            // Deeper buffer on Tailscale/cellular so short blips don't underrun.
+            item.preferredForwardBufferDuration = 60
+        } else if isBluetoothRouteActive {
+            // Shorter buffer on BT so underruns surface as stalls (recoverable)
+            // instead of ~50s of silent "playing" after the first fill.
+            item.preferredForwardBufferDuration = 15
         } else {
             item.preferredForwardBufferDuration = 45
         }
-        // Cellular MP3: shorter buffer so stalls recover without huge seeks.
-        if shouldCompressForCellular, !isFile {
-            item.preferredForwardBufferDuration = 20
-        }
-        item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        // Keep filling while paused (route changes, brief background) so resume
+        // after a Tailscale hop isn't starting from an empty pipe.
+        item.canUseNetworkResourcesForLiveStreamingWhilePaused = !isFile
         item.preferredPeakBitRate = 0
         return item
     }
@@ -1649,6 +1782,7 @@ final class PlayerEngine: ObservableObject {
                 if engagePlayback, !dispatched {
                     kickPlaybackIfNeeded()
                 }
+                flushPendingSharePlaySnapshotIfNeeded()
             }
         }
 
@@ -1668,6 +1802,16 @@ final class PlayerEngine: ObservableObject {
             setPlaybackIntent(true)
         } else {
             setPlaybackIntent(false)
+        }
+        prefetchUpcomingIntoCache()
+        // Warm the current track into the disk cache in the background so a
+        // later Tailscale blip can rebuild onto a local file.
+        let song = current.song
+        if shouldUseResilientStream, streamCache.cachedURL(for: song.id) == nil {
+            Task { [weak self] in
+                _ = try? await self?.streamCache.fileURL(
+                    for: song, maxBitRate: PlaybackPreferences.cellularMaxBitRate)
+            }
         }
     }
     #endif
@@ -1767,12 +1911,27 @@ final class PlayerEngine: ObservableObject {
                     // External resume (lock screen / CarPlay / headphones).
                     self.wantsToPlay = true
                     if !self.isPlaying { self.isPlaying = true }
+                    #if !os(tvOS)
+                    self.stallStartedAt = nil
+                    #endif
                 case .waitingToPlayAtSpecifiedRate:
                     // Buffering — keep the button on the sticky intent.
                     if self.isPlaying != self.wantsToPlay {
                         self.isPlaying = self.wantsToPlay
                     }
+                    #if !os(tvOS)
+                    if self.wantsToPlay {
+                        if self.stallStartedAt == nil {
+                            self.stallStartedAt = Date()
+                            DromeDiagnostics.logPlayer("stall begin \(self.diagnosticStateLine())")
+                        }
+                        self.scheduleStallRecovery(reason: "waiting")
+                    }
+                    #endif
                 case .paused:
+                    #if !os(tvOS)
+                    self.stallStartedAt = nil
+                    #endif
                     if self.isRebuilding || self.wantsToPlay {
                         // Transient pause during skip/rebuild — do not flip UI.
                         if self.isPlaying != self.wantsToPlay {
@@ -1818,6 +1977,9 @@ final class PlayerEngine: ObservableObject {
                     nextDuration = itemDuration
                 }
                 self.setPlayhead(elapsed: seconds, duration: nextDuration)
+                #if !os(tvOS)
+                self.checkSilentWhilePlaying()
+                #endif
             }
         }
 
@@ -1850,9 +2012,27 @@ final class PlayerEngine: ObservableObject {
                 #if os(tvOS)
                 guard !self.tvUsingAudioPlayer else { return }
                 self.retryCurrentAfterDecodeFailure()
+                #else
+                let err = failed.error?.localizedDescription ?? "unknown"
+                DromeDiagnostics.logPlayer("failedToPlayToEnd \(err) → recover")
+                self.scheduleStallRecovery(reason: "failedToEnd", force: true)
                 #endif
             }
             .store(in: &cancellables)
+
+        #if !os(tvOS)
+        NotificationCenter.default.publisher(for: AVPlayerItem.playbackStalledNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self else { return }
+                guard let stalled = notification.object as? AVPlayerItem,
+                      stalled === self.player.currentItem,
+                      self.wantsToPlay else { return }
+                DromeDiagnostics.logPlayer("playbackStalled → recover")
+                self.scheduleStallRecovery(reason: "stalled", force: true)
+            }
+            .store(in: &cancellables)
+        #endif
 
         NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
             .receive(on: DispatchQueue.main)
@@ -1868,14 +2048,40 @@ final class PlayerEngine: ObservableObject {
                 let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
                     .flatMap(AVAudioSession.RouteChangeReason.init)
                 if reason == .oldDeviceUnavailable {
-                    self.resumeAfterInterruption = false
-                    self.pause()
+                    // Only pause when we lost the *output* route entirely (e.g.
+                    // headphones unplugged with no fallback speaker yet). Bluetooth
+                    // handoffs often fire this then immediately re-route — don't
+                    // leave music paused/silent after a reconnect.
+                    let stillHasOutput = !AVAudioSession.sharedInstance()
+                        .currentRoute.outputs.isEmpty
+                    if stillHasOutput {
+                        self.configureAudioSession()
+                        self.handlePossibleAirPlayRouteChange()
+                        self.handlePossibleBluetoothRouteChange()
+                        if self.wantsToPlay {
+                            self.playCurrentWhenReady()
+                        }
+                    } else {
+                        self.resumeAfterInterruption = false
+                        self.pause()
+                    }
                     return
                 }
-                // Rebuild the player item when entering/leaving AirPlay so we
-                // switch between lossless raw and AirPlay-compatible MP3.
+                // Rebuild when entering/leaving AirPlay or Bluetooth so we
+                // switch between lossless raw and A2DP/AirPlay-compatible MP3.
                 if reason == .newDeviceAvailable || reason == .routeConfigurationChange {
+                    self.configureAudioSession()
                     self.handlePossibleAirPlayRouteChange()
+                    self.handlePossibleBluetoothRouteChange()
+                    if self.wantsToPlay {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                            guard let self, self.wantsToPlay else { return }
+                            self.activateAudioSession()
+                            if self.player.timeControlStatus != .playing {
+                                self.playCurrentWhenReady()
+                            }
+                        }
+                    }
                 }
             }
             .store(in: &cancellables)
@@ -2239,41 +2445,55 @@ final class PlayerEngine: ObservableObject {
             #if os(tvOS)
             try? session.setCategory(.playback, mode: .moviePlayback, options: [])
             #else
-            try? session.setCategory(.playback, mode: .default, options: [])
+            // Always re-apply .playback/.default — podcasts leave .spokenAudio
+            // sticky, which can force Bluetooth HFP and go silent after ~1 buffer.
+            try? session.setCategory(
+                .playback,
+                mode: .default,
+                options: [.allowBluetoothA2DP])
             #endif
         }
         try? session.setActive(true, options: [])
     }
 
     private func activateAudioSession() {
-        try? AVAudioSession.sharedInstance().setActive(true, options: [])
+        // Must reconfigure, not just setActive — otherwise a prior podcast
+        // spokenAudio session keeps owning the Bluetooth route for music.
+        configureAudioSession()
     }
 
     private func configureRemoteCommands() {
         nowPlaying.configureCommands()
+        // Play must resume (not toggle) — the old playPause wiring paused
+        // mid-buffer when CarPlay / lock screen re-sent Play.
         nowPlaying.onPlay = { [weak self] in
-            guard AudioFocus.shared.owner != .podcast else { return }
-            self?.playPause()
+            guard AudioFocus.shared.isOwner(.music) else { return }
+            self?.resume()
         }
         nowPlaying.onPause = { [weak self] in
-            guard AudioFocus.shared.owner != .podcast else { return }
+            guard AudioFocus.shared.isOwner(.music) else { return }
             self?.pause()
         }
+        nowPlaying.onToggle = { [weak self] in
+            guard AudioFocus.shared.isOwner(.music) else { return }
+            self?.playPause()
+        }
         nowPlaying.onNext = { [weak self] in
-            guard AudioFocus.shared.owner != .podcast else { return }
+            guard AudioFocus.shared.isOwner(.music) else { return }
             self?.next()
         }
         nowPlaying.onPrevious = { [weak self] in
-            guard AudioFocus.shared.owner != .podcast else { return }
+            guard AudioFocus.shared.isOwner(.music) else { return }
             self?.previous()
         }
         nowPlaying.onSeek = { [weak self] time in
-            guard AudioFocus.shared.owner != .podcast else { return }
+            guard AudioFocus.shared.isOwner(.music) else { return }
             self?.seek(to: time)
         }
     }
 
     private func pushNowPlayingInfo() {
+        // NowPlayingCenter no-ops / refuses to clear when podcast owns focus.
         nowPlaying.update(song: current?.song, elapsed: elapsed,
                           duration: duration, isPlaying: isPlaying)
     }
@@ -2323,6 +2543,8 @@ final class PlayerEngine: ObservableObject {
             if sharePlayActive { return }
             // Capture intent before pause() clears wantsToPlay.
             resumeAfterInterruption = wantsToPlay || isPlaying
+            DromeDiagnostics.logPlayer(
+                "interruption began resumeAfter=\(resumeAfterInterruption) \(diagnosticStateLine())")
             if resumeAfterInterruption {
                 setPlaybackIntent(false)
                 #if os(tvOS)
@@ -2343,6 +2565,8 @@ final class PlayerEngine: ObservableObject {
                 && AudioFocus.shared.isOwner(.music)
                 && current != nil
             resumeAfterInterruption = false
+            DromeDiagnostics.logPlayer(
+                "interruption ended shouldResume=\(shouldResume) canResume=\(canResume)")
             if canResume {
                 resume()
             }
@@ -2350,6 +2574,127 @@ final class PlayerEngine: ObservableObject {
             break
         }
     }
+
+    #if !os(tvOS)
+    /// After Tailscale / cell blips, AVPlayer often sits in `.waiting` forever.
+    /// Recover by: (1) waiting briefly, (2) soft seek to flush the pipe,
+    /// (3) swapping onto a cached MP3 file, (4) full item rebuild.
+    private func scheduleStallRecovery(reason: String, force: Bool = false) {
+        guard wantsToPlay, current != nil, !isRebuilding else { return }
+        if !force, let started = stallStartedAt, Date().timeIntervalSince(started) < 2.5 {
+            return
+        }
+        if Date().timeIntervalSince(lastStallRecoveryAt) < 4, !force { return }
+        stallRecoveryTask?.cancel()
+        stallRecoveryTask = Task { [weak self] in
+            // Give the buffer a moment on transient waits.
+            if !force {
+                try? await Task.sleep(nanoseconds: 2_800_000_000)
+            } else {
+                try? await Task.sleep(nanoseconds: 350_000_000)
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.performStallRecovery(reason: reason)
+            }
+        }
+    }
+
+    private func performStallRecovery(reason: String) {
+        guard wantsToPlay, let current, !isRebuilding else { return }
+        let item = player.currentItem
+        let silentPlaying = player.timeControlStatus == .playing
+            && item != nil
+            && (item?.isPlaybackBufferEmpty == true || item?.isPlaybackLikelyToKeepUp == false)
+        if player.timeControlStatus == .playing, !silentPlaying, reason != "silent-buffer" {
+            stallStartedAt = nil
+            return
+        }
+        lastStallRecoveryAt = Date()
+        let position = max(0, accurateElapsed())
+        DromeDiagnostics.logPlayer(
+            "stall recover (\(reason)) pos=\(Int(position))s \(diagnosticStateLine())")
+
+        // Bluetooth silence: re-seat session + soft seek first.
+        activateAudioSession()
+
+        // 1) Soft seek — often restarts a dead HTTP connection / audio graph.
+        if player.currentItem != nil,
+           player.currentItem?.status != .failed,
+           streamCache.cachedURL(for: current.song.id) == nil {
+            seek(to: position)
+            playCurrentWhenReady()
+            // If still stuck shortly, fall through to cache/rebuild below.
+            stallRecoveryTask?.cancel()
+            stallRecoveryTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 3_500_000_000)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard let self, self.wantsToPlay else { return }
+                    let stillSilent = self.player.timeControlStatus != .playing
+                        || self.player.currentItem?.isPlaybackBufferEmpty == true
+                        || self.player.currentItem?.isPlaybackLikelyToKeepUp == false
+                    guard stillSilent else { return }
+                    self.rebuildFromCacheOrStream(position: position, reason: "\(reason)-retry")
+                }
+            }
+            return
+        }
+
+        rebuildFromCacheOrStream(position: position, reason: reason)
+    }
+
+    /// Bluetooth often keeps `timeControlStatus == .playing` with no audible
+    /// output once the first forward buffer drains. Catch that and recover.
+    private func checkSilentWhilePlaying() {
+        guard wantsToPlay, !isRebuilding, let item = player.currentItem else {
+            silentBufferTicks = 0
+            return
+        }
+        let apparentlyPlaying = player.timeControlStatus == .playing || player.rate > 0.01
+        let bufferDead = item.isPlaybackBufferEmpty || !item.isPlaybackLikelyToKeepUp
+        if apparentlyPlaying, bufferDead {
+            silentBufferTicks += 1
+            if silentBufferTicks >= 5 { // ~2.5s at 0.5s cadence
+                silentBufferTicks = 0
+                DromeDiagnostics.logPlayer(
+                    "silent-while-playing bufferEmpty=\(item.isPlaybackBufferEmpty) keepUp=\(item.isPlaybackLikelyToKeepUp) → recover")
+                scheduleStallRecovery(reason: "silent-buffer", force: true)
+            }
+        } else {
+            silentBufferTicks = 0
+        }
+    }
+
+    private func rebuildFromCacheOrStream(position: TimeInterval, reason: String) {
+        guard wantsToPlay, let song = current?.song else { return }
+        DromeDiagnostics.logPlayer("stall rebuild (\(reason))")
+        // Force resilient URL selection for the rebuild.
+        lastCellularCompressed = true
+        let resume = wantsToPlay
+        rebuildWindow(startPlaying: resume)
+        if position > 0.5 {
+            seek(to: position)
+        }
+        // Kick a cache fill so the *next* stall can play from disk.
+        Task { [weak self] in
+            guard let self else { return }
+            _ = try? await self.streamCache.fileURL(
+                for: song, maxBitRate: PlaybackPreferences.cellularMaxBitRate)
+            await MainActor.run {
+                self.prefetchUpcomingIntoCache()
+            }
+        }
+    }
+
+    private func prefetchUpcomingIntoCache() {
+        guard shouldUseResilientStream || ConnectivityMonitor.lastIsCellular else { return }
+        var songs: [Song] = []
+        if let current { songs.append(current.song) }
+        songs.append(contentsOf: peekUpcoming(limit: 3).map(\.song))
+        streamCache.prefetch(songs, maxBitRate: PlaybackPreferences.cellularMaxBitRate)
+    }
+    #endif
 
     // MARK: - Scrobbling
 
@@ -2379,6 +2724,7 @@ final class PlayerEngine: ObservableObject {
         sharePlaySession = nil
         sharePlayActive = false
         sharePlayParticipantCount = 0
+        sharePlayDidSync = false
         lastSharePlaySnapshot = nil
         pendingSharePlaySnapshot = nil
         configureAudioSession()
@@ -2390,6 +2736,7 @@ final class PlayerEngine: ObservableObject {
         sharePlaySession?.leave()
 
         sharePlaySession = session
+        sharePlayDidSync = false
         let messenger = GroupSessionMessenger(session: session)
         sharePlayMessenger = messenger
 
@@ -2401,7 +2748,11 @@ final class PlayerEngine: ObservableObject {
         })
         sharePlaySessionTasks.append(Task { [weak self] in
             for await (_, _) in messenger.messages(of: SharePlayCatchUp.self) {
-                await MainActor.run { self?.broadcastSharePlay(force: true) }
+                await MainActor.run {
+                    // Only answer catch-up once we have a queue worth sharing —
+                    // otherwise a cold joiner can echo an empty state.
+                    self?.broadcastSharePlay(force: true)
+                }
             }
         })
         sharePlaySessionTasks.append(Task { [weak self] in
@@ -2412,6 +2763,7 @@ final class PlayerEngine: ObservableObject {
                     self.sharePlayMessenger = nil
                     self.sharePlayActive = false
                     self.sharePlayParticipantCount = 0
+                    self.sharePlayDidSync = false
                     self.pendingSharePlaySnapshot = nil
                     self.configureAudioSession()
                 }
@@ -2423,7 +2775,10 @@ final class PlayerEngine: ObservableObject {
                 let count = participants.count
                 let grew = count > self.sharePlayParticipantCount
                 self.sharePlayParticipantCount = count
-                if grew { self.broadcastSharePlay(force: true) }
+                // Existing members push state when someone new arrives.
+                if grew, self.sharePlayDidSync || self.current != nil {
+                    self.broadcastSharePlay(force: true)
+                }
             }
         })
 
@@ -2431,17 +2786,39 @@ final class PlayerEngine: ObservableObject {
         session.join()
         sharePlayActive = true
         configureAudioSession()
-        broadcastSharePlay(force: true)
+        // Do NOT broadcast our local queue on join — a guest mid-song would
+        // overwrite the host. Pull theirs, and only seed if nobody answers.
+        // New items use MP3 while sharePlayActive (see playbackURL).
         requestSharePlayCatchUp()
         ensureAutoplayBuffer()
 
         sharePlaySessionTasks.append(Task { [weak self] in
-            for delay in [400_000_000, 1_200_000_000, 3_000_000_000] as [UInt64] {
+            for delay in [350_000_000, 1_000_000_000, 2_500_000_000] as [UInt64] {
                 try? await Task.sleep(nanoseconds: delay)
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    self?.broadcastSharePlay(force: true)
-                    self?.requestSharePlayCatchUp()
+                    guard let self, self.sharePlayActive else { return }
+                    if self.sharePlayDidSync {
+                        // Keep coordinated playhead honest after late joins.
+                        if self.sharePlayParticipantCount > 1 {
+                            self.broadcastSharePlay(force: false)
+                        }
+                        return
+                    }
+                    if self.sharePlayParticipantCount > 1 {
+                        // Others are in the jam — don't push our local queue over
+                        // theirs; keep asking until a snapshot lands.
+                        self.requestSharePlayCatchUp()
+                        return
+                    }
+                    // Nobody else here yet — seed the jam from this phone.
+                    if self.current != nil {
+                        DromeDiagnostics.logPlayer("sharePlay seed as host")
+                        self.sharePlayDidSync = true
+                        self.broadcastSharePlay(force: true)
+                    } else {
+                        self.requestSharePlayCatchUp()
+                    }
                 }
             }
         })
@@ -2465,6 +2842,8 @@ final class PlayerEngine: ObservableObject {
         guard let snapshot = makeSharePlaySnapshot() else { return }
         if !force, snapshot == lastSharePlaySnapshot { return }
         lastSharePlaySnapshot = snapshot
+        DromeDiagnostics.logPlayer(
+            "sharePlay broadcast «\(snapshot.current.title)» playing=\(snapshot.isPlaying) upcoming=\(snapshot.upcoming.count)")
         Task {
             try? await messenger.send(snapshot)
         }
@@ -2478,12 +2857,18 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
+    /// Snapshots deferred during rebuild / buffer-wait used to sit forever.
+    private func flushPendingSharePlaySnapshotIfNeeded() {
+        guard sharePlayActive,
+              let pending = pendingSharePlaySnapshot,
+              !applyingSharePlay,
+              !isPlayerTransitioning else { return }
+        pendingSharePlaySnapshot = nil
+        Task { await applySharePlaySnapshot(pending) }
+    }
+
     private func applySharePlaySnapshot(_ snapshot: SharePlaySnapshot) async {
-        if isPlayerTransitioning {
-            pendingSharePlaySnapshot = snapshot
-            return
-        }
-        if applyingSharePlay {
+        if isPlayerTransitioning || applyingSharePlay {
             pendingSharePlaySnapshot = snapshot
             return
         }
@@ -2492,6 +2877,15 @@ final class PlayerEngine: ObservableObject {
         }
         if snapshot == lastSharePlaySnapshot {
             lastSharePlaySnapshot = snapshot
+            sharePlayDidSync = true
+            // Same track — still honor play/pause if we somehow drifted.
+            if snapshot.isPlaying != wantsToPlay {
+                if snapshot.isPlaying {
+                    resume(bypassConnectGate: true)
+                } else {
+                    pause()
+                }
+            }
             return
         }
 
@@ -2503,6 +2897,7 @@ final class PlayerEngine: ObservableObject {
                 Task { await applySharePlaySnapshot(pending) }
             } else {
                 ensureAutoplayBuffer()
+                flushPendingSharePlaySnapshotIfNeeded()
             }
         }
 
@@ -2511,11 +2906,9 @@ final class PlayerEngine: ObservableObject {
         } ?? false
 
         if currentMatches {
-            let upcomingSongs = await resolveSharePlayTracks(snapshot.upcoming)
-            userQueue = upcomingSongs.map { QueueItem(song: $0) }
-            contextQueue.removeAll()
             lastSharePlaySnapshot = snapshot
-            resyncUpcomingWindow()
+            sharePlayDidSync = true
+            // Don't block play/pause on resolving the whole upcoming list.
             if snapshot.isPlaying != wantsToPlay {
                 if snapshot.isPlaying {
                     resume(bypassConnectGate: true)
@@ -2523,35 +2916,83 @@ final class PlayerEngine: ObservableObject {
                     pause()
                 }
             }
+            let upcoming = snapshot.upcoming
+            Task { @MainActor [weak self] in
+                guard let self, self.sharePlayActive else { return }
+                let upcomingSongs = await self.resolveSharePlayTracks(upcoming)
+                guard self.current.map({
+                    Self.sharePlayContentID(for: $0.song) == Self.sharePlayContentID(for: snapshot.current)
+                }) == true else { return }
+                self.userQueue = upcomingSongs.map { QueueItem(song: $0) }
+                self.contextQueue.removeAll()
+                self.resyncUpcomingWindow()
+            }
             return
         }
 
-        var songs: [Song] = []
-        if let currentSong = await resolveSharePlayTrack(snapshot.current) {
-            songs.append(currentSong)
-        }
-        let upcomingSongs = await resolveSharePlayTracks(snapshot.upcoming)
-        for song in upcomingSongs where !songs.contains(where: { $0.id == song.id }) {
-            songs.append(song)
-        }
-        guard !songs.isEmpty else {
-            sharePlayNotice = "“\(snapshot.current.title)” isn’t in your library."
+        DromeDiagnostics.logPlayer(
+            "sharePlay apply «\(snapshot.current.title)» playing=\(snapshot.isPlaying)")
+        // Resolve the current track first and start immediately — waiting on
+        // the whole upcoming queue was the multi-second jam start lag.
+        guard let currentSong = await resolveSharePlayTrack(snapshot.current) else {
+            // Fall back to first resolvable upcoming track.
+            let upcomingSongs = await resolveSharePlayTracks(Array(snapshot.upcoming.prefix(4)))
+            guard let fallback = upcomingSongs.first else {
+                sharePlayNotice = "“\(snapshot.current.title)” isn’t in your library."
+                return
+            }
+            sharePlayNotice = "“\(snapshot.current.title)” isn’t in your library — playing the next shared track."
+            await startSharePlayQueue(
+                current: fallback,
+                upcoming: Array(upcomingSongs.dropFirst()),
+                snapshot: snapshot)
             return
         }
-        if songs.first.map({ Self.sharePlayContentID(for: $0) }) != Self.sharePlayContentID(for: snapshot.current) {
-            sharePlayNotice = "“\(snapshot.current.title)” isn’t in your library — playing the next shared track."
-        }
+
         lastSharePlaySnapshot = snapshot
+        sharePlayDidSync = true
         cancelAutoplayWork()
         context = PlaybackContext(label: "Jam", kind: .mix)
-        fullContextSongs = songs
-        originalContextOrder = Array(songs.dropFirst()).map { QueueItem(song: $0) }
+        fullContextSongs = [currentSong]
+        originalContextOrder = []
+        contextQueue = []
+        userQueue.removeAll()
+        history.removeAll()
+        setCurrent(QueueItem(song: currentSong), startPlaying: snapshot.isPlaying, allowLowRated: true)
+        NowPlayingPresenter.open()
+        sharePlayNotice = nil
+
+        let upcoming = snapshot.upcoming
+        Task { @MainActor [weak self] in
+            guard let self, self.sharePlayActive else { return }
+            let upcomingSongs = await self.resolveSharePlayTracks(upcoming)
+            guard self.current.map({
+                Self.sharePlayContentID(for: $0.song) == Self.sharePlayContentID(for: snapshot.current)
+            }) == true else { return }
+            self.userQueue = upcomingSongs.map { QueueItem(song: $0) }
+            self.contextQueue.removeAll()
+            self.fullContextSongs = [currentSong] + upcomingSongs
+            self.originalContextOrder = upcomingSongs.map { QueueItem(song: $0) }
+            self.resyncUpcomingWindow()
+        }
+    }
+
+    private func startSharePlayQueue(
+        current: Song,
+        upcoming: [Song],
+        snapshot: SharePlaySnapshot
+    ) async {
+        lastSharePlaySnapshot = snapshot
+        sharePlayDidSync = true
+        cancelAutoplayWork()
+        context = PlaybackContext(label: "Jam", kind: .mix)
+        fullContextSongs = [current] + upcoming
+        originalContextOrder = upcoming.map { QueueItem(song: $0) }
         contextQueue = originalContextOrder
         userQueue.removeAll()
         history.removeAll()
-        setCurrent(QueueItem(song: songs[0]), startPlaying: snapshot.isPlaying, allowLowRated: true)
+        setCurrent(QueueItem(song: current), startPlaying: snapshot.isPlaying, allowLowRated: true)
         NowPlayingPresenter.open()
-        sharePlayNotice = nil
     }
 
     private func resolveSharePlayTracks(_ tracks: [SharePlayTrack]) async -> [Song] {
