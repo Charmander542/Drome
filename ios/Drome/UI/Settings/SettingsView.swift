@@ -158,7 +158,7 @@ struct SettingsView: View {
                     Label("Diagnostics", systemImage: "ladybug")
                 }
             } footer: {
-                Text("Playback event log for troubleshooting crashes. Copy or share after a crash to help debug.")
+                Text("When something sounds wrong: Diagnostics → Copy report for Cursor → paste into chat.")
             }
             .listRowBackground(DromeTheme.elevated)
 

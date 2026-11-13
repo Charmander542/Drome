@@ -55,6 +55,9 @@ final class PodcastPlayer: ObservableObject {
     private var wantsToPlay = false
     private var pendingSeek: TimeInterval?
     private var didAttemptFreshURL = false
+    /// Coalesce playbackStalled soft-seeks — uncoalesced seeks thrash like the
+    /// old music silent-buffer loop on flaky podcast CDNs.
+    private var lastStallRecoverAt: Date = .distantPast
     private let nowPlaying = PodcastNowPlayingCenter()
     private let store: PodcastStore?
 
@@ -518,6 +521,8 @@ final class PodcastPlayer: ObservableObject {
                       let stalled = note.object as? AVPlayerItem,
                       stalled === self.player.currentItem,
                       self.wantsToPlay else { return }
+                guard Date().timeIntervalSince(self.lastStallRecoverAt) >= 2.5 else { return }
+                self.lastStallRecoverAt = Date()
                 DromeDiagnostics.logPodcast("stalled → soft seek")
                 let pos = self.elapsed
                 self.seek(to: pos)

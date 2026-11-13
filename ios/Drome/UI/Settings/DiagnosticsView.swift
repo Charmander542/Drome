@@ -5,6 +5,7 @@ struct DiagnosticsView: View {
     @EnvironmentObject private var player: PlayerEngine
     @State private var logText = ""
     @State private var showCopied = false
+    @State private var copiedKind = "Report"
 
     var body: some View {
         List {
@@ -19,11 +20,22 @@ struct DiagnosticsView: View {
             } header: {
                 Text("Recent events")
             } footer: {
-                Text("A rolling log of playback and app events. After a crash, reopen Drome and copy or share this log — it helps trace what happened right before.")
+                Text("When playback glitches, tap Copy report for Cursor and paste the whole block into chat — it includes device, route, network, live player state, and the event tail.")
             }
             .listRowBackground(DromeTheme.elevated)
 
             Section {
+                Button {
+                    let report = DromeDiagnostics.copyReadyReport(player: player)
+                    UIPasteboard.general.string = report
+                    copiedKind = "Report"
+                    showCopied = true
+                    reload()
+                } label: {
+                    Label("Copy report for Cursor", systemImage: "doc.on.clipboard")
+                }
+                .fontWeight(.semibold)
+
                 Button {
                     DromeDiagnostics.snapshotPlayer(player, note: "manual")
                     reload()
@@ -33,9 +45,10 @@ struct DiagnosticsView: View {
 
                 Button {
                     UIPasteboard.general.string = logText
+                    copiedKind = "Log"
                     showCopied = true
                 } label: {
-                    Label("Copy log", systemImage: "doc.on.doc")
+                    Label("Copy raw log only", systemImage: "doc.on.doc")
                 }
 
                 ShareLink(item: DromeDiagnostics.logFileURL) {
@@ -61,8 +74,12 @@ struct DiagnosticsView: View {
         .navigationTitle("Diagnostics")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { reload() }
-        .alert("Copied", isPresented: $showCopied) {
+        .alert("\(copiedKind) copied", isPresented: $showCopied) {
             Button("OK", role: .cancel) { }
+        } message: {
+            Text(copiedKind == "Report"
+                 ? "Paste the whole block into Cursor."
+                 : "Raw event log is on the clipboard.")
         }
         .preferredColorScheme(.dark)
     }

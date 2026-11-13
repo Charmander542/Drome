@@ -144,8 +144,20 @@ final class PlayerEngine: ObservableObject {
     private var stallSoftSeekCount = 0
     /// After a stall rebuild, keep using MP3/cache until the next track.
     private var stallForcedResilient = false
-    /// Counts consecutive "playing but buffer empty" ticks (Bluetooth silence).
+    /// Rebuilds attempted for the current track — circuit-breaks infinite thrash.
+    private var stallRebuildCountForTrack = 0
+    /// Counts consecutive "playing but playhead stuck + empty buffer" ticks.
     private var silentBufferTicks = 0
+    /// Last time the playhead meaningfully advanced (health / silence detector).
+    private var lastPlayheadAdvanceAt: Date = .distantPast
+    private var lastObservedPlayhead: TimeInterval = -1
+    /// Ignore stall/silence recovery until this date (after seek/rebuild).
+    private var recoveryQuietUntil: Date = .distantPast
+    /// Throttle setCategory — reconfiguring every recover glitches A2DP.
+    private var lastAudioSessionConfigAt: Date = .distantPast
+    /// Wall-clock health probe — AVPlayer's timebase stops ticking when frozen,
+    /// so the periodic time observer alone can't detect true BT silence.
+    private var healthProbeCancellable: AnyCancellable?
     #endif
     private let sharePlayBridge = SharePlayCoordinatorBridge()
     private let groupStateObserver = GroupStateObserver()
@@ -213,6 +225,9 @@ final class PlayerEngine: ObservableObject {
         observePlayer()
         observeAppLifecycle()
         observeNetworkStreamChanges()
+        #if !os(tvOS)
+        startPlaybackHealthProbe()
+        #endif
         lastAirPlayActive = isAirPlayRouteActive
         lastBluetoothRoute = isBluetoothRouteActive
         lastCellularCompressed = shouldUseResilientStream
@@ -237,11 +252,23 @@ final class PlayerEngine: ObservableObject {
     /// One-line player state for the diagnostics log.
     func diagnosticStateLine() -> String {
         let song = current?.song
+        let item = player.currentItem
+        let tcs: String = {
+            switch player.timeControlStatus {
+            case .playing: return "playing"
+            case .paused: return "paused"
+            case .waitingToPlayAtSpecifiedRate: return "waiting"
+            @unknown default: return "unknown"
+            }
+        }()
         var parts = [
             "track=\(song?.id ?? "nil")",
             "«\(song?.title ?? "—")»",
-            "\(Int(elapsed))/\(Int(duration))s",
-            isPlaying ? "playing" : "paused",
+            "\(String(format: "%.1f", elapsed))/\(Int(duration))s",
+            "want=\(wantsToPlay)",
+            "ui=\(isPlaying)",
+            "tcs=\(tcs)",
+            "rate=\(String(format: "%.2f", player.rate))",
             "rebuild:\(isRebuilding)/d:\(rebuildDepth)",
             "pendingNext:\(pendingNextCount)",
             "pendingAdvance:\(pendingAdvanceAfterRebuild)",
@@ -250,11 +277,93 @@ final class PlayerEngine: ObservableObject {
             "resilient:\(shouldUseResilientStream)",
             "airPlay:\(isAirPlayRouteActive)",
             "bt:\(isBluetoothRouteActive)",
+            "sharePlay:\(sharePlayActive)/\(sharePlayParticipantCount)",
         ]
+        if let item {
+            let status: String = {
+                switch item.status {
+                case .unknown: return "unknown"
+                case .readyToPlay: return "ready"
+                case .failed: return "failed"
+                @unknown default: return "?"
+                }
+            }()
+            parts.append("item=\(status)")
+            parts.append("bufEmpty=\(item.isPlaybackBufferEmpty)")
+            parts.append("keepUp=\(item.isPlaybackLikelyToKeepUp)")
+        } else {
+            parts.append("item=nil")
+        }
         #if !os(tvOS)
         parts.append("path:\(ConnectivityMonitor.lastInterfaceSummary)")
+        parts.append("stallRebuilds:\(stallRebuildCountForTrack)")
+        parts.append("softSeek:\(stallSoftSeekCount)")
+        parts.append("forcedMP3:\(stallForcedResilient)")
+        parts.append("quiet:\(isInRecoveryQuietPeriod)")
         #endif
         return parts.joined(separator: " ")
+    }
+
+    /// Multi-line dump for the copy-paste support report.
+    func diagnosticReportLines(note: String) -> [String] {
+        let song = current?.song
+        let item = player.currentItem
+        let assetURL = (item?.asset as? AVURLAsset)?.url
+        let urlKind: String = {
+            guard let assetURL else { return "none" }
+            if assetURL.isFileURL {
+                return assetURL.path.contains("DromeStreamCache") ? "streamCache" : "localFile"
+            }
+            return "http"
+        }()
+        var lines: [String] = [
+            "report(\(note))",
+            "  track id=\(song?.id ?? "nil") title=«\(song?.title ?? "—")» artist=«\(song?.displayArtist ?? "—")»",
+            "  format suffix=\(song?.suffix ?? "?") contentType=\(song?.contentType ?? "?") duration=\(song?.duration.map(String.init) ?? "?")s bitRate=\(song?.bitRate.map(String.init) ?? "?")",
+            "  playhead elapsed=\(String(format: "%.2f", elapsed)) accurate=\(String(format: "%.2f", accurateElapsed())) duration=\(String(format: "%.2f", duration))",
+            "  intent wantsToPlay=\(wantsToPlay) isPlaying=\(isPlaying) rate=\(String(format: "%.2f", player.rate)) tcs=\(player.timeControlStatus.rawValue)",
+            "  queues user=\(userQueue.count) context=\(contextQueue.count) history=\(history.count) window=\(window.count) contextLabel=\(context?.label ?? "nil")",
+            "  transport rebuild=\(isRebuilding) depth=\(rebuildDepth) handlingEnd=\(isHandlingTrackEnd) pendingNext=\(pendingNextCount) pendingAdvance=\(pendingAdvanceAfterRebuild)",
+            "  seek epoch=\(seekEpoch)/applied=\(appliedSeekEpoch)",
+            "  routes airPlay=\(isAirPlayRouteActive) bluetooth=\(isBluetoothRouteActive) resilient=\(shouldUseResilientStream)",
+            "  sharePlay active=\(sharePlayActive) participants=\(sharePlayParticipantCount) synced=\(sharePlayDidSync)",
+            "  source kind=\(urlKind) url=\(DromeDiagnostics.redactedURL(assetURL))",
+        ]
+        if let item {
+            let err = item.error.map { "\($0.localizedDescription)" } ?? "nil"
+            lines.append("  item status=\(item.status.rawValue) bufEmpty=\(item.isPlaybackBufferEmpty) keepUp=\(item.isPlaybackLikelyToKeepUp) error=\(err)")
+            let loaded = item.loadedTimeRanges
+                .map(\.timeRangeValue)
+                .map { r -> String in
+                    let s = CMTimeGetSeconds(r.start)
+                    let d = CMTimeGetSeconds(r.duration)
+                    return String(format: "%.1f+%.1f", s, d)
+                }
+                .joined(separator: ",")
+            lines.append("  loadedRanges=[\(loaded)]")
+        } else {
+            lines.append("  item=nil")
+        }
+        #if !os(tvOS)
+        lines.append(
+            "  stall rebuilds=\(stallRebuildCountForTrack) softSeek=\(stallSoftSeekCount) forcedResilient=\(stallForcedResilient) quiet=\(isInRecoveryQuietPeriod) silentTicks=\(silentBufferTicks)")
+        lines.append(
+            "  stallStarted=\(stallStartedAt.map { String(format: "%.1fsAgo", Date().timeIntervalSince($0)) } ?? "nil") lastRecover=\(String(format: "%.1fsAgo", Date().timeIntervalSince(lastStallRecoveryAt)))")
+        if let song, let cached = streamCache.cachedURL(
+            for: song.id,
+            minimumBytes: Self.minimumStreamCacheBytes(for: song)) {
+            lines.append("  streamCache=hit \(DromeDiagnostics.redactedURL(cached))")
+        } else if song != nil {
+            lines.append("  streamCache=miss")
+        }
+        #endif
+        let session = AVAudioSession.sharedInstance()
+        let outs = session.currentRoute.outputs
+            .map { "\($0.portType.rawValue):\($0.portName)" }
+            .joined(separator: ",")
+        lines.append("  audioSession category=\(session.category.rawValue) mode=\(session.mode.rawValue) outputs=[\(outs)]")
+        lines.append("  audioFocus=\(AudioFocus.shared.owner == .music ? "music" : AudioFocus.shared.owner == .podcast ? "podcast" : "none")")
+        return lines
     }
 
     /// Rebuild the last listening session after launch (paused) so the mini
@@ -289,8 +398,9 @@ final class PlayerEngine: ObservableObject {
         let bluetooth = isBluetoothRouteActive
         guard bluetooth != lastBluetoothRoute else { return }
         lastBluetoothRoute = bluetooth
-        DromeDiagnostics.logPlayer(
-            "bluetooth route → \(bluetooth) outputs=\(Self.routeSummary)")
+        DromeDiagnostics.logIncident(
+            "bluetooth route → \(bluetooth) outputs=\(Self.routeSummary)",
+            player: self)
         configureAudioSession()
         if bluetooth {
             // Clears leftover spokenAudio from podcasts and moves FLAC streams
@@ -312,7 +422,8 @@ final class PlayerEngine: ObservableObject {
         #if !os(tvOS)
         if regained, wantsToPlay {
             DromeDiagnostics.logPlayer("network regained → stall check \(diagnosticStateLine())")
-            scheduleStallRecovery(reason: "network-regained")
+            // Pierce quiet period — we may have been mid-rebuild when the path died.
+            scheduleStallRecovery(reason: "network-regained", force: true)
         }
         // Keep warm-caching upcoming tracks whenever the path is usable.
         if ConnectivityMonitor.lastIsOnline {
@@ -337,6 +448,14 @@ final class PlayerEngine: ObservableObject {
             self[keyPath: pending] = true
             return
         }
+        // Debounce flaky A2DP / AirPlay route flaps that fire several
+        // configuration changes in under a second.
+        #if !os(tvOS)
+        if isInRecoveryQuietPeriod {
+            self[keyPath: pending] = true
+            return
+        }
+        #endif
         performStreamFormatRebuild()
     }
 
@@ -346,9 +465,12 @@ final class PlayerEngine: ObservableObject {
         pendingBluetoothRebuild = false
         guard current != nil else { return }
         DromeDiagnostics.logPlayer("stream format rebuild \(diagnosticStateLine())")
-        configureAudioSession()
+        configureAudioSession(force: true)
         let resume = wantsToPlay
         let position = max(0, elapsed)
+        #if !os(tvOS)
+        beginRecoveryQuietPeriod(3.0)
+        #endif
         rebuildWindow(startPlaying: resume)
         if position > 0.5 {
             seek(to: position)
@@ -477,6 +599,8 @@ final class PlayerEngine: ObservableObject {
         tvUsingAudioPlayer = false
         #else
         clearStallRecoveryState(resetForcedResilient: true)
+        healthProbeCancellable?.cancel()
+        healthProbeCancellable = nil
         #endif
         player.pause()
         player.rate = 0
@@ -915,12 +1039,15 @@ final class PlayerEngine: ObservableObject {
                       item === self.player.currentItem,
                       !self.isRebuilding else { return }
                 self.itemReadyCancellable = nil
-                // Prefer a brief stall over forcing an empty buffer — AVPlayer
-                // will fill and resume when automaticallyWaitsToMinimizeStalling.
-                if item.status == .readyToPlay || self.itemIsSafeToStart(item) {
+                if item.status == .failed {
+                    _ = self.recoverFailedItemOrSkip(reason: "ready-timeout-failed")
+                } else if self.itemIsSafeToStart(item) || item.status == .readyToPlay {
+                    // readyToPlay with a thin buffer is OK — AVPlayer will wait.
                     self.player.play()
-                } else if item.status != .failed {
-                    self.player.play()
+                } else {
+                    // Do NOT force-play into a totally empty pipe (1s blip → stall loop).
+                    DromeDiagnostics.logPlayer("ready-timeout without buffer → stall recover")
+                    self.scheduleStallRecovery(reason: "ready-timeout", force: true)
                 }
                 self.flushPendingSharePlaySnapshotIfNeeded()
             }
@@ -1552,9 +1679,12 @@ final class PlayerEngine: ObservableObject {
             return local
         }
         // Prefer a warm stream-cache file whenever we have one — including over
-        // Bluetooth. Blocking A2DP from cache left AirPods on HTTP MP3 even
-        // after streamCache ready, which is what made cell/wifi stalls audible.
-        if !airPlay, !sharePlayActive, let cached = streamCache.cachedURL(for: song.id) {
+        // Bluetooth. Reject tiny/partial caches (they play ~1s then die, and
+        // rebuild used to reattach the same corpse forever).
+        if !airPlay, !sharePlayActive,
+           let cached = streamCache.cachedURL(
+            for: song.id,
+            minimumBytes: Self.minimumStreamCacheBytes(for: song)) {
             return cached
         }
         // AirPlay, Bluetooth, and SharePlay prefer server-side MP3 — faster to
@@ -1815,6 +1945,10 @@ final class PlayerEngine: ObservableObject {
         } else {
             setPlaybackIntent(false)
         }
+        // Let the new item buffer before stall/silence detectors can fire.
+        beginRecoveryQuietPeriod(engagePlayback ? 3.0 : 1.0)
+        lastObservedPlayhead = 0
+        lastPlayheadAdvanceAt = Date()
         prefetchUpcomingIntoCache()
         // Warm the current track into the disk cache in the background so a
         // later Tailscale / BT blip can rebuild onto a local file.
@@ -1921,15 +2055,20 @@ final class PlayerEngine: ObservableObject {
                 guard let self else { return }
                 switch status {
                 case .playing:
-                    // External resume (lock screen / CarPlay / headphones).
-                    self.wantsToPlay = true
-                    if !self.isPlaying { self.isPlaying = true }
+                    // Don't flip intent from coordinator/route blips — only
+                    // reflect UI when we already wanted to play (or remote Play
+                    // already set wantsToPlay). Surprise .playing must not
+                    // un-pause the user.
+                    if self.wantsToPlay, !self.isPlaying {
+                        self.isPlaying = true
+                    }
                     #if !os(tvOS)
-                    // Healthy playback ends the stall episode, but keep any
-                    // armed rebuild escalation only while still recovering.
-                    if self.player.currentItem?.isPlaybackLikelyToKeepUp == true {
+                    // Playhead progress is the health signal — not keepUp, which
+                    // flickers false constantly on HTTP streams and caused 1s
+                    // play→rebuild thrash when we cleared/armed on keepUp alone.
+                    if self.wantsToPlay, self.playheadRecentlyAdvanced(within: 1.5) {
                         self.clearStallRecoveryState(resetForcedResilient: false)
-                    } else {
+                    } else if self.wantsToPlay {
                         self.stallStartedAt = nil
                     }
                     #endif
@@ -1939,7 +2078,11 @@ final class PlayerEngine: ObservableObject {
                         self.isPlaying = self.wantsToPlay
                     }
                     #if !os(tvOS)
-                    if self.wantsToPlay {
+                    // Brief waits after a seek/underrun are normal. Only arm
+                    // recovery when the playhead has actually stopped.
+                    if self.wantsToPlay,
+                       !self.isInRecoveryQuietPeriod,
+                       !self.playheadRecentlyAdvanced(within: 1.25) {
                         if self.stallStartedAt == nil {
                             self.stallStartedAt = Date()
                             self.stallSoftSeekCount = 0
@@ -1989,6 +2132,13 @@ final class PlayerEngine: ObservableObject {
                 if !self.wantsToPlay, seconds > 0.35, self.elapsed < 0.35 {
                     return
                 }
+                #if !os(tvOS)
+                // Health checks must run even when the playhead is stuck — the
+                // UI throttle below used to skip them, hiding real stalls while
+                // false keepUp flickers during healthy play still fired recovery.
+                self.notePlayheadProgress(seconds)
+                self.checkPlaybackHealth()
+                #endif
                 // Skip tiny updates to cut SwiftUI churn while audio stays smooth.
                 if abs(seconds - self.lastPublishedElapsed) < 0.2,
                    abs(seconds - self.elapsed) < 0.2 {
@@ -2001,9 +2151,6 @@ final class PlayerEngine: ObservableObject {
                     nextDuration = itemDuration
                 }
                 self.setPlayhead(elapsed: seconds, duration: nextDuration)
-                #if !os(tvOS)
-                self.checkSilentWhilePlaying()
-                #endif
             }
         }
 
@@ -2038,8 +2185,10 @@ final class PlayerEngine: ObservableObject {
                 self.retryCurrentAfterDecodeFailure()
                 #else
                 let err = failed.error?.localizedDescription ?? "unknown"
-                DromeDiagnostics.logPlayer("failedToPlayToEnd \(err) → recover")
-                self.scheduleStallRecovery(reason: "failedToEnd", force: true)
+                DromeDiagnostics.logIncident("failedToPlayToEnd \(err)", player: self)
+                // Hard failure — don't go through the coalesced stall scheduler
+                // (quiet periods / min-interval used to swallow these entirely).
+                _ = self.recoverFailedItemOrSkip(reason: "failedToEnd")
                 #endif
             }
             .store(in: &cancellables)
@@ -2460,8 +2609,20 @@ final class PlayerEngine: ObservableObject {
 
     // MARK: - System integration
 
-    private func configureAudioSession() {
+    private func configureAudioSession(force: Bool = false) {
         let session = AVAudioSession.sharedInstance()
+        #if !os(tvOS)
+        // Podcasts leave .spokenAudio sticky — never throttle past that, or
+        // music keeps HFP and goes silent after ~1 buffer on Bluetooth.
+        let stuckOnSpokenAudio = session.mode == .spokenAudio && !sharePlayActive
+        let mustForce = force || stuckOnSpokenAudio
+        // Re-setCategory on every stall recover used to glitch Bluetooth A2DP.
+        if !mustForce, Date().timeIntervalSince(lastAudioSessionConfigAt) < 1.0 {
+            try? session.setActive(true, options: [])
+            return
+        }
+        lastAudioSessionConfigAt = Date()
+        #endif
         if sharePlayActive {
             // Mix with FaceTime so Drome can play on each phone during the call.
             try? session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
@@ -2481,9 +2642,13 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func activateAudioSession() {
-        // Must reconfigure, not just setActive — otherwise a prior podcast
-        // spokenAudio session keeps owning the Bluetooth route for music.
+        // Force when clearing leftover podcast spokenAudio; otherwise throttle.
+        #if os(tvOS)
         configureAudioSession()
+        #else
+        let force = AVAudioSession.sharedInstance().mode == .spokenAudio
+        configureAudioSession(force: force)
+        #endif
     }
 
     private func configureRemoteCommands() {
@@ -2604,13 +2769,27 @@ final class PlayerEngine: ObservableObject {
     /// rest of a track after a long underrun killed the HTTP AVPlayerItem.
     @discardableResult
     private func recoverFailedItemOrSkip(reason: String) -> Bool {
-        guard wantsToPlay, current != nil, !isRebuilding else {
-            DromeDiagnostics.logPlayer("\(reason) → skip")
+        guard wantsToPlay, let current else {
+            DromeDiagnostics.logPlayer("\(reason) → skip (no current)")
             advanceAfterCurrentEnds(playImmediately: wantsToPlay)
             return true
         }
-        if !stallForcedResilient {
-            let position = max(0, accurateElapsed())
+        // Second failure while a rebuild is already in flight must NOT skip —
+        // that race turned one bad packet into an immediate track change.
+        if isRebuilding || rebuildDepth > 0 {
+            DromeDiagnostics.logPlayer("\(reason) → ignored (rebuild in flight)")
+            return false
+        }
+        let position = max(0, accurateElapsed())
+        // Drop any stream-cache file we were playing — a truncated MP3 is the
+        // classic "1 second then fail" source, and rebuild must not reuse it.
+        if let url = (player.currentItem?.asset as? AVURLAsset)?.url,
+           url.isFileURL,
+           url.path.contains("DromeStreamCache") {
+            streamCache.invalidate(songID: current.song.id)
+            DromeDiagnostics.logPlayer("\(reason) → invalidated stream cache")
+        }
+        if stallRebuildCountForTrack < PlaybackResilience.maxRebuildsPerTrack {
             DromeDiagnostics.logPlayer("\(reason) → resilient rebuild")
             rebuildFromCacheOrStream(position: position, reason: reason)
             return true
@@ -2620,25 +2799,35 @@ final class PlayerEngine: ObservableObject {
         return true
     }
 
-    /// After Tailscale / cell blips, AVPlayer often sits in `.waiting` forever.
-    /// Recover by: (1) waiting briefly, (2) soft seek to flush the pipe,
-    /// (3) swapping onto a cached MP3 file, (4) full item rebuild.
+    private static func minimumStreamCacheBytes(for song: Song) -> Int {
+        PlaybackResilience.minimumStreamCacheBytes(durationSeconds: song.duration)
+    }
+
+    private func isHardFailureReason(_ reason: String) -> Bool {
+        PlaybackResilience.isHardFailure(reason)
+    }
+
     private func scheduleStallRecovery(reason: String, force: Bool = false) {
         guard wantsToPlay, current != nil, !isRebuilding else { return }
-        if !force, let started = stallStartedAt, Date().timeIntervalSince(started) < 2.5 {
+        let hard = isHardFailureReason(reason)
+        // Quiet period protects healthy buffering — never swallow hard failures.
+        if isInRecoveryQuietPeriod, !hard { return }
+        if !force, !hard, let started = stallStartedAt, Date().timeIntervalSince(started) < 2.5 {
             return
         }
         // Coalesce even forced recovers — playbackStalled used to fire every
         // ~400ms with force:true, cancelling the rebuild escalation forever.
-        let minInterval: TimeInterval = force ? 1.6 : 4
+        let minInterval: TimeInterval = hard ? 1.0 : (force ? 2.5 : 4.5)
         if Date().timeIntervalSince(lastStallRecoveryAt) < minInterval { return }
         stallRecoveryTask?.cancel()
         stallRecoveryTask = Task { [weak self] in
             // Give the buffer a moment on transient waits.
-            if !force {
+            if hard {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            } else if !force {
                 try? await Task.sleep(nanoseconds: 2_800_000_000)
             } else {
-                try? await Task.sleep(nanoseconds: 350_000_000)
+                try? await Task.sleep(nanoseconds: 500_000_000)
             }
             guard !Task.isCancelled else { return }
             await MainActor.run {
@@ -2649,35 +2838,50 @@ final class PlayerEngine: ObservableObject {
 
     private func performStallRecovery(reason: String) {
         guard wantsToPlay, let current, !isRebuilding else { return }
+        let hard = isHardFailureReason(reason)
+        if isInRecoveryQuietPeriod, !hard { return }
+
+        // Playhead still moving ⇒ audio pipeline is alive. Bail out.
+        if !hard, playheadRecentlyAdvanced(within: 2.0) {
+            if player.timeControlStatus == .playing {
+                clearStallRecoveryState(resetForcedResilient: false)
+            }
+            return
+        }
+
         let item = player.currentItem
-        let silentPlaying = player.timeControlStatus == .playing
-            && item != nil
-            && (item?.isPlaybackBufferEmpty == true || item?.isPlaybackLikelyToKeepUp == false)
-        if player.timeControlStatus == .playing, !silentPlaying, reason != "silent-buffer" {
+        if !hard,
+           player.timeControlStatus == .playing,
+           reason != "silent-buffer",
+           item?.isPlaybackBufferEmpty != true {
             clearStallRecoveryState(resetForcedResilient: false)
             return
         }
+
         lastStallRecoveryAt = Date()
         let position = max(0, accurateElapsed())
-        DromeDiagnostics.logPlayer(
-            "stall recover (\(reason)) pos=\(Int(position))s softSeek=\(stallSoftSeekCount) \(diagnosticStateLine())")
-
-        // Bluetooth silence: re-seat session + soft seek first.
-        activateAudioSession()
+        DromeDiagnostics.logIncident(
+            "stall-recover:\(reason) pos=\(Int(position))s softSeek=\(stallSoftSeekCount) rebuilds=\(stallRebuildCountForTrack)",
+            player: self)
 
         // Soft seek at most once per stall episode. Further stalls / failed
-        // items / silent-buffer go straight to a cache-or-MP3 rebuild. Keep the
-        // escalation timer on a separate task so another playbackStalled can't
-        // cancel it by re-entering scheduleStallRecovery.
+        // items go to a cache-or-MP3 rebuild. Keep escalation on a separate
+        // task so another playbackStalled can't cancel it.
+        let hasCachedFile = streamCache.cachedURL(
+            for: current.song.id,
+            minimumBytes: Self.minimumStreamCacheBytes(for: current.song)) != nil
         let canSoftSeek = player.currentItem != nil
             && player.currentItem?.status != .failed
-            && streamCache.cachedURL(for: current.song.id) == nil
-            && stallSoftSeekCount < 1
-            && reason != "failedToEnd"
-            && reason != "silent-buffer"
+            && PlaybackResilience.canSoftSeek(
+                softSeekCount: stallSoftSeekCount,
+                rebuildCount: stallRebuildCountForTrack,
+                reason: reason,
+                hasCachedFile: hasCachedFile)
 
         if canSoftSeek {
             stallSoftSeekCount += 1
+            beginRecoveryQuietPeriod(2.5)
+            try? AVAudioSession.sharedInstance().setActive(true, options: [])
             seek(to: position)
             playCurrentWhenReady()
             armStallRebuildEscalation(position: position, reason: reason)
@@ -2691,17 +2895,34 @@ final class PlayerEngine: ObservableObject {
     private func armStallRebuildEscalation(position: TimeInterval, reason: String) {
         guard stallRebuildTask == nil else { return }
         stallRebuildTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard let self else { return }
                 self.stallRebuildTask = nil
                 guard self.wantsToPlay, !self.isRebuilding else { return }
-                let stillSilent = self.player.timeControlStatus != .playing
-                    || self.player.currentItem?.isPlaybackBufferEmpty == true
-                    || self.player.currentItem?.isPlaybackLikelyToKeepUp == false
-                    || self.player.currentItem?.status == .failed
-                guard stillSilent else { return }
+                if self.isInRecoveryQuietPeriod {
+                    // Soft seek / playhead jump extended quiet past this timer —
+                    // re-arm so we don't abort recovery forever.
+                    let delay = max(0.3, self.recoveryQuietUntil.timeIntervalSinceNow + 0.3)
+                    self.stallRebuildTask = Task { [weak self] in
+                        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                        guard !Task.isCancelled else { return }
+                        await MainActor.run {
+                            guard let self else { return }
+                            self.stallRebuildTask = nil
+                            self.armStallRebuildEscalation(position: position, reason: reason)
+                        }
+                    }
+                    return
+                }
+                // Require a stuck playhead — never escalate on keepUp flicker.
+                guard !self.playheadRecentlyAdvanced(within: 2.0) else { return }
+                let item = self.player.currentItem
+                let stillStuck = self.player.timeControlStatus != .playing
+                    || item?.isPlaybackBufferEmpty == true
+                    || item?.status == .failed
+                guard stillStuck else { return }
                 self.rebuildFromCacheOrStream(position: position, reason: "\(reason)-retry")
             }
         }
@@ -2717,25 +2938,109 @@ final class PlayerEngine: ObservableObject {
         silentBufferTicks = 0
         if resetForcedResilient {
             stallForcedResilient = false
+            stallRebuildCountForTrack = 0
+            lastObservedPlayhead = -1
+            lastPlayheadAdvanceAt = Date()
+            recoveryQuietUntil = .distantPast
         }
     }
 
-    /// Bluetooth often keeps `timeControlStatus == .playing` with no audible
-    /// output once the first forward buffer drains. Catch that and recover.
-    private func checkSilentWhilePlaying() {
+    private var isInRecoveryQuietPeriod: Bool {
+        Date() < recoveryQuietUntil
+    }
+
+    private func beginRecoveryQuietPeriod(_ seconds: TimeInterval) {
+        recoveryQuietUntil = Date().addingTimeInterval(seconds)
+        silentBufferTicks = 0
+    }
+
+    private func playheadRecentlyAdvanced(within seconds: TimeInterval) -> Bool {
+        Date().timeIntervalSince(lastPlayheadAdvanceAt) < seconds
+    }
+
+    private func notePlayheadProgress(_ seconds: TimeInterval) {
+        if lastObservedPlayhead < 0 {
+            lastObservedPlayhead = seconds
+            lastPlayheadAdvanceAt = Date()
+            return
+        }
+        // Forward progress of ≥0.3s counts as healthy playback.
+        if PlaybackResilience.playheadAdvanced(previous: lastObservedPlayhead, next: seconds) {
+            lastPlayheadAdvanceAt = Date()
+            lastObservedPlayhead = seconds
+        } else if abs(seconds - lastObservedPlayhead) > 1.5 {
+            // Seek / rebuild jumped the playhead — reset baseline, quiet briefly.
+            lastObservedPlayhead = seconds
+            lastPlayheadAdvanceAt = Date()
+            beginRecoveryQuietPeriod(2.0)
+        }
+    }
+
+    /// Wall-clock probe so frozen AVPlayer timebases still get health checks.
+    private func startPlaybackHealthProbe() {
+        healthProbeCancellable?.cancel()
+        healthProbeCancellable = Timer.publish(every: 0.5, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                guard let self, self.wantsToPlay, !self.isRebuilding else { return }
+                let seconds = self.player.currentTime().seconds
+                guard seconds.isFinite, seconds >= 0 else {
+                    self.checkPlaybackHealth()
+                    return
+                }
+                self.notePlayheadProgress(seconds)
+                self.checkPlaybackHealth()
+            }
+    }
+
+    /// Detect truly stuck playback. Never use `isPlaybackLikelyToKeepUp` alone.
+    private func checkPlaybackHealth() {
         guard wantsToPlay, !isRebuilding, let item = player.currentItem else {
             silentBufferTicks = 0
             return
         }
-        let apparentlyPlaying = player.timeControlStatus == .playing || player.rate > 0.01
-        let bufferDead = item.isPlaybackBufferEmpty || !item.isPlaybackLikelyToKeepUp
-        if apparentlyPlaying, bufferDead {
+        let failed = item.status == .failed
+        // Hard failures pierce the quiet period — otherwise a bad cache file
+        // that dies during the post-rebuild quiet sits dead until the user skips.
+        if failed {
+            silentBufferTicks = 0
+            _ = recoverFailedItemOrSkip(reason: "failedToEnd")
+            return
+        }
+        if isInRecoveryQuietPeriod {
+            silentBufferTicks = 0
+            return
+        }
+        let engaged = player.timeControlStatus == .playing
+            || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+            || player.rate > 0.01
+        guard engaged else {
+            silentBufferTicks = 0
+            return
+        }
+        // Healthy if the clock is moving.
+        if playheadRecentlyAdvanced(within: 2.0) {
+            silentBufferTicks = 0
+            return
+        }
+        let bufferEmpty = item.isPlaybackBufferEmpty
+        let waiting = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+        let playingFrozen = player.timeControlStatus == .playing || player.rate > 0.01
+        // Empty/waiting: recover after ~3s. Playing-but-frozen (classic BT
+        // silence with a stale non-empty buffer): wait longer (~5s) to avoid
+        // false positives during intentional slow buffering.
+        let threshold = PlaybackResilience.stuckTickThreshold(
+            bufferEmpty: bufferEmpty, waiting: waiting, playingFrozen: playingFrozen)
+        if bufferEmpty || waiting || playingFrozen {
             silentBufferTicks += 1
-            if silentBufferTicks >= 5 { // ~2.5s at 0.5s cadence
+            if silentBufferTicks >= threshold {
                 silentBufferTicks = 0
-                DromeDiagnostics.logPlayer(
-                    "silent-while-playing bufferEmpty=\(item.isPlaybackBufferEmpty) keepUp=\(item.isPlaybackLikelyToKeepUp) → recover")
-                scheduleStallRecovery(reason: "silent-buffer", force: true)
+                DromeDiagnostics.logIncident(
+                    "health-stuck bufEmpty=\(bufferEmpty) waiting=\(waiting) playing=\(playingFrozen)",
+                    player: self)
+                scheduleStallRecovery(
+                    reason: waiting ? "waiting" : "silent-buffer",
+                    force: true)
             }
         } else {
             silentBufferTicks = 0
@@ -2744,15 +3049,31 @@ final class PlayerEngine: ObservableObject {
 
     private func rebuildFromCacheOrStream(position: TimeInterval, reason: String) {
         guard wantsToPlay, let song = current?.song else { return }
-        DromeDiagnostics.logPlayer("stall rebuild (\(reason))")
+        stallRebuildCountForTrack += 1
+        if stallRebuildCountForTrack > PlaybackResilience.maxRebuildsPerTrack {
+            DromeDiagnostics.logIncident(
+                "circuit-break:\(reason) after \(stallRebuildCountForTrack) → skip",
+                player: self)
+            clearStallRecoveryState(resetForcedResilient: true)
+            advanceAfterCurrentEnds(playImmediately: wantsToPlay)
+            return
+        }
+        // 2nd+ rebuild: nuke stream cache so we don't reattach a truncated file.
+        if PlaybackResilience.shouldInvalidateCache(rebuildAttempt: stallRebuildCountForTrack) {
+            streamCache.invalidate(songID: song.id)
+        }
+        DromeDiagnostics.logPlayer(
+            "stall rebuild (\(reason)) #\(stallRebuildCountForTrack) pos=\(Int(position))s")
         stallRecoveryTask?.cancel()
         stallRecoveryTask = nil
         stallRebuildTask?.cancel()
         stallRebuildTask = nil
         stallSoftSeekCount = 0
+        silentBufferTicks = 0
         // Force resilient URL selection for the rebuild (and rest of track).
         stallForcedResilient = true
         lastCellularCompressed = true
+        beginRecoveryQuietPeriod(4.0)
         let resume = wantsToPlay
         rebuildWindow(startPlaying: resume)
         if position > 0.5 {
@@ -2868,13 +3189,21 @@ final class PlayerEngine: ObservableObject {
             }
         })
 
-        player.playbackCoordinator.coordinateWithSession(session)
         session.join()
         sharePlayActive = true
-        configureAudioSession()
+        configureAudioSession(force: true)
+        // Flip current item onto jam MP3 before coordinating — attaching the
+        // coordinator to a mid-buffer FLAC item caused long one-sided mute.
+        if current != nil {
+            if isPlayerTransitioning {
+                pendingNetworkRebuild = true
+            } else {
+                performStreamFormatRebuild()
+            }
+        }
+        player.playbackCoordinator.coordinateWithSession(session)
         // Do NOT broadcast our local queue on join — a guest mid-song would
         // overwrite the host. Pull theirs, and only seed if nobody answers.
-        // New items use MP3 while sharePlayActive (see playbackURL).
         requestSharePlayCatchUp()
         ensureAutoplayBuffer()
 
@@ -2949,6 +3278,17 @@ final class PlayerEngine: ObservableObject {
               let pending = pendingSharePlaySnapshot,
               !applyingSharePlay,
               !isPlayerTransitioning else { return }
+        #if !os(tvOS)
+        // Don't tear down mid stall-recovery for a jam queue update unless the
+        // remote track actually changed.
+        if isInRecoveryQuietPeriod || stallForcedResilient {
+            let remoteID = Self.sharePlayContentID(for: pending.current)
+            let localID = current.map { Self.sharePlayContentID(for: $0.song) }
+            if localID == remoteID {
+                return
+            }
+        }
+        #endif
         pendingSharePlaySnapshot = nil
         Task { await applySharePlaySnapshot(pending) }
     }

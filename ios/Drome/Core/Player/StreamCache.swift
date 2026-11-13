@@ -26,12 +26,22 @@ final class StreamCache {
     }
 
     /// Ready-to-play local file, if the cached MP3 looks complete enough.
-    func cachedURL(for songID: String) -> URL? {
+    func cachedURL(for songID: String, minimumBytes: Int = 48_000) -> URL? {
         let url = destination(for: songID)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        // Tiny files are almost always truncated / HTML error pages.
-        guard size > 32_768 else { return nil }
+        // Tiny / stub files play ~1s then fail — reject them so the player
+        // falls back to HTTP instead of thrashing on the same corpse.
+        guard size >= minimumBytes else {
+            if size > 0 {
+                DromeDiagnostics.logNetwork(
+                    "streamCache reject \(songID) bytes=\(size) min=\(minimumBytes)")
+            }
+            return nil
+        }
+        // Playing from cache must refresh mtime — otherwise trim() can delete
+        // an in-use file under prefetch pressure.
+        touch(url)
         return url
     }
 
@@ -185,6 +195,19 @@ final class StreamCache {
         let head = try handle.read(upToCount: 32) ?? Data()
         try handle.close()
         guard looksLikeAudio(head) else {
+            try? FileManager.default.removeItem(at: temp)
+            throw URLError(.cannotDecodeContentData)
+        }
+        let size = (try? temp.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        // Reject obviously truncated responses (server error bodies, cut pipes).
+        if let http = response as? HTTPURLResponse,
+           let expectedStr = http.value(forHTTPHeaderField: "Content-Length"),
+           let expected = Int(expectedStr), expected > 64_000,
+           size < (expected * 9) / 10 {
+            try? FileManager.default.removeItem(at: temp)
+            throw URLError(.networkConnectionLost)
+        }
+        guard size >= 48_000 else {
             try? FileManager.default.removeItem(at: temp)
             throw URLError(.cannotDecodeContentData)
         }
