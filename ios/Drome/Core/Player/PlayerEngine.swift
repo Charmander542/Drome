@@ -2066,10 +2066,11 @@ final class PlayerEngine: ObservableObject {
                     // Playhead progress is the health signal — not keepUp, which
                     // flickers false constantly on HTTP streams and caused 1s
                     // play→rebuild thrash when we cleared/armed on keepUp alone.
+                    // Do NOT clear stallStartedAt on barren .playing flickers —
+                    // waiting↔playing thrash was resetting the 2.5s stall clock
+                    // forever so recovery never armed.
                     if self.wantsToPlay, self.playheadRecentlyAdvanced(within: 1.5) {
                         self.clearStallRecoveryState(resetForcedResilient: false)
-                    } else if self.wantsToPlay {
-                        self.stallStartedAt = nil
                     }
                     #endif
                 case .waitingToPlayAtSpecifiedRate:
@@ -2095,8 +2096,6 @@ final class PlayerEngine: ObservableObject {
                     #if !os(tvOS)
                     if !self.isRebuilding, !self.wantsToPlay {
                         self.clearStallRecoveryState(resetForcedResilient: false)
-                    } else {
-                        self.stallStartedAt = nil
                     }
                     #endif
                     if self.isRebuilding || self.wantsToPlay {
@@ -2104,6 +2103,13 @@ final class PlayerEngine: ObservableObject {
                         if self.isPlaying != self.wantsToPlay {
                             self.isPlaying = self.wantsToPlay
                         }
+                        #if !os(tvOS)
+                        // Sticky play intent with a paused AVPlayer is the
+                        // "isn't playing at all" dead state — re-kick soon.
+                        if !self.isRebuilding, !self.isInRecoveryQuietPeriod {
+                            self.scheduleStallRecovery(reason: "paused-wanting", force: true)
+                        }
+                        #endif
                     } else if self.isPlaying {
                         self.isPlaying = false
                     }
@@ -2864,6 +2870,17 @@ final class PlayerEngine: ObservableObject {
             "stall-recover:\(reason) pos=\(Int(position))s softSeek=\(stallSoftSeekCount) rebuilds=\(stallRebuildCountForTrack)",
             player: self)
 
+        // Sticky play intent + paused transport: re-assert play() first. Soft
+        // seeking a fully buffered ready item just thrashes the seek epoch.
+        if reason == "paused-wanting",
+           player.currentItem?.status == .readyToPlay {
+            beginRecoveryQuietPeriod(2.0)
+            try? AVAudioSession.sharedInstance().setActive(true, options: [])
+            kickPlaybackIfNeeded()
+            armStallRebuildEscalation(position: position, reason: reason)
+            return
+        }
+
         // Soft seek at most once per stall episode. Further stalls / failed
         // items go to a cache-or-MP3 rebuild. Keep escalation on a separate
         // task so another playbackStalled can't cancel it.
@@ -2964,15 +2981,21 @@ final class PlayerEngine: ObservableObject {
             lastPlayheadAdvanceAt = Date()
             return
         }
-        // Forward progress of ≥0.3s counts as healthy playback.
+        // Forward progress of ≥0.3s counts as healthy playback — but only while
+        // actually playing. Waiting/paused time jumps (FLAC probe quirks) must
+        // not look like healthy audio or they'll poison stall recovery.
         if PlaybackResilience.playheadAdvanced(previous: lastObservedPlayhead, next: seconds) {
-            lastPlayheadAdvanceAt = Date()
+            if player.timeControlStatus == .playing, player.rate > 0.01 {
+                lastPlayheadAdvanceAt = Date()
+            }
             lastObservedPlayhead = seconds
         } else if abs(seconds - lastObservedPlayhead) > 1.5 {
-            // Seek / rebuild jumped the playhead — reset baseline, quiet briefly.
             lastObservedPlayhead = seconds
-            lastPlayheadAdvanceAt = Date()
-            beginRecoveryQuietPeriod(2.0)
+            // Only quiet recovery for jumps we caused (seek / rebuild).
+            if seekEpoch != appliedSeekEpoch || isRebuilding {
+                lastPlayheadAdvanceAt = Date()
+                beginRecoveryQuietPeriod(2.0)
+            }
         }
     }
 
@@ -3011,6 +3034,25 @@ final class PlayerEngine: ObservableObject {
             silentBufferTicks = 0
             return
         }
+        let pausedWhileWanting = PlaybackResilience.isPausedWhileWanting(
+            wantsToPlay: true,
+            isPaused: player.timeControlStatus == .paused,
+            rate: Double(player.rate))
+        // Intent says play but AVPlayer is fully paused — the live-report
+        // dead state. Kick play() and escalate; do not ignore as "not engaged".
+        if pausedWhileWanting {
+            let threshold = PlaybackResilience.stuckTickThreshold(
+                bufferEmpty: false, waiting: false, playingFrozen: false,
+                pausedWhileWanting: true)
+            silentBufferTicks += 1
+            if silentBufferTicks >= threshold {
+                silentBufferTicks = 0
+                DromeDiagnostics.logIncident("health-paused-while-wanting", player: self)
+                kickPlaybackIfNeeded()
+                scheduleStallRecovery(reason: "paused-wanting", force: true)
+            }
+            return
+        }
         let engaged = player.timeControlStatus == .playing
             || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
             || player.rate > 0.01
@@ -3018,7 +3060,7 @@ final class PlayerEngine: ObservableObject {
             silentBufferTicks = 0
             return
         }
-        // Healthy if the clock is moving.
+        // Healthy if the clock is moving while actually playing.
         if playheadRecentlyAdvanced(within: 2.0) {
             silentBufferTicks = 0
             return
