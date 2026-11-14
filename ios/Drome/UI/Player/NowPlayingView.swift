@@ -1301,6 +1301,7 @@ struct NowPlayingMoreSheet: View {
     @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject private var rotation: RotationManager
     @EnvironmentObject private var downloads: DownloadManager
+    @EnvironmentObject private var sleepTimer: SleepTimerController
 
     var body: some View {
         NavigationStack {
@@ -1444,6 +1445,41 @@ struct NowPlayingMoreSheet: View {
                               systemImage: "infinity")
                     }
                     .listRowBackground(DromeTheme.elevated)
+                }
+
+                Section {
+                    ForEach(SleepTimerController.presets, id: \.self) { minutes in
+                        Button {
+                            sleepTimer.schedule(minutes: minutes)
+                            isPresented = false
+                        } label: {
+                            HStack {
+                                Label("\(minutes) minutes", systemImage: "moon.zzz")
+                                Spacer()
+                                if sleepTimer.selectedMinutes == minutes {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(DromeTheme.accent)
+                                }
+                            }
+                        }
+                        .listRowBackground(DromeTheme.elevated)
+                    }
+                    if sleepTimer.isActive {
+                        Button(role: .destructive) {
+                            sleepTimer.cancel()
+                            isPresented = false
+                        } label: {
+                            Label(
+                                sleepTimer.remainingLabel.map { "Turn Off (\($0))" } ?? "Turn Off",
+                                systemImage: "moon.zzz")
+                        }
+                        .listRowBackground(DromeTheme.elevated)
+                    }
+                } header: {
+                    Text("Sleep timer")
+                } footer: {
+                    Text("Pauses music and podcasts when the timer ends.")
+                        .font(.caption)
                 }
             }
             .scrollContentBackground(.hidden)

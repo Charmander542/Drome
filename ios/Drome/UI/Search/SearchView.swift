@@ -9,6 +9,7 @@ struct SearchView: View {
 
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var podcastManager: PodcastManager
+    @EnvironmentObject private var podcastPlayer: PodcastPlayer
     @Environment(\.songNavigator) private var songNavigator
     @Environment(\.tabPopToRootTrigger) private var tabPopToRootTrigger
 
@@ -144,17 +145,18 @@ struct SearchView: View {
     @ViewBuilder
     private var libraryResults: some View {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let libraryEmpty = hits.isEmpty && podcastHits.isEmpty
         List {
             if trimmed.isEmpty {
                 recentSearchesSection
-            } else if let error, hits.isEmpty {
+            } else if let error, libraryEmpty {
                 Section {
                     Text(error)
                         .font(.subheadline)
                         .foregroundStyle(DromeTheme.muted)
                         .listRowBackground(DromeTheme.background)
                 }
-            } else if hits.isEmpty && hasCompletedSearch && !isSearching {
+            } else if libraryEmpty && hasCompletedSearch && !isSearching {
                 Section {
                     Text("No results")
                         .font(.subheadline)
@@ -162,10 +164,25 @@ struct SearchView: View {
                         .listRowBackground(DromeTheme.background)
                 }
             } else {
-                ForEach(hits) { hit in
-                    hitRow(hit)
-                        .listRowBackground(DromeTheme.background)
-                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                if !hits.isEmpty {
+                    Section {
+                        ForEach(hits) { hit in
+                            hitRow(hit)
+                                .listRowBackground(DromeTheme.background)
+                                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                        }
+                    }
+                }
+                if !podcastHits.isEmpty {
+                    Section {
+                        ForEach(podcastHits.prefix(6)) { hit in
+                            podcastNavigatingRow(hit)
+                                .listRowBackground(DromeTheme.background)
+                                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                        }
+                    } header: {
+                        Text("Podcasts")
+                    }
                 }
             }
         }
@@ -177,15 +194,15 @@ struct SearchView: View {
                 EmptyStateView(
                     title: "Find your music",
                     systemImage: "magnifyingglass",
-                    message: "Try an artist, album, song, or a line of lyrics.")
+                    message: "Try an artist, album, song, podcast, or a line of lyrics.")
                 .allowsHitTesting(false)
-            } else if !trimmed.isEmpty && hits.isEmpty && isSearching {
+            } else if !trimmed.isEmpty && libraryEmpty && isSearching {
                 ProgressView()
                     .tint(DromeTheme.muted)
             }
         }
         .overlay(alignment: .top) {
-            if isSearching && !hits.isEmpty {
+            if isSearching && !libraryEmpty {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
@@ -288,7 +305,7 @@ struct SearchView: View {
                 }
             } else {
                 ForEach(podcastHits) { hit in
-                    podcastRow(hit)
+                    podcastNavigatingRow(hit)
                         .listRowBackground(DromeTheme.background)
                         .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                 }
@@ -312,58 +329,24 @@ struct SearchView: View {
         .animation(nil, value: query)
     }
 
-    private func podcastRow(_ hit: PodcastDiscoverResult) -> some View {
-        let subscribed = podcastManager.isSubscribed(feedURL: hit.show.feedURL)
-        return HStack(spacing: 12) {
-            RemoteImage(
-                url: hit.show.imageURL,
-                placeholderSymbol: "headphones",
-                holdImageWhileLoading: true)
-                .frame(width: 44, height: 44)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(hit.show.title)
-                    .font(DromeTheme.rowTitle)
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Text(podcastSubtitle(hit.show))
-                    .font(.caption)
-                    .foregroundStyle(DromeTheme.muted)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 0)
-
-            if subscribed {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(DromeTheme.accent)
-            } else {
-                Button {
-                    Task { await subscribeToPodcast(feedURL: hit.show.feedURL) }
-                } label: {
-                    if subscribingFeedURLs.contains(hit.show.feedURL) {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(DromeTheme.accent)
-                    }
-                }
-                .buttonStyle(.plain)
-                .disabled(subscribingFeedURLs.contains(hit.show.feedURL))
-                .accessibilityLabel("Subscribe")
-            }
+    private func podcastNavigatingRow(_ hit: PodcastDiscoverResult) -> some View {
+        NavigationLink {
+            PodcastShowView(show: hit.show)
+        } label: {
+            podcastRowContent(hit.show, feedURLHint: false)
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .trailing) {
+            podcastSubscribeButton(feedURL: hit.show.feedURL)
+                .padding(.trailing, 4)
         }
     }
 
-    private func podcastFeedURLRow(_ show: PodcastShow) -> some View {
-        let subscribed = podcastManager.isSubscribed(feedURL: show.feedURL)
-        return HStack(spacing: 12) {
+    private func podcastRowContent(_ show: PodcastShow, feedURLHint: Bool) -> some View {
+        HStack(spacing: 12) {
             RemoteImage(
                 url: show.imageURL,
-                placeholderSymbol: "link",
+                placeholderSymbol: feedURLHint ? "link" : "headphones",
                 holdImageWhileLoading: true)
                 .frame(width: 44, height: 44)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -373,33 +356,52 @@ struct SearchView: View {
                     .font(DromeTheme.rowTitle)
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                Text(show.feedURL)
+                Text(feedURLHint ? show.feedURL : podcastSubtitle(show))
                     .font(.caption)
                     .foregroundStyle(DromeTheme.muted)
                     .lineLimit(1)
             }
 
-            Spacer(minLength: 0)
+            Spacer(minLength: 36)
+        }
+    }
 
+    private func podcastSubscribeButton(feedURL: String) -> some View {
+        let subscribed = podcastManager.isSubscribed(feedURL: feedURL)
+        return Group {
             if subscribed {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.title2)
                     .foregroundStyle(DromeTheme.accent)
             } else {
                 Button {
-                    Task { await subscribeToPodcast(feedURL: show.feedURL) }
+                    Task { await subscribeToPodcast(feedURL: feedURL) }
                 } label: {
-                    if subscribingFeedURLs.contains(show.feedURL) {
+                    if subscribingFeedURLs.contains(feedURL) {
                         ProgressView()
                     } else {
-                        Text("Add")
-                            .font(.caption.weight(.semibold))
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title2)
                             .foregroundStyle(DromeTheme.accent)
                     }
                 }
                 .buttonStyle(.plain)
-                .disabled(subscribingFeedURLs.contains(show.feedURL))
+                .disabled(subscribingFeedURLs.contains(feedURL))
+                .accessibilityLabel("Subscribe")
             }
+        }
+    }
+
+    private func podcastFeedURLRow(_ show: PodcastShow) -> some View {
+        NavigationLink {
+            PodcastShowView(show: show)
+        } label: {
+            podcastRowContent(show, feedURLHint: true)
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .trailing) {
+            podcastSubscribeButton(feedURL: show.feedURL)
+                .padding(.trailing, 4)
         }
     }
 
@@ -867,6 +869,7 @@ struct SearchView: View {
                 userInfo: ["query": trimmed])
             switch source {
             case .library:
+                podcastHits = []
                 await runLocalSearch(trimmed)
                 guard !Task.isCancelled else { return }
                 guard trimmed.count >= 2 else { return }
@@ -875,7 +878,10 @@ struct SearchView: View {
                 }
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
-                await runNetworkSearch(trimmed)
+                // Music + podcasts in one pass so Library search surfaces shows too.
+                async let music: Void = runNetworkSearch(trimmed)
+                async let podcasts: Void = runLibraryPodcastSearch(trimmed)
+                _ = await (music, podcasts)
             case .spotify:
                 try? await Task.sleep(nanoseconds: 180_000_000)
                 guard !Task.isCancelled else { return }
@@ -921,6 +927,21 @@ struct SearchView: View {
             ImageLoader.shared.prefetch(results.compactMap(\.show.imageURL), limit: 24)
         } catch {
             self.error = error.localizedDescription
+            podcastHits = []
+        }
+    }
+
+    /// Side-channel podcast hits while searching Library — failures stay quiet
+    /// so a flaky iTunes lookup never blanks music results.
+    private func runLibraryPodcastSearch(_ q: String) async {
+        guard PodcastManager.httpURL(from: q) == nil else { return }
+        do {
+            let results = try await PodcastManager.searchPodcasts(query: q, limit: 8)
+            guard !Task.isCancelled else { return }
+            podcastHits = results
+            ImageLoader.shared.prefetch(results.compactMap(\.show.imageURL), limit: 8)
+        } catch {
+            guard !Task.isCancelled else { return }
             podcastHits = []
         }
     }

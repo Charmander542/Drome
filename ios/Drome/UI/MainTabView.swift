@@ -164,6 +164,7 @@ struct MainTabView: View {
             SongNavigationStack(popToRootTrigger: tabPopTriggers[1]) {
                 SearchView()
                     .environmentObject(podcastManager)
+                    .environmentObject(podcastPlayer)
             }
             .opacity(selectedTab == 1 ? 1 : 0)
             .allowsHitTesting(selectedTab == 1)

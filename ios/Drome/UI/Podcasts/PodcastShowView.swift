@@ -291,8 +291,9 @@ struct PodcastShowView: View {
 
     private func loadEpisodes() async {
         isLoading = true
+        error = nil
         do {
-            episodes = try podcastManager.episodes(for: show.feedURL)
+            episodes = try await podcastManager.episodesForBrowse(feedURL: show.feedURL)
         } catch {
             self.error = error.localizedDescription
         }
@@ -301,7 +302,9 @@ struct PodcastShowView: View {
 
     private func refresh() async {
         isRefreshing = true
-        await podcastManager.refreshFeed(feedURL: show.feedURL)
+        if podcastManager.isSubscribed(feedURL: show.feedURL) {
+            await podcastManager.refreshFeed(feedURL: show.feedURL)
+        }
         await loadEpisodes()
         isRefreshing = false
     }
