@@ -33,6 +33,21 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # Guest remote access (Cloudflare Tunnel). Start with:
+  #   CLOUDFLARE_TUNNEL_TOKEN=... docker compose --profile cloudflare up -d
+  # Public hostnames are configured in the Cloudflare Zero Trust tunnel UI
+  # (music.example.com → http://navidrome:4533). See docs/cloudflare-remote-access.md.
+  cloudflared:
+    profiles: ["cloudflare"]
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    networks:
+      - navidrome_default
+
 networks:
   navidrome_default:
     external: true
