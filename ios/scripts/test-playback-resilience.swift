@@ -27,10 +27,20 @@ enum PlaybackResilience {
         next >= previous + minimumDelta
     }
 
-    static func stuckTickThreshold(bufferEmpty: Bool, waiting: Bool, playingFrozen: Bool) -> Int {
+    static func stuckTickThreshold(
+        bufferEmpty: Bool,
+        waiting: Bool,
+        playingFrozen: Bool,
+        pausedWhileWanting: Bool = false
+    ) -> Int {
+        if pausedWhileWanting { return 4 }
         if bufferEmpty || waiting { return 6 }
         if playingFrozen { return 10 }
         return 8
+    }
+
+    static func isPausedWhileWanting(wantsToPlay: Bool, isPaused: Bool, rate: Double) -> Bool {
+        wantsToPlay && isPaused && rate < 0.01
     }
 
     static let maxRebuildsPerTrack = 3
@@ -137,6 +147,37 @@ for _ in 0..<12 {
     }
 }
 expect(wouldRecover, "frozen playhead + empty buffer eventually recovers")
+
+print("=== paused while wanting (live-report dead state) ===")
+expect(
+    PlaybackResilience.isPausedWhileWanting(wantsToPlay: true, isPaused: true, rate: 0),
+    "want+paused+rate0 is dead state")
+expect(
+    !PlaybackResilience.isPausedWhileWanting(wantsToPlay: true, isPaused: false, rate: 1),
+    "actually playing is not dead state")
+expect(
+    !PlaybackResilience.isPausedWhileWanting(wantsToPlay: false, isPaused: true, rate: 0),
+    "user pause is not dead state")
+expect(
+    PlaybackResilience.stuckTickThreshold(
+        bufferEmpty: false, waiting: false, playingFrozen: false, pausedWhileWanting: true) == 4,
+    "paused-while-wanting recovers at ~2s")
+
+// Simulate the live report: wantsToPlay, tcs=paused, full buffer, playhead stuck.
+ticks = 0
+wouldRecover = false
+for _ in 0..<8 {
+    let pausedWanting = PlaybackResilience.isPausedWhileWanting(
+        wantsToPlay: true, isPaused: true, rate: 0)
+    let threshold = PlaybackResilience.stuckTickThreshold(
+        bufferEmpty: false, waiting: false, playingFrozen: false,
+        pausedWhileWanting: pausedWanting)
+    if pausedWanting {
+        ticks += 1
+        if ticks >= threshold { wouldRecover = true }
+    }
+}
+expect(wouldRecover, "paused-while-wanting trips recovery within ~2s")
 
 print("")
 if failures == 0 {

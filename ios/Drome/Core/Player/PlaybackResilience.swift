@@ -32,10 +32,22 @@ enum PlaybackResilience {
 
     /// Tick threshold before declaring playback stuck.
     /// Empty/waiting recovers sooner; playing-but-frozen (BT silence) waits longer.
-    static func stuckTickThreshold(bufferEmpty: Bool, waiting: Bool, playingFrozen: Bool) -> Int {
+    /// `pausedWhileWanting` is the "UI says play, AVPlayer is paused" dead state.
+    static func stuckTickThreshold(
+        bufferEmpty: Bool,
+        waiting: Bool,
+        playingFrozen: Bool,
+        pausedWhileWanting: Bool = false
+    ) -> Int {
+        if pausedWhileWanting { return 4 }          // ~2s — kick play() soon
         if bufferEmpty || waiting { return 6 }      // ~3s at 0.5s cadence
         if playingFrozen { return 10 }              // ~5s
         return 8
+    }
+
+    /// True when intent says play but the transport is fully stopped.
+    static func isPausedWhileWanting(wantsToPlay: Bool, isPaused: Bool, rate: Double) -> Bool {
+        wantsToPlay && isPaused && rate < 0.01
     }
 
     /// Max resilient rebuilds for one track before skipping.
