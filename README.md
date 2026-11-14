@@ -49,3 +49,8 @@ pairing). Same Navidrome login on each device.
 | `DROME_NAVIDROME_SCAN_USER` / `PASSWORD` | Optional; triggers immediate library scan |
 
 Auth reuses Subsonic `u` / `t` / `s` query params — same credentials as Navidrome login.
+
+### Remote access without Tailscale
+
+To let guests use Drome over the public internet (Cloudflare Tunnel), see
+[`docs/cloudflare-remote-access.md`](docs/cloudflare-remote-access.md).

@@ -7,6 +7,7 @@ import UIKit
 struct PodcastNowPlayingView: View {
     @EnvironmentObject private var podcastPlayer: PodcastPlayer
     @EnvironmentObject private var podcastManager: PodcastManager
+    @EnvironmentObject private var sleepTimer: SleepTimerController
     @Environment(\.dismiss) private var dismiss
     var onClose: (() -> Void)? = nil
 
@@ -25,6 +26,7 @@ struct PodcastNowPlayingView: View {
     /// When true, show classic elapsed under the playhead while seeking / after tap.
     @State private var showPreciseTime = false
     @State private var showChapters = false
+    @State private var showSleepTimer = false
 
     var body: some View {
         NavigationStack {
@@ -42,8 +44,8 @@ struct PodcastNowPlayingView: View {
                     VStack(spacing: 0) {
                         dismissChrome
                             .modifier(PodcastDismissGesture(
-                                enabled: !isDismissClosing && !showSpeedPicker && !showChapters,
-                                gesture: dismissGesture))
+                enabled: !isDismissClosing && !showSpeedPicker && !showChapters && !showSleepTimer,
+                gesture: dismissGesture))
 
                         episodePane(width: width, height: paneHeight)
                             .frame(width: width)
@@ -60,7 +62,7 @@ struct PodcastNowPlayingView: View {
                 }
             }
             .modifier(PodcastDismissGesture(
-                enabled: !isDismissClosing && !showSpeedPicker && !showChapters,
+                enabled: !isDismissClosing && !showSpeedPicker && !showChapters && !showSleepTimer,
                 gesture: dismissGesture))
             .ignoresSafeArea(edges: .bottom)
             .toolbar(.hidden, for: .navigationBar)
@@ -83,6 +85,25 @@ struct PodcastNowPlayingView: View {
                     Button(speedLabel(speed)) {
                         podcastPlayer.setSpeed(speed)
                         flash(speedLabel(speed))
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            .confirmationDialog(
+                sleepTimer.remainingLabel.map { "Sleep timer · \($0)" } ?? "Sleep timer",
+                isPresented: $showSleepTimer,
+                titleVisibility: .visible
+            ) {
+                ForEach(SleepTimerController.presets, id: \.self) { minutes in
+                    Button("\(minutes) minutes") {
+                        sleepTimer.schedule(minutes: minutes)
+                        flash("Sleep · \(minutes)m")
+                    }
+                }
+                if sleepTimer.isActive {
+                    Button("Turn Off", role: .destructive) {
+                        sleepTimer.cancel()
+                        flash("Sleep timer off")
                     }
                 }
                 Button("Cancel", role: .cancel) {}
@@ -467,19 +488,38 @@ struct PodcastNowPlayingView: View {
 
             Spacer(minLength: 0)
 
-            Button {
-                toggleStar()
+            Menu {
+                Button {
+                    toggleStar()
+                } label: {
+                    Label(
+                        episodeIsStarred ? "Remove Star" : "Star Episode",
+                        systemImage: episodeIsStarred ? "star.slash" : "star")
+                }
+                Divider()
+                Button {
+                    showSleepTimer = true
+                } label: {
+                    Label(
+                        sleepTimer.remainingLabel.map { "Sleep Timer · \($0)" } ?? "Sleep Timer",
+                        systemImage: "moon.zzz")
+                }
             } label: {
-                Image(systemName: episodeIsStarred ? "star.fill" : "star")
+                Image(systemName: sleepTimer.isActive
+                      ? "moon.zzz.fill"
+                      : (episodeIsStarred ? "star.fill" : "ellipsis"))
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(episodeIsStarred ? DromeTheme.accent : Color.white.opacity(0.55))
+                    .foregroundStyle(
+                        sleepTimer.isActive || episodeIsStarred
+                        ? DromeTheme.accent
+                        : Color.white.opacity(0.55))
                     .frame(width: 48, height: 44)
                     .background(
                         Capsule()
                             .fill(Color.white.opacity(0.08))
                     )
             }
-            .accessibilityLabel(episodeIsStarred ? "Remove star" : "Star episode")
+            .accessibilityLabel("More")
         }
         .frame(height: 72)
     }

@@ -66,6 +66,18 @@ final class PodcastManager: ObservableObject {
         try store.episodes(for: feedURL)
     }
 
+    /// Episodes for a show — store first, otherwise fetch the feed so Search
+    /// can open an unsubscribed show without forcing Subscribe first.
+    func episodesForBrowse(feedURL: String) async throws -> [PodcastEpisode] {
+        let cached = try store.episodes(for: feedURL)
+        if !cached.isEmpty { return cached }
+        guard let url = URL(string: feedURL), RSSPodcastParser.isHTTPURL(feedURL) else {
+            return []
+        }
+        let (_, episodes) = try await RSSPodcastParser.fetchFeed(url: url)
+        return episodes
+    }
+
     /// Refresh a single show's feed, adding any new episodes.
     func refreshFeed(feedURL: String) async {
         guard let url = Self.httpURL(from: feedURL) else { return }
