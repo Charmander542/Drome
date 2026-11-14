@@ -14,6 +14,7 @@ final class AppEnvironment: ObservableObject {
     let podcastStore: PodcastStore
     let podcastManager: PodcastManager
     let podcastPlayer: PodcastPlayer
+    let sleepTimer: SleepTimerController
 
     @Published private(set) var session: AppSession?
     private var pendingDeepLink: URL?
@@ -25,8 +26,13 @@ final class AppEnvironment: ObservableObject {
         podcastStore = PodcastStore.makeDefault()
         podcastManager = PodcastManager(store: podcastStore)
         podcastPlayer = PodcastPlayer(store: podcastStore)
+        sleepTimer = SleepTimerController()
         AppEnvironment.shared = self
         SharePlayRuntime.shared.startListening()
+        // Pause whichever engine is audible when the timer fires.
+        sleepTimer.bind(
+            pauseMusic: { [weak self] in self?.session?.player.pause() },
+            pausePodcast: { [weak self] in self?.podcastPlayer.pause() })
         if let account = accounts.activeAccount {
             activate(account)
         }

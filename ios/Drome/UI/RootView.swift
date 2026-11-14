@@ -10,6 +10,7 @@ struct RootView: View {
                     .dromeSession(session)
                     .environmentObject(env.podcastManager)
                     .environmentObject(env.podcastPlayer)
+                    .environmentObject(env.sleepTimer)
                     .id(session.id)
             } else {
                 LoginView()
