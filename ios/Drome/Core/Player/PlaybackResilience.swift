@@ -72,4 +72,31 @@ enum PlaybackResilience {
             && !hasCachedFile
             && !isHardFailure(reason)
     }
+
+    /// Prefer the published playhead when AV reports ~0 mid-track (stalled /
+    /// rebuilt items often reset `currentTime` before a deferred seek lands).
+    static func recoveryElapsed(accurate: TimeInterval, published: TimeInterval) -> TimeInterval {
+        if accurate < 0.75, published > 2.0 { return published }
+        return max(0, max(accurate, published))
+    }
+
+    /// Late-track stalls should advance, not soft-seek/rebuild back into the song.
+    static func shouldAdvanceNearEnd(
+        position: TimeInterval,
+        duration: TimeInterval,
+        threshold: TimeInterval = 2.5
+    ) -> Bool {
+        duration > 8 && position >= max(0, duration - threshold)
+    }
+
+    /// Whether a seekable window is far enough along to honor a recovery seek
+    /// without clamping the target down to a few buffered seconds.
+    static func seekableCovers(
+        target: TimeInterval,
+        seekableEnd: TimeInterval?,
+        tolerance: TimeInterval = 1.5
+    ) -> Bool {
+        guard let end = seekableEnd, end.isFinite, end > 0 else { return false }
+        return end + tolerance >= target
+    }
 }
