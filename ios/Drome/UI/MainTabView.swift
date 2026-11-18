@@ -7,12 +7,10 @@ struct MainTabView: View {
     @EnvironmentObject private var connectivity: ConnectivityMonitor
     @EnvironmentObject private var podcastManager: PodcastManager
     @EnvironmentObject private var podcastPlayer: PodcastPlayer
-    @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab = 0
     @State private var showNowPlaying = false
     @State private var showPodcastNowPlaying = false
     @State private var keyboardVisible = false
-    @State private var wasInBackground = false
     /// Bumped when the user re-taps an already-selected tab (pop to root).
     @State private var tabPopTriggers = [0, 0, 0, 0]
 
@@ -119,27 +117,9 @@ struct MainTabView: View {
         .onReceive(NotificationCenter.default.publisher(for: .dromeFocusCarPlaySearch)) { _ in
             selectedTab = 1
         }
-        .onChange(of: scenePhase) { _, phase in
-            switch phase {
-            case .background:
-                wasInBackground = true
-            case .active:
-                if wasInBackground, !showNowPlaying, !showPodcastNowPlaying {
-                    if player.isPlaying, player.current != nil {
-                        withAnimation(.easeOut(duration: 0.32)) {
-                            showNowPlaying = true
-                        }
-                    } else if podcastPlayer.isPlaying, podcastPlayer.currentEpisode != nil {
-                        withAnimation(.easeOut(duration: 0.32)) {
-                            showPodcastNowPlaying = true
-                        }
-                    }
-                }
-                wasInBackground = false
-            default:
-                break
-            }
-        }
+        // Do not auto-present Now Playing on foreground — `isPlaying` races with
+        // AVPlayer restore, so the sheet either never appeared or slid in after
+        // the tabs were already visible. Leave the mini player; tap to open.
         .onChange(of: podcastPlayer.currentEpisode?.id) { _, newID in
             if newID == nil { showPodcastNowPlaying = false }
         }
