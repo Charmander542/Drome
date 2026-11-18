@@ -60,6 +60,28 @@ enum PlaybackResilience {
             && !hasCachedFile
             && !isHardFailure(reason)
     }
+
+    static func recoveryElapsed(accurate: TimeInterval, published: TimeInterval) -> TimeInterval {
+        if accurate < 0.75, published > 2.0 { return published }
+        return max(0, max(accurate, published))
+    }
+
+    static func shouldAdvanceNearEnd(
+        position: TimeInterval,
+        duration: TimeInterval,
+        threshold: TimeInterval = 2.5
+    ) -> Bool {
+        duration > 8 && position >= max(0, duration - threshold)
+    }
+
+    static func seekableCovers(
+        target: TimeInterval,
+        seekableEnd: TimeInterval?,
+        tolerance: TimeInterval = 1.5
+    ) -> Bool {
+        guard let end = seekableEnd, end.isFinite, end > 0 else { return false }
+        return end + tolerance >= target
+    }
 }
 
 var failures = 0
@@ -178,6 +200,26 @@ for _ in 0..<8 {
     }
 }
 expect(wouldRecover, "paused-while-wanting trips recovery within ~2s")
+
+print("=== late-track recovery seek policy ===")
+expect(
+    PlaybackResilience.recoveryElapsed(accurate: 0, published: 180) == 180,
+    "AV zero mid-track prefers published playhead")
+expect(
+    PlaybackResilience.recoveryElapsed(accurate: 181, published: 180) == 181,
+    "healthy accurate playhead wins")
+expect(
+    PlaybackResilience.shouldAdvanceNearEnd(position: 208, duration: 210),
+    "stall in last 2.5s advances")
+expect(
+    !PlaybackResilience.shouldAdvanceNearEnd(position: 150, duration: 210),
+    "mid-track stall does not advance")
+expect(
+    !PlaybackResilience.seekableCovers(target: 180, seekableEnd: 5),
+    "5s seekable window must NOT cover 180s resume")
+expect(
+    PlaybackResilience.seekableCovers(target: 180, seekableEnd: 179),
+    "seekable near target is enough")
 
 print("")
 if failures == 0 {

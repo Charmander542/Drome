@@ -138,6 +138,8 @@ final class PlayerEngine: ObservableObject {
     private var stallRecoveryTask: Task<Void, Never>?
     /// Escalation to rebuild — kept separate so soft seeks can't cancel it.
     private var stallRebuildTask: Task<Void, Never>?
+    /// Waits for seekable ranges before honoring a mid-track recovery seek.
+    private var deferredRecoverySeekTask: Task<Void, Never>?
     private var lastStallRecoveryAt: Date = .distantPast
     private var stallStartedAt: Date?
     /// Soft seeks attempted for the current stall episode.
@@ -467,14 +469,24 @@ final class PlayerEngine: ObservableObject {
         DromeDiagnostics.logPlayer("stream format rebuild \(diagnosticStateLine())")
         configureAudioSession(force: true)
         let resume = wantsToPlay
-        let position = max(0, elapsed)
         #if !os(tvOS)
+        let position = recoveryElapsed()
         beginRecoveryQuietPeriod(3.0)
-        #endif
+        // Seek before audible play so we don't start at 0 then jump.
+        rebuildWindow(startPlaying: false)
+        if resume { setPlaybackIntent(true) }
+        if position > 0.5 {
+            seekWhenSeekable(to: position, thenPlay: resume)
+        } else if resume {
+            kickPlaybackIfNeeded()
+        }
+        #else
+        let position = max(0, elapsed)
         rebuildWindow(startPlaying: resume)
         if position > 0.5 {
             seek(to: position)
         }
+        #endif
     }
 
     private func finishRebuildSideEffects() -> Bool {
@@ -599,6 +611,8 @@ final class PlayerEngine: ObservableObject {
         tvUsingAudioPlayer = false
         #else
         clearStallRecoveryState(resetForcedResilient: true)
+        deferredRecoverySeekTask?.cancel()
+        deferredRecoverySeekTask = nil
         healthProbeCancellable?.cancel()
         healthProbeCancellable = nil
         #endif
@@ -1286,6 +1300,14 @@ final class PlayerEngine: ObservableObject {
     }
 
     func seek(to time: TimeInterval) {
+        seek(to: time, clampToPartialSeekable: true)
+    }
+
+    /// - Parameter clampToPartialSeekable: User scrubbing should stay inside the
+    ///   currently buffered window. Stall-recovery seeks must NOT — clamping a
+    ///   mid/late-track resume to a 5s seekable window is what made songs jump
+    ///   back to a "random" early position after a rebuild.
+    private func seek(to time: TimeInterval, clampToPartialSeekable: Bool) {
         #if os(tvOS)
         if tvUsingAudioPlayer {
             let seconds = max(0, time)
@@ -1315,7 +1337,8 @@ final class PlayerEngine: ObservableObject {
         let maxSeekable = max(0, itemDuration - 0.35)
         var seconds = min(max(0, time), maxSeekable)
 
-        if let range = item.seekableTimeRanges.last?.timeRangeValue {
+        if clampToPartialSeekable,
+           let range = item.seekableTimeRanges.last?.timeRangeValue {
             let start = range.start.seconds
             let end = CMTimeRangeGetEnd(range).seconds
             if start.isFinite, end.isFinite, end > start {
@@ -1323,12 +1346,14 @@ final class PlayerEngine: ObservableObject {
             }
         }
 
+        let requested = seconds
         let target = CMTime(seconds: seconds, preferredTimescale: 600)
         seekEpoch += 1
         let epoch = seekEpoch
         let shouldResume = player.timeControlStatus == .playing
             || player.rate > 0
             || isPlaying
+            || wantsToPlay
 
         // HTTP streams on the phone need slack or the seek no-ops. Apple TV
         // playing a local file needs an exact seek — a 1s window plus another
@@ -1344,7 +1369,15 @@ final class PlayerEngine: ObservableObject {
                 guard let self, self.seekEpoch == epoch else { return }
                 self.appliedSeekEpoch = epoch
                 let actual = self.player.currentTime().seconds
-                let nextElapsed = (actual.isFinite && actual >= 0) ? actual : seconds
+                // Never publish ~0 when we asked for a mid-track seek — the item
+                // often still reports 0 until the seek finishes decoding.
+                let nextElapsed: TimeInterval
+                if actual.isFinite, actual >= 0,
+                   !(requested > 2.0 && actual < 0.75) {
+                    nextElapsed = actual
+                } else {
+                    nextElapsed = requested
+                }
                 var nextDuration = self.duration
                 if let itemDuration = self.player.currentItem?.duration.seconds,
                    itemDuration.isFinite, itemDuration > 0 {
@@ -1361,6 +1394,81 @@ final class PlayerEngine: ObservableObject {
 
         setPlayhead(elapsed: seconds)
         pushNowPlayingInfo()
+    }
+
+    /// Resume at `time` only once the new item can actually seek there.
+    private func seekWhenSeekable(to time: TimeInterval, thenPlay: Bool) {
+        #if os(tvOS)
+        seek(to: time)
+        if thenPlay { kickPlaybackIfNeeded() }
+        return
+        #else
+        deferredRecoverySeekTask?.cancel()
+        let target = max(0, time)
+        setPlayhead(elapsed: target)
+        lastObservedPlayhead = target
+        lastPlayheadAdvanceAt = .distantPast
+
+        if tryCommitRecoverySeek(to: target, thenPlay: thenPlay) { return }
+
+        deferredRecoverySeekTask = Task { [weak self] in
+            for _ in 0..<40 { // ~10s @ 250ms
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                guard !Task.isCancelled else { return }
+                let done = await MainActor.run {
+                    self?.tryCommitRecoverySeek(to: target, thenPlay: thenPlay) ?? true
+                }
+                if done { return }
+            }
+            await MainActor.run {
+                guard let self else { return }
+                DromeDiagnostics.logPlayer(
+                    "recovery seek timeout → force pos=\(Int(target))s")
+                self.seek(to: target, clampToPartialSeekable: false)
+                if thenPlay {
+                    self.activateAudioSession()
+                    self.playCurrentWhenReady()
+                }
+            }
+        }
+        #endif
+    }
+
+    /// Returns true once a recovery seek has been issued (or is impossible).
+    private func tryCommitRecoverySeek(to target: TimeInterval, thenPlay: Bool) -> Bool {
+        guard let item = player.currentItem, item.status != .failed else { return false }
+        let isFile = (item.asset as? AVURLAsset)?.url.isFileURL == true
+        if isFile {
+            seek(to: target, clampToPartialSeekable: false)
+            if thenPlay {
+                activateAudioSession()
+                playCurrentWhenReady()
+            }
+            return true
+        }
+        let seekableEnd = item.seekableTimeRanges.last.flatMap { range -> TimeInterval? in
+            let end = CMTimeRangeGetEnd(range.timeRangeValue).seconds
+            return end.isFinite ? end : nil
+        }
+        let durationReady = item.duration.seconds.isFinite && item.duration.seconds >= target - 1
+        let covered = PlaybackResilience.seekableCovers(
+            target: target, seekableEnd: seekableEnd)
+        // Wait until the buffered/seekable window reaches the resume point.
+        // Seeking earlier clamps into a short window → "random" early resume.
+        guard item.status == .readyToPlay else { return false }
+        if !covered, target > 2 { return false }
+        guard covered || durationReady else { return false }
+        seek(to: target, clampToPartialSeekable: false)
+        if thenPlay {
+            activateAudioSession()
+            playCurrentWhenReady()
+        }
+        return true
+    }
+
+    /// Sticky playhead for stall recovery — never trust a mid-track AV zero.
+    private func recoveryElapsed() -> TimeInterval {
+        PlaybackResilience.recoveryElapsed(accurate: accurateElapsed(), published: elapsed)
     }
 
     /// High-resolution playhead for karaoke / scrubber UIs. Prefer this over
@@ -1946,9 +2054,11 @@ final class PlayerEngine: ObservableObject {
             setPlaybackIntent(false)
         }
         // Let the new item buffer before stall/silence detectors can fire.
+        // Do NOT pretend the playhead advanced — that aborted recovery while
+        // we were still sitting on a clamped early seek after rebuild.
         beginRecoveryQuietPeriod(engagePlayback ? 3.0 : 1.0)
-        lastObservedPlayhead = 0
-        lastPlayheadAdvanceAt = Date()
+        lastObservedPlayhead = -1
+        lastPlayheadAdvanceAt = .distantPast
         prefetchUpcomingIntoCache()
         // Warm the current track into the disk cache in the background so a
         // later Tailscale / BT blip can rebuild onto a local file.
@@ -2786,7 +2896,12 @@ final class PlayerEngine: ObservableObject {
             DromeDiagnostics.logPlayer("\(reason) → ignored (rebuild in flight)")
             return false
         }
-        let position = max(0, accurateElapsed())
+        let position = recoveryElapsed()
+        if PlaybackResilience.shouldAdvanceNearEnd(position: position, duration: duration) {
+            DromeDiagnostics.logPlayer("\(reason) near end → advance")
+            advanceAfterCurrentEnds(playImmediately: wantsToPlay)
+            return true
+        }
         // Drop any stream-cache file we were playing — a truncated MP3 is the
         // classic "1 second then fail" source, and rebuild must not reuse it.
         if let url = (player.currentItem?.asset as? AVURLAsset)?.url,
@@ -2865,10 +2980,18 @@ final class PlayerEngine: ObservableObject {
         }
 
         lastStallRecoveryAt = Date()
-        let position = max(0, accurateElapsed())
+        let position = recoveryElapsed()
         DromeDiagnostics.logIncident(
             "stall-recover:\(reason) pos=\(Int(position))s softSeek=\(stallSoftSeekCount) rebuilds=\(stallRebuildCountForTrack)",
             player: self)
+
+        // Near the end, advance — soft-seek/rebuild here restarts or clamps oddly.
+        if PlaybackResilience.shouldAdvanceNearEnd(position: position, duration: duration) {
+            DromeDiagnostics.logPlayer("stall near end → advance")
+            clearStallRecoveryState(resetForcedResilient: false)
+            advanceAfterCurrentEnds(playImmediately: wantsToPlay)
+            return
+        }
 
         // Sticky play intent + paused transport: re-assert play() first. Soft
         // seeking a fully buffered ready item just thrashes the seek epoch.
@@ -2899,7 +3022,7 @@ final class PlayerEngine: ObservableObject {
             stallSoftSeekCount += 1
             beginRecoveryQuietPeriod(2.5)
             try? AVAudioSession.sharedInstance().setActive(true, options: [])
-            seek(to: position)
+            seek(to: position, clampToPartialSeekable: false)
             playCurrentWhenReady()
             armStallRebuildEscalation(position: position, reason: reason)
             return
@@ -2950,6 +3073,8 @@ final class PlayerEngine: ObservableObject {
         stallRecoveryTask = nil
         stallRebuildTask?.cancel()
         stallRebuildTask = nil
+        deferredRecoverySeekTask?.cancel()
+        deferredRecoverySeekTask = nil
         stallStartedAt = nil
         stallSoftSeekCount = 0
         silentBufferTicks = 0
@@ -3104,12 +3229,16 @@ final class PlayerEngine: ObservableObject {
         if PlaybackResilience.shouldInvalidateCache(rebuildAttempt: stallRebuildCountForTrack) {
             streamCache.invalidate(songID: song.id)
         }
+        let resumeAt = PlaybackResilience.recoveryElapsed(
+            accurate: position, published: elapsed)
         DromeDiagnostics.logPlayer(
-            "stall rebuild (\(reason)) #\(stallRebuildCountForTrack) pos=\(Int(position))s")
+            "stall rebuild (\(reason)) #\(stallRebuildCountForTrack) pos=\(Int(resumeAt))s")
         stallRecoveryTask?.cancel()
         stallRecoveryTask = nil
         stallRebuildTask?.cancel()
         stallRebuildTask = nil
+        deferredRecoverySeekTask?.cancel()
+        deferredRecoverySeekTask = nil
         stallSoftSeekCount = 0
         silentBufferTicks = 0
         // Force resilient URL selection for the rebuild (and rest of track).
@@ -3117,9 +3246,14 @@ final class PlayerEngine: ObservableObject {
         lastCellularCompressed = true
         beginRecoveryQuietPeriod(4.0)
         let resume = wantsToPlay
-        rebuildWindow(startPlaying: resume)
-        if position > 0.5 {
-            seek(to: position)
+        // Build paused, seek once seekable covers resumeAt, then play — avoids
+        // audible start-at-0 and partial-seekable clamps to a random early spot.
+        rebuildWindow(startPlaying: false)
+        if resume { setPlaybackIntent(true) }
+        if resumeAt > 0.5 {
+            seekWhenSeekable(to: resumeAt, thenPlay: resume)
+        } else if resume {
+            kickPlaybackIfNeeded()
         }
         // Kick a cache fill so the *next* stall can play from disk.
         Task { [weak self] in
