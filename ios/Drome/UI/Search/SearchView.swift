@@ -373,17 +373,24 @@ struct SearchView: View {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.title2)
                     .foregroundStyle(DromeTheme.accent)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                    .accessibilityLabel("Subscribed")
             } else {
                 Button {
                     Task { await subscribeToPodcast(feedURL: feedURL) }
                 } label: {
-                    if subscribingFeedURLs.contains(feedURL) {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(DromeTheme.accent)
+                    Group {
+                        if subscribingFeedURLs.contains(feedURL) {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(DromeTheme.accent)
+                        }
                     }
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(subscribingFeedURLs.contains(feedURL))

@@ -35,6 +35,70 @@ final class RSSPodcastParserTests: XCTestCase {
         XCTAssertTrue(first.description?.contains("HTML") == true)
     }
 
+    /// Feeds often duplicate the same string in `<title>` and `<itunes:title>`.
+    /// Local-name fallback must not concatenate them into "TitleTitle".
+    func testDoesNotDoubleTitleWhenItunesTitleMatches() throws {
+        let xml = try fixture("sample_feed.xml")
+        let (show, episodes) = try RSSPodcastParser.parseFeed(
+            xml: xml,
+            feedURL: "https://example.com/feed.xml")
+
+        XCTAssertEqual(show.title, "Drome Test Podcast")
+        XCTAssertFalse(show.title.contains("Drome Test PodcastDrome"))
+
+        let first = try XCTUnwrap(episodes.first)
+        XCTAssertEqual(first.title, "Episode One: Beginnings")
+        XCTAssertFalse(first.title.contains("BeginningsEpisode") || first.title.contains("BeginningsBeginnings"))
+    }
+
+    func testPrefersRSSTitleOverItunesTitle() throws {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+          <channel>
+            <title>Channel RSS Title</title>
+            <itunes:title>Channel iTunes Title</itunes:title>
+            <item>
+              <title>Show 74 - Mania for Subjugation IV</title>
+              <itunes:title>Mania for Subjugation IV</itunes:title>
+              <guid>ep-mania-iv</guid>
+              <enclosure url="https://example.com/ep.mp3" length="1" type="audio/mpeg"/>
+            </item>
+          </channel>
+        </rss>
+        """
+        let (show, episodes) = try RSSPodcastParser.parseFeed(
+            xml: xml,
+            feedURL: "https://example.com/feed.xml")
+
+        XCTAssertEqual(show.title, "Channel RSS Title")
+        let episode = try XCTUnwrap(episodes.first)
+        XCTAssertEqual(episode.title, "Show 74 - Mania for Subjugation IV")
+    }
+
+    func testUsesItunesTitleWhenRSSTitleMissing() throws {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+          <channel>
+            <itunes:title>iTunes-Only Show</itunes:title>
+            <item>
+              <itunes:title>iTunes-Only Episode</itunes:title>
+              <guid>ep-itunes-only</guid>
+              <enclosure url="https://example.com/ep.mp3" length="1" type="audio/mpeg"/>
+            </item>
+          </channel>
+        </rss>
+        """
+        let (show, episodes) = try RSSPodcastParser.parseFeed(
+            xml: xml,
+            feedURL: "https://example.com/feed.xml")
+
+        XCTAssertEqual(show.title, "iTunes-Only Show")
+        let episode = try XCTUnwrap(episodes.first)
+        XCTAssertEqual(episode.title, "iTunes-Only Episode")
+    }
+
     func testParsesEpisodeDurationSeconds() throws {
         let xml = try fixture("sample_feed.xml")
         let (_, episodes) = try RSSPodcastParser.parseFeed(

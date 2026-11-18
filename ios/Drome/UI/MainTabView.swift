@@ -31,35 +31,41 @@ struct MainTabView: View {
         )
     }
 
-    var body: some View {
-        VStack(spacing: 0) {
-            if !connectivity.isOnline {
-                disconnectedBanner
-            }
+    private var isNowPlayingPresented: Bool {
+        showNowPlaying || showPodcastNowPlaying
+    }
 
-            // Tab content fills remaining space ABOVE the chrome. Custom switch
-            // (not TabView) so iOS liquid-glass UITabBar never appears above the
-            // mini player. Sibling chrome — not safeAreaInset — keeps Lists clear.
-            Group {
-                if connectivity.isOnline {
-                    tabContent
-                        .tint(DromeTheme.accent)
-                } else {
-                    SongNavigationStack {
-                        DownloadsView(isOfflineMode: true)
+    var body: some View {
+        ZStack {
+            VStack(spacing: 0) {
+                if !connectivity.isOnline {
+                    disconnectedBanner
+                }
+
+                // Tab content fills remaining space ABOVE the chrome. Custom switch
+                // (not TabView) so iOS liquid-glass UITabBar never appears above the
+                // mini player. Sibling chrome — not safeAreaInset — keeps Lists clear.
+                Group {
+                    if connectivity.isOnline {
+                        tabContent
+                            .tint(DromeTheme.accent)
+                    } else {
+                        SongNavigationStack {
+                            DownloadsView(isOfflineMode: true)
+                        }
                     }
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if !keyboardVisible {
-                bottomChrome
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                if !keyboardVisible {
+                    bottomChrome
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
-        }
-        .animation(.easeOut(duration: 0.2), value: keyboardVisible)
-        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: activeMiniPlayer)
-        .overlay {
+            // Hide Home / tabs from the accessibility tree while NP is up.
+            .accessibilityHidden(isNowPlayingPresented)
+            .allowsHitTesting(!isNowPlayingPresented)
+
             if showNowPlaying {
                 // Offset lives on the stack inside NowPlayingView so the whole
                 // sheet (not just content over a black nav chrome) slides away.
@@ -68,6 +74,7 @@ struct MainTabView: View {
                     txn.disablesAnimations = true
                     withTransaction(txn) { showNowPlaying = false }
                 }
+                .accessibilityAddTraits(.isModal)
                 .transition(.asymmetric(
                     insertion: .move(edge: .bottom),
                     removal: .identity))
@@ -77,11 +84,14 @@ struct MainTabView: View {
                     txn.disablesAnimations = true
                     withTransaction(txn) { showPodcastNowPlaying = false }
                 }
+                .accessibilityAddTraits(.isModal)
                 .transition(.asymmetric(
                     insertion: .move(edge: .bottom),
                     removal: .identity))
             }
         }
+        .animation(.easeOut(duration: 0.2), value: keyboardVisible)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: activeMiniPlayer)
         .alert(
             "Switch playback?",
             isPresented: switchPromptBinding

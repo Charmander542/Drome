@@ -9,6 +9,7 @@ struct PodcastNowPlayingView: View {
     @EnvironmentObject private var podcastManager: PodcastManager
     @EnvironmentObject private var sleepTimer: SleepTimerController
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     var onClose: (() -> Void)? = nil
 
     @State private var isSeeking = false
@@ -215,31 +216,27 @@ struct PodcastNowPlayingView: View {
         let screenH = UIScreen.main.bounds.height
         let estimatedPane = max(400, (screenH.isFinite ? screenH : 800) - 200)
         let artSide = min(contentWidth, max(200, estimatedPane * 0.42))
+        let compactArtSide = min(contentWidth, max(120, estimatedPane * 0.28))
         let paneHeight = max(0, height)
 
-        return VStack(spacing: 0) {
-            Spacer(minLength: 8)
-
-            coverCard(url: artworkURL, side: artSide)
-
-            Spacer(minLength: 20)
-
-            metadataBlock
-                .frame(width: contentWidth, alignment: .leading)
-                .id(podcastPlayer.currentEpisode?.id)
-
-            Spacer(minLength: 22)
-
-            progressBlock
-                .frame(width: contentWidth)
-
-            Spacer(minLength: 18)
-
-            transport
-                .frame(width: contentWidth)
-                .padding(.bottom, 28)
+        return ViewThatFits(in: .vertical) {
+            episodePaneStacked(
+                width: width,
+                contentWidth: contentWidth,
+                paneHeight: paneHeight,
+                artSide: artSide,
+                compact: false)
+            // Accessibility / short-height fallback: scroll so transport stays reachable.
+            ScrollView(.vertical, showsIndicators: false) {
+                episodePaneStacked(
+                    width: width,
+                    contentWidth: contentWidth,
+                    paneHeight: nil,
+                    artSide: compactArtSide,
+                    compact: true)
+            }
+            .frame(width: max(0, width), height: paneHeight, alignment: .top)
         }
-        .frame(width: max(0, width), height: paneHeight)
         .overlay(alignment: .bottom) {
             if let message = podcastPlayer.errorMessage {
                 Text(message)
@@ -253,9 +250,55 @@ struct PodcastNowPlayingView: View {
         }
     }
 
+    private func episodePaneStacked(
+        width: CGFloat,
+        contentWidth: CGFloat,
+        paneHeight: CGFloat?,
+        artSide: CGFloat,
+        compact: Bool
+    ) -> some View {
+        VStack(spacing: 0) {
+            if compact {
+                coverCard(url: artworkURL, side: artSide)
+                    .padding(.top, 8)
+                    .padding(.bottom, 16)
+            } else {
+                Spacer(minLength: 8)
+                coverCard(url: artworkURL, side: artSide)
+                Spacer(minLength: 20)
+            }
+
+            metadataBlock
+                .frame(width: contentWidth, alignment: .leading)
+                .id(podcastPlayer.currentEpisode?.id)
+
+            if compact {
+                progressBlock
+                    .frame(width: contentWidth)
+                    .padding(.top, 18)
+                transport
+                    .frame(width: contentWidth)
+                    .padding(.top, 16)
+                    .padding(.bottom, 28)
+            } else {
+                Spacer(minLength: 22)
+                progressBlock
+                    .frame(width: contentWidth)
+                Spacer(minLength: 18)
+                transport
+                    .frame(width: contentWidth)
+                    .padding(.bottom, 28)
+            }
+        }
+        .frame(width: max(0, width), height: paneHeight, alignment: .top)
+    }
+
     private func coverCard(url: URL?, side: CGFloat) -> some View {
         let safeSide = Self.finiteSize(side)
-        return RemoteImage(url: url, holdImageWhileLoading: true)
+        return RemoteImage(
+            url: url,
+            placeholderSymbol: "headphones",
+            holdImageWhileLoading: true)
             .frame(width: safeSide, height: safeSide)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .shadow(color: .black.opacity(0.45), radius: 24, y: 14)
@@ -263,34 +306,48 @@ struct PodcastNowPlayingView: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(Color.white.opacity(0.08), lineWidth: 1)
             }
+            .accessibilityLabel("Podcast artwork")
     }
 
     private var metadataBlock: some View {
         let episode = podcastPlayer.currentEpisode
         let title = cleaned(episode?.title) ?? "Episode"
         let showName = cleaned(currentShow?.title) ?? "Podcast"
+        let allowWrap = dynamicTypeSize.isAccessibilitySize
 
         return VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .font(.title2.weight(.bold))
                 .foregroundStyle(.white)
-                .lineLimit(3)
-                .minimumScaleFactor(0.85)
+                .lineLimit(allowWrap ? 4 : 3)
+                .minimumScaleFactor(allowWrap ? 0.7 : 0.85)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack(spacing: 8) {
+            if allowWrap {
                 Text(showName)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(Color.white.opacity(0.7))
-                    .lineLimit(1)
-
+                    .fixedSize(horizontal: false, vertical: true)
                 if let date = episode?.pubDate {
-                    Text("·")
-                        .foregroundStyle(Color.white.opacity(0.35))
                     Text(date.formatted(date: .abbreviated, time: .omitted))
                         .font(.subheadline)
                         .foregroundStyle(Color.white.opacity(0.45))
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Text(showName)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Color.white.opacity(0.7))
                         .lineLimit(1)
+
+                    if let date = episode?.pubDate {
+                        Text("·")
+                            .foregroundStyle(Color.white.opacity(0.35))
+                        Text(date.formatted(date: .abbreviated, time: .omitted))
+                            .font(.subheadline)
+                            .foregroundStyle(Color.white.opacity(0.45))
+                            .lineLimit(1)
+                    }
                 }
             }
 
@@ -298,7 +355,7 @@ struct PodcastNowPlayingView: View {
                 Text(chapter.title)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(DromeTheme.accent.opacity(0.95))
-                    .lineLimit(1)
+                    .lineLimit(allowWrap ? 2 : 1)
                     .padding(.top, 2)
             }
         }
