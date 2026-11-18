@@ -28,14 +28,6 @@ enum Formatters {
     }
 }
 
-extension Array where Element == Song {
-    /// Removes duplicate songs by id, keeping first occurrence.
-    func uniquedByID() -> [Song] {
-        var seen = Set<String>()
-        return filter { seen.insert($0.id).inserted }
-    }
-}
-
 extension Sequence where Element: Hashable {
     func uniqued() -> [Element] {
         var seen = Set<Element>()

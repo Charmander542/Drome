@@ -9,6 +9,9 @@ mkdir -p "$SRC"
 cp "$ROOT/Drome/Core/Models/PodcastModels.swift" "$SRC/"
 cp "$ROOT/Drome/Core/Podcasts/RSSPodcastParser.swift" "$SRC/"
 cp "$ROOT/Drome/Core/Podcasts/PodcastStore.swift" "$SRC/"
+# Chapter timestamps + episode startTimeText depend on these.
+cp "$ROOT/Drome/Core/Podcasts/PodcastChapterResolver.swift" "$SRC/"
+cp "$ROOT/Drome/Shared/Formatters.swift" "$SRC/"
 
 cd "$KIT"
 swift test "$@"

@@ -95,6 +95,8 @@ private final class FeedParserDelegate: NSObject, XMLParserDelegate {
 
     // Channel-level accumulators
     private var channelTitle = ""
+    /// True once RSS `<title>` was seen so `<itunes:title>` is not concatenated.
+    private var channelHasStandardTitle = false
     private var channelAuthor = ""
     private var channelDescription = ""
     private var channelImageURL: URL?
@@ -243,7 +245,13 @@ private final class FeedParserDelegate: NSObject, XMLParserDelegate {
         guard !text.isEmpty else { return }
         switch elementName {
         case "title":
-            builder.title += text
+            // Prefer RSS <title>. Do not also append <itunes:title> (same local name).
+            builder.title = text
+            builder.hasStandardTitle = true
+        case "itunes:title":
+            if !builder.hasStandardTitle {
+                builder.title = text
+            }
         case "description", "content:encoded", "itunes:summary", "itunes:subtitle":
             if builder.description.isEmpty || elementName == "description" {
                 if builder.description.isEmpty { builder.description = text }
@@ -265,8 +273,9 @@ private final class FeedParserDelegate: NSObject, XMLParserDelegate {
         case "itunes:explicit":
             builder.explicit = Self.isExplicit(text)
         default:
-            if local == "title" { builder.title += text }
-            else if local == "description", builder.description.isEmpty { builder.description = text }
+            // Namespaced titles (e.g. itunes:title) are handled above — never
+            // concatenate via local-name fallback.
+            if local == "description", builder.description.isEmpty { builder.description = text }
             else if local == "guid" { builder.guid += text }
             else if local == "pubDate" { builder.pubDate = text }
         }
@@ -276,7 +285,14 @@ private final class FeedParserDelegate: NSObject, XMLParserDelegate {
         guard !text.isEmpty else { return }
         switch elementName {
         case "title":
-            if !inRSSImage { channelTitle += text }
+            if !inRSSImage {
+                channelTitle = text
+                channelHasStandardTitle = true
+            }
+        case "itunes:title":
+            if !inRSSImage, !channelHasStandardTitle {
+                channelTitle = text
+            }
         case "itunes:author", "managingEditor", "dc:creator", "author":
             if channelAuthor.isEmpty { channelAuthor = text }
         case "description", "itunes:summary", "itunes:subtitle":
@@ -294,8 +310,7 @@ private final class FeedParserDelegate: NSObject, XMLParserDelegate {
         case "itunes:explicit":
             channelExplicit = Self.isExplicit(text)
         default:
-            if local == "title", !inRSSImage { channelTitle += text }
-            else if local == "description", channelDescription.isEmpty { channelDescription = text }
+            if local == "description", channelDescription.isEmpty { channelDescription = text }
             else if local == "url", inRSSImage, channelImageURL == nil, RSSPodcastParser.isHTTPURL(text) {
                 channelImageURL = URL(string: text)
             }
@@ -319,6 +334,8 @@ private final class FeedParserDelegate: NSObject, XMLParserDelegate {
 
 private final class PodcastEpisodeBuilder {
     var title = ""
+    /// True once RSS `<title>` was seen so `<itunes:title>` is not concatenated.
+    var hasStandardTitle = false
     var description = ""
     var guid = ""
     var pubDate: String?
