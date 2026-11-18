@@ -336,6 +336,8 @@ struct SearchView: View {
             podcastRowContent(hit.show, feedURLHint: false)
         }
         .buttonStyle(.plain)
+        // Subscribe owns the trailing chrome — hide the default disclosure chevron.
+        .navigationLinkIndicatorVisibility(.hidden)
         .overlay(alignment: .trailing) {
             podcastSubscribeButton(feedURL: hit.show.feedURL)
                 .padding(.trailing, 4)
@@ -362,7 +364,8 @@ struct SearchView: View {
                     .lineLimit(1)
             }
 
-            Spacer(minLength: 36)
+            // Room for the 44pt Subscribe control without crowding the title.
+            Spacer(minLength: 52)
         }
     }
 
@@ -406,6 +409,7 @@ struct SearchView: View {
             podcastRowContent(show, feedURLHint: true)
         }
         .buttonStyle(.plain)
+        .navigationLinkIndicatorVisibility(.hidden)
         .overlay(alignment: .trailing) {
             podcastSubscribeButton(feedURL: show.feedURL)
                 .padding(.trailing, 4)

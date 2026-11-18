@@ -62,8 +62,13 @@ struct PodcastNowPlayingView: View {
                     if h > 0 { sheetHeight = height }
                 }
             }
+            // Don't steal vertical pans from the AX scroll pane — chrome still dismisses.
             .modifier(PodcastDismissGesture(
-                enabled: !isDismissClosing && !showSpeedPicker && !showChapters && !showSleepTimer,
+                enabled: !usesScrollableEpisodePane
+                    && !isDismissClosing
+                    && !showSpeedPicker
+                    && !showChapters
+                    && !showSleepTimer,
                 gesture: dismissGesture))
             .ignoresSafeArea(edges: .bottom)
             .toolbar(.hidden, for: .navigationBar)
@@ -175,6 +180,7 @@ struct PodcastNowPlayingView: View {
             back: backdropBack,
             frontOpacity: backdropFrontOpacity
         )
+        .accessibilityHidden(true)
         .onAppear { syncBackground(animated: false) }
         .onChange(of: artworkURL?.absoluteString) { _, _ in
             syncBackground(animated: true)
@@ -208,6 +214,12 @@ struct PodcastNowPlayingView: View {
         }
     }
 
+    /// Accessibility sizes need a scrollable stack — Spacers make ViewThatFits
+    /// treat a fixed-height pane as always fitting, so AX must opt in explicitly.
+    private var usesScrollableEpisodePane: Bool {
+        dynamicTypeSize.isAccessibilitySize
+    }
+
     // MARK: - Episode pane
 
     private func episodePane(width: CGFloat, height: CGFloat) -> some View {
@@ -219,23 +231,26 @@ struct PodcastNowPlayingView: View {
         let compactArtSide = min(contentWidth, max(120, estimatedPane * 0.28))
         let paneHeight = max(0, height)
 
-        return ViewThatFits(in: .vertical) {
-            episodePaneStacked(
-                width: width,
-                contentWidth: contentWidth,
-                paneHeight: paneHeight,
-                artSide: artSide,
-                compact: false)
-            // Accessibility / short-height fallback: scroll so transport stays reachable.
-            ScrollView(.vertical, showsIndicators: false) {
+        return Group {
+            if usesScrollableEpisodePane {
+                ScrollView(.vertical, showsIndicators: true) {
+                    episodePaneStacked(
+                        width: width,
+                        contentWidth: contentWidth,
+                        paneHeight: nil,
+                        artSide: compactArtSide,
+                        compact: true)
+                }
+                .frame(width: max(0, width), height: paneHeight, alignment: .top)
+                .scrollBounceBehavior(.basedOnSize)
+            } else {
                 episodePaneStacked(
                     width: width,
                     contentWidth: contentWidth,
-                    paneHeight: nil,
-                    artSide: compactArtSide,
-                    compact: true)
+                    paneHeight: paneHeight,
+                    artSide: artSide,
+                    compact: false)
             }
-            .frame(width: max(0, width), height: paneHeight, alignment: .top)
         }
         .overlay(alignment: .bottom) {
             if let message = podcastPlayer.errorMessage {

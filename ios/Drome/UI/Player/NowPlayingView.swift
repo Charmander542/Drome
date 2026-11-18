@@ -330,6 +330,7 @@ struct NowPlayingView: View {
             back: backdropBack,
             frontOpacity: backdropFrontOpacity
         )
+        .accessibilityHidden(true)
         .onAppear { syncBackground(animated: false) }
         .onChange(of: currentBackdropURL?.absoluteString) { _, _ in
             syncBackground(animated: true)
@@ -1175,6 +1176,9 @@ enum NowPlayingBackdrop {
                     endPoint: .bottom
                 )
             }
+            // Decorative wash only — never expose music.note / "Song" to VoiceOver.
+            .accessibilityHidden(true)
+            .accessibilityElement(children: .ignore)
         }
 
         @ViewBuilder
@@ -1208,9 +1212,11 @@ enum NowPlayingBackdrop {
                         .blur(radius: 72)
                         .opacity(0.42)
                         .allowsHitTesting(false)
+                        .accessibilityHidden(true)
                 }
             }
             .allowsHitTesting(false)
+            .accessibilityHidden(true)
         }
     }
 
