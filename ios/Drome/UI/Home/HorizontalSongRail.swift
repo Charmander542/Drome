@@ -46,7 +46,7 @@ struct HorizontalSongRail: View {
             requestPlay(index: index)
         } label: {
             VStack(alignment: .leading, spacing: 8) {
-                RemoteImage(url: session.client.coverArtURL(
+                RemoteImage(url: session.artworkURL(
                     id: song.coverArt ?? song.albumId ?? song.id, size: 300))
                     .aspectRatio(1, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))

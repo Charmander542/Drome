@@ -1817,11 +1817,20 @@ final class PlayerEngine: ObservableObject {
             return client.streamURL(
                 songId: song.id,
                 format: "mp3",
-                maxBitRate: PlaybackPreferences.cellularMaxBitRate,
+                maxBitRate: resilientMaxBitRate,
                 estimateContentLength: true)
         }
         return client.streamURL(songId: song.id, compatibleWithAirPlay: false)
         #endif
+    }
+
+    /// 192 kbps on Funnel/remote hosts; 256 on cellular against LAN.
+    private var resilientMaxBitRate: Int {
+        PlaybackPreferences.preferredMaxBitRate(serverHost: client.account.serverURL.host)
+    }
+
+    private var remoteAwareCoverSize: Int {
+        PlaybackPreferences.clampedCoverSize(1200, serverHost: client.account.serverURL.host)
     }
 
     #if os(tvOS)
@@ -2083,7 +2092,7 @@ final class PlayerEngine: ObservableObject {
         if shouldWarm, streamCache.cachedURL(for: song.id) == nil {
             Task { [weak self] in
                 _ = try? await self?.streamCache.fileURL(
-                    for: song, maxBitRate: PlaybackPreferences.cellularMaxBitRate)
+                    for: song, maxBitRate: resilientMaxBitRate)
             }
         }
     }
@@ -2839,8 +2848,9 @@ final class PlayerEngine: ObservableObject {
         let localURL: URL? = candidates.lazy
             .compactMap { self.downloads.localCoverURL(coverId: $0) }
             .first
+        let coverSize = remoteAwareCoverSize
         let remoteURL: URL? = candidates.lazy
-            .compactMap { self.client.coverArtURL(id: $0, size: 1200) }
+            .compactMap { self.client.coverArtURL(id: $0, size: coverSize) }
             .first
         guard let url = localURL ?? remoteURL else { return }
 
@@ -2854,7 +2864,8 @@ final class PlayerEngine: ObservableObject {
             var image = await ImageLoader.shared.image(for: url)
             if image == nil {
                 for id in candidates.dropFirst() {
-                    guard let alt = self?.client.coverArtURL(id: id, size: 1200) else { continue }
+                    guard let self else { break }
+                    guard let alt = self.client.coverArtURL(id: id, size: self.remoteAwareCoverSize) else { continue }
                     image = await ImageLoader.shared.image(for: alt)
                     if image != nil { break }
                 }
@@ -3285,7 +3296,7 @@ final class PlayerEngine: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             _ = try? await self.streamCache.fileURL(
-                for: song, maxBitRate: PlaybackPreferences.cellularMaxBitRate)
+                for: song, maxBitRate: resilientMaxBitRate)
             await MainActor.run {
                 self.prefetchUpcomingIntoCache()
             }
@@ -3301,7 +3312,7 @@ final class PlayerEngine: ObservableObject {
         var songs: [Song] = []
         if let current { songs.append(current.song) }
         songs.append(contentsOf: peekUpcoming(limit: 3).map(\.song))
-        streamCache.prefetch(songs, maxBitRate: PlaybackPreferences.cellularMaxBitRate)
+        streamCache.prefetch(songs, maxBitRate: resilientMaxBitRate)
     }
     #endif
 

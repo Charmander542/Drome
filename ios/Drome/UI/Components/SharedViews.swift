@@ -24,7 +24,7 @@ struct AlbumCard: View {
             songNavigator?.viewAlbum(album)
         } label: {
             VStack(alignment: .leading, spacing: 8) {
-                RemoteImage(url: session?.client.coverArtURL(id: album.coverArt ?? album.id, size: 300))
+                RemoteImage(url: session?.artworkURL(id: album.coverArt ?? album.id, size: 300))
                     .aspectRatio(1, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -92,7 +92,7 @@ struct AlbumMediaRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            RemoteImage(url: session?.client.coverArtURL(id: album.coverArt ?? album.id, size: 120))
+            RemoteImage(url: session?.artworkURL(id: album.coverArt ?? album.id, size: 120))
                 .frame(width: coverSize, height: coverSize)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
 
@@ -190,7 +190,7 @@ struct PlaylistCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            RemoteImage(url: session?.client.coverArtURL(id: playlist.coverArt ?? playlist.id, size: 300),
+            RemoteImage(url: session?.artworkURL(id: playlist.coverArt ?? playlist.id, size: 300),
                         placeholderSymbol: "music.note.list")
                 .aspectRatio(1, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))

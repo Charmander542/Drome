@@ -534,7 +534,7 @@ struct LibraryView: View {
                                 } label: {
                                     HStack(spacing: 12) {
                                         RemoteImage(
-                                            url: session.client.coverArtURL(
+                                            url: session.artworkURL(
                                                 id: artist.coverArt ?? artist.id,
                                                 size: Self.listArtSize),
                                             placeholderSymbol: "person.crop.circle")
@@ -770,7 +770,7 @@ struct LibraryView: View {
 
     private func warmArtistCovers(_ artists: [Artist]) {
         let urls = artists.compactMap {
-            session.client.coverArtURL(id: $0.coverArt ?? $0.id, size: Self.listArtSize)
+            session.artworkURL(id: $0.coverArt ?? $0.id, size: Self.listArtSize)
         }
         ImageLoader.shared.prefetch(urls, limit: 48)
     }
@@ -789,7 +789,7 @@ struct LibraryView: View {
                     Image(systemName: "lock.fill")
                         .foregroundStyle(DromeTheme.muted)
                 } else {
-                    RemoteImage(url: session.client.coverArtURL(id: playlist.coverArt ?? playlist.id, size: 96),
+                    RemoteImage(url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 96),
                                 placeholderSymbol: "music.note.list")
                 }
             }
