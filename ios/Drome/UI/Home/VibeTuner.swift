@@ -23,8 +23,13 @@ struct VibeTuner: View {
     private var ax: Bool { dynamicTypeSize.isAccessibilitySize }
 
     private var chipCaptionSize: CGFloat {
-        // Cap ~22 so seven labels still fit; previous min(..., 13) blocked AX scaling.
-        ax ? min(chipCaptionSizeScaled, 22) : 9
+        // Cap ~20; AX row scrolls horizontally so labels need not squeeze into 1/7 width.
+        ax ? min(chipCaptionSizeScaled, 20) : 9
+    }
+
+    /// Minimum AX column width so shortLabels ("Happy", "Night", …) fit without ellipsis.
+    private var axMinSlotWidth: CGFloat {
+        max(70, chipCaptionSize * 4.0 + 12)
     }
 
     var body: some View {
@@ -47,7 +52,9 @@ struct VibeTuner: View {
                         .stroke(selected.ink.opacity(0.22), lineWidth: 1)
                 }
         }
-        .padding(.horizontal, 16)
+        // Extra trailing inset at AX so the Lucky column clears the Home account toolbar button.
+        .padding(.leading, 16)
+        .padding(.trailing, ax ? 52 : 16)
         .hoverEffectDisabled()
         .animation(.spring(response: 0.38, dampingFraction: 0.84), value: selected)
         .sensoryFeedback(.selection, trigger: selected)
@@ -133,66 +140,89 @@ struct VibeTuner: View {
 
     private var tuner: some View {
         let dialHeight: CGFloat = ax ? max(56, min(stationDotSelectedSizeScaled, 48) + 16) : 56
-        return VStack(spacing: 8) {
-            GeometryReader { geo in
-                let n = CGFloat(max(vibes.count, 1))
-                let width = geo.size.width.isFinite ? max(0, geo.size.width) : 0
-                let slot = width > 0 ? width / n : 0
-                let selectedIndex = vibes.firstIndex(of: selected) ?? 0
+        let captionRowHeight: CGFloat = ax ? chipCaptionSize + 6 : 14
+        return GeometryReader { geo in
+            let n = CGFloat(max(vibes.count, 1))
+            let available = geo.size.width.isFinite ? max(0, geo.size.width) : 0
+            let equalSlot = available > 0 ? available / n : 0
+            let slot = ax ? max(equalSlot, axMinSlotWidth) : equalSlot
+            let contentWidth = slot * n
+            let needsScroll = ax && contentWidth > available + 0.5
 
-                ZStack(alignment: .leading) {
-                    // Frequency hash marks — radio, not a mix collage.
-                    VStack(spacing: 0) {
-                        HStack(spacing: 0) {
-                            ForEach(0..<24, id: \.self) { i in
-                                Rectangle()
-                                    .fill(Color.white.opacity(i.isMultiple(of: 4) ? 0.28 : 0.1))
-                                    .frame(width: 1, height: i.isMultiple(of: 4) ? 10 : 5)
-                                if i < 23 { Spacer(minLength: 0) }
-                            }
-                        }
-                        .padding(.horizontal, 4)
-                        Capsule()
-                            .fill(Color.white.opacity(0.14))
-                            .frame(height: 2)
-                    }
-                    .frame(height: 16)
-                    .offset(y: -22)
-
-                    if slot > 0 {
-                        Capsule()
-                            .fill(selected.ink.opacity(0.18))
-                            .frame(width: slot, height: dialHeight)
-                            .offset(x: slot * CGFloat(selectedIndex))
-
-                        HStack(spacing: 0) {
-                            ForEach(vibes) { vibe in
-                                station(vibe)
-                                    .frame(width: slot, height: dialHeight)
-                            }
-                        }
-                    }
-                }
-                .contentShape(Rectangle())
-                .gesture(scrub(width: width))
-                .accessibilityElement(children: .contain)
+            let dialAndCaptions = VStack(spacing: 8) {
+                dialTrack(slot: slot, contentWidth: contentWidth, dialHeight: dialHeight)
+                captionRow(slot: slot, contentWidth: contentWidth)
             }
-            .frame(height: dialHeight)
+            .frame(width: max(contentWidth, available), alignment: .leading)
 
-            HStack(spacing: 0) {
-                ForEach(vibes) { vibe in
-                    Text(vibe.shortLabel)
-                        .font(.system(size: chipCaptionSize,
-                                      weight: vibe == selected ? .bold : .medium))
-                        .foregroundStyle(vibe == selected ? selected.ink : Color.white.opacity(0.38))
-                        .lineLimit(1)
-                        // AX: no per-label shrink — equal slots + minimumScaleFactor made
-                        // wider glyphs ("Happy", "Night") render smaller than the rest.
-                        .minimumScaleFactor(ax ? 1 : 0.7)
-                        .frame(maxWidth: .infinity)
+            Group {
+                if needsScroll {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        dialAndCaptions
+                    }
+                } else {
+                    dialAndCaptions
                 }
             }
         }
+        .frame(height: dialHeight + 8 + captionRowHeight)
+    }
+
+    private func dialTrack(slot: CGFloat, contentWidth: CGFloat, dialHeight: CGFloat) -> some View {
+        let selectedIndex = vibes.firstIndex(of: selected) ?? 0
+        return ZStack(alignment: .leading) {
+            // Frequency hash marks — radio, not a mix collage.
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    ForEach(0..<24, id: \.self) { i in
+                        Rectangle()
+                            .fill(Color.white.opacity(i.isMultiple(of: 4) ? 0.28 : 0.1))
+                            .frame(width: 1, height: i.isMultiple(of: 4) ? 10 : 5)
+                        if i < 23 { Spacer(minLength: 0) }
+                    }
+                }
+                .padding(.horizontal, 4)
+                Capsule()
+                    .fill(Color.white.opacity(0.14))
+                    .frame(height: 2)
+            }
+            .frame(width: contentWidth, height: 16)
+            .offset(y: -22)
+
+            if slot > 0 {
+                Capsule()
+                    .fill(selected.ink.opacity(0.18))
+                    .frame(width: slot, height: dialHeight)
+                    .offset(x: slot * CGFloat(selectedIndex))
+
+                HStack(spacing: 0) {
+                    ForEach(vibes) { vibe in
+                        station(vibe)
+                            .frame(width: slot, height: dialHeight)
+                    }
+                }
+            }
+        }
+        .frame(width: contentWidth, height: dialHeight)
+        .contentShape(Rectangle())
+        .gesture(scrub(width: contentWidth))
+        .accessibilityElement(children: .contain)
+    }
+
+    private func captionRow(slot: CGFloat, contentWidth: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            ForEach(vibes) { vibe in
+                Text(vibe.shortLabel)
+                    .font(.system(size: chipCaptionSize,
+                                  weight: vibe == selected ? .bold : .medium))
+                    .foregroundStyle(vibe == selected ? selected.ink : Color.white.opacity(0.38))
+                    .lineLimit(1)
+                    // AX: full label at one size (slots are wide enough / scrollable).
+                    .minimumScaleFactor(ax ? 1 : 0.7)
+                    .frame(width: slot > 0 ? slot : nil, alignment: .center)
+            }
+        }
+        .frame(width: contentWidth, alignment: .leading)
     }
 
     private func station(_ vibe: MoodVibe) -> some View {

@@ -110,6 +110,7 @@ struct HomeView: View {
                 }
             }
         }
+        .modifier(HomeAXNavChrome(enabled: dynamicTypeSize.isAccessibilitySize))
         .sheet(isPresented: $showAccounts) {
             AccountSwitcherSheet().environmentObject(env)
         }
@@ -230,6 +231,23 @@ struct HomeView: View {
             var cleaned = mix
             cleaned.songs = songs
             return cleaned
+        }
+    }
+}
+
+/// Opaque nav bar only at accessibility sizes so scrolled Vibe chips don't
+/// show through / sit under a clear toolbar. No-op at default / XXXL.
+private struct HomeAXNavChrome: ViewModifier {
+    let enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .toolbarBackground(DromeTheme.background, for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
+        } else {
+            content
         }
     }
 }
