@@ -6,12 +6,21 @@ import WidgetKit
 struct VibeTuner: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var selected: MoodVibe = WidgetVibeStore.selectedVibe
     @State private var spinning: MoodVibe?
     @State private var error: String?
 
+    /// Chip captions stay 9pt at default; scale with caption2, capped for AX.
+    @ScaledMetric(relativeTo: .caption2) private var chipCaptionSize: CGFloat = 9
+    @ScaledMetric(relativeTo: .caption2) private var stationIconSize: CGFloat = 9
+    @ScaledMetric(relativeTo: .body) private var stationIconSelectedSize: CGFloat = 14
+    @ScaledMetric(relativeTo: .body) private var stationDotSize: CGFloat = 22
+    @ScaledMetric(relativeTo: .title3) private var stationDotSelectedSize: CGFloat = 36
+
     private let vibes = MoodVibe.spectrum
+    private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -58,41 +67,61 @@ struct VibeTuner: View {
                 Text(selected.blurb)
                     .font(.caption)
                     .foregroundStyle(Color.white.opacity(0.62))
-                    .lineLimit(2)
+                    .lineLimit(accessibilityLayout ? 4 : 2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
             VStack(spacing: 8) {
-                VibeMeter(heights: selected.meterHeights, color: selected.ink)
+                if !accessibilityLayout {
+                    VibeMeter(heights: selected.meterHeights, color: selected.ink)
+                }
                 Button {
                     guard spinning == nil else { return }
                     Task { await play(selected) }
                 } label: {
-                    HStack(spacing: 6) {
-                        // Fixed slot so ProgressView ↔ play doesn't resize the capsule.
-                        ZStack {
-                            Image(systemName: "play.fill")
-                                .font(.caption.weight(.bold))
-                                .offset(x: 0.5)
-                                .opacity(spinning == nil ? 1 : 0)
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(.black)
-                                .opacity(spinning == nil ? 0 : 1)
-                        }
-                        .frame(width: 12, height: 12)
-                        Text("Play")
-                            .font(.subheadline.weight(.bold))
-                    }
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(selected.ink, in: Capsule())
+                    playButtonLabel
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, accessibilityLayout ? 12 : 14)
+                        .padding(.vertical, accessibilityLayout ? 10 : 9)
+                        .background(selected.ink, in: Capsule())
                 }
                 .buttonStyle(.plain)
                 .allowsHitTesting(spinning == nil)
                 .animation(nil, value: spinning)
                 .accessibilityLabel("Play \(selected.title)")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var playButtonLabel: some View {
+        // Fixed slot so ProgressView ↔ play doesn't resize the capsule.
+        let icon = ZStack {
+            Image(systemName: "play.fill")
+                .font(.caption.weight(.bold))
+                .offset(x: 0.5)
+                .opacity(spinning == nil ? 1 : 0)
+            ProgressView()
+                .controlSize(.small)
+                .tint(.black)
+                .opacity(spinning == nil ? 0 : 1)
+        }
+        .frame(width: 12, height: 12)
+
+        let title = Text("Play")
+            .font(.subheadline.weight(.bold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+
+        if accessibilityLayout {
+            VStack(spacing: 4) {
+                icon
+                title
+            }
+        } else {
+            HStack(spacing: 6) {
+                icon
+                title
             }
         }
     }
@@ -142,15 +171,16 @@ struct VibeTuner: View {
                 .gesture(scrub(width: width))
                 .accessibilityElement(children: .contain)
             }
-            .frame(height: 56)
+            .frame(height: accessibilityLayout ? max(56, stationDotSelectedSize + 16) : 56)
 
             HStack(spacing: 0) {
                 ForEach(vibes) { vibe in
                     Text(vibe.shortLabel)
-                        .font(.system(size: 9, weight: vibe == selected ? .bold : .medium))
+                        .font(.system(size: min(chipCaptionSize, 13),
+                                      weight: vibe == selected ? .bold : .medium))
                         .foregroundStyle(vibe == selected ? selected.ink : Color.white.opacity(0.38))
                         .lineLimit(1)
-                        .minimumScaleFactor(0.7)
+                        .minimumScaleFactor(0.65)
                         .frame(maxWidth: .infinity)
                 }
             }
@@ -159,15 +189,17 @@ struct VibeTuner: View {
 
     private func station(_ vibe: MoodVibe) -> some View {
         let on = vibe == selected
+        let dot = on ? min(stationDotSelectedSize, 44) : min(stationDotSize, 30)
+        let icon = on ? min(stationIconSelectedSize, 18) : min(stationIconSize, 12)
         return ZStack {
             Circle()
                 .fill(vibe.wash)
                 .overlay {
                     Circle().stroke(vibe.ink.opacity(on ? 0.9 : 0.35), lineWidth: on ? 2 : 1)
                 }
-                .frame(width: on ? 36 : 22, height: on ? 36 : 22)
+                .frame(width: dot, height: dot)
             Image(systemName: vibe.symbol)
-                .font(.system(size: on ? 14 : 9, weight: .semibold))
+                .font(.system(size: icon, weight: .semibold))
                 .foregroundStyle(vibe.ink)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

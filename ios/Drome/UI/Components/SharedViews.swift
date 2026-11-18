@@ -283,6 +283,10 @@ struct LoadingStateView: View {
 struct ErrorStateView: View {
     let message: String
     var retry: (() -> Void)?
+    /// When true (default), fills the parent so the error centers on full-screen
+    /// placeholders. Pass false inside ScrollViews — a viewport-tall frame clips
+    /// oversized Dynamic Type content and makes Try Again unreachable.
+    var expandsToFill: Bool = true
 
     var body: some View {
         VStack(spacing: 14) {
@@ -299,7 +303,9 @@ struct ErrorStateView: View {
                     .tint(DromeTheme.accent)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
+        .frame(maxHeight: expandsToFill ? .infinity : nil)
+        .padding(.vertical, expandsToFill ? 0 : 24)
     }
 }
 
@@ -317,5 +323,20 @@ struct EmptyStateView: View {
             }
         }
         .foregroundStyle(DromeTheme.muted)
+    }
+}
+
+/// Scrollable empty/error chrome for overlays and non-List placeholders so AX
+/// text that exceeds the visible height stays reachable above the mini player.
+struct ScrollableEmptyState<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ScrollView {
+            content()
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

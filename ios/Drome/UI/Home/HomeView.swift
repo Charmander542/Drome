@@ -52,15 +52,18 @@ struct HomeView: View {
                     }
 
                     if let error, recentEntries.isEmpty && frequent.isEmpty && newest.isEmpty {
-                        ErrorStateView(message: error) { Task { await loadAll() } }
+                        ErrorStateView(message: error, expandsToFill: false) {
+                            Task { await loadAll() }
+                        }
                     } else if !isLoading && recentEntries.isEmpty && frequent.isEmpty
                                 && newest.isEmpty && dailyMixes.isEmpty {
                         EmptyStateView(title: "Your library is empty",
                                        message: "Add music to Navidrome and pull to refresh.")
-                            .frame(height: 220)
+                            .padding(.vertical, 24)
                     }
                 }
                 .padding(.vertical, 12)
+                .padding(.bottom, 12)
             }
             .onChange(of: scrollToTopToken) { _, _ in
                 withAnimation(.easeOut(duration: 0.25)) {

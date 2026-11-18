@@ -277,11 +277,12 @@ struct PodcastsView: View {
     private var emptyState: some View {
         VStack(spacing: 16) {
             Image(systemName: "headphones")
-                .font(.system(size: 64))
+                .font(.largeTitle)
                 .foregroundStyle(.secondary)
 
             Text("No Podcasts Yet")
                 .font(.title2.weight(.bold))
+                .multilineTextAlignment(.center)
 
             Text("Use Search → Podcasts to find shows or paste an RSS feed URL.")
                 .font(.subheadline)
@@ -289,6 +290,8 @@ struct PodcastsView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
         }
+        .frame(maxWidth: .infinity)
         .padding(.vertical, 60)
+        .padding(.bottom, 24)
     }
 }

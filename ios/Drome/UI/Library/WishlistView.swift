@@ -21,10 +21,12 @@ struct WishlistView: View {
     var body: some View {
         Group {
             if session.wishlist == nil {
-                EmptyStateView(
-                    title: "Wishlist not configured",
-                    systemImage: "heart",
-                    message: "Set your companion server URL when signing in (or in Settings) to keep a shared “songs to go get” list.")
+                ScrollableEmptyState {
+                    EmptyStateView(
+                        title: "Wishlist not configured",
+                        systemImage: "heart",
+                        message: "Set your companion server URL when signing in (or in Settings) to keep a shared “songs to go get” list.")
+                }
             } else if isLoading && entries.isEmpty {
                 LoadingStateView()
             } else {

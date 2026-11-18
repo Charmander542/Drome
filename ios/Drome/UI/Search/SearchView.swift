@@ -191,10 +191,12 @@ struct SearchView: View {
         .scrollDismissesKeyboard(.interactively)
         .overlay {
             if trimmed.isEmpty && recentItems.isEmpty {
-                EmptyStateView(
-                    title: "Find your music",
-                    systemImage: "magnifyingglass",
-                    message: "Try an artist, album, song, podcast, or a line of lyrics.")
+                ScrollableEmptyState {
+                    EmptyStateView(
+                        title: "Find your music",
+                        systemImage: "magnifyingglass",
+                        message: "Try an artist, album, song, podcast, or a line of lyrics.")
+                }
                 .allowsHitTesting(false)
             } else if !trimmed.isEmpty && libraryEmpty && isSearching {
                 ProgressView()
@@ -223,10 +225,12 @@ struct SearchView: View {
     @ViewBuilder
     private var spotifyResults: some View {
         if session.wishlist == nil {
-            EmptyStateView(
-                title: "Wishlist not configured",
-                systemImage: "heart",
-                message: "Set your companion server URL in Settings to search Spotify and add tracks to your wishlist.")
+            ScrollableEmptyState {
+                EmptyStateView(
+                    title: "Wishlist not configured",
+                    systemImage: "heart",
+                    message: "Set your companion server URL in Settings to search Spotify and add tracks to your wishlist.")
+            }
         } else {
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
             List {
@@ -259,10 +263,12 @@ struct SearchView: View {
             .scrollDismissesKeyboard(.interactively)
             .overlay {
                 if trimmed.isEmpty {
-                    EmptyStateView(
-                        title: "Search Spotify",
-                        systemImage: "magnifyingglass",
-                        message: "Find tracks to add to your wishlist.")
+                    ScrollableEmptyState {
+                        EmptyStateView(
+                            title: "Search Spotify",
+                            systemImage: "magnifyingglass",
+                            message: "Find tracks to add to your wishlist.")
+                    }
                     .allowsHitTesting(false)
                 } else if spotifyHits.isEmpty && isSearching {
                     ProgressView()
@@ -316,10 +322,12 @@ struct SearchView: View {
         .scrollDismissesKeyboard(.interactively)
         .overlay {
             if trimmed.isEmpty {
-                EmptyStateView(
-                    title: "Find podcasts",
-                    systemImage: "headphones",
-                    message: "Search by show name, or paste an RSS feed URL to subscribe.")
+                ScrollableEmptyState {
+                    EmptyStateView(
+                        title: "Find podcasts",
+                        systemImage: "headphones",
+                        message: "Search by show name, or paste an RSS feed URL to subscribe.")
+                }
                 .allowsHitTesting(false)
             } else if podcastHits.isEmpty && podcastFeedCandidate == nil && isSearching {
                 ProgressView()

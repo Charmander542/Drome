@@ -12,6 +12,8 @@ struct LoginView: View {
     @State private var errorMessage: String?
     @State private var showSavedAccounts = false
     @FocusState private var focusedField: Field?
+    /// Matches the previous fixed 48pt at default size; scales with Dynamic Type.
+    @ScaledMetric(relativeTo: .largeTitle) private var brandSize: CGFloat = 48
 
     private enum Field { case server, user, password, wishlist }
 
@@ -20,8 +22,9 @@ struct LoginView: View {
             VStack(alignment: .leading, spacing: 28) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Drome")
-                        .font(.system(size: 48, weight: .bold, design: .rounded))
+                        .font(.system(size: brandSize, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
+                        .accessibilityAddTraits(.isHeader)
                     Text("Stream your Navidrome library.")
                         .font(.title3)
                         .foregroundStyle(DromeTheme.muted)
@@ -87,9 +90,10 @@ struct LoginView: View {
                 .disabled(isWorking || !canSubmit)
             }
             .padding(.horizontal, 24)
-            .padding(.bottom, 40)
+            .padding(.bottom, 56)
         }
         .scrollDismissesKeyboard(.interactively)
+        .scrollBounceBehavior(.basedOnSize)
         .sheet(isPresented: $showSavedAccounts) {
             AccountSwitcherSheet()
                 .environmentObject(env)

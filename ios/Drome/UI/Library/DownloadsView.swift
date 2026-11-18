@@ -43,30 +43,28 @@ struct DownloadsView: View {
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 8, trailing: 16))
 
-                HStack(spacing: 12) {
-                    Button {
-                        player.play(downloadedSongs, startAt: 0, context: playbackContext)
-                    } label: {
-                        Label("Play", systemImage: "play.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(DromeTheme.accent)
-                    .foregroundStyle(.white)
-                    .disabled(downloadedSongs.isEmpty)
+                if !downloadedSongs.isEmpty {
+                    HStack(spacing: 12) {
+                        Button {
+                            player.play(downloadedSongs, startAt: 0, context: playbackContext)
+                        } label: {
+                            downloadsActionLabel("Play", systemImage: "play.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(DromeTheme.accent)
+                        .foregroundStyle(.white)
 
-                    Button {
-                        player.playShuffled(downloadedSongs, context: playbackContext)
-                    } label: {
-                        Label("Shuffle", systemImage: "shuffle")
-                            .frame(maxWidth: .infinity)
+                        Button {
+                            player.playShuffled(downloadedSongs, context: playbackContext)
+                        } label: {
+                            downloadsActionLabel("Shuffle", systemImage: "shuffle")
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.white)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.white)
-                    .disabled(downloadedSongs.isEmpty)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                 }
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
 
                 if !isOfflineMode, !downloadedSongs.isEmpty {
                     Button(role: .destructive) {
@@ -117,6 +115,29 @@ struct DownloadsView: View {
         .scrollContentBackground(.hidden)
         .navigationTitle(isOfflineMode ? "Offline Library" : "Downloaded")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// Avoid mid-word wraps at AX sizes: shrink first, then stack icon/title.
+    private func downloadsActionLabel(_ title: String, systemImage: String) -> some View {
+        ViewThatFits(in: .horizontal) {
+            Label {
+                Text(title)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            } icon: {
+                Image(systemName: systemImage)
+            }
+            .frame(maxWidth: .infinity)
+
+            VStack(spacing: 4) {
+                Image(systemName: systemImage)
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity)
+        }
     }
 
     private var downloadsHeader: some View {
