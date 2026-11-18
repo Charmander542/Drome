@@ -1,0 +1,27 @@
+# MP3-only Navidrome for Tailscale Funnel / guest remote access.
+# Merge into /home/cvh/docker/navidrome/compose.yaml or run from that directory:
+#
+#   docker compose -f compose.yaml -f /path/to/Drome/deploy/navidrome-remote.compose.yaml up -d
+#
+# Prerequisites:
+#   ./scripts/pretranscode-remote-library.py   # builds /srv/storage/Media/Music-Remote
+# Funnel (guest music URL stays the same hostname):
+#   tailscale funnel --bg --https=443 http://localhost:4536
+
+services:
+  navidrome-remote:
+    image: deluan/navidrome:latest
+    container_name: navidrome-remote
+    restart: unless-stopped
+    ports:
+      - "4536:4533"
+    user: "1000:1000"
+    environment:
+      ND_SCANSCHEDULE: 1h
+      ND_LOGLEVEL: info
+      ND_SESSIONTIMEOUT: 24h
+      ND_BASEURL: ""
+      ND_SCANNER_PURGEMISSING: always
+    volumes:
+      - ./data-remote:/data
+      - /srv/storage/Media/Music-Remote:/music:ro
