@@ -2,6 +2,7 @@ import SwiftUI
 
 struct WishlistView: View {
     @EnvironmentObject private var session: AppSession
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var entries: [WishlistEntry] = []
     @State private var searchQuery = ""
@@ -21,7 +22,14 @@ struct WishlistView: View {
     var body: some View {
         Group {
             if session.wishlist == nil {
-                ScrollableEmptyState {
+                if dynamicTypeSize.isAccessibilitySize {
+                    ScrollableEmptyState {
+                        EmptyStateView(
+                            title: "Wishlist not configured",
+                            systemImage: "heart",
+                            message: "Set your companion server URL when signing in (or in Settings) to keep a shared “songs to go get” list.")
+                    }
+                } else {
                     EmptyStateView(
                         title: "Wishlist not configured",
                         systemImage: "heart",

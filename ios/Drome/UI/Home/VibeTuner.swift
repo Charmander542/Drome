@@ -12,15 +12,20 @@ struct VibeTuner: View {
     @State private var spinning: MoodVibe?
     @State private var error: String?
 
-    /// Chip captions stay 9pt at default; scale with caption2, capped for AX.
-    @ScaledMetric(relativeTo: .caption2) private var chipCaptionSize: CGFloat = 9
-    @ScaledMetric(relativeTo: .caption2) private var stationIconSize: CGFloat = 9
-    @ScaledMetric(relativeTo: .body) private var stationIconSelectedSize: CGFloat = 14
-    @ScaledMetric(relativeTo: .body) private var stationDotSize: CGFloat = 22
-    @ScaledMetric(relativeTo: .title3) private var stationDotSelectedSize: CGFloat = 36
+    /// Accessibility-only scaling. Default/XXXL keep the fixed 9pt captions.
+    @ScaledMetric(relativeTo: .caption2) private var chipCaptionSizeScaled: CGFloat = 9
+    @ScaledMetric(relativeTo: .caption2) private var stationIconSizeScaled: CGFloat = 9
+    @ScaledMetric(relativeTo: .body) private var stationIconSelectedSizeScaled: CGFloat = 14
+    @ScaledMetric(relativeTo: .body) private var stationDotSizeScaled: CGFloat = 22
+    @ScaledMetric(relativeTo: .title3) private var stationDotSelectedSizeScaled: CGFloat = 36
 
     private let vibes = MoodVibe.spectrum
-    private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
+    private var ax: Bool { dynamicTypeSize.isAccessibilitySize }
+
+    private var chipCaptionSize: CGFloat {
+        // Cap ~22 so seven labels still fit; previous min(..., 13) blocked AX scaling.
+        ax ? min(chipCaptionSizeScaled, 22) : 9
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -67,12 +72,12 @@ struct VibeTuner: View {
                 Text(selected.blurb)
                     .font(.caption)
                     .foregroundStyle(Color.white.opacity(0.62))
-                    .lineLimit(accessibilityLayout ? 4 : 2)
+                    .lineLimit(ax ? 4 : 2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
             VStack(spacing: 8) {
-                if !accessibilityLayout {
+                if !ax {
                     VibeMeter(heights: selected.meterHeights, color: selected.ink)
                 }
                 Button {
@@ -81,8 +86,8 @@ struct VibeTuner: View {
                 } label: {
                     playButtonLabel
                         .foregroundStyle(.black)
-                        .padding(.horizontal, accessibilityLayout ? 12 : 14)
-                        .padding(.vertical, accessibilityLayout ? 10 : 9)
+                        .padding(.horizontal, ax ? 12 : 14)
+                        .padding(.vertical, ax ? 10 : 9)
                         .background(selected.ink, in: Capsule())
                 }
                 .buttonStyle(.plain)
@@ -113,7 +118,7 @@ struct VibeTuner: View {
             .lineLimit(1)
             .minimumScaleFactor(0.8)
 
-        if accessibilityLayout {
+        if ax {
             VStack(spacing: 4) {
                 icon
                 title
@@ -127,7 +132,8 @@ struct VibeTuner: View {
     }
 
     private var tuner: some View {
-        VStack(spacing: 8) {
+        let dialHeight: CGFloat = ax ? max(56, min(stationDotSelectedSizeScaled, 48) + 16) : 56
+        return VStack(spacing: 8) {
             GeometryReader { geo in
                 let n = CGFloat(max(vibes.count, 1))
                 let width = geo.size.width.isFinite ? max(0, geo.size.width) : 0
@@ -156,13 +162,13 @@ struct VibeTuner: View {
                     if slot > 0 {
                         Capsule()
                             .fill(selected.ink.opacity(0.18))
-                            .frame(width: slot, height: 56)
+                            .frame(width: slot, height: dialHeight)
                             .offset(x: slot * CGFloat(selectedIndex))
 
                         HStack(spacing: 0) {
                             ForEach(vibes) { vibe in
                                 station(vibe)
-                                    .frame(width: slot, height: 56)
+                                    .frame(width: slot, height: dialHeight)
                             }
                         }
                     }
@@ -171,16 +177,16 @@ struct VibeTuner: View {
                 .gesture(scrub(width: width))
                 .accessibilityElement(children: .contain)
             }
-            .frame(height: accessibilityLayout ? max(56, stationDotSelectedSize + 16) : 56)
+            .frame(height: dialHeight)
 
             HStack(spacing: 0) {
                 ForEach(vibes) { vibe in
                     Text(vibe.shortLabel)
-                        .font(.system(size: min(chipCaptionSize, 13),
+                        .font(.system(size: chipCaptionSize,
                                       weight: vibe == selected ? .bold : .medium))
                         .foregroundStyle(vibe == selected ? selected.ink : Color.white.opacity(0.38))
                         .lineLimit(1)
-                        .minimumScaleFactor(0.65)
+                        .minimumScaleFactor(ax ? 0.55 : 0.7)
                         .frame(maxWidth: .infinity)
                 }
             }
@@ -189,8 +195,15 @@ struct VibeTuner: View {
 
     private func station(_ vibe: MoodVibe) -> some View {
         let on = vibe == selected
-        let dot = on ? min(stationDotSelectedSize, 44) : min(stationDotSize, 30)
-        let icon = on ? min(stationIconSelectedSize, 18) : min(stationIconSize, 12)
+        let dot: CGFloat
+        let icon: CGFloat
+        if ax {
+            dot = on ? min(stationDotSelectedSizeScaled, 48) : min(stationDotSizeScaled, 32)
+            icon = on ? min(stationIconSelectedSizeScaled, 20) : min(stationIconSizeScaled, 14)
+        } else {
+            dot = on ? 36 : 22
+            icon = on ? 14 : 9
+        }
         return ZStack {
             Circle()
                 .fill(vibe.wash)

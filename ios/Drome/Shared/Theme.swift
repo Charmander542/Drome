@@ -34,7 +34,7 @@ extension Color {
 
 /// Kept for call sites / future overlays. Bottom chrome is laid out as a sibling
 /// of tab content in `MainTabView`, so Lists cannot paint under the mini player.
-/// Oversized Dynamic Type empty/error chrome still needs to scroll within that
+/// At accessibility sizes, empty/error chrome still needs to scroll within that
 /// sibling frame (see `ScrollableEmptyState` / `ErrorStateView.expandsToFill`).
 private struct MiniPlayerClearanceKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
@@ -61,8 +61,7 @@ extension View {
     }
 
     /// No-op: mini player + tab bar are siblings of tab content in MainTabView,
-    /// so pages cannot draw underneath them. Prefer scrollable empty/error
-    /// states when Dynamic Type content may exceed the remaining height.
+    /// so pages cannot draw underneath them.
     func dromeMiniPlayerClearance(_ height: CGFloat? = nil) -> some View {
         self
     }

@@ -4,6 +4,7 @@ import SwiftUI
 struct PodcastsView: View {
     @EnvironmentObject private var podcastManager: PodcastManager
     @EnvironmentObject private var podcastPlayer: PodcastPlayer
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var isRefreshing = false
 
     var body: some View {
@@ -275,14 +276,14 @@ struct PodcastsView: View {
     // MARK: - Empty State
 
     private var emptyState: some View {
-        VStack(spacing: 16) {
+        let ax = dynamicTypeSize.isAccessibilitySize
+        return VStack(spacing: 16) {
             Image(systemName: "headphones")
-                .font(.largeTitle)
+                .font(ax ? .largeTitle : .system(size: 64))
                 .foregroundStyle(.secondary)
 
             Text("No Podcasts Yet")
                 .font(.title2.weight(.bold))
-                .multilineTextAlignment(.center)
 
             Text("Use Search → Podcasts to find shows or paste an RSS feed URL.")
                 .font(.subheadline)
@@ -292,6 +293,6 @@ struct PodcastsView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 60)
-        .padding(.bottom, 24)
+        .padding(.bottom, ax ? 24 : 0)
     }
 }

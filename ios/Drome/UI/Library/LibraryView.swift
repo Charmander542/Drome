@@ -180,65 +180,50 @@ struct LibraryView: View {
     }
 
     private var filterBar: some View {
-        Group {
-            if dynamicTypeSize.isAccessibilitySize {
-                // Scroll so captions aren't force-truncated ("Play…", "Arti…").
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        ForEach(LibraryFilter.topBarCases) { item in
-                            filterTab(item, flexible: false)
+        let ax = dynamicTypeSize.isAccessibilitySize
+        // Keep the equal-width HStack (ScrollView path rendered as a blank band at AX5).
+        // At AX sizes, grow height and allow 2-line / scaled captions instead of truncating.
+        return HStack(spacing: 0) {
+            ForEach(LibraryFilter.topBarCases) { item in
+                Button {
+                    filter = item
+                } label: {
+                    VStack(spacing: 6) {
+                        Text(item.shortTitle)
+                            .font(.caption.weight(filter == item ? .bold : .semibold))
+                            .foregroundStyle(filter == item ? Color.white : Color.white.opacity(0.55))
+                            .lineLimit(ax ? 2 : 1)
+                            .minimumScaleFactor(ax ? 0.45 : 0.65)
+                            .multilineTextAlignment(.center)
+                        ZStack {
+                            Capsule()
+                                .fill(Color.clear)
+                                .frame(height: 2)
+                            if filter == item {
+                                Capsule()
+                                    .fill(DromeTheme.accent)
+                                    .frame(height: 2)
+                                    .matchedGeometryEffect(
+                                        id: "libraryFilterUnderline",
+                                        in: filterUnderlineNamespace)
+                            }
                         }
                     }
-                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 10)
+                    .padding(.bottom, ax ? 8 : 0)
+                    .contentShape(Rectangle())
                 }
-            } else {
-                HStack(spacing: 0) {
-                    ForEach(LibraryFilter.topBarCases) { item in
-                        filterTab(item, flexible: true)
-                    }
-                }
-                .padding(.horizontal, 4)
-                .frame(height: 44)
+                .buttonStyle(.plain)
+                .accessibilityLabel(item.rawValue)
+                .accessibilityAddTraits(filter == item ? .isSelected : [])
             }
         }
+        .padding(.horizontal, 4)
+        .frame(height: ax ? nil : 44)
+        .frame(minHeight: 44)
         .background(DromeTheme.background)
         .animation(.spring(response: 0.32, dampingFraction: 0.86), value: filter)
-    }
-
-    private func filterTab(_ item: LibraryFilter, flexible: Bool) -> some View {
-        Button {
-            filter = item
-        } label: {
-            VStack(spacing: 6) {
-                Text(item.shortTitle)
-                    .font(.caption.weight(filter == item ? .bold : .semibold))
-                    .foregroundStyle(filter == item ? Color.white : Color.white.opacity(0.55))
-                    .lineLimit(1)
-                    .minimumScaleFactor(flexible ? 0.65 : 0.85)
-                    .fixedSize(horizontal: !flexible, vertical: false)
-                ZStack {
-                    Capsule()
-                        .fill(Color.clear)
-                        .frame(height: 2)
-                    if filter == item {
-                        Capsule()
-                            .fill(DromeTheme.accent)
-                            .frame(height: 2)
-                            .matchedGeometryEffect(
-                                id: "libraryFilterUnderline",
-                                in: filterUnderlineNamespace)
-                    }
-                }
-            }
-            .frame(maxWidth: flexible ? .infinity : nil)
-            .padding(.horizontal, flexible ? 0 : 10)
-            .padding(.top, 10)
-            .padding(.bottom, flexible ? 0 : 6)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(item.rawValue)
-        .accessibilityAddTraits(filter == item ? .isSelected : [])
     }
 
     @ViewBuilder

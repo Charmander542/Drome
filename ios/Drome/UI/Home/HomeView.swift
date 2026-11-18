@@ -5,6 +5,7 @@ struct HomeView: View {
     @EnvironmentObject private var env: AppEnvironment
     @Environment(\.tabPopToRootTrigger) private var tabPopToRootTrigger
     @Environment(\.tabScrollToTopTrigger) private var tabScrollToTopTrigger
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var recentEntries: [RecentPlayEntry] = []
     @State private var homePlaylists: [Playlist] = []
@@ -52,18 +53,23 @@ struct HomeView: View {
                     }
 
                     if let error, recentEntries.isEmpty && frequent.isEmpty && newest.isEmpty {
-                        ErrorStateView(message: error, expandsToFill: false) {
+                        // Only drop expandsToFill at AX sizes so Try Again can scroll;
+                        // default/XXXL keep the original centered block.
+                        ErrorStateView(
+                            message: error,
+                            expandsToFill: !dynamicTypeSize.isAccessibilitySize
+                        ) {
                             Task { await loadAll() }
                         }
                     } else if !isLoading && recentEntries.isEmpty && frequent.isEmpty
                                 && newest.isEmpty && dailyMixes.isEmpty {
                         EmptyStateView(title: "Your library is empty",
                                        message: "Add music to Navidrome and pull to refresh.")
-                            .padding(.vertical, 24)
+                            .frame(height: dynamicTypeSize.isAccessibilitySize ? nil : 220)
+                            .padding(.vertical, dynamicTypeSize.isAccessibilitySize ? 24 : 0)
                     }
                 }
                 .padding(.vertical, 12)
-                .padding(.bottom, 12)
             }
             .onChange(of: scrollToTopToken) { _, _ in
                 withAnimation(.easeOut(duration: 0.25)) {

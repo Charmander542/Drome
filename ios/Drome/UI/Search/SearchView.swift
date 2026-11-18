@@ -12,6 +12,7 @@ struct SearchView: View {
     @EnvironmentObject private var podcastPlayer: PodcastPlayer
     @Environment(\.songNavigator) private var songNavigator
     @Environment(\.tabPopToRootTrigger) private var tabPopToRootTrigger
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var source: Source = .library
     @State private var query = ""
@@ -101,33 +102,56 @@ struct SearchView: View {
 
     /// Stays visible while the search field is focused (unlike nav toolbar items).
     private var searchControls: some View {
-        HStack(spacing: 12) {
-            Picker("Source", selection: $source) {
-                ForEach(Source.allCases, id: \.self) { s in
-                    Text(s.rawValue).tag(s)
-                }
-            }
-            .pickerStyle(.segmented)
+        let ax = dynamicTypeSize.isAccessibilitySize
+        return Group {
+            if ax {
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("Source", selection: $source) {
+                        ForEach(Source.allCases, id: \.self) { s in
+                            Text(s.rawValue).tag(s)
+                        }
+                    }
+                    .pickerStyle(.segmented)
 
-            if source == .library {
-                Button {
-                    includeLyrics.toggle()
-                    scheduleSearch(query)
-                } label: {
-                    Image(systemName: "text.quote")
-                        .symbolVariant(includeLyrics ? .fill : .none)
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(includeLyrics ? DromeTheme.accent : Color.white.opacity(0.7))
-                        .frame(width: 36, height: 36)
-                        .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    if source == .library {
+                        lyricsToggleButton(compact: false)
+                    }
                 }
-                .accessibilityLabel(includeLyrics ? "Lyrics search on" : "Lyrics search off")
+            } else {
+                HStack(spacing: 12) {
+                    Picker("Source", selection: $source) {
+                        ForEach(Source.allCases, id: \.self) { s in
+                            Text(s.rawValue).tag(s)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    if source == .library {
+                        lyricsToggleButton(compact: true)
+                    }
+                }
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(DromeTheme.background.opacity(0.94))
+    }
+
+    private func lyricsToggleButton(compact: Bool) -> some View {
+        Button {
+            includeLyrics.toggle()
+            scheduleSearch(query)
+        } label: {
+            Image(systemName: "text.quote")
+                .symbolVariant(includeLyrics ? .fill : .none)
+                // Fixed size so Dynamic Type doesn't clip the icon in the 36pt chip.
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(includeLyrics ? DromeTheme.accent : Color.white.opacity(0.7))
+                .frame(width: compact ? 36 : 44, height: compact ? 36 : 44)
+                .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .accessibilityLabel(includeLyrics ? "Lyrics search on" : "Lyrics search off")
     }
 
     @ViewBuilder
@@ -146,9 +170,23 @@ struct SearchView: View {
     private var libraryResults: some View {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let libraryEmpty = hits.isEmpty && podcastHits.isEmpty
+        let showCenteredEmpty = trimmed.isEmpty && recentItems.isEmpty
+            && !dynamicTypeSize.isAccessibilitySize
         List {
             if trimmed.isEmpty {
-                recentSearchesSection
+                if recentItems.isEmpty, dynamicTypeSize.isAccessibilitySize {
+                    // In-list so AX empty copy scrolls with the List above the mini player.
+                    Section {
+                        EmptyStateView(
+                            title: "Find your music",
+                            systemImage: "magnifyingglass",
+                            message: "Try an artist, album, song, podcast, or a line of lyrics.")
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 48, trailing: 16))
+                    }
+                } else {
+                    recentSearchesSection
+                }
             } else if let error, libraryEmpty {
                 Section {
                     Text(error)
@@ -190,13 +228,11 @@ struct SearchView: View {
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .overlay {
-            if trimmed.isEmpty && recentItems.isEmpty {
-                ScrollableEmptyState {
-                    EmptyStateView(
-                        title: "Find your music",
-                        systemImage: "magnifyingglass",
-                        message: "Try an artist, album, song, podcast, or a line of lyrics.")
-                }
+            if showCenteredEmpty {
+                EmptyStateView(
+                    title: "Find your music",
+                    systemImage: "magnifyingglass",
+                    message: "Try an artist, album, song, podcast, or a line of lyrics.")
                 .allowsHitTesting(false)
             } else if !trimmed.isEmpty && libraryEmpty && isSearching {
                 ProgressView()
@@ -225,7 +261,14 @@ struct SearchView: View {
     @ViewBuilder
     private var spotifyResults: some View {
         if session.wishlist == nil {
-            ScrollableEmptyState {
+            if dynamicTypeSize.isAccessibilitySize {
+                ScrollableEmptyState {
+                    EmptyStateView(
+                        title: "Wishlist not configured",
+                        systemImage: "heart",
+                        message: "Set your companion server URL in Settings to search Spotify and add tracks to your wishlist.")
+                }
+            } else {
                 EmptyStateView(
                     title: "Wishlist not configured",
                     systemImage: "heart",
@@ -233,9 +276,21 @@ struct SearchView: View {
             }
         } else {
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            let ax = dynamicTypeSize.isAccessibilitySize
             List {
                 if trimmed.isEmpty {
-                    Section { EmptyView() }
+                    if ax {
+                        Section {
+                            EmptyStateView(
+                                title: "Search Spotify",
+                                systemImage: "magnifyingglass",
+                                message: "Find tracks to add to your wishlist.")
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 48, trailing: 16))
+                        }
+                    } else {
+                        Section { EmptyView() }
+                    }
                 } else if let error, spotifyHits.isEmpty {
                     Section {
                         Text(error)
@@ -262,13 +317,11 @@ struct SearchView: View {
             .scrollContentBackground(.hidden)
             .scrollDismissesKeyboard(.interactively)
             .overlay {
-                if trimmed.isEmpty {
-                    ScrollableEmptyState {
-                        EmptyStateView(
-                            title: "Search Spotify",
-                            systemImage: "magnifyingglass",
-                            message: "Find tracks to add to your wishlist.")
-                    }
+                if trimmed.isEmpty && !ax {
+                    EmptyStateView(
+                        title: "Search Spotify",
+                        systemImage: "magnifyingglass",
+                        message: "Find tracks to add to your wishlist.")
                     .allowsHitTesting(false)
                 } else if spotifyHits.isEmpty && isSearching {
                     ProgressView()
@@ -282,6 +335,7 @@ struct SearchView: View {
     @ViewBuilder
     private var podcastResults: some View {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ax = dynamicTypeSize.isAccessibilitySize
         List {
             if let podcastFeedCandidate {
                 Section {
@@ -294,7 +348,18 @@ struct SearchView: View {
             }
 
             if trimmed.isEmpty {
-                Section { EmptyView() }
+                if ax {
+                    Section {
+                        EmptyStateView(
+                            title: "Find podcasts",
+                            systemImage: "headphones",
+                            message: "Search by show name, or paste an RSS feed URL to subscribe.")
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 48, trailing: 16))
+                    }
+                } else {
+                    Section { EmptyView() }
+                }
             } else if let error, podcastHits.isEmpty, podcastFeedCandidate == nil {
                 Section {
                     Text(error)
@@ -321,13 +386,11 @@ struct SearchView: View {
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .overlay {
-            if trimmed.isEmpty {
-                ScrollableEmptyState {
-                    EmptyStateView(
-                        title: "Find podcasts",
-                        systemImage: "headphones",
-                        message: "Search by show name, or paste an RSS feed URL to subscribe.")
-                }
+            if trimmed.isEmpty && !ax {
+                EmptyStateView(
+                    title: "Find podcasts",
+                    systemImage: "headphones",
+                    message: "Search by show name, or paste an RSS feed URL to subscribe.")
                 .allowsHitTesting(false)
             } else if podcastHits.isEmpty && podcastFeedCandidate == nil && isSearching {
                 ProgressView()

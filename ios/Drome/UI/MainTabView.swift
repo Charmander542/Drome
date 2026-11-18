@@ -13,9 +13,10 @@ struct MainTabView: View {
     @State private var keyboardVisible = false
     /// Bumped when the user re-taps an already-selected tab (pop to root).
     @State private var tabPopTriggers = [0, 0, 0, 0]
-    /// Preserve the previous 10pt / 20pt look at default Dynamic Type.
-    @ScaledMetric(relativeTo: .caption2) private var tabLabelSize: CGFloat = 10
-    @ScaledMetric(relativeTo: .title3) private var tabIconSize: CGFloat = 20
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// Used only at accessibility sizes; default/XXXL keep fixed 10pt / 20pt.
+    @ScaledMetric(relativeTo: .caption2) private var tabLabelSizeScaled: CGFloat = 10
+    @ScaledMetric(relativeTo: .title3) private var tabIconSizeScaled: CGFloat = 20
 
     /// Active bottom chrome: podcast wins while an episode is loaded so it
     /// replaces the music mini (music only pauses — `current` stays set).
@@ -270,9 +271,9 @@ struct MainTabView: View {
 
     private func solidTabItem(tag: Int, title: String, systemImage: String) -> some View {
         let selected = selectedTab == tag
-        // Cap so AX5 doesn't eat the whole screen; still well above the old fixed 10pt.
-        let labelSize = min(tabLabelSize, 15)
-        let iconSize = min(tabIconSize, 28)
+        let ax = dynamicTypeSize.isAccessibilitySize
+        let labelSize: CGFloat = ax ? min(tabLabelSizeScaled, 15) : 10
+        let iconSize: CGFloat = ax ? min(tabIconSizeScaled, 28) : 20
         return Button {
             selectTab(tag)
         } label: {
@@ -281,8 +282,8 @@ struct MainTabView: View {
                     .font(.system(size: iconSize, weight: .semibold))
                 Text(title)
                     .font(.system(size: labelSize, weight: .medium))
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.7)
+                    .lineLimit(ax ? 2 : 1)
+                    .minimumScaleFactor(ax ? 0.7 : 0.8)
                     .multilineTextAlignment(.center)
             }
             .foregroundStyle(selected ? DromeTheme.accent : DromeTheme.muted)

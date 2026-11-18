@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LoginView: View {
     @EnvironmentObject private var env: AppEnvironment
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var serverURL = "http://"
     @State private var username = ""
@@ -12,10 +13,14 @@ struct LoginView: View {
     @State private var errorMessage: String?
     @State private var showSavedAccounts = false
     @FocusState private var focusedField: Field?
-    /// Matches the previous fixed 48pt at default size; scales with Dynamic Type.
-    @ScaledMetric(relativeTo: .largeTitle) private var brandSize: CGFloat = 48
+    /// Used only at accessibility sizes; default/XXXL keep the fixed 48pt brand.
+    @ScaledMetric(relativeTo: .largeTitle) private var brandSizeScaled: CGFloat = 48
 
     private enum Field { case server, user, password, wishlist }
+
+    private var brandSize: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? min(brandSizeScaled, 72) : 48
+    }
 
     var body: some View {
         ScrollView {
@@ -24,7 +29,6 @@ struct LoginView: View {
                     Text("Drome")
                         .font(.system(size: brandSize, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
-                        .accessibilityAddTraits(.isHeader)
                     Text("Stream your Navidrome library.")
                         .font(.title3)
                         .foregroundStyle(DromeTheme.muted)
@@ -90,10 +94,9 @@ struct LoginView: View {
                 .disabled(isWorking || !canSubmit)
             }
             .padding(.horizontal, 24)
-            .padding(.bottom, 56)
+            .padding(.bottom, 40)
         }
         .scrollDismissesKeyboard(.interactively)
-        .scrollBounceBehavior(.basedOnSize)
         .sheet(isPresented: $showSavedAccounts) {
             AccountSwitcherSheet()
                 .environmentObject(env)
