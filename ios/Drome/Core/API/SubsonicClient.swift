@@ -94,24 +94,31 @@ final class SubsonicClient {
 
     @discardableResult
     func request<P: Decodable>(_ payload: P.Type, endpoint: String,
-                               parameters: [URLQueryItem] = []) async throws -> P {
+                               parameters: [URLQueryItem] = [],
+                               timeout: TimeInterval? = nil) async throws -> P {
         guard let url = endpointURL(endpoint, parameters: parameters) else {
             throw SubsonicError.invalidURL
         }
-        let session = self.session
-        return try await Task.detached(priority: .userInitiated) {
-            let (data, response) = try await session.data(from: url)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                throw SubsonicError.http(status: http.statusCode)
-            }
-            return try JSONDecoder().decode(SubsonicEnvelope<P>.self, from: data).payload
-        }.value
+        var urlRequest = URLRequest(url: url)
+        // Per-request timeout overrides the session's long defaults (used for
+        // streaming/downloads) when callers need a snappy failure — e.g. login.
+        if let timeout {
+            urlRequest.timeoutInterval = timeout
+        }
+        let (data, response) = try await session.data(for: urlRequest)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw SubsonicError.http(status: http.statusCode)
+        }
+        return try JSONDecoder().decode(SubsonicEnvelope<P>.self, from: data).payload
     }
 
     // MARK: - System
 
-    func ping() async throws {
-        _ = try await request(PingPayload.self, endpoint: "ping.view")
+    /// Login / reachability check. Uses a short per-request timeout so a dead host
+    /// fails quickly without changing the long-lived session timeouts used for
+    /// streaming and large downloads.
+    func ping(timeout: TimeInterval = 15) async throws {
+        _ = try await request(PingPayload.self, endpoint: "ping.view", timeout: timeout)
     }
 
     /// Kick off a Navidrome / Subsonic library rescan.
