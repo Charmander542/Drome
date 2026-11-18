@@ -13,10 +13,6 @@ struct LoginView: View {
     @State private var errorMessage: String?
     @State private var showSavedAccounts = false
     @State private var signInTask: Task<Void, Never>?
-    /// Extra bottom padding for the Sign In chrome while the keyboard is up.
-    /// Measured as keyboard overlap minus the home-indicator inset already
-    /// applied by layout, so username/password QuickType bars can't cover it.
-    @State private var keyboardFooterPadding: CGFloat = 0
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable {
@@ -109,10 +105,10 @@ struct LoginView: View {
                                 .id("loginError")
                         }
 
-                        // Tappable clear space so users can dismiss the keyboard
-                        // without fighting the field hit targets above.
+                        // Room below the fields so a focused row can scroll up into
+                        // the viewport above the sticky Sign In chrome.
                         Color.clear
-                            .frame(minHeight: 120)
+                            .frame(minHeight: accessibilityLayout ? 180 : 120)
                             .frame(maxWidth: .infinity)
                             .contentShape(Rectangle())
                             .onTapGesture { focusedField = nil }
@@ -123,6 +119,10 @@ struct LoginView: View {
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .scrollIndicators(.hidden)
+                .onChange(of: focusedField) { _, newValue in
+                    guard let newValue else { return }
+                    scrollFieldIntoView(newValue, proxy: proxy)
+                }
                 .onChange(of: errorMessage) { _, newValue in
                     guard newValue != nil else { return }
                     withAnimation(.easeOut(duration: 0.25)) {
@@ -136,9 +136,9 @@ struct LoginView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { focusedField = nil }
             }
-            // Handle keyboard overlap ourselves so username/password autofill
-            // bars (taller than the URL keyboard) can't cover Sign In.
-            .ignoresSafeArea(.keyboard, edges: .bottom)
+            // Sticky Sign In chrome only — system keyboard safe area lifts it.
+            // Do not manually pad by the full keyboard height (that collapsed the
+            // form and overlapped the focused field).
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 signInChrome
             }
@@ -149,20 +149,6 @@ struct LoginView: View {
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
-            .onReceive(NotificationCenter.default.publisher(
-                for: UIResponder.keyboardWillChangeFrameNotification
-            )) { notification in
-                updateKeyboardFooterPadding(from: notification)
-            }
-            .onReceive(NotificationCenter.default.publisher(
-                for: UIResponder.keyboardWillHideNotification
-            )) { notification in
-                let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double
-                    ?? 0.25
-                withAnimation(.easeOut(duration: duration)) {
-                    keyboardFooterPadding = 0
-                }
-            }
         }
         .sheet(isPresented: $showSavedAccounts) {
             AccountSwitcherSheet()
@@ -178,9 +164,6 @@ struct LoginView: View {
             .padding(.top, 12)
             .padding(.bottom, 8)
             .frame(maxWidth: .infinity)
-            // Lift the actions by the live keyboard overlap (keys + Done +
-            // autofill). Background fills that gap so content doesn't show through.
-            .padding(.bottom, keyboardFooterPadding)
             .background(
                 DromeTheme.background
                     .opacity(0.96)
@@ -204,15 +187,9 @@ struct LoginView: View {
         .accessibilityLabel("Cancel sign in")
 
         let submit = Button(action: signIn) {
-            HStack(spacing: 8) {
-                if isWorking { ProgressView().tint(.black) }
-                Text(isWorking ? "Connecting…" : "Sign In")
-                    .font(.headline)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
+            submitLabel
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
         }
         .buttonStyle(.borderedProminent)
         .tint(DromeTheme.accent)
@@ -235,26 +212,36 @@ struct LoginView: View {
         }
     }
 
-    private func updateKeyboardFooterPadding(from notification: Notification) {
-        guard
-            let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
-        else { return }
-        // Convert to the key window so overlap includes the Done accessory and
-        // any username/password QuickType bar above the keys. Subtract the
-        // window's bottom safe inset — `safeAreaInset` already clears that.
-        let padding: CGFloat
-        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let window = scene.windows.first(where: \.isKeyWindow) ?? scene.windows.first {
-            let converted = window.convert(frame, from: nil)
-            let overlap = max(0, window.bounds.maxY - converted.minY)
-            padding = max(0, overlap - window.safeAreaInsets.bottom)
+    @ViewBuilder
+    private var submitLabel: some View {
+        // At AX sizes, stack spinner + short title so "Connecting…" isn't
+        // truncated mid-word to "Connectin…".
+        if isWorking && accessibilityLayout {
+            VStack(spacing: 6) {
+                ProgressView().tint(.black)
+                Text("Connecting")
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         } else {
-            padding = max(0, UIScreen.main.bounds.height - frame.minY)
+            HStack(spacing: 8) {
+                if isWorking { ProgressView().tint(.black) }
+                Text(isWorking ? "Connecting…" : "Sign In")
+                    .font(.headline)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
         }
-        let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double
-            ?? 0.25
-        withAnimation(.easeOut(duration: duration)) {
-            keyboardFooterPadding = padding
+    }
+
+    /// Pin the focused field near the top of the remaining viewport (below the
+    /// status bar, above the sticky Sign In chrome) after the keyboard settles.
+    private func scrollFieldIntoView(_ field: Field, proxy: ScrollViewProxy) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            withAnimation(.easeOut(duration: 0.25)) {
+                proxy.scrollTo(field, anchor: UnitPoint(x: 0.5, y: 0.18))
+            }
         }
     }
 
@@ -293,6 +280,7 @@ struct LoginView: View {
                 .accessibilityLabel(title)
                 .onSubmit { advanceFocus(from: field) }
         }
+        .id(field)
     }
 
     private func labeledSecureField(
@@ -316,6 +304,7 @@ struct LoginView: View {
                 .accessibilityLabel(title)
                 .onSubmit { advanceFocus(from: .password) }
         }
+        .id(Field.password)
     }
 
     private func advanceFocus(from field: Field) {
