@@ -276,6 +276,8 @@ struct LoginView: View {
                 env.signIn(account: account, password: password)
             } catch is CancellationError {
                 // User cancelled; leave the form as-is.
+            } catch let urlError as URLError where urlError.code == .cancelled {
+                // URLSession surfaces task cancellation as URLError.cancelled.
             } catch {
                 if !Task.isCancelled {
                     errorMessage = error.localizedDescription
