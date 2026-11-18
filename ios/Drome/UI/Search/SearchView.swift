@@ -12,6 +12,7 @@ struct SearchView: View {
     @EnvironmentObject private var podcastPlayer: PodcastPlayer
     @Environment(\.songNavigator) private var songNavigator
     @Environment(\.tabPopToRootTrigger) private var tabPopToRootTrigger
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var source: Source = .library
     @State private var query = ""
@@ -101,33 +102,55 @@ struct SearchView: View {
 
     /// Stays visible while the search field is focused (unlike nav toolbar items).
     private var searchControls: some View {
-        HStack(spacing: 12) {
-            Picker("Source", selection: $source) {
-                ForEach(Source.allCases, id: \.self) { s in
-                    Text(s.rawValue).tag(s)
+        let ax = dynamicTypeSize.isAccessibilitySize
+        return Group {
+            if ax {
+                // Stack at AX so the lyrics chip isn't clipped beside the segmented control.
+                VStack(alignment: .leading, spacing: 10) {
+                    sourcePicker
+                    if source == .library {
+                        lyricsToggleButton(axLayout: true)
+                    }
                 }
-            }
-            .pickerStyle(.segmented)
-
-            if source == .library {
-                Button {
-                    includeLyrics.toggle()
-                    scheduleSearch(query)
-                } label: {
-                    Image(systemName: "text.quote")
-                        .symbolVariant(includeLyrics ? .fill : .none)
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(includeLyrics ? DromeTheme.accent : Color.white.opacity(0.7))
-                        .frame(width: 36, height: 36)
-                        .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            } else {
+                // Identical to main at default / XXXL.
+                HStack(spacing: 12) {
+                    sourcePicker
+                    if source == .library {
+                        lyricsToggleButton(axLayout: false)
+                    }
                 }
-                .accessibilityLabel(includeLyrics ? "Lyrics search on" : "Lyrics search off")
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
         .background(DromeTheme.background.opacity(0.94))
+    }
+
+    private var sourcePicker: some View {
+        Picker("Source", selection: $source) {
+            ForEach(Source.allCases, id: \.self) { s in
+                Text(s.rawValue).tag(s)
+            }
+        }
+        .pickerStyle(.segmented)
+    }
+
+    private func lyricsToggleButton(axLayout: Bool) -> some View {
+        Button {
+            includeLyrics.toggle()
+            scheduleSearch(query)
+        } label: {
+            Image(systemName: "text.quote")
+                .symbolVariant(includeLyrics ? .fill : .none)
+                // Non-AX: match main (`.body` scales through XXXL). AX: fixed so it fits.
+                .font(axLayout ? .system(size: 17, weight: .semibold) : .body.weight(.semibold))
+                .foregroundStyle(includeLyrics ? DromeTheme.accent : Color.white.opacity(0.7))
+                .frame(width: axLayout ? 44 : 36, height: axLayout ? 44 : 36)
+                .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .accessibilityLabel(includeLyrics ? "Lyrics search on" : "Lyrics search off")
     }
 
     @ViewBuilder
@@ -146,9 +169,23 @@ struct SearchView: View {
     private var libraryResults: some View {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let libraryEmpty = hits.isEmpty && podcastHits.isEmpty
+        let showCenteredEmpty = trimmed.isEmpty && recentItems.isEmpty
+            && !dynamicTypeSize.isAccessibilitySize
         List {
             if trimmed.isEmpty {
-                recentSearchesSection
+                if recentItems.isEmpty, dynamicTypeSize.isAccessibilitySize {
+                    // In-list so AX empty copy scrolls with the List above the mini player.
+                    Section {
+                        EmptyStateView(
+                            title: "Find your music",
+                            systemImage: "magnifyingglass",
+                            message: "Try an artist, album, song, podcast, or a line of lyrics.")
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 48, trailing: 16))
+                    }
+                } else {
+                    recentSearchesSection
+                }
             } else if let error, libraryEmpty {
                 Section {
                     Text(error)
@@ -190,7 +227,7 @@ struct SearchView: View {
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .overlay {
-            if trimmed.isEmpty && recentItems.isEmpty {
+            if showCenteredEmpty {
                 EmptyStateView(
                     title: "Find your music",
                     systemImage: "magnifyingglass",
@@ -223,15 +260,36 @@ struct SearchView: View {
     @ViewBuilder
     private var spotifyResults: some View {
         if session.wishlist == nil {
-            EmptyStateView(
-                title: "Wishlist not configured",
-                systemImage: "heart",
-                message: "Set your companion server URL in Settings to search Spotify and add tracks to your wishlist.")
+            if dynamicTypeSize.isAccessibilitySize {
+                ScrollableEmptyState {
+                    EmptyStateView(
+                        title: "Wishlist not configured",
+                        systemImage: "heart",
+                        message: "Set your companion server URL in Settings to search Spotify and add tracks to your wishlist.")
+                }
+            } else {
+                EmptyStateView(
+                    title: "Wishlist not configured",
+                    systemImage: "heart",
+                    message: "Set your companion server URL in Settings to search Spotify and add tracks to your wishlist.")
+            }
         } else {
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            let ax = dynamicTypeSize.isAccessibilitySize
             List {
                 if trimmed.isEmpty {
-                    Section { EmptyView() }
+                    if ax {
+                        Section {
+                            EmptyStateView(
+                                title: "Search Spotify",
+                                systemImage: "magnifyingglass",
+                                message: "Find tracks to add to your wishlist.")
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 48, trailing: 16))
+                        }
+                    } else {
+                        Section { EmptyView() }
+                    }
                 } else if let error, spotifyHits.isEmpty {
                     Section {
                         Text(error)
@@ -258,7 +316,7 @@ struct SearchView: View {
             .scrollContentBackground(.hidden)
             .scrollDismissesKeyboard(.interactively)
             .overlay {
-                if trimmed.isEmpty {
+                if trimmed.isEmpty && !ax {
                     EmptyStateView(
                         title: "Search Spotify",
                         systemImage: "magnifyingglass",
@@ -276,6 +334,7 @@ struct SearchView: View {
     @ViewBuilder
     private var podcastResults: some View {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ax = dynamicTypeSize.isAccessibilitySize
         List {
             if let podcastFeedCandidate {
                 Section {
@@ -288,7 +347,18 @@ struct SearchView: View {
             }
 
             if trimmed.isEmpty {
-                Section { EmptyView() }
+                if ax {
+                    Section {
+                        EmptyStateView(
+                            title: "Find podcasts",
+                            systemImage: "headphones",
+                            message: "Search by show name, or paste an RSS feed URL to subscribe.")
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 48, trailing: 16))
+                    }
+                } else {
+                    Section { EmptyView() }
+                }
             } else if let error, podcastHits.isEmpty, podcastFeedCandidate == nil {
                 Section {
                     Text(error)
@@ -315,7 +385,7 @@ struct SearchView: View {
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .overlay {
-            if trimmed.isEmpty {
+            if trimmed.isEmpty && !ax {
                 EmptyStateView(
                     title: "Find podcasts",
                     systemImage: "headphones",
@@ -336,6 +406,8 @@ struct SearchView: View {
             podcastRowContent(hit.show, feedURLHint: false)
         }
         .buttonStyle(.plain)
+        // Subscribe owns the trailing chrome — hide the default disclosure chevron.
+        .navigationLinkIndicatorVisibility(.hidden)
         .overlay(alignment: .trailing) {
             podcastSubscribeButton(feedURL: hit.show.feedURL)
                 .padding(.trailing, 4)
@@ -362,7 +434,8 @@ struct SearchView: View {
                     .lineLimit(1)
             }
 
-            Spacer(minLength: 36)
+            // Room for the 44pt Subscribe control without crowding the title.
+            Spacer(minLength: 52)
         }
     }
 
@@ -373,17 +446,24 @@ struct SearchView: View {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.title2)
                     .foregroundStyle(DromeTheme.accent)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                    .accessibilityLabel("Subscribed")
             } else {
                 Button {
                     Task { await subscribeToPodcast(feedURL: feedURL) }
                 } label: {
-                    if subscribingFeedURLs.contains(feedURL) {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(DromeTheme.accent)
+                    Group {
+                        if subscribingFeedURLs.contains(feedURL) {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(DromeTheme.accent)
+                        }
                     }
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(subscribingFeedURLs.contains(feedURL))
@@ -399,6 +479,7 @@ struct SearchView: View {
             podcastRowContent(show, feedURLHint: true)
         }
         .buttonStyle(.plain)
+        .navigationLinkIndicatorVisibility(.hidden)
         .overlay(alignment: .trailing) {
             podcastSubscribeButton(feedURL: show.feedURL)
                 .padding(.trailing, 4)
@@ -519,7 +600,7 @@ struct SearchView: View {
     private func recentItemLabel(_ item: RecentSearchItem, shape: CoverShape) -> some View {
         HStack(spacing: 12) {
             RemoteImage(
-                url: session.client.coverArtURL(id: item.coverArt ?? item.entityId, size: 120),
+                url: session.artworkURL(id: item.coverArt ?? item.entityId, size: 120),
                 placeholderSymbol: item.kind == .artist ? "person.crop.circle" : "music.note")
                 .frame(width: 44, height: 44)
                 .clipShape(shape == .circle ? AnyShape(Circle()) : AnyShape(RoundedRectangle(cornerRadius: 4)))
@@ -781,7 +862,7 @@ struct SearchView: View {
         HStack(spacing: 12) {
             if showsCover {
                 Group {
-                    RemoteImage(url: session.client.coverArtURL(id: hit.coverArt, size: 120),
+                    RemoteImage(url: session.artworkURL(id: hit.coverArt, size: 120),
                                 placeholderSymbol: placeholder(for: hit.kind))
                 }
                 .frame(width: 44, height: 44)

@@ -13,6 +13,10 @@ struct MainTabView: View {
     @State private var keyboardVisible = false
     /// Bumped when the user re-taps an already-selected tab (pop to root).
     @State private var tabPopTriggers = [0, 0, 0, 0]
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// Used only at accessibility sizes; default/XXXL keep fixed 10pt / 20pt.
+    @ScaledMetric(relativeTo: .caption2) private var tabLabelSizeScaled: CGFloat = 10
+    @ScaledMetric(relativeTo: .title3) private var tabIconSizeScaled: CGFloat = 20
 
     /// Active bottom chrome: podcast wins while an episode is loaded so it
     /// replaces the music mini (music only pauses — `current` stays set).
@@ -31,35 +35,41 @@ struct MainTabView: View {
         )
     }
 
-    var body: some View {
-        VStack(spacing: 0) {
-            if !connectivity.isOnline {
-                disconnectedBanner
-            }
+    private var isNowPlayingPresented: Bool {
+        showNowPlaying || showPodcastNowPlaying
+    }
 
-            // Tab content fills remaining space ABOVE the chrome. Custom switch
-            // (not TabView) so iOS liquid-glass UITabBar never appears above the
-            // mini player. Sibling chrome — not safeAreaInset — keeps Lists clear.
-            Group {
-                if connectivity.isOnline {
-                    tabContent
-                        .tint(DromeTheme.accent)
-                } else {
-                    SongNavigationStack {
-                        DownloadsView(isOfflineMode: true)
+    var body: some View {
+        ZStack {
+            VStack(spacing: 0) {
+                if !connectivity.isOnline {
+                    disconnectedBanner
+                }
+
+                // Tab content fills remaining space ABOVE the chrome. Custom switch
+                // (not TabView) so iOS liquid-glass UITabBar never appears above the
+                // mini player. Sibling chrome — not safeAreaInset — keeps Lists clear.
+                Group {
+                    if connectivity.isOnline {
+                        tabContent
+                            .tint(DromeTheme.accent)
+                    } else {
+                        SongNavigationStack {
+                            DownloadsView(isOfflineMode: true)
+                        }
                     }
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if !keyboardVisible {
-                bottomChrome
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                if !keyboardVisible {
+                    bottomChrome
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
-        }
-        .animation(.easeOut(duration: 0.2), value: keyboardVisible)
-        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: activeMiniPlayer)
-        .overlay {
+            // Hide Home / tabs from the accessibility tree while NP is up.
+            .accessibilityHidden(isNowPlayingPresented)
+            .allowsHitTesting(!isNowPlayingPresented)
+
             if showNowPlaying {
                 // Offset lives on the stack inside NowPlayingView so the whole
                 // sheet (not just content over a black nav chrome) slides away.
@@ -68,6 +78,7 @@ struct MainTabView: View {
                     txn.disablesAnimations = true
                     withTransaction(txn) { showNowPlaying = false }
                 }
+                .accessibilityAddTraits(.isModal)
                 .transition(.asymmetric(
                     insertion: .move(edge: .bottom),
                     removal: .identity))
@@ -77,11 +88,14 @@ struct MainTabView: View {
                     txn.disablesAnimations = true
                     withTransaction(txn) { showPodcastNowPlaying = false }
                 }
+                .accessibilityAddTraits(.isModal)
                 .transition(.asymmetric(
                     insertion: .move(edge: .bottom),
                     removal: .identity))
             }
         }
+        .animation(.easeOut(duration: 0.2), value: keyboardVisible)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: activeMiniPlayer)
         .alert(
             "Switch playback?",
             isPresented: switchPromptBinding
@@ -267,16 +281,18 @@ struct MainTabView: View {
 
     private func solidTabItem(tag: Int, title: String, systemImage: String) -> some View {
         let selected = selectedTab == tag
+        let ax = dynamicTypeSize.isAccessibilitySize
         return Button {
             selectTab(tag)
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: ax ? min(tabIconSizeScaled, 28) : 20, weight: .semibold))
                 Text(title)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: ax ? min(tabLabelSizeScaled, 15) : 10, weight: .medium))
+                    // Match main exactly at default/XXXL (no multilineTextAlignment).
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .minimumScaleFactor(ax ? 0.7 : 0.8)
             }
             .foregroundStyle(selected ? DromeTheme.accent : DromeTheme.muted)
             .frame(maxWidth: .infinity)

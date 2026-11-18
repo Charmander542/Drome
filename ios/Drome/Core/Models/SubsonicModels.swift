@@ -389,3 +389,11 @@ struct LyricsBySongPayload: Decodable {
     struct List: Decodable { var structuredLyrics: [StructuredLyrics]? }
     var lyricsList: List
 }
+
+extension Array where Element == Song {
+    /// Removes duplicate songs by id, keeping first occurrence.
+    func uniquedByID() -> [Song] {
+        var seen = Set<String>()
+        return filter { seen.insert($0.id).inserted }
+    }
+}

@@ -139,7 +139,7 @@ struct AlbumDetailView: View {
 
     private func header(_ album: AlbumWithSongs, canPlay: Bool, songsReady: Bool) -> some View {
         VStack(spacing: 16) {
-            RemoteImage(url: session.client.coverArtURL(id: album.coverArt ?? album.id, size: 600))
+            RemoteImage(url: session.artworkURL(id: album.coverArt ?? album.id, size: 600))
                 .frame(width: 220, height: 220)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .shadow(color: .black.opacity(0.45), radius: 24, y: 12)

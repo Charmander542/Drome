@@ -338,7 +338,7 @@ final class DownloadManager: ObservableObject {
         coverInflight.insert(coverId)
         defer { coverInflight.remove(coverId) }
 
-        guard let url = client.coverArtURL(id: coverId, size: 800) else { return }
+        guard let url = client.coverArtURL(id: coverId, size: 800, preferFullSize: true) else { return }
         // Use the API session so self-signed servers work; keep this off the
         // background download session (audio files only).
         guard let (data, response) = try? await client.session.data(from: url),

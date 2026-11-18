@@ -340,11 +340,16 @@ final class SubsonicClient {
         ], stableMediaAuth: true)
     }
 
-    func coverArtURL(id: String?, size: Int = 600) -> URL? {
+    /// Cover art URL. On Funnel/remote hosts, `size` is clamped unless
+    /// `preferFullSize` is set (e.g. offline download cache).
+    func coverArtURL(id: String?, size: Int = 600, preferFullSize: Bool = false) -> URL? {
         guard let id else { return nil }
+        let resolved = preferFullSize
+            ? size
+            : PlaybackPreferences.clampedCoverSize(size, serverHost: account.serverURL.host)
         return endpointURL("getCoverArt", parameters: [
             URLQueryItem(name: "id", value: id),
-            URLQueryItem(name: "size", value: String(size)),
+            URLQueryItem(name: "size", value: String(resolved)),
         ], stableMediaAuth: true)
     }
 

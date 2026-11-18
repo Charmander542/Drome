@@ -33,7 +33,9 @@ extension Color {
 }
 
 /// Kept for call sites / future overlays. Bottom chrome is laid out as a sibling
-/// of tab content in `MainTabView`, so scroll pages no longer need manual inset.
+/// of tab content in `MainTabView`, so Lists cannot paint under the mini player.
+/// At accessibility sizes, empty/error chrome still needs to scroll within that
+/// sibling frame (see `ScrollableEmptyState` / `ErrorStateView.expandsToFill`).
 private struct MiniPlayerClearanceKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
 }

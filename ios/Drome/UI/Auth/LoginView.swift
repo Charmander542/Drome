@@ -14,12 +14,18 @@ struct LoginView: View {
     @State private var showSavedAccounts = false
     @State private var signInTask: Task<Void, Never>?
     @FocusState private var focusedField: Field?
+    /// Used only at accessibility sizes; default/XXXL keep the fixed 48pt brand.
+    @ScaledMetric(relativeTo: .largeTitle) private var brandSizeScaled: CGFloat = 48
 
     private enum Field: Hashable {
         case server, user, password, wishlist
     }
 
     private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
+
+    private var brandSize: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? min(brandSizeScaled, 72) : 48
+    }
 
     var body: some View {
         NavigationStack {
@@ -28,7 +34,7 @@ struct LoginView: View {
                     VStack(alignment: .leading, spacing: 28) {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Drome")
-                                .font(.system(size: 48, weight: .bold, design: .rounded))
+                                .font(.system(size: brandSize, weight: .bold, design: .rounded))
                                 .foregroundStyle(.white)
                             Text("Stream your Navidrome library.")
                                 .font(.title3)

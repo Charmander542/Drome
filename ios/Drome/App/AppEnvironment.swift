@@ -377,9 +377,12 @@ final class AppSession: ObservableObject, Identifiable {
     }
 
     /// Prefer locally downloaded cover art when present (offline-safe).
+    /// Remote / Funnel hosts clamp `size` via `PlaybackPreferences.remoteCoverMaxSize`.
     func artworkURL(id: String?, size: Int = 600) -> URL? {
         if let local = downloads.localCoverURL(coverId: id) { return local }
-        return client.coverArtURL(id: id, size: size)
+        let clamped = PlaybackPreferences.clampedCoverSize(
+            size, serverHost: account.serverURL.host)
+        return client.coverArtURL(id: id, size: clamped)
     }
 
     func artworkURL(for song: Song, size: Int = 600) -> URL? {

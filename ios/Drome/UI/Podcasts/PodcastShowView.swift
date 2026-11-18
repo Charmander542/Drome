@@ -118,7 +118,8 @@ struct PodcastShowView: View {
             }
 
             HStack(spacing: 16) {
-                Label("\(show.episodeCount) episodes", systemImage: "list.bullet")
+                // Prefer loaded episodes over search-result metadata (often 0).
+                Label("\(displayedEpisodeCount) episodes", systemImage: "list.bullet")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -288,6 +289,11 @@ struct PodcastShowView: View {
     }
 
     // MARK: - Helpers
+
+    private var displayedEpisodeCount: Int {
+        if !episodes.isEmpty { return episodes.count }
+        return show.episodeCount
+    }
 
     private func loadEpisodes() async {
         isLoading = true
