@@ -1,7 +1,9 @@
 import Foundation
 
 extension Song {
-    /// Human-readable quality badge, e.g. `FLAC · 24-bit/96 kHz` or `320 kbps`.
+    /// Library-file quality badge, e.g. `FLAC · 24-bit/96 kHz` or `320 kbps`.
+    /// Now Playing prefers `PlayerEngine.activeStreamBadge` when the engine is
+    /// transcoding (Funnel/cellular MP3) so the label matches what's audible.
     var qualityBadge: String? {
         let format = formatLabel
         var parts: [String] = []

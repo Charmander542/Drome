@@ -826,7 +826,7 @@ struct NowPlayingView: View {
                         .lineLimit(1)
                 }
 
-                if let badge = song?.qualityBadge {
+                if let badge = player.activeStreamBadge ?? song?.qualityBadge {
                     Text(badge)
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(DromeTheme.accent.opacity(0.95))

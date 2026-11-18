@@ -21,6 +21,8 @@ final class PlayerEngine: ObservableObject {
     // MARK: Published state
 
     @Published private(set) var current: QueueItem?
+    /// What's actually playing (e.g. `MP3 · 192 kbps` on Funnel), not just library tags.
+    @Published private(set) var activeStreamBadge: String?
     @Published private(set) var userQueue: [QueueItem] = []
     @Published private(set) var contextQueue: [QueueItem] = []
     @Published private(set) var history: [QueueItem] = []
@@ -1849,6 +1851,10 @@ final class PlayerEngine: ObservableObject {
 
     private func makePlayerItem(for song: Song, url: URL) -> AVPlayerItem {
         let isFile = url.isFileURL
+        activeStreamBadge = Self.streamQualityBadge(
+            for: song,
+            url: url,
+            resilientBitRate: resilientMaxBitRate)
         // Never force precise duration on the hot path — library metadata is
         // good enough for UI, and probing FLAC delayed every downloaded tap.
         let asset = AVURLAsset(url: url, options: [
@@ -1881,6 +1887,36 @@ final class PlayerEngine: ObservableObject {
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = !isFile
         item.preferredPeakBitRate = 0
         return item
+    }
+
+    /// Badge for the bytes actually playing (transcoded MP3 vs library FLAC).
+    static func streamQualityBadge(for song: Song, url: URL, resilientBitRate: Int) -> String? {
+        if url.isFileURL {
+            let ext = url.pathExtension.lowercased()
+            if ext == "mp3" {
+                return "MP3 · \(resilientBitRate) kbps"
+            }
+            if !ext.isEmpty {
+                // Downloaded original (or other local file) — library tags win.
+                return song.qualityBadge ?? ext.uppercased()
+            }
+            return song.qualityBadge
+        }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let format = items.first { $0.name == "format" }?.value?.lowercased()
+        let maxBitRate = items.first { $0.name == "maxBitRate" }?.value.flatMap(Int.init)
+        if format == "mp3" {
+            let br = maxBitRate ?? resilientBitRate
+            return br > 0 ? "MP3 · \(br) kbps" : "MP3"
+        }
+        if format == "aac" {
+            let br = maxBitRate ?? 256
+            return br > 0 ? "AAC · \(br) kbps" : "AAC"
+        }
+        if let format, !format.isEmpty, format != "raw" {
+            return format.uppercased()
+        }
+        return song.qualityBadge
     }
 
     /// How many *upcoming* items to keep in AVQueuePlayer.
