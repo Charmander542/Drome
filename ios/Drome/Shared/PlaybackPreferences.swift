@@ -59,7 +59,7 @@ enum PlaybackPreferences {
     static var remoteMaxBitRate: Int { 192 }
 
     /// Cap getCoverArt `size=` over Funnel/remote so grids don't pull 600–1200px.
-    static var remoteCoverMaxSize: Int { 300 }
+    static var remoteCoverMaxSize: Int { 200 }
 
     /// Bitrate for compressed streams given the configured Navidrome host.
     static func preferredMaxBitRate(serverHost: String?) -> Int {
