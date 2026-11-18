@@ -1021,6 +1021,17 @@ final class PlayerEngine: ObservableObject {
             if recoverFailedItemOrSkip(reason: "current-item-failed") { return }
             return
         }
+        // Downloaded / local files: play immediately. Waiting on readyToPlay with
+        // PreferPreciseDuration forced multi-second FLAC probes before any sound.
+        let isFile = (item.asset as? AVURLAsset)?.url.isFileURL == true
+        if isFile {
+            itemReadyCancellable = nil
+            itemReadyTimeout?.cancel()
+            player.automaticallyWaitsToMinimizeStalling = false
+            player.play()
+            return
+        }
+        player.automaticallyWaitsToMinimizeStalling = true
         if itemIsSafeToStart(item) {
             itemReadyCancellable = nil
             itemReadyTimeout?.cancel()
@@ -1098,9 +1109,9 @@ final class PlayerEngine: ObservableObject {
 
     /// Local files can start immediately; remote streams need a real buffer.
     private func itemIsSafeToStart(_ item: AVPlayerItem) -> Bool {
-        guard item.status == .readyToPlay else { return false }
         let isFile = (item.asset as? AVURLAsset)?.url.isFileURL == true
-        if isFile { return true }
+        if isFile { return item.status != .failed }
+        guard item.status == .readyToPlay else { return false }
         if item.isPlaybackBufferEmpty { return false }
         if item.isPlaybackLikelyToKeepUp { return true }
         let now = item.currentTime()
@@ -1694,15 +1705,17 @@ final class PlayerEngine: ObservableObject {
         #endif
         DromeDiagnostics.logPlayer(
             "setCurrent \(playItem.song.id) «\(playItem.song.title)» play=\(startPlaying) \(diagnosticStateLine())")
-        // Pin the new track at 0 before rebuild so a crash mid-rebuild doesn't
-        // restore the next song at the previous playhead (~⅓).
-        persistSessionNow(force: true)
         if startPlaying {
             AudioFocus.shared.claim(.music)
             onWillStartPlayback?()
             resumeAfterInterruption = false
         }
+        // Play first — session pin / artwork / scrobble used to run before
+        // rebuild and added noticeable delay on downloaded taps.
         rebuildWindow(startPlaying: startPlaying)
+        // Pin playhead at 0 after insert so a crash mid-rebuild doesn't restore
+        // the next song at the previous playhead (~⅓).
+        persistSessionNow(force: true)
         loadArtwork(for: playItem.song)
         if recordPlay {
             scrobbleNowPlaying(playItem.song)
@@ -1827,15 +1840,17 @@ final class PlayerEngine: ObservableObject {
 
     private func makePlayerItem(for song: Song, url: URL) -> AVPlayerItem {
         let isFile = url.isFileURL
+        // Never force precise duration on the hot path — library metadata is
+        // good enough for UI, and probing FLAC delayed every downloaded tap.
         let asset = AVURLAsset(url: url, options: [
-            AVURLAssetPreferPreciseDurationAndTimingKey: isFile,
+            AVURLAssetPreferPreciseDurationAndTimingKey: false,
         ])
         let item = AVPlayerItem(asset: asset)
         sharePlayBridge.remember(item, identity: Self.sharePlayContentID(for: song))
-        // Hi-res FLAC needs a deep buffer; a second stream stealing the pipe is
-        // what made playback sound grainy / staticy.
+        // Hi-res FLAC needs a deep buffer on the network; local files should
+        // start with no artificial forward-buffer wait.
         if isFile {
-            item.preferredForwardBufferDuration = 4
+            item.preferredForwardBufferDuration = 0
         } else if sharePlayActive {
             // Coordinated playback waits for every phone — keep the buffer lean
             // so one slow FLAC fill doesn't stall the whole jam.
@@ -2056,14 +2071,15 @@ final class PlayerEngine: ObservableObject {
         // Let the new item buffer before stall/silence detectors can fire.
         // Do NOT pretend the playhead advanced — that aborted recovery while
         // we were still sitting on a clamped early seek after rebuild.
-        beginRecoveryQuietPeriod(engagePlayback ? 3.0 : 1.0)
+        let playingLocal = (playerItem.asset as? AVURLAsset)?.url.isFileURL == true
+        beginRecoveryQuietPeriod(engagePlayback ? (playingLocal ? 6.0 : 3.0) : 1.0)
         lastObservedPlayhead = -1
         lastPlayheadAdvanceAt = .distantPast
         prefetchUpcomingIntoCache()
         // Warm the current track into the disk cache in the background so a
         // later Tailscale / BT blip can rebuild onto a local file.
         let song = current.song
-        let shouldWarm = shouldUseResilientStream || isBluetoothRouteActive
+        let shouldWarm = !playingLocal && (shouldUseResilientStream || isBluetoothRouteActive)
         if shouldWarm, streamCache.cachedURL(for: song.id) == nil {
             Task { [weak self] in
                 _ = try? await self?.streamCache.fileURL(
@@ -2216,8 +2232,18 @@ final class PlayerEngine: ObservableObject {
                         #if !os(tvOS)
                         // Sticky play intent with a paused AVPlayer is the
                         // "isn't playing at all" dead state — re-kick soon.
+                        // Skip while a local file is still opening (precise FLAC
+                        // probes used to trip this and rebuild mid-start).
                         if !self.isRebuilding, !self.isInRecoveryQuietPeriod {
-                            self.scheduleStallRecovery(reason: "paused-wanting", force: true)
+                            let loadingLocal: Bool = {
+                                guard let item = self.player.currentItem,
+                                      let url = (item.asset as? AVURLAsset)?.url,
+                                      url.isFileURL else { return false }
+                                return item.status == .unknown
+                            }()
+                            if !loadingLocal {
+                                self.scheduleStallRecovery(reason: "paused-wanting", force: true)
+                            }
                         }
                         #endif
                     } else if self.isPlaying {

@@ -41,6 +41,11 @@ final class DownloadManager: ObservableObject {
     private let client: SubsonicClient
     private let database: AppDatabase
     private let serverKey: String
+    /// Cached download root — `directory(for:)` also mkdir's, which was wasteful
+    /// on every `localURL` / play tap.
+    private let downloadDirectory: URL
+    /// songId → relative path under `downloadDirectory` for finished downloads.
+    private var localRelPathBySongId: [String: String] = [:]
     private var session: URLSession!
     private let sessionDelegate = DownloadSessionDelegate()
     private var tasksBySongID: [String: URLSessionDownloadTask] = [:]
@@ -51,10 +56,11 @@ final class DownloadManager: ObservableObject {
         self.client = client
         self.database = database
         self.serverKey = serverKey
+        self.downloadDirectory = Self.directory(for: serverKey)
 
         sessionDelegate.manager = self
         sessionDelegate.trustedHost = client.account.allowSelfSigned ? client.account.serverURL.host : nil
-        sessionDelegate.destinationDirectory = Self.directory(for: serverKey)
+        sessionDelegate.destinationDirectory = downloadDirectory
 
         let config = URLSessionConfiguration.background(
             withIdentifier: "com.drome.app.downloads")
@@ -95,7 +101,7 @@ final class DownloadManager: ObservableObject {
     }
 
     private var artDirectory: URL {
-        Self.directory(for: serverKey).appendingPathComponent("Art", isDirectory: true)
+        downloadDirectory.appendingPathComponent("Art", isDirectory: true)
     }
 
     private func reload() {
@@ -104,7 +110,18 @@ final class DownloadManager: ObservableObject {
         let loadedRecords = (try? db.downloadRecords(serverKey: key)) ?? []
         let memberships = (try? db.downloadPlaylistMemberships(serverKey: key)) ?? []
         records = loadedRecords
-        downloadedIDs = Set(loadedRecords.filter { $0.state == "done" }.map(\.songId))
+        var doneIDs = Set<String>()
+        var relPaths: [String: String] = [:]
+        doneIDs.reserveCapacity(loadedRecords.count)
+        relPaths.reserveCapacity(loadedRecords.count)
+        for record in loadedRecords where record.state == "done" {
+            doneIDs.insert(record.songId)
+            if let relPath = record.relPath {
+                relPaths[record.songId] = relPath
+            }
+        }
+        downloadedIDs = doneIDs
+        localRelPathBySongId = relPaths
         playlistMemberships = memberships
         rebuildPlaylistDownloadCounts()
 
@@ -140,10 +157,8 @@ final class DownloadManager: ObservableObject {
     // MARK: - Queries
 
     func localURL(songId: String) -> URL? {
-        guard downloadedIDs.contains(songId),
-              let record = records.first(where: { $0.songId == songId }),
-              let relPath = record.relPath else { return nil }
-        let url = Self.directory(for: serverKey).appendingPathComponent(relPath)
+        guard let relPath = localRelPathBySongId[songId] else { return nil }
+        let url = downloadDirectory.appendingPathComponent(relPath)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
@@ -291,7 +306,7 @@ final class DownloadManager: ObservableObject {
     func removeAll() {
         for record in records where record.state == "done" {
             if let relPath = record.relPath {
-                let url = Self.directory(for: serverKey).appendingPathComponent(relPath)
+                let url = downloadDirectory.appendingPathComponent(relPath)
                 try? FileManager.default.removeItem(at: url)
             }
             try? database.deleteDownload(serverKey: serverKey, songId: record.songId)
