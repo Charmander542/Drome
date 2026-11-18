@@ -105,50 +105,49 @@ struct SearchView: View {
         let ax = dynamicTypeSize.isAccessibilitySize
         return Group {
             if ax {
+                // Stack at AX so the lyrics chip isn't clipped beside the segmented control.
                 VStack(alignment: .leading, spacing: 10) {
-                    Picker("Source", selection: $source) {
-                        ForEach(Source.allCases, id: \.self) { s in
-                            Text(s.rawValue).tag(s)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-
+                    sourcePicker
                     if source == .library {
-                        lyricsToggleButton(compact: false)
+                        lyricsToggleButton(axLayout: true)
                     }
                 }
             } else {
+                // Identical to main at default / XXXL.
                 HStack(spacing: 12) {
-                    Picker("Source", selection: $source) {
-                        ForEach(Source.allCases, id: \.self) { s in
-                            Text(s.rawValue).tag(s)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-
+                    sourcePicker
                     if source == .library {
-                        lyricsToggleButton(compact: true)
+                        lyricsToggleButton(axLayout: false)
                     }
                 }
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity)
         .background(DromeTheme.background.opacity(0.94))
     }
 
-    private func lyricsToggleButton(compact: Bool) -> some View {
+    private var sourcePicker: some View {
+        Picker("Source", selection: $source) {
+            ForEach(Source.allCases, id: \.self) { s in
+                Text(s.rawValue).tag(s)
+            }
+        }
+        .pickerStyle(.segmented)
+    }
+
+    private func lyricsToggleButton(axLayout: Bool) -> some View {
         Button {
             includeLyrics.toggle()
             scheduleSearch(query)
         } label: {
             Image(systemName: "text.quote")
                 .symbolVariant(includeLyrics ? .fill : .none)
-                // Fixed size so Dynamic Type doesn't clip the icon in the 36pt chip.
-                .font(.system(size: 17, weight: .semibold))
+                // Non-AX: match main (`.body` scales through XXXL). AX: fixed so it fits.
+                .font(axLayout ? .system(size: 17, weight: .semibold) : .body.weight(.semibold))
                 .foregroundStyle(includeLyrics ? DromeTheme.accent : Color.white.opacity(0.7))
-                .frame(width: compact ? 36 : 44, height: compact ? 36 : 44)
+                .frame(width: axLayout ? 44 : 36, height: axLayout ? 44 : 36)
                 .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .accessibilityLabel(includeLyrics ? "Lyrics search on" : "Lyrics search off")

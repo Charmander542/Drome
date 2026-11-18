@@ -186,7 +186,9 @@ struct VibeTuner: View {
                                       weight: vibe == selected ? .bold : .medium))
                         .foregroundStyle(vibe == selected ? selected.ink : Color.white.opacity(0.38))
                         .lineLimit(1)
-                        .minimumScaleFactor(ax ? 0.55 : 0.7)
+                        // AX: no per-label shrink — equal slots + minimumScaleFactor made
+                        // wider glyphs ("Happy", "Night") render smaller than the rest.
+                        .minimumScaleFactor(ax ? 1 : 0.7)
                         .frame(maxWidth: .infinity)
                 }
             }

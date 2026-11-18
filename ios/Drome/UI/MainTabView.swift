@@ -272,19 +272,17 @@ struct MainTabView: View {
     private func solidTabItem(tag: Int, title: String, systemImage: String) -> some View {
         let selected = selectedTab == tag
         let ax = dynamicTypeSize.isAccessibilitySize
-        let labelSize: CGFloat = ax ? min(tabLabelSizeScaled, 15) : 10
-        let iconSize: CGFloat = ax ? min(tabIconSizeScaled, 28) : 20
         return Button {
             selectTab(tag)
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: systemImage)
-                    .font(.system(size: iconSize, weight: .semibold))
+                    .font(.system(size: ax ? min(tabIconSizeScaled, 28) : 20, weight: .semibold))
                 Text(title)
-                    .font(.system(size: labelSize, weight: .medium))
-                    .lineLimit(ax ? 2 : 1)
+                    .font(.system(size: ax ? min(tabLabelSizeScaled, 15) : 10, weight: .medium))
+                    // Match main exactly at default/XXXL (no multilineTextAlignment).
+                    .lineLimit(1)
                     .minimumScaleFactor(ax ? 0.7 : 0.8)
-                    .multilineTextAlignment(.center)
             }
             .foregroundStyle(selected ? DromeTheme.accent : DromeTheme.muted)
             .frame(maxWidth: .infinity)
