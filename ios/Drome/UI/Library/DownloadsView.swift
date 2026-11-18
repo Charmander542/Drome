@@ -5,6 +5,7 @@ struct DownloadsView: View {
 
     @EnvironmentObject private var downloads: DownloadManager
     @EnvironmentObject private var player: PlayerEngine
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var active: [DownloadRecord] {
         downloads.records.filter {
@@ -117,24 +118,25 @@ struct DownloadsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    /// Avoid mid-word wraps at AX sizes: shrink first, then stack icon/title.
+    /// Avoid mid-word wraps at AX sizes: single-line + scale, or stack icon/title.
+    @ViewBuilder
     private func downloadsActionLabel(_ title: String, systemImage: String) -> some View {
-        ViewThatFits(in: .horizontal) {
-            Label {
-                Text(title)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            } icon: {
-                Image(systemName: systemImage)
-            }
-            .frame(maxWidth: .infinity)
-
+        if dynamicTypeSize.isAccessibilitySize {
             VStack(spacing: 4) {
                 Image(systemName: systemImage)
                 Text(title)
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity)
+        } else {
+            Label {
+                Text(title)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            } icon: {
+                Image(systemName: systemImage)
             }
             .frame(maxWidth: .infinity)
         }
