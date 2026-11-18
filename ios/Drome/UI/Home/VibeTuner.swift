@@ -52,9 +52,10 @@ struct VibeTuner: View {
                         .stroke(selected.ink.opacity(0.22), lineWidth: 1)
                 }
         }
-        // Extra trailing inset at AX so the Lucky column clears the Home account toolbar button.
-        .padding(.leading, 16)
-        .padding(.trailing, ax ? 52 : 16)
+        .padding(.horizontal, ax ? 0 : 16)
+        // AX: asymmetric outer inset — clear the Home account button on the trailing edge.
+        .padding(.leading, ax ? 16 : 0)
+        .padding(.trailing, ax ? 52 : 0)
         .hoverEffectDisabled()
         .animation(.spring(response: 0.38, dampingFraction: 0.84), value: selected)
         .sensoryFeedback(.selection, trigger: selected)
@@ -138,91 +139,124 @@ struct VibeTuner: View {
         }
     }
 
+    @ViewBuilder
     private var tuner: some View {
-        let dialHeight: CGFloat = ax ? max(56, min(stationDotSelectedSizeScaled, 48) + 16) : 56
-        let captionRowHeight: CGFloat = ax ? chipCaptionSize + 6 : 14
-        return GeometryReader { geo in
-            let n = CGFloat(max(vibes.count, 1))
-            let available = geo.size.width.isFinite ? max(0, geo.size.width) : 0
-            let equalSlot = available > 0 ? available / n : 0
-            let slot = ax ? max(equalSlot, axMinSlotWidth) : equalSlot
-            let contentWidth = slot * n
-            let needsScroll = ax && contentWidth > available + 0.5
+        if ax {
+            axScrollableTuner
+        } else {
+            // Exact pre-AX layout (keeps Home error block position identical to main).
+            standardTuner
+        }
+    }
 
-            let dialAndCaptions = VStack(spacing: 8) {
-                dialTrack(slot: slot, contentWidth: contentWidth, dialHeight: dialHeight)
-                captionRow(slot: slot, contentWidth: contentWidth)
-            }
-            .frame(width: max(contentWidth, available), alignment: .leading)
+    /// Default / XXXL: equal-width dial + captions, scrub gesture. Unchanged vs main.
+    private var standardTuner: some View {
+        VStack(spacing: 8) {
+            GeometryReader { geo in
+                let n = CGFloat(max(vibes.count, 1))
+                let width = geo.size.width.isFinite ? max(0, geo.size.width) : 0
+                let slot = width > 0 ? width / n : 0
+                let selectedIndex = vibes.firstIndex(of: selected) ?? 0
 
-            Group {
-                if needsScroll {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        dialAndCaptions
+                ZStack(alignment: .leading) {
+                    frequencyMarks
+                        .frame(height: 16)
+                        .offset(y: -22)
+
+                    if slot > 0 {
+                        Capsule()
+                            .fill(selected.ink.opacity(0.18))
+                            .frame(width: slot, height: 56)
+                            .offset(x: slot * CGFloat(selectedIndex))
+
+                        HStack(spacing: 0) {
+                            ForEach(vibes) { vibe in
+                                station(vibe)
+                                    .frame(width: slot, height: 56)
+                            }
+                        }
                     }
-                } else {
-                    dialAndCaptions
+                }
+                .contentShape(Rectangle())
+                .gesture(scrub(width: width))
+                .accessibilityElement(children: .contain)
+            }
+            .frame(height: 56)
+
+            HStack(spacing: 0) {
+                ForEach(vibes) { vibe in
+                    Text(vibe.shortLabel)
+                        .font(.system(size: 9, weight: vibe == selected ? .bold : .medium))
+                        .foregroundStyle(vibe == selected ? selected.ink : Color.white.opacity(0.38))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .frame(maxWidth: .infinity)
                 }
             }
         }
-        .frame(height: dialHeight + 8 + captionRowHeight)
     }
 
-    private func dialTrack(slot: CGFloat, contentWidth: CGFloat, dialHeight: CGFloat) -> some View {
+    /// AX: wide columns + real ScrollView. No scrub DragGesture — it was eating swipes.
+    private var axScrollableTuner: some View {
+        let dialHeight = max(56, min(stationDotSelectedSizeScaled, 48) + 16)
+        let slot = axMinSlotWidth
+        let contentWidth = slot * CGFloat(vibes.count)
         let selectedIndex = vibes.firstIndex(of: selected) ?? 0
-        return ZStack(alignment: .leading) {
-            // Frequency hash marks — radio, not a mix collage.
-            VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    ForEach(0..<24, id: \.self) { i in
-                        Rectangle()
-                            .fill(Color.white.opacity(i.isMultiple(of: 4) ? 0.28 : 0.1))
-                            .frame(width: 1, height: i.isMultiple(of: 4) ? 10 : 5)
-                        if i < 23 { Spacer(minLength: 0) }
+
+        return ScrollView(.horizontal, showsIndicators: true) {
+            VStack(spacing: 8) {
+                ZStack(alignment: .leading) {
+                    frequencyMarks
+                        .frame(width: contentWidth, height: 16)
+                        .offset(y: -22)
+
+                    Capsule()
+                        .fill(selected.ink.opacity(0.18))
+                        .frame(width: slot, height: dialHeight)
+                        .offset(x: slot * CGFloat(selectedIndex))
+
+                    HStack(spacing: 0) {
+                        ForEach(vibes) { vibe in
+                            station(vibe)
+                                .frame(width: slot, height: dialHeight)
+                        }
                     }
                 }
-                .padding(.horizontal, 4)
-                Capsule()
-                    .fill(Color.white.opacity(0.14))
-                    .frame(height: 2)
-            }
-            .frame(width: contentWidth, height: 16)
-            .offset(y: -22)
-
-            if slot > 0 {
-                Capsule()
-                    .fill(selected.ink.opacity(0.18))
-                    .frame(width: slot, height: dialHeight)
-                    .offset(x: slot * CGFloat(selectedIndex))
+                .frame(width: contentWidth, height: dialHeight)
+                .accessibilityElement(children: .contain)
 
                 HStack(spacing: 0) {
                     ForEach(vibes) { vibe in
-                        station(vibe)
-                            .frame(width: slot, height: dialHeight)
+                        Text(vibe.shortLabel)
+                            .font(.system(size: chipCaptionSize,
+                                          weight: vibe == selected ? .bold : .medium))
+                            .foregroundStyle(vibe == selected ? selected.ink : Color.white.opacity(0.38))
+                            .lineLimit(1)
+                            .minimumScaleFactor(1)
+                            .frame(width: slot, alignment: .center)
                     }
                 }
+                .frame(width: contentWidth, alignment: .leading)
             }
         }
-        .frame(width: contentWidth, height: dialHeight)
-        .contentShape(Rectangle())
-        .gesture(scrub(width: contentWidth))
-        .accessibilityElement(children: .contain)
+        .frame(height: dialHeight + 8 + chipCaptionSize + 8)
     }
 
-    private func captionRow(slot: CGFloat, contentWidth: CGFloat) -> some View {
-        HStack(spacing: 0) {
-            ForEach(vibes) { vibe in
-                Text(vibe.shortLabel)
-                    .font(.system(size: chipCaptionSize,
-                                  weight: vibe == selected ? .bold : .medium))
-                    .foregroundStyle(vibe == selected ? selected.ink : Color.white.opacity(0.38))
-                    .lineLimit(1)
-                    // AX: full label at one size (slots are wide enough / scrollable).
-                    .minimumScaleFactor(ax ? 1 : 0.7)
-                    .frame(width: slot > 0 ? slot : nil, alignment: .center)
+    private var frequencyMarks: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                ForEach(0..<24, id: \.self) { i in
+                    Rectangle()
+                        .fill(Color.white.opacity(i.isMultiple(of: 4) ? 0.28 : 0.1))
+                        .frame(width: 1, height: i.isMultiple(of: 4) ? 10 : 5)
+                    if i < 23 { Spacer(minLength: 0) }
+                }
             }
+            .padding(.horizontal, 4)
+            Capsule()
+                .fill(Color.white.opacity(0.14))
+                .frame(height: 2)
         }
-        .frame(width: contentWidth, alignment: .leading)
     }
 
     private func station(_ vibe: MoodVibe) -> some View {
