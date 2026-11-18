@@ -76,7 +76,7 @@ struct ArtistAvatar: View {
 
     /// List-sized cover (≈2× point size) — small enough to feel instant.
     private var coverURL: URL? {
-        session.client.coverArtURL(id: navidromeCoverArt ?? artistId, size: Int(max(size * 2, 96)))
+        session.artworkURL(id: navidromeCoverArt ?? artistId, size: Int(max(size * 2, 96)))
     }
 
     var body: some View {

@@ -600,7 +600,7 @@ struct SearchView: View {
     private func recentItemLabel(_ item: RecentSearchItem, shape: CoverShape) -> some View {
         HStack(spacing: 12) {
             RemoteImage(
-                url: session.client.coverArtURL(id: item.coverArt ?? item.entityId, size: 120),
+                url: session.artworkURL(id: item.coverArt ?? item.entityId, size: 120),
                 placeholderSymbol: item.kind == .artist ? "person.crop.circle" : "music.note")
                 .frame(width: 44, height: 44)
                 .clipShape(shape == .circle ? AnyShape(Circle()) : AnyShape(RoundedRectangle(cornerRadius: 4)))
@@ -862,7 +862,7 @@ struct SearchView: View {
         HStack(spacing: 12) {
             if showsCover {
                 Group {
-                    RemoteImage(url: session.client.coverArtURL(id: hit.coverArt, size: 120),
+                    RemoteImage(url: session.artworkURL(id: hit.coverArt, size: 120),
                                 placeholderSymbol: placeholder(for: hit.kind))
                 }
                 .frame(width: 44, height: 44)

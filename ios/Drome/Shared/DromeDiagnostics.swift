@@ -203,7 +203,9 @@ enum DromeDiagnostics {
             .joined(separator: ",")
         lines.append("audio category=\(session.category.rawValue) mode=\(session.mode.rawValue) outputs=[\(outs)]")
         lines.append("audioFocus=\(AudioFocus.shared.ownerLabel) lastFocus=\(AudioFocus.shared.lastOwnerLabel)")
-        lines.append("prefs compressCellular=\(PlaybackPreferences.compressOnCellular) resilientRemote=\(PlaybackPreferences.resilientRemoteStreaming) bitRate=\(PlaybackPreferences.cellularMaxBitRate)")
+        lines.append(
+            "prefs compressCellular=\(PlaybackPreferences.compressOnCellular) resilientRemote=\(PlaybackPreferences.resilientRemoteStreaming) cellularBitRate=\(PlaybackPreferences.cellularMaxBitRate) remoteBitRate=\(PlaybackPreferences.remoteMaxBitRate) remoteCoverMax=\(PlaybackPreferences.remoteCoverMaxSize)"
+        )
         return lines
     }
 

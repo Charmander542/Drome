@@ -21,6 +21,8 @@ final class PlayerEngine: ObservableObject {
     // MARK: Published state
 
     @Published private(set) var current: QueueItem?
+    /// What's actually playing (e.g. `MP3 · 192 kbps` on Funnel), not just library tags.
+    @Published private(set) var activeStreamBadge: String?
     @Published private(set) var userQueue: [QueueItem] = []
     @Published private(set) var contextQueue: [QueueItem] = []
     @Published private(set) var history: [QueueItem] = []
@@ -1817,11 +1819,20 @@ final class PlayerEngine: ObservableObject {
             return client.streamURL(
                 songId: song.id,
                 format: "mp3",
-                maxBitRate: PlaybackPreferences.cellularMaxBitRate,
+                maxBitRate: resilientMaxBitRate,
                 estimateContentLength: true)
         }
         return client.streamURL(songId: song.id, compatibleWithAirPlay: false)
         #endif
+    }
+
+    /// 192 kbps on Funnel/remote hosts; 256 on cellular against LAN.
+    private var resilientMaxBitRate: Int {
+        PlaybackPreferences.preferredMaxBitRate(serverHost: client.account.serverURL.host)
+    }
+
+    private var remoteAwareCoverSize: Int {
+        PlaybackPreferences.clampedCoverSize(1200, serverHost: client.account.serverURL.host)
     }
 
     #if os(tvOS)
@@ -1840,6 +1851,10 @@ final class PlayerEngine: ObservableObject {
 
     private func makePlayerItem(for song: Song, url: URL) -> AVPlayerItem {
         let isFile = url.isFileURL
+        activeStreamBadge = Self.streamQualityBadge(
+            for: song,
+            url: url,
+            resilientBitRate: resilientMaxBitRate)
         // Never force precise duration on the hot path — library metadata is
         // good enough for UI, and probing FLAC delayed every downloaded tap.
         let asset = AVURLAsset(url: url, options: [
@@ -1872,6 +1887,36 @@ final class PlayerEngine: ObservableObject {
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = !isFile
         item.preferredPeakBitRate = 0
         return item
+    }
+
+    /// Badge for the bytes actually playing (transcoded MP3 vs library FLAC).
+    static func streamQualityBadge(for song: Song, url: URL, resilientBitRate: Int) -> String? {
+        if url.isFileURL {
+            let ext = url.pathExtension.lowercased()
+            if ext == "mp3" {
+                return "MP3 · \(resilientBitRate) kbps"
+            }
+            if !ext.isEmpty {
+                // Downloaded original (or other local file) — library tags win.
+                return song.qualityBadge ?? ext.uppercased()
+            }
+            return song.qualityBadge
+        }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let format = items.first { $0.name == "format" }?.value?.lowercased()
+        let maxBitRate = items.first { $0.name == "maxBitRate" }?.value.flatMap(Int.init)
+        if format == "mp3" {
+            let br = maxBitRate ?? resilientBitRate
+            return br > 0 ? "MP3 · \(br) kbps" : "MP3"
+        }
+        if format == "aac" {
+            let br = maxBitRate ?? 256
+            return br > 0 ? "AAC · \(br) kbps" : "AAC"
+        }
+        if let format, !format.isEmpty, format != "raw" {
+            return format.uppercased()
+        }
+        return song.qualityBadge
     }
 
     /// How many *upcoming* items to keep in AVQueuePlayer.
@@ -2083,7 +2128,7 @@ final class PlayerEngine: ObservableObject {
         if shouldWarm, streamCache.cachedURL(for: song.id) == nil {
             Task { [weak self] in
                 _ = try? await self?.streamCache.fileURL(
-                    for: song, maxBitRate: PlaybackPreferences.cellularMaxBitRate)
+                    for: song, maxBitRate: resilientMaxBitRate)
             }
         }
     }
@@ -2839,8 +2884,9 @@ final class PlayerEngine: ObservableObject {
         let localURL: URL? = candidates.lazy
             .compactMap { self.downloads.localCoverURL(coverId: $0) }
             .first
+        let coverSize = remoteAwareCoverSize
         let remoteURL: URL? = candidates.lazy
-            .compactMap { self.client.coverArtURL(id: $0, size: 1200) }
+            .compactMap { self.client.coverArtURL(id: $0, size: coverSize) }
             .first
         guard let url = localURL ?? remoteURL else { return }
 
@@ -2854,7 +2900,8 @@ final class PlayerEngine: ObservableObject {
             var image = await ImageLoader.shared.image(for: url)
             if image == nil {
                 for id in candidates.dropFirst() {
-                    guard let alt = self?.client.coverArtURL(id: id, size: 1200) else { continue }
+                    guard let self else { break }
+                    guard let alt = self.client.coverArtURL(id: id, size: self.remoteAwareCoverSize) else { continue }
                     image = await ImageLoader.shared.image(for: alt)
                     if image != nil { break }
                 }
@@ -3285,7 +3332,7 @@ final class PlayerEngine: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             _ = try? await self.streamCache.fileURL(
-                for: song, maxBitRate: PlaybackPreferences.cellularMaxBitRate)
+                for: song, maxBitRate: resilientMaxBitRate)
             await MainActor.run {
                 self.prefetchUpcomingIntoCache()
             }
@@ -3301,7 +3348,7 @@ final class PlayerEngine: ObservableObject {
         var songs: [Song] = []
         if let current { songs.append(current.song) }
         songs.append(contentsOf: peekUpcoming(limit: 3).map(\.song))
-        streamCache.prefetch(songs, maxBitRate: PlaybackPreferences.cellularMaxBitRate)
+        streamCache.prefetch(songs, maxBitRate: resilientMaxBitRate)
     }
     #endif
 
