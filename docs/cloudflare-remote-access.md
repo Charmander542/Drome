@@ -15,17 +15,18 @@ No app code changes are required for basic streaming. Guests set **Server URL** 
 
 ```
 Home LAN / Docker
-├── network: navidrome_default
-│   ├── navidrome      :4533 published on host
-│   └── drome-server   :4534 published on host
-└── Tailscale Funnel (already on):
-    https://cvh-elitemini-series.tail96490e.ts.net  →  http://localhost:4533
+├── navidrome         :4533  FLAC library (Charlie LAN/VPN)
+├── navidrome-remote  :4536  MP3 mirror (Funnel guests)
+└── drome-server      :4534  wishlist companion
+└── Tailscale Funnel:
+    https://cvh-elitemini-series.tail96490e.ts.net       →  :4536 (MP3)
+    https://cvh-elitemini-series.tail96490e.ts.net:10000 →  :4534 (wishlist)
 ```
 
-- Funnel is **public** (not Tailscale-only). Guests can already point Drome at:
-  `https://cvh-elitemini-series.tail96490e.ts.net`
-- Navidrome users on this box: `cvanhook` (admin), `bubba` (guest).
-- Companion wishlist (`:4534`) stays LAN/Tailscale-only unless you deliberately expose it.
+- Funnel is **public** (not Tailscale-only). Guests use:
+  `https://cvh-elitemini-series.tail96490e.ts.net` (MP3 Navidrome — see [`remote-mp3-funnel.md`](remote-mp3-funnel.md)).
+- Companion wishlist Funnel: `https://cvh-elitemini-series.tail96490e.ts.net:10000`.
+- Create matching guest users on **both** Navidrome instances (separate DBs).
 
 Cloudflare Tunnel is the nicer guest UX (short domain like `music.yourdomain.com`). Infra is wired in this repo; you only need a Cloudflare domain + tunnel token to finish.
 

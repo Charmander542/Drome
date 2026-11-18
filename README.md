@@ -52,5 +52,7 @@ Auth reuses Subsonic `u` / `t` / `s` query params — same credentials as Navidr
 
 ### Remote access without Tailscale
 
-To let guests use Drome over the public internet (Cloudflare Tunnel), see
-[`docs/cloudflare-remote-access.md`](docs/cloudflare-remote-access.md).
+Guests use Tailscale Funnel against an MP3-only Navidrome mirror (fast file
+serves). See [`docs/remote-mp3-funnel.md`](docs/remote-mp3-funnel.md).
+
+Cloudflare Tunnel (optional custom domain): [`docs/cloudflare-remote-access.md`](docs/cloudflare-remote-access.md).
