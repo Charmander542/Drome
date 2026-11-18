@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LoginView: View {
     @EnvironmentObject private var env: AppEnvironment
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var serverURL = "http://"
     @State private var username = ""
@@ -12,11 +13,17 @@ struct LoginView: View {
     @State private var errorMessage: String?
     @State private var showSavedAccounts = false
     @State private var signInTask: Task<Void, Never>?
+    /// Extra bottom padding for the Sign In chrome while the keyboard is up.
+    /// Measured as keyboard overlap minus the home-indicator inset already
+    /// applied by layout, so username/password QuickType bars can't cover it.
+    @State private var keyboardFooterPadding: CGFloat = 0
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable {
         case server, user, password, wishlist
     }
+
+    private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
 
     var body: some View {
         NavigationStack {
@@ -32,6 +39,9 @@ struct LoginView: View {
                                 .foregroundStyle(DromeTheme.muted)
                         }
                         .padding(.top, 48)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .onTapGesture { focusedField = nil }
 
                         if !env.accounts.accounts.isEmpty {
                             Button {
@@ -120,18 +130,17 @@ struct LoginView: View {
                     }
                 }
             }
-            .background(DromeTheme.background.ignoresSafeArea())
-            .safeAreaInset(edge: .bottom) {
-                signInActions
-                    .padding(.horizontal, 24)
-                    .padding(.top, 12)
-                    .padding(.bottom, 8)
-                    .frame(maxWidth: .infinity)
-                    .background(
-                        DromeTheme.background
-                            .opacity(0.96)
-                            .ignoresSafeArea(edges: .bottom)
-                    )
+            .background {
+                DromeTheme.background
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { focusedField = nil }
+            }
+            // Handle keyboard overlap ourselves so username/password autofill
+            // bars (taller than the URL keyboard) can't cover Sign In.
+            .ignoresSafeArea(.keyboard, edges: .bottom)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                signInChrome
             }
             .toolbar {
                 ToolbarItemGroup(placement: .keyboard) {
@@ -140,6 +149,20 @@ struct LoginView: View {
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
+            .onReceive(NotificationCenter.default.publisher(
+                for: UIResponder.keyboardWillChangeFrameNotification
+            )) { notification in
+                updateKeyboardFooterPadding(from: notification)
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: UIResponder.keyboardWillHideNotification
+            )) { notification in
+                let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double
+                    ?? 0.25
+                withAnimation(.easeOut(duration: duration)) {
+                    keyboardFooterPadding = 0
+                }
+            }
         }
         .sheet(isPresented: $showSavedAccounts) {
             AccountSwitcherSheet()
@@ -149,30 +172,89 @@ struct LoginView: View {
         .onDisappear { cancelSignIn() }
     }
 
-    private var signInActions: some View {
-        HStack(spacing: 12) {
-            if isWorking {
-                Button("Cancel", role: .cancel, action: cancelSignIn)
-                    .buttonStyle(.bordered)
-                    .tint(.white)
-                    .controlSize(.large)
-                    .accessibilityLabel("Cancel sign in")
-            }
+    private var signInChrome: some View {
+        signInActions
+            .padding(.horizontal, 24)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+            .frame(maxWidth: .infinity)
+            // Lift the actions by the live keyboard overlap (keys + Done +
+            // autofill). Background fills that gap so content doesn't show through.
+            .padding(.bottom, keyboardFooterPadding)
+            .background(
+                DromeTheme.background
+                    .opacity(0.96)
+                    .ignoresSafeArea(edges: .bottom)
+            )
+    }
 
-            Button(action: signIn) {
-                HStack {
-                    if isWorking { ProgressView().tint(.black) }
-                    Text(isWorking ? "Connecting…" : "Sign In")
-                        .font(.headline)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
+    @ViewBuilder
+    private var signInActions: some View {
+        let cancel = Button(role: .cancel, action: cancelSignIn) {
+            Text("Cancel")
+                .font(.headline)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .frame(maxWidth: accessibilityLayout ? .infinity : nil)
+                .padding(.vertical, accessibilityLayout ? 14 : 0)
+        }
+        .buttonStyle(.bordered)
+        .tint(.white)
+        .controlSize(.large)
+        .accessibilityLabel("Cancel sign in")
+
+        let submit = Button(action: signIn) {
+            HStack(spacing: 8) {
+                if isWorking { ProgressView().tint(.black) }
+                Text(isWorking ? "Connecting…" : "Sign In")
+                    .font(.headline)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(DromeTheme.accent)
-            .foregroundStyle(.black)
-            .disabled(isWorking || !canSubmit)
-            .accessibilityLabel(isWorking ? "Connecting" : "Sign In")
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(DromeTheme.accent)
+        .foregroundStyle(.black)
+        .disabled(isWorking || !canSubmit)
+        .accessibilityLabel(isWorking ? "Connecting" : "Sign In")
+
+        // Side-by-side at default sizes; stack at AX so labels don't mid-word wrap.
+        if isWorking && accessibilityLayout {
+            VStack(spacing: 10) {
+                cancel
+                    .frame(maxWidth: .infinity)
+                submit
+            }
+        } else {
+            HStack(spacing: 12) {
+                if isWorking { cancel }
+                submit
+            }
+        }
+    }
+
+    private func updateKeyboardFooterPadding(from notification: Notification) {
+        guard
+            let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+        else { return }
+        // Convert to the key window so overlap includes the Done accessory and
+        // any username/password QuickType bar above the keys. Subtract the
+        // window's bottom safe inset — `safeAreaInset` already clears that.
+        let padding: CGFloat
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let window = scene.windows.first(where: \.isKeyWindow) ?? scene.windows.first {
+            let converted = window.convert(frame, from: nil)
+            let overlap = max(0, window.bounds.maxY - converted.minY)
+            padding = max(0, overlap - window.safeAreaInsets.bottom)
+        } else {
+            padding = max(0, UIScreen.main.bounds.height - frame.minY)
+        }
+        let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double
+            ?? 0.25
+        withAnimation(.easeOut(duration: duration)) {
+            keyboardFooterPadding = padding
         }
     }
 
