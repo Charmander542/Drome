@@ -6,12 +6,26 @@ import WidgetKit
 struct VibeTuner: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var selected: MoodVibe = WidgetVibeStore.selectedVibe
     @State private var spinning: MoodVibe?
     @State private var error: String?
 
+    /// Accessibility-only scaling. Default/XXXL keep the fixed 9pt captions.
+    @ScaledMetric(relativeTo: .caption2) private var chipCaptionSizeScaled: CGFloat = 9
+    @ScaledMetric(relativeTo: .caption2) private var stationIconSizeScaled: CGFloat = 9
+    @ScaledMetric(relativeTo: .body) private var stationIconSelectedSizeScaled: CGFloat = 14
+    @ScaledMetric(relativeTo: .body) private var stationDotSizeScaled: CGFloat = 22
+    @ScaledMetric(relativeTo: .title3) private var stationDotSelectedSizeScaled: CGFloat = 36
+
     private let vibes = MoodVibe.spectrum
+    private var ax: Bool { dynamicTypeSize.isAccessibilitySize }
+
+    private var chipCaptionSize: CGFloat {
+        // Cap ~22 so seven labels still fit; previous min(..., 13) blocked AX scaling.
+        ax ? min(chipCaptionSizeScaled, 22) : 9
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -58,36 +72,23 @@ struct VibeTuner: View {
                 Text(selected.blurb)
                     .font(.caption)
                     .foregroundStyle(Color.white.opacity(0.62))
-                    .lineLimit(2)
+                    .lineLimit(ax ? 4 : 2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
             VStack(spacing: 8) {
-                VibeMeter(heights: selected.meterHeights, color: selected.ink)
+                if !ax {
+                    VibeMeter(heights: selected.meterHeights, color: selected.ink)
+                }
                 Button {
                     guard spinning == nil else { return }
                     Task { await play(selected) }
                 } label: {
-                    HStack(spacing: 6) {
-                        // Fixed slot so ProgressView ↔ play doesn't resize the capsule.
-                        ZStack {
-                            Image(systemName: "play.fill")
-                                .font(.caption.weight(.bold))
-                                .offset(x: 0.5)
-                                .opacity(spinning == nil ? 1 : 0)
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(.black)
-                                .opacity(spinning == nil ? 0 : 1)
-                        }
-                        .frame(width: 12, height: 12)
-                        Text("Play")
-                            .font(.subheadline.weight(.bold))
-                    }
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(selected.ink, in: Capsule())
+                    playButtonLabel
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, ax ? 12 : 14)
+                        .padding(.vertical, ax ? 10 : 9)
+                        .background(selected.ink, in: Capsule())
                 }
                 .buttonStyle(.plain)
                 .allowsHitTesting(spinning == nil)
@@ -97,8 +98,42 @@ struct VibeTuner: View {
         }
     }
 
+    @ViewBuilder
+    private var playButtonLabel: some View {
+        // Fixed slot so ProgressView ↔ play doesn't resize the capsule.
+        let icon = ZStack {
+            Image(systemName: "play.fill")
+                .font(.caption.weight(.bold))
+                .offset(x: 0.5)
+                .opacity(spinning == nil ? 1 : 0)
+            ProgressView()
+                .controlSize(.small)
+                .tint(.black)
+                .opacity(spinning == nil ? 0 : 1)
+        }
+        .frame(width: 12, height: 12)
+
+        let title = Text("Play")
+            .font(.subheadline.weight(.bold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+
+        if ax {
+            VStack(spacing: 4) {
+                icon
+                title
+            }
+        } else {
+            HStack(spacing: 6) {
+                icon
+                title
+            }
+        }
+    }
+
     private var tuner: some View {
-        VStack(spacing: 8) {
+        let dialHeight: CGFloat = ax ? max(56, min(stationDotSelectedSizeScaled, 48) + 16) : 56
+        return VStack(spacing: 8) {
             GeometryReader { geo in
                 let n = CGFloat(max(vibes.count, 1))
                 let width = geo.size.width.isFinite ? max(0, geo.size.width) : 0
@@ -127,13 +162,13 @@ struct VibeTuner: View {
                     if slot > 0 {
                         Capsule()
                             .fill(selected.ink.opacity(0.18))
-                            .frame(width: slot, height: 56)
+                            .frame(width: slot, height: dialHeight)
                             .offset(x: slot * CGFloat(selectedIndex))
 
                         HStack(spacing: 0) {
                             ForEach(vibes) { vibe in
                                 station(vibe)
-                                    .frame(width: slot, height: 56)
+                                    .frame(width: slot, height: dialHeight)
                             }
                         }
                     }
@@ -142,15 +177,18 @@ struct VibeTuner: View {
                 .gesture(scrub(width: width))
                 .accessibilityElement(children: .contain)
             }
-            .frame(height: 56)
+            .frame(height: dialHeight)
 
             HStack(spacing: 0) {
                 ForEach(vibes) { vibe in
                     Text(vibe.shortLabel)
-                        .font(.system(size: 9, weight: vibe == selected ? .bold : .medium))
+                        .font(.system(size: chipCaptionSize,
+                                      weight: vibe == selected ? .bold : .medium))
                         .foregroundStyle(vibe == selected ? selected.ink : Color.white.opacity(0.38))
                         .lineLimit(1)
-                        .minimumScaleFactor(0.7)
+                        // AX: no per-label shrink — equal slots + minimumScaleFactor made
+                        // wider glyphs ("Happy", "Night") render smaller than the rest.
+                        .minimumScaleFactor(ax ? 1 : 0.7)
                         .frame(maxWidth: .infinity)
                 }
             }
@@ -159,15 +197,24 @@ struct VibeTuner: View {
 
     private func station(_ vibe: MoodVibe) -> some View {
         let on = vibe == selected
+        let dot: CGFloat
+        let icon: CGFloat
+        if ax {
+            dot = on ? min(stationDotSelectedSizeScaled, 48) : min(stationDotSizeScaled, 32)
+            icon = on ? min(stationIconSelectedSizeScaled, 20) : min(stationIconSizeScaled, 14)
+        } else {
+            dot = on ? 36 : 22
+            icon = on ? 14 : 9
+        }
         return ZStack {
             Circle()
                 .fill(vibe.wash)
                 .overlay {
                     Circle().stroke(vibe.ink.opacity(on ? 0.9 : 0.35), lineWidth: on ? 2 : 1)
                 }
-                .frame(width: on ? 36 : 22, height: on ? 36 : 22)
+                .frame(width: dot, height: dot)
             Image(systemName: vibe.symbol)
-                .font(.system(size: on ? 14 : 9, weight: .semibold))
+                .font(.system(size: icon, weight: .semibold))
                 .foregroundStyle(vibe.ink)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

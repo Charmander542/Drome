@@ -32,6 +32,9 @@ struct LibraryView: View {
     @EnvironmentObject private var downloads: DownloadManager
     @EnvironmentObject private var player: PlayerEngine
     @Environment(\.tabPopToRootTrigger) private var tabPopToRootTrigger
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// Explicit height so the AX horizontal ScrollView isn't a blank band.
+    @ScaledMetric(relativeTo: .caption) private var filterBarHeightScaled: CGFloat = 44
 
     @State private var filter: LibraryFilter = .playlists
     @State private var playlists: [Playlist] = []
@@ -179,40 +182,86 @@ struct LibraryView: View {
     }
 
     private var filterBar: some View {
-        HStack(spacing: 0) {
-            ForEach(LibraryFilter.topBarCases) { item in
-                Button {
-                    filter = item
-                } label: {
-                    VStack(spacing: 6) {
-                        Text(item.shortTitle)
-                            .font(.caption.weight(filter == item ? .bold : .semibold))
-                            .foregroundStyle(filter == item ? Color.white : Color.white.opacity(0.55))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.65)
-                        ZStack {
-                            Capsule()
-                                .fill(Color.clear)
-                                .frame(height: 2)
-                            if filter == item {
-                                Capsule()
-                                    .fill(DromeTheme.accent)
-                                    .frame(height: 2)
-                                    .matchedGeometryEffect(
-                                        id: "libraryFilterUnderline",
-                                        in: filterUnderlineNamespace)
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                // Horizontal scroll + intrinsic labels → no mid-word wraps ("Al-bums").
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(LibraryFilter.topBarCases) { item in
+                            Button {
+                                filter = item
+                            } label: {
+                                VStack(spacing: 6) {
+                                    Text(item.shortTitle)
+                                        .font(.caption.weight(filter == item ? .bold : .semibold))
+                                        .foregroundStyle(filter == item ? Color.white : Color.white.opacity(0.55))
+                                        .lineLimit(1)
+                                        .fixedSize(horizontal: true, vertical: false)
+                                    ZStack {
+                                        Capsule()
+                                            .fill(Color.clear)
+                                            .frame(height: 2)
+                                        if filter == item {
+                                            Capsule()
+                                                .fill(DromeTheme.accent)
+                                                .frame(height: 2)
+                                                .matchedGeometryEffect(
+                                                    id: "libraryFilterUnderline",
+                                                    in: filterUnderlineNamespace)
+                                        }
+                                    }
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.top, 10)
+                                .padding(.bottom, 6)
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(item.rawValue)
+                            .accessibilityAddTraits(filter == item ? .isSelected : [])
                         }
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 10)
-                    .contentShape(Rectangle())
+                    .padding(.horizontal, 8)
                 }
-                .buttonStyle(.plain)
+                .frame(height: max(filterBarHeightScaled, 52))
+            } else {
+                // Match main at default / XXXL (equal-width, fixed 44pt).
+                HStack(spacing: 0) {
+                    ForEach(LibraryFilter.topBarCases) { item in
+                        Button {
+                            filter = item
+                        } label: {
+                            VStack(spacing: 6) {
+                                Text(item.shortTitle)
+                                    .font(.caption.weight(filter == item ? .bold : .semibold))
+                                    .foregroundStyle(filter == item ? Color.white : Color.white.opacity(0.55))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.65)
+                                ZStack {
+                                    Capsule()
+                                        .fill(Color.clear)
+                                        .frame(height: 2)
+                                    if filter == item {
+                                        Capsule()
+                                            .fill(DromeTheme.accent)
+                                            .frame(height: 2)
+                                            .matchedGeometryEffect(
+                                                id: "libraryFilterUnderline",
+                                                in: filterUnderlineNamespace)
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 10)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 4)
+                .frame(height: 44)
             }
         }
-        .padding(.horizontal, 4)
-        .frame(height: 44)
         .background(DromeTheme.background)
         .animation(.spring(response: 0.32, dampingFraction: 0.86), value: filter)
     }

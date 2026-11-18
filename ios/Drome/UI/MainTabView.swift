@@ -13,6 +13,10 @@ struct MainTabView: View {
     @State private var keyboardVisible = false
     /// Bumped when the user re-taps an already-selected tab (pop to root).
     @State private var tabPopTriggers = [0, 0, 0, 0]
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// Used only at accessibility sizes; default/XXXL keep fixed 10pt / 20pt.
+    @ScaledMetric(relativeTo: .caption2) private var tabLabelSizeScaled: CGFloat = 10
+    @ScaledMetric(relativeTo: .title3) private var tabIconSizeScaled: CGFloat = 20
 
     /// Active bottom chrome: podcast wins while an episode is loaded so it
     /// replaces the music mini (music only pauses — `current` stays set).
@@ -277,16 +281,18 @@ struct MainTabView: View {
 
     private func solidTabItem(tag: Int, title: String, systemImage: String) -> some View {
         let selected = selectedTab == tag
+        let ax = dynamicTypeSize.isAccessibilitySize
         return Button {
             selectTab(tag)
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: ax ? min(tabIconSizeScaled, 28) : 20, weight: .semibold))
                 Text(title)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: ax ? min(tabLabelSizeScaled, 15) : 10, weight: .medium))
+                    // Match main exactly at default/XXXL (no multilineTextAlignment).
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .minimumScaleFactor(ax ? 0.7 : 0.8)
             }
             .foregroundStyle(selected ? DromeTheme.accent : DromeTheme.muted)
             .frame(maxWidth: .infinity)

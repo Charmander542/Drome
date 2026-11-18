@@ -282,6 +282,10 @@ struct LoadingStateView: View {
 
 struct ErrorStateView: View {
     let message: String
+    /// When true (default), fills the parent so the error centers on full-screen
+    /// placeholders. Pass false inside ScrollViews at accessibility sizes — a
+    /// viewport-tall frame clips oversized Dynamic Type content.
+    var expandsToFill: Bool = true
     var retry: (() -> Void)?
 
     var body: some View {
@@ -299,7 +303,8 @@ struct ErrorStateView: View {
                     .tint(DromeTheme.accent)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: expandsToFill ? .infinity : nil)
+        .padding(.vertical, expandsToFill ? 0 : 24)
     }
 }
 
@@ -317,5 +322,22 @@ struct EmptyStateView: View {
             }
         }
         .foregroundStyle(DromeTheme.muted)
+    }
+}
+
+/// Scrollable empty chrome for accessibility sizes so oversized
+/// `ContentUnavailableView` text stays reachable above the mini player.
+struct ScrollableEmptyState<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ScrollView {
+            content()
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 32)
+                .padding(.bottom, 24)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
