@@ -287,14 +287,7 @@ struct OnboardingView: View {
                                 : OnboardingTourChrome.titleBottomSpacing)
                         .accessibilityAddTraits(.isHeader)
 
-                    Text(displayedCaption)
-                        .font(.body)
-                        .foregroundStyle(DromeTheme.muted)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(accessibilityLayout ? 4 : 3)
-                        .minimumScaleFactor(0.9)
-                        .frame(maxWidth: .infinity, alignment: .top)
-                        .frame(height: captionSlotHeight, alignment: .top)
+                    captionBlock
                         .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -316,6 +309,27 @@ struct OnboardingView: View {
             }
             .scrollIndicators(accessibilityLayout ? .visible : .automatic)
             .scrollBounceBehavior(.basedOnSize)
+        }
+    }
+
+    /// Non-AX: fixed slot so layout doesn’t shift. AX5: grow with full text (scrollable).
+    @ViewBuilder
+    private var captionBlock: some View {
+        let text = Text(displayedCaption)
+            .font(.body)
+            .foregroundStyle(DromeTheme.muted)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity, alignment: .top)
+
+        if accessibilityLayout {
+            text
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(minHeight: captionSlotHeight, alignment: .top)
+        } else {
+            text
+                .lineLimit(3)
+                .minimumScaleFactor(0.9)
+                .frame(height: captionSlotHeight, alignment: .top)
         }
     }
 

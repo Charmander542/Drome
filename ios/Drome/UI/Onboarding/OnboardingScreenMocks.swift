@@ -933,11 +933,21 @@ struct OnboardingNowPlayingControlsMock: View {
         .background(DromeTheme.background)
         .onAppear { restartSwipeHint() }
         .onChange(of: step) { _, _ in
-            artDragX = 0
-            isAnimatingCover = false
+            stopCoverMotion()
             restartSwipeHint()
         }
         .onChange(of: reduceMotion) { _, _ in restartSwipeHint() }
+    }
+
+    /// Clears drag + hint immediately (cancels any in-flight repeatForever hint).
+    private func stopCoverMotion() {
+        isAnimatingCover = false
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            artDragX = 0
+            swipeHintOffset = 0
+        }
     }
 
     private var songLyricsPicker: some View {
@@ -971,46 +981,50 @@ struct OnboardingNowPlayingControlsMock: View {
             }
     }
 
-    /// One square cover; next cover fills under the current so the hint never shows a dark gap.
+    /// One square cover. Neighbour tiles only exist on the swipe tip (avoids bleed on tips 2–6).
     private var albumArt: some View {
         let active = step == .artSwipe
         let hint = (active && !reduceMotion && !isAnimatingCover) ? swipeHintOffset : 0
         return ZStack {
-            // Underlay — always fills the ring (next cover during left-hint / drag).
-            artTile(index: (artIndex + 1) % artPalettes.count)
-                .frame(width: coverSize, height: coverSize)
-
-            artTile(index: artIndex)
-                .frame(width: coverSize, height: coverSize)
-                .offset(x: artDragX + hint)
-
-            // Previous cover peeks in from the left when dragging right.
-            if artDragX > 0 {
-                artTile(index: (artIndex + artPalettes.count - 1) % artPalettes.count)
+            if active {
+                // Underlay fills the ring during left-hint / drag so no dark gap shows.
+                artTile(index: (artIndex + 1) % artPalettes.count)
                     .frame(width: coverSize, height: coverSize)
-                    .offset(x: artDragX - coverSize - 10)
-            }
 
-            if active, reduceMotion {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.left")
-                    Text("swipe")
-                    Image(systemName: "chevron.right")
+                artTile(index: artIndex)
+                    .frame(width: coverSize, height: coverSize)
+                    .offset(x: artDragX + hint)
+
+                if artDragX > 0 {
+                    artTile(index: (artIndex + artPalettes.count - 1) % artPalettes.count)
+                        .frame(width: coverSize, height: coverSize)
+                        .offset(x: artDragX - coverSize)
                 }
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Color.black.opacity(0.55), in: Capsule())
-                .allowsHitTesting(false)
-            } else if active, !isAnimatingCover {
-                Image(systemName: "hand.draw.fill")
-                    .font(.system(size: 16, weight: .semibold))
+
+                if reduceMotion {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.left")
+                        Text("swipe")
+                        Image(systemName: "chevron.right")
+                    }
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.white)
-                    .padding(8)
-                    .background(Color.black.opacity(0.45), in: Circle())
-                    .offset(x: hint * 0.4)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.black.opacity(0.55), in: Capsule())
                     .allowsHitTesting(false)
+                } else if !isAnimatingCover {
+                    Image(systemName: "hand.draw.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(8)
+                        .background(Color.black.opacity(0.45), in: Circle())
+                        .offset(x: hint * 0.4)
+                        .allowsHitTesting(false)
+                }
+            } else {
+                artTile(index: artIndex)
+                    .frame(width: coverSize, height: coverSize)
             }
         }
         .frame(width: coverSize, height: coverSize)
@@ -1096,7 +1110,7 @@ struct OnboardingNowPlayingControlsMock: View {
     }
 
     private func restartSwipeHint() {
-        swipeHintOffset = 0
+        stopCoverMotion()
         guard step == .artSwipe, !reduceMotion else { return }
         withAnimation(.easeInOut(duration: 0.95).repeatForever(autoreverses: true)) {
             swipeHintOffset = -14
