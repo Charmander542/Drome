@@ -7,7 +7,7 @@ struct MainTabView: View {
     @EnvironmentObject private var connectivity: ConnectivityMonitor
     @EnvironmentObject private var podcastManager: PodcastManager
     @EnvironmentObject private var podcastPlayer: PodcastPlayer
-    @State private var selectedTab = 0
+    @State private var router = AppNavigationRouter()
     @State private var showNowPlaying = false
     @State private var showPodcastNowPlaying = false
     @State private var keyboardVisible = false
@@ -17,6 +17,10 @@ struct MainTabView: View {
     /// Used only at accessibility sizes; default/XXXL keep fixed 10pt / 20pt.
     @ScaledMetric(relativeTo: .caption2) private var tabLabelSizeScaled: CGFloat = 10
     @ScaledMetric(relativeTo: .title3) private var tabIconSizeScaled: CGFloat = 20
+
+    private var selectedTab: AppNavigationRouter.Tab {
+        router.selectedTab
+    }
 
     /// Active bottom chrome: podcast wins while an episode is loaded so it
     /// replaces the music mini (music only pauses — `current` stays set).
@@ -129,7 +133,7 @@ struct MainTabView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .dromeFocusCarPlaySearch)) { _ in
-            selectedTab = 1
+            router.selectTab(.search)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dromeOpenPlaylist)) { _ in
             selectedTab = 2
@@ -146,39 +150,40 @@ struct MainTabView: View {
         .onAppear {
             Self.applyUITestHooksIfNeeded(podcastPlayer: podcastPlayer)
         }
+        .environment(router)
     }
 
     /// Keeps each tab's NavigationStack alive so push state survives tab switches.
     @ViewBuilder
     private var tabContent: some View {
         ZStack {
-            SongNavigationStack(popToRootTrigger: tabPopTriggers[0]) {
+            SongNavigationStack(popToRootTrigger: tabPopTriggers[AppNavigationRouter.Tab.home.rawValue]) {
                 HomeView()
             }
-            .opacity(selectedTab == 0 ? 1 : 0)
-            .allowsHitTesting(selectedTab == 0)
+            .opacity(selectedTab == .home ? 1 : 0)
+            .allowsHitTesting(selectedTab == .home)
 
-            SongNavigationStack(popToRootTrigger: tabPopTriggers[1]) {
+            SongNavigationStack(popToRootTrigger: tabPopTriggers[AppNavigationRouter.Tab.search.rawValue]) {
                 SearchView()
                     .environmentObject(podcastManager)
                     .environmentObject(podcastPlayer)
             }
-            .opacity(selectedTab == 1 ? 1 : 0)
-            .allowsHitTesting(selectedTab == 1)
+            .opacity(selectedTab == .search ? 1 : 0)
+            .allowsHitTesting(selectedTab == .search)
 
-            SongNavigationStack(popToRootTrigger: tabPopTriggers[2]) {
+            SongNavigationStack(popToRootTrigger: tabPopTriggers[AppNavigationRouter.Tab.library.rawValue]) {
                 LibraryView()
             }
-            .opacity(selectedTab == 2 ? 1 : 0)
-            .allowsHitTesting(selectedTab == 2)
+            .opacity(selectedTab == .library ? 1 : 0)
+            .allowsHitTesting(selectedTab == .library)
 
-            SongNavigationStack(popToRootTrigger: tabPopTriggers[3]) {
+            SongNavigationStack(popToRootTrigger: tabPopTriggers[AppNavigationRouter.Tab.podcasts.rawValue]) {
                 PodcastsView()
                     .environmentObject(podcastManager)
                     .environmentObject(podcastPlayer)
             }
-            .opacity(selectedTab == 3 ? 1 : 0)
-            .allowsHitTesting(selectedTab == 3)
+            .opacity(selectedTab == .podcasts ? 1 : 0)
+            .allowsHitTesting(selectedTab == .podcasts)
         }
     }
 
@@ -262,10 +267,10 @@ struct MainTabView: View {
 
     private var solidTabBar: some View {
         HStack(spacing: 0) {
-            solidTabItem(tag: 0, title: "Home", systemImage: "house.fill")
-            solidTabItem(tag: 1, title: "Search", systemImage: "magnifyingglass")
-            solidTabItem(tag: 2, title: "Your Library", systemImage: "rectangle.stack.fill")
-            solidTabItem(tag: 3, title: "Podcasts", systemImage: "headphones")
+            solidTabItem(tab: .home, title: "Home", systemImage: "house.fill")
+            solidTabItem(tab: .search, title: "Search", systemImage: "magnifyingglass")
+            solidTabItem(tab: .library, title: "Your Library", systemImage: "rectangle.stack.fill")
+            solidTabItem(tab: .podcasts, title: "Podcasts", systemImage: "headphones")
         }
         .padding(.top, 8)
         .padding(.bottom, 6)
@@ -282,11 +287,11 @@ struct MainTabView: View {
         .accessibilityElement(children: .contain)
     }
 
-    private func solidTabItem(tag: Int, title: String, systemImage: String) -> some View {
-        let selected = selectedTab == tag
+    private func solidTabItem(tab: AppNavigationRouter.Tab, title: String, systemImage: String) -> some View {
+        let selected = selectedTab == tab
         let ax = dynamicTypeSize.isAccessibilitySize
         return Button {
-            selectTab(tag)
+            selectTab(tab)
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: systemImage)
@@ -306,14 +311,15 @@ struct MainTabView: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    private func selectTab(_ tag: Int) {
-        if selectedTab == tag {
+    private func selectTab(_ tab: AppNavigationRouter.Tab) {
+        if selectedTab == tab {
+            let tag = tab.rawValue
             guard tabPopTriggers.indices.contains(tag) else { return }
             var triggers = tabPopTriggers
             triggers[tag] += 1
             tabPopTriggers = triggers
         } else {
-            selectedTab = tag
+            router.selectTab(tab)
         }
     }
 
