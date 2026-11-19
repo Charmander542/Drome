@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Main Podcasts view — subscriptions and in-progress episodes.
 struct PodcastsView: View {
+    @Environment(AppNavigationRouter.self) private var router
     @EnvironmentObject private var podcastManager: PodcastManager
     @EnvironmentObject private var podcastPlayer: PodcastPlayer
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -38,7 +39,15 @@ struct PodcastsView: View {
         }
         .navigationTitle("Podcasts")
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    router.openPodcastsSearch()
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .accessibilityLabel("Search podcasts")
+                .accessibilityIdentifier("podcasts-search-button")
+
                 Button {
                     Task { await refreshAll() }
                 } label: {

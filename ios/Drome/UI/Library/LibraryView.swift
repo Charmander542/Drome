@@ -27,6 +27,7 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
 }
 
 struct LibraryView: View {
+    @Environment(AppNavigationRouter.self) private var router
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var rotation: RotationManager
     @EnvironmentObject private var downloads: DownloadManager
@@ -104,7 +105,17 @@ struct LibraryView: View {
                 }
                 .accessibilityLabel("Wishlist")
             }
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if let searchTarget = librarySearchTarget {
+                    Button {
+                        router.openLibrarySearch(filter: searchTarget.filter)
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .accessibilityLabel(searchTarget.accessibilityLabel)
+                    .accessibilityIdentifier(searchTarget.accessibilityIdentifier)
+                }
+
                 if filter == .playlists, isReorderingPlaylists {
                     Button("Done") { isReorderingPlaylists = false }
                 } else if filter == .playlists {
@@ -178,6 +189,35 @@ struct LibraryView: View {
             Button("Cancel", role: .cancel) { playlistToDelete = nil }
         } message: {
             Text("This removes the playlist from Navidrome. Songs stay in your library.")
+        }
+    }
+
+    private struct LibrarySearchTarget {
+        let filter: AppNavigationRouter.SearchResultFilter
+        let accessibilityLabel: String
+        let accessibilityIdentifier: String
+    }
+
+    /// Songs / Albums / Artists list filters hand off into Search with a typed filter.
+    private var librarySearchTarget: LibrarySearchTarget? {
+        switch filter {
+        case .songs:
+            return LibrarySearchTarget(
+                filter: .songs,
+                accessibilityLabel: "Search songs",
+                accessibilityIdentifier: "library-songs-search-button")
+        case .albums:
+            return LibrarySearchTarget(
+                filter: .albums,
+                accessibilityLabel: "Search albums",
+                accessibilityIdentifier: "library-albums-search-button")
+        case .artists:
+            return LibrarySearchTarget(
+                filter: .artists,
+                accessibilityLabel: "Search artists",
+                accessibilityIdentifier: "library-artists-search-button")
+        case .playlists, .genres:
+            return nil
         }
     }
 

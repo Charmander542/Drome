@@ -5,8 +5,17 @@ struct SearchView: View {
         case library = "Library"
         case spotify = "Spotify"
         case podcasts = "Podcasts"
+
+        init(_ mode: AppNavigationRouter.SearchMode) {
+            switch mode {
+            case .library: self = .library
+            case .spotify: self = .spotify
+            case .podcasts: self = .podcasts
+            }
+        }
     }
 
+    @Environment(AppNavigationRouter.self) private var router
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var podcastManager: PodcastManager
     @EnvironmentObject private var podcastPlayer: PodcastPlayer
@@ -15,6 +24,7 @@ struct SearchView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var source: Source = .library
+    @State private var resultFilter: AppNavigationRouter.SearchResultFilter = .all
     @State private var query = ""
     @State private var includeLyrics = false
     @State private var isSearching = false
@@ -35,11 +45,48 @@ struct SearchView: View {
 
     private var searchPrompt: String {
         switch source {
-        case .library: return "Artists, songs, albums…"
+        case .library:
+            switch resultFilter {
+            case .all: return "Artists, songs, albums…"
+            case .songs: return "Search songs…"
+            case .albums: return "Search albums…"
+            case .artists: return "Search artists…"
+            }
         case .spotify: return "Search Spotify tracks, albums…"
         case .podcasts: return "Search podcasts or paste feed URL…"
         }
     }
+
+    private var filteredHits: [SearchHit] {
+        switch resultFilter {
+        case .all:
+            return hits
+        case .songs:
+            return hits.filter { $0.kind == .song || $0.kind == .lyrics }
+        case .albums:
+            return hits.filter { $0.kind == .album }
+        case .artists:
+            return hits.filter { $0.kind == .artist }
+        }
+    }
+
+    private var filteredLibraryPodcastHits: [PodcastDiscoverResult] {
+        resultFilter == .all ? podcastHits : []
+    }
+
+    private var filteredRecentItems: [RecentSearchItem] {
+        switch resultFilter {
+        case .all:
+            return recentItems
+        case .songs:
+            return recentItems.filter { $0.kind == .song }
+        case .albums:
+            return recentItems.filter { $0.kind == .album }
+        case .artists:
+            return recentItems.filter { $0.kind == .artist }
+        }
+    }
+
     var body: some View {
         results
             .navigationTitle("Search")
@@ -57,18 +104,27 @@ struct SearchView: View {
             .onChange(of: query) { _, newValue in
                 scheduleSearch(newValue)
             }
-            .onChange(of: source) { _, _ in
+            .onChange(of: source) { _, newValue in
                 hits = []
                 spotifyHits = []
                 podcastHits = []
                 podcastFeedCandidate = nil
                 error = nil
                 hasCompletedSearch = false
+                if newValue != .library {
+                    resultFilter = .all
+                }
                 scheduleSearch(query)
             }
             .onChange(of: tabPopToRootTrigger) { _, trigger in
                 guard trigger > 0 else { return }
                 resetToDefault()
+            }
+            .onChange(of: router.pendingSearchIntent) { _, intent in
+                consumePendingSearchIntent(intent)
+            }
+            .onAppear {
+                consumePendingSearchIntent(router.pendingSearchIntent)
             }
             .task {
                 let loaded = await Task.detached(priority: .utility) {
@@ -78,6 +134,7 @@ struct SearchView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .dromeFocusCarPlaySearch)) { _ in
                 source = .library
+                resultFilter = .all
                 isSearchPresented = true
             }
             .scrollDismissesKeyboard(.interactively)
@@ -86,6 +143,7 @@ struct SearchView: View {
     private func resetToDefault() {
         debounceTask?.cancel()
         source = .library
+        resultFilter = .all
         query = ""
         includeLyrics = false
         isSearching = false
@@ -100,10 +158,23 @@ struct SearchView: View {
         matchedAlbums = [:]
     }
 
+    /// Apply a cross-tab handoff once. Focus is one-shot so returning to Search
+    /// later does not re-open the keyboard.
+    private func consumePendingSearchIntent(_ intent: AppNavigationRouter.SearchIntent?) {
+        guard let intent else { return }
+        source = Source(intent.mode)
+        resultFilter = intent.mode == .library ? intent.filter : .all
+        if intent.shouldFocus {
+            isSearchPresented = true
+        }
+        // Clear after apply so a later appear / tab return does not re-focus.
+        router.pendingSearchIntent = nil
+    }
+
     /// Stays visible while the search field is focused (unlike nav toolbar items).
     private var searchControls: some View {
         let ax = dynamicTypeSize.isAccessibilitySize
-        return Group {
+        return VStack(alignment: .leading, spacing: 10) {
             if ax {
                 // Stack at AX so the lyrics chip isn't clipped beside the segmented control.
                 VStack(alignment: .leading, spacing: 10) {
@@ -121,6 +192,9 @@ struct SearchView: View {
                     }
                 }
             }
+            if source == .library {
+                resultFilterChips
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -135,6 +209,38 @@ struct SearchView: View {
             }
         }
         .pickerStyle(.segmented)
+    }
+
+    /// Horizontally scrolling chips so AX5 labels stay readable without wrapping.
+    private var resultFilterChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(AppNavigationRouter.SearchResultFilter.allCases) { filter in
+                    let selected = resultFilter == filter
+                    Button {
+                        resultFilter = filter
+                    } label: {
+                        Text(filter.title)
+                            .font(.subheadline.weight(selected ? .semibold : .medium))
+                            .foregroundStyle(selected ? Color.black : Color.white.opacity(0.85))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(
+                                selected ? DromeTheme.accent : DromeTheme.elevated2,
+                                in: Capsule()
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(filter.title)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                    .accessibilityIdentifier(filter.accessibilityIdentifier)
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Result type filter")
     }
 
     private func lyricsToggleButton(axLayout: Bool) -> some View {
@@ -168,12 +274,15 @@ struct SearchView: View {
     @ViewBuilder
     private var libraryResults: some View {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let libraryEmpty = hits.isEmpty && podcastHits.isEmpty
-        let showCenteredEmpty = trimmed.isEmpty && recentItems.isEmpty
+        let visibleHits = filteredHits
+        let visiblePodcastHits = filteredLibraryPodcastHits
+        let visibleRecents = filteredRecentItems
+        let libraryEmpty = visibleHits.isEmpty && visiblePodcastHits.isEmpty
+        let showCenteredEmpty = trimmed.isEmpty && visibleRecents.isEmpty
             && !dynamicTypeSize.isAccessibilitySize
         List {
             if trimmed.isEmpty {
-                if recentItems.isEmpty, dynamicTypeSize.isAccessibilitySize {
+                if visibleRecents.isEmpty, dynamicTypeSize.isAccessibilitySize {
                     // In-list so AX empty copy scrolls with the List above the mini player.
                     Section {
                         EmptyStateView(
@@ -184,7 +293,7 @@ struct SearchView: View {
                         .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 48, trailing: 16))
                     }
                 } else {
-                    recentSearchesSection
+                    recentSearchesSection(items: visibleRecents)
                 }
             } else if let error, libraryEmpty {
                 Section {
@@ -201,18 +310,18 @@ struct SearchView: View {
                         .listRowBackground(DromeTheme.background)
                 }
             } else {
-                if !hits.isEmpty {
+                if !visibleHits.isEmpty {
                     Section {
-                        ForEach(hits) { hit in
+                        ForEach(visibleHits) { hit in
                             hitRow(hit)
                                 .listRowBackground(DromeTheme.background)
                                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                         }
                     }
                 }
-                if !podcastHits.isEmpty {
+                if !visiblePodcastHits.isEmpty {
                     Section {
-                        ForEach(podcastHits.prefix(6)) { hit in
+                        ForEach(visiblePodcastHits.prefix(6)) { hit in
                             podcastNavigatingRow(hit)
                                 .listRowBackground(DromeTheme.background)
                                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
@@ -255,6 +364,7 @@ struct SearchView: View {
             }
         }
         .animation(nil, value: query)
+        .animation(nil, value: resultFilter)
     }
 
     @ViewBuilder
@@ -505,10 +615,10 @@ struct SearchView: View {
     }
 
     @ViewBuilder
-    private var recentSearchesSection: some View {
-        if !recentItems.isEmpty {
+    private func recentSearchesSection(items: [RecentSearchItem]) -> some View {
+        if !items.isEmpty {
             Section {
-                ForEach(recentItems) { item in
+                ForEach(items) { item in
                     recentItemRow(item)
                         .listRowBackground(DromeTheme.background)
                         .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
@@ -824,7 +934,7 @@ struct SearchView: View {
                 ) {
                     dismissKeyboard()
                     rememberHit(hit)
-                    let songs = hits.compactMap(\.song)
+                    let songs = filteredHits.compactMap(\.song)
                     let start = songs.firstIndex(where: { $0.id == song.id }) ?? 0
                     session.player.play(songs.isEmpty ? [song] : songs, startAt: start,
                                 context: PlaybackContext(label: "Search", kind: .search))

@@ -140,6 +140,7 @@
 				Siri/DromeSiriPlayback.swift,
 				Siri/PlayInDromeIntent.swift,
 				Siri/PlayMediaIntentHandler.swift,
+				UI/AppNavigationRouter.swift,
 				UI/Auth/LoginView.swift,
 				UI/Components/AirPlayRoutePicker.swift,
 				UI/Components/AlphabetScrubber.swift,
