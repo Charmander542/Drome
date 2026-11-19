@@ -27,126 +27,131 @@ struct LoginView: View {
         dynamicTypeSize.isAccessibilitySize ? min(brandSizeScaled, 72) : 48
     }
 
+    /// Gap between scroll content / focused field and the pinned Sign In chrome.
+    /// Slightly roomier at AX so Wishlist doesn't sit flush against the button.
+    private var footerGap: CGFloat { accessibilityLayout ? 16 : 0 }
+
     var body: some View {
         NavigationStack {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 28) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Drome")
-                                .font(.system(size: brandSize, weight: .bold, design: .rounded))
-                                .foregroundStyle(.white)
-                            Text("Stream your Navidrome library.")
-                                .font(.title3)
-                                .foregroundStyle(DromeTheme.muted)
-                        }
-                        .padding(.top, 48)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                        .onTapGesture { focusedField = nil }
-
-                        if !env.accounts.accounts.isEmpty {
-                            Button {
-                                showSavedAccounts = true
-                            } label: {
-                                Label("Switch to a saved account", systemImage: "person.2")
-                                    .frame(maxWidth: .infinity)
+            // Pin Sign In in the layout (not an overlay) so its height becomes a
+            // real bottom inset — fields can never sit under the button.
+            VStack(spacing: footerGap) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 28) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Drome")
+                                    .font(.system(size: brandSize, weight: .bold, design: .rounded))
+                                    .foregroundStyle(.white)
+                                Text("Stream your Navidrome library.")
+                                    .font(.title3)
+                                    .foregroundStyle(DromeTheme.muted)
                             }
-                            .buttonStyle(.bordered)
-                            .tint(.white)
-                        }
-
-                        VStack(spacing: 14) {
-                            labeledField(
-                                title: "Server URL",
-                                text: $serverURL,
-                                field: .server,
-                                keyboard: .URL,
-                                autocapitalization: .never,
-                                contentType: .URL,
-                                submitLabel: .next,
-                                placeholder: "https://host:4533"
-                            )
-                            labeledField(
-                                title: "Username",
-                                text: $username,
-                                field: .user,
-                                keyboard: .default,
-                                autocapitalization: .never,
-                                contentType: .username,
-                                submitLabel: .next
-                            )
-                            labeledSecureField(
-                                title: "Password",
-                                text: $password,
-                                submitLabel: .next
-                            )
-                            labeledField(
-                                title: "Wishlist server (optional)",
-                                text: $wishlistURL,
-                                field: .wishlist,
-                                keyboard: .URL,
-                                autocapitalization: .never,
-                                contentType: .URL,
-                                submitLabel: .go,
-                                placeholder: "http://host:4534"
-                            )
-
-                            Toggle(isOn: $allowSelfSigned) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Allow self-signed certificate")
-                                    Text("Only for your own Navidrome host.")
-                                        .font(.caption)
-                                        .foregroundStyle(DromeTheme.muted)
-                                }
-                            }
-                            .tint(DromeTheme.accent)
-                            .padding(.top, 4)
-                        }
-
-                        if let errorMessage {
-                            Text(errorMessage)
-                                .font(.subheadline)
-                                .foregroundStyle(.red)
-                                .id("loginError")
-                        }
-
-                        // Room below the fields so a focused row can scroll up into
-                        // the viewport above the sticky Sign In chrome.
-                        Color.clear
-                            .frame(minHeight: accessibilityLayout ? 180 : 120)
-                            .frame(maxWidth: .infinity)
+                            .padding(.top, 48)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .contentShape(Rectangle())
                             .onTapGesture { focusedField = nil }
+
+                            if !env.accounts.accounts.isEmpty {
+                                Button {
+                                    showSavedAccounts = true
+                                } label: {
+                                    Label("Switch to a saved account", systemImage: "person.2")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(.white)
+                            }
+
+                            VStack(spacing: 14) {
+                                labeledField(
+                                    title: "Server URL",
+                                    text: $serverURL,
+                                    field: .server,
+                                    keyboard: .URL,
+                                    autocapitalization: .never,
+                                    contentType: .URL,
+                                    submitLabel: .next,
+                                    placeholder: "https://host:4533"
+                                )
+                                labeledField(
+                                    title: "Username",
+                                    text: $username,
+                                    field: .user,
+                                    keyboard: .default,
+                                    autocapitalization: .never,
+                                    contentType: .username,
+                                    submitLabel: .next
+                                )
+                                labeledSecureField(
+                                    title: "Password",
+                                    text: $password,
+                                    submitLabel: .next
+                                )
+                                labeledField(
+                                    title: "Wishlist server (optional)",
+                                    text: $wishlistURL,
+                                    field: .wishlist,
+                                    keyboard: .URL,
+                                    autocapitalization: .never,
+                                    contentType: .URL,
+                                    submitLabel: .go,
+                                    placeholder: "http://host:4534"
+                                )
+
+                                Toggle(isOn: $allowSelfSigned) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Allow self-signed certificate")
+                                        Text("Only for your own Navidrome host.")
+                                            .font(.caption)
+                                            .foregroundStyle(DromeTheme.muted)
+                                    }
+                                }
+                                .tint(DromeTheme.accent)
+                                .padding(.top, 4)
+                            }
+
+                            if let errorMessage {
+                                Text(errorMessage)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.red)
+                                    .id("loginError")
+                            }
+
+                            // Extra scroll room so a focused row can move up into
+                            // the viewport above the pinned chrome.
+                            Color.clear
+                                .frame(minHeight: accessibilityLayout ? 180 : 120)
+                                .frame(maxWidth: .infinity)
+                                .contentShape(Rectangle())
+                                .onTapGesture { focusedField = nil }
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 24)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 24)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .scrollDismissesKeyboard(.interactively)
-                .scrollIndicators(.hidden)
-                .onChange(of: focusedField) { _, newValue in
-                    guard let newValue else { return }
-                    scrollFieldIntoView(newValue, proxy: proxy)
-                }
-                .onChange(of: errorMessage) { _, newValue in
-                    guard newValue != nil else { return }
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        proxy.scrollTo("loginError", anchor: .center)
+                    .scrollDismissesKeyboard(.interactively)
+                    .scrollIndicators(.hidden)
+                    .onChange(of: focusedField) { _, newValue in
+                        guard let newValue else { return }
+                        scrollFieldIntoView(newValue, proxy: proxy)
+                    }
+                    .onChange(of: errorMessage) { _, newValue in
+                        guard newValue != nil else { return }
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            proxy.scrollTo("loginError", anchor: .center)
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                signInChrome
             }
             .background {
                 DromeTheme.background
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
                     .onTapGesture { focusedField = nil }
-            }
-            // Sticky Sign In chrome only — system keyboard safe area lifts it.
-            // Do not manually pad by the full keyboard height (that collapsed the
-            // form and overlapped the focused field).
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                signInChrome
             }
             .toolbar {
                 ToolbarItemGroup(placement: .keyboard) {
@@ -167,14 +172,11 @@ struct LoginView: View {
     private var signInChrome: some View {
         signInActions
             .padding(.horizontal, 24)
-            .padding(.top, 12)
+            .padding(.top, accessibilityLayout ? 16 : 12)
             .padding(.bottom, 8)
             .frame(maxWidth: .infinity)
-            .background(
-                DromeTheme.background
-                    .opacity(0.96)
-                    .ignoresSafeArea(edges: .bottom)
-            )
+            // Fully opaque so a disabled Sign In never lets field labels show through.
+            .background(DromeTheme.background.ignoresSafeArea(edges: .bottom))
     }
 
     @ViewBuilder
@@ -201,6 +203,9 @@ struct LoginView: View {
         .tint(DromeTheme.accent)
         .foregroundStyle(.black)
         .disabled(isWorking || !canSubmit)
+        // Opaque plate under the (often translucent) disabled prominent style
+        // so field labels never read through the control itself.
+        .background(DromeTheme.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityLabel(isWorking ? "Connecting" : "Sign In")
 
         // Side-by-side at default sizes; stack at AX so labels don't mid-word wrap.
