@@ -160,11 +160,14 @@ struct OnboardingView: View {
                     if index == nowPlayingControlsPageIndex {
                         OnboardingNowPlayingLessonView(
                             step: nowPlayingStep,
-                            reduceMotion: reduceMotion)
+                            reduceMotion: reduceMotion,
+                            onAdvance: advance)
                             .padding(.horizontal, 20)
                             .padding(.bottom, accessibilityLayout ? 12 : 16)
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel(pageAccessibilityLabel)
+                            .accessibilityHint("Double tap to continue")
+                            .accessibilityAction(.default) { advance() }
                     } else {
                         phonePreview(for: index)
                             .frame(maxWidth: accessibilityLayout ? 280 : 320)
@@ -186,12 +189,15 @@ struct OnboardingView: View {
                         .padding(.bottom, accessibilityLayout ? 6 : 8)
                         .accessibilityAddTraits(.isHeader)
 
-                    Text(index == nowPlayingControlsPageIndex ? nowPlayingStep.caption : pages[index].caption)
-                        .font(.body)
-                        .foregroundStyle(DromeTheme.muted)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, 28)
+                    // Lesson view already shows icon + caption next to the close-up.
+                    if index != nowPlayingControlsPageIndex {
+                        Text(pages[index].caption)
+                            .font(.body)
+                            .foregroundStyle(DromeTheme.muted)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 28)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
                 .padding(.top, accessibilityLayout ? 2 : 6)

@@ -752,11 +752,11 @@ enum OnboardingNowPlayingStep: Int, CaseIterable {
         case .artSwipe:
             return "Swipe album art left for the next song, right for the previous."
         case .shuffle:
-            return "Shuffle: Off plays in list order. Smart favors higher-rated tracks. Random is uniform."
+            return "Shuffle: Off plays in list order. Smart favors higher-rated tracks. Random plays this list in random order."
         case .repeat:
-            return "Repeat: tap once to loop the list, twice for one song, again to turn off."
+            return "Repeat: tap once to repeat the list, twice for one song, again to turn off."
         case .keepPlaying:
-            return "∞ Keep Playing: when your queue ends, Drome adds similar songs so music keeps going."
+            return "∞ Keep Playing: when your queue ends, Drome keeps playing similar songs."
         case .queue:
             return "Queue: opens the upcoming tracks so you can reorder or clear what’s next."
         case .lyrics:
@@ -782,6 +782,8 @@ enum OnboardingNowPlayingStep: Int, CaseIterable {
 struct OnboardingNowPlayingLessonView: View {
     let step: OnboardingNowPlayingStep
     var reduceMotion: Bool
+    /// Tap the lesson (or Continue) to advance within the page.
+    var onAdvance: (() -> Void)? = nil
 
     @State private var swipeHintOffset: CGFloat = 0
 
@@ -820,6 +822,7 @@ struct OnboardingNowPlayingLessonView: View {
                     .font(.system(size: 28, weight: .semibold))
                     .foregroundStyle(DromeTheme.accent)
                     .frame(width: 36, height: 36)
+                    .accessibilityHidden(true)
                 Text(step.caption)
                     .font(.body)
                     .foregroundStyle(.white)
@@ -828,8 +831,16 @@ struct OnboardingNowPlayingLessonView: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 4)
+
+            if onAdvance != nil {
+                Text("Tap anywhere to continue")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(DromeTheme.muted)
+            }
         }
         .padding(.horizontal, 8)
+        .contentShape(Rectangle())
+        .onTapGesture { onAdvance?() }
         .onAppear { restartSwipeHint() }
         .onChange(of: step) { _, _ in restartSwipeHint() }
         .onChange(of: reduceMotion) { _, _ in restartSwipeHint() }
