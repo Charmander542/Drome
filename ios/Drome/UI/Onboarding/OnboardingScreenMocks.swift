@@ -451,9 +451,10 @@ struct OnboardingSearchMock: View {
         }
     }
 
+    private let filterChips = ["All", "Songs", "Albums", "Artists", "Lyrics"]
+
     var body: some View {
         VStack(spacing: 0) {
-            // Real Search uses a small centered nav title.
             Text("Search")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white)
@@ -466,9 +467,15 @@ struct OnboardingSearchMock: View {
                 .padding(.bottom, 6)
                 .opacity(0.55)
 
-            searchControls
+            sourceSegments
                 .padding(.horizontal, 10)
-                .padding(.bottom, 8)
+                .padding(.bottom, 6)
+
+            if selectedSource == .library {
+                filterChipRow
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 8)
+            }
 
             resultsPlaceholder
                 .opacity(0.4)
@@ -505,77 +512,66 @@ struct OnboardingSearchMock: View {
         }
     }
 
-    /// Per-control callout above its own ring (so Lyrics sits over the quote
-    /// button, not the center of the row). Rings switch instantly to avoid
-    /// two rings during crossfade; callouts fade.
-    private var searchControls: some View {
+    private var sourceSegments: some View {
         Group {
             if showAllCallouts {
                 VStack(spacing: 4) {
-                    OnboardingCalloutLabel(text: "Library · Spotify · Podcasts · Lyrics")
+                    OnboardingCalloutLabel(text: "Library · Spotify · Podcasts")
                         .frame(height: 20)
-                    HStack(spacing: 8) {
-                        sourceSegments(ringMode: nil)
-                        lyricsChip(ringActive: false)
-                    }
-                    .frame(height: 32)
+                    segmentsRow(ringMode: nil)
                 }
             } else {
-                HStack(alignment: .top, spacing: 8) {
-                    sourceSegments(ringMode: focus)
-                    controlColumn(callout: "Lyrics", showCallout: focus == .lyrics) {
-                        lyricsChip(ringActive: focus == .lyrics)
+                HStack(alignment: .top, spacing: 0) {
+                    ForEach([OnboardingSearchFocus.library, .spotify, .podcasts], id: \.rawValue) { mode in
+                        segmentColumn(mode)
                     }
                 }
+                .padding(2)
+                .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
     }
 
-    private func controlColumn<Control: View>(
-        callout: String,
-        showCallout: Bool,
-        @ViewBuilder control: () -> Control
-    ) -> some View {
-        VStack(spacing: 4) {
+    private func segmentsRow(ringMode: OnboardingSearchFocus?) -> some View {
+        HStack(spacing: 0) {
+            ForEach([OnboardingSearchFocus.library, .spotify, .podcasts], id: \.rawValue) { mode in
+                segmentChip(mode, ringActive: ringMode == mode)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(2)
+        .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .frame(height: 32)
+    }
+
+    private func segmentColumn(_ mode: OnboardingSearchFocus) -> some View {
+        let title = mode.callout
+        let showCallout = focus == mode
+        return VStack(spacing: 4) {
             ZStack {
                 if showCallout {
-                    OnboardingCalloutLabel(text: callout)
+                    OnboardingCalloutLabel(text: title)
                         .transition(.opacity)
                 }
             }
             .frame(height: 20)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: showCallout)
 
-            control()
+            segmentChip(mode, ringActive: focus == mode)
                 .frame(height: 32)
-                // Rings snap — only the callout crossfades.
                 .transaction { $0.animation = nil }
         }
+        .frame(maxWidth: .infinity)
     }
 
-    private func sourceSegments(ringMode: OnboardingSearchFocus?) -> some View {
-        HStack(spacing: 0) {
-            segment(.library, title: "Library", ringMode: ringMode)
-            segment(.spotify, title: "Spotify", ringMode: ringMode)
-            segment(.podcasts, title: "Podcasts", ringMode: ringMode)
-        }
-        .padding(2)
-        .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private func segment(
-        _ mode: OnboardingSearchFocus,
-        title: String,
-        ringMode: OnboardingSearchFocus?
-    ) -> some View {
+    private func segmentChip(_ mode: OnboardingSearchFocus, ringActive: Bool) -> some View {
         let selected = selectedSource == mode
-        let ringActive = ringMode == mode
-        let chip = OnboardingSpotlightRing(
+        return OnboardingSpotlightRing(
             isActive: ringActive,
             reduceMotion: reduceMotion,
             cornerRadius: 6
         ) {
-            Text(title)
+            Text(mode.callout)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(selected ? .white : DromeTheme.muted)
                 .frame(maxWidth: .infinity)
@@ -587,29 +583,58 @@ struct OnboardingSearchMock: View {
                     }
                 }
         }
-
-        // Each segment owns its callout column so the label stays centered on it.
-        if ringMode != nil {
-            return AnyView(
-                controlColumn(callout: title, showCallout: ringMode == mode) { chip }
-                    .frame(maxWidth: .infinity)
-            )
-        }
-        return AnyView(chip.frame(maxWidth: .infinity))
     }
 
-    private func lyricsChip(ringActive: Bool) -> some View {
-        OnboardingSpotlightRing(
-            isActive: ringActive,
-            reduceMotion: reduceMotion,
-            cornerRadius: 7
-        ) {
-            Image(systemName: "text.quote")
-                .symbolVariant(focus == .lyrics || showAllCallouts ? .fill : .none)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(focus == .lyrics || showAllCallouts ? DromeTheme.accent : Color.white.opacity(0.7))
-                .frame(width: 26, height: 26)
-                .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+    /// Library-mode result filters — Lyrics replaces the old quote toggle.
+    private var filterChipRow: some View {
+        Group {
+            if showAllCallouts {
+                VStack(spacing: 4) {
+                    OnboardingCalloutLabel(text: "All · Songs · Albums · Artists · Lyrics")
+                        .frame(height: 20)
+                    chips(highlightLyrics: false)
+                }
+            } else {
+                VStack(spacing: 4) {
+                    ZStack {
+                        if focus == .lyrics {
+                            OnboardingCalloutLabel(text: "Lyrics")
+                                .transition(.opacity)
+                        }
+                    }
+                    .frame(height: 20)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: focus == .lyrics)
+
+                    chips(highlightLyrics: focus == .lyrics)
+                        .transaction { $0.animation = nil }
+                }
+            }
+        }
+    }
+
+    private func chips(highlightLyrics: Bool) -> some View {
+        HStack(spacing: 5) {
+            ForEach(filterChips, id: \.self) { title in
+                let isLyrics = title == "Lyrics"
+                let selected = isLyrics ? (focus == .lyrics || showAllCallouts) : (title == "All" && focus != .lyrics && !showAllCallouts)
+                let ring = isLyrics && highlightLyrics
+                OnboardingSpotlightRing(
+                    isActive: ring,
+                    reduceMotion: reduceMotion,
+                    cornerRadius: 10
+                ) {
+                    Text(title)
+                        .font(.system(size: 9, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(selected ? Color.black : Color.white.opacity(0.85))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(
+                            selected ? DromeTheme.accent : DromeTheme.elevated2,
+                            in: Capsule())
+                }
+            }
         }
     }
 
@@ -710,8 +735,12 @@ struct OnboardingNowPlayingMock: View {
                 HStack(spacing: 24) {
                     Image(systemName: "shuffle")
                     Image(systemName: "backward.fill")
-                    Image(systemName: "pause.circle.fill")
-                        .font(.system(size: 24))
+                    ZStack {
+                        Circle().fill(Color.white).frame(width: 26, height: 26)
+                        Image(systemName: "pause.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.black)
+                    }
                     Image(systemName: "forward.fill")
                     Image(systemName: "repeat")
                 }
@@ -747,24 +776,38 @@ enum OnboardingNowPlayingStep: Int, CaseIterable {
     }
 
     /// Plain-language caption matching real PlayerEngine / NowPlayingView behavior.
-    var caption: String {
+    func caption(compact: Bool) -> String {
         switch self {
         case .artSwipe:
-            return "Swipe album art left for the next song, right for the previous."
+            return compact
+                ? "Swipe art left for next, right for previous."
+                : "Swipe album art left for the next song, right for the previous."
         case .shuffle:
-            return "Shuffle: Off plays in list order. Smart favors higher-rated tracks. Random plays this list in random order."
+            return compact
+                ? "Off: in order. Smart: higher-rated. Random: any order."
+                : "Shuffle: Off plays in list order. Smart favors higher-rated tracks. Random plays this list in random order."
         case .repeat:
-            return "Repeat: tap once to repeat the list, twice for one song, again to turn off."
+            return compact
+                ? "Tap once for the list, twice for one song."
+                : "Repeat: tap once to repeat the list, twice for one song, again to turn off."
         case .keepPlaying:
-            return "∞ Keep Playing: when your queue ends, Drome keeps playing similar songs."
+            return compact
+                ? "On: similar songs when the queue ends."
+                : "∞ Keep Playing: when your queue ends, Drome keeps playing similar songs."
         case .queue:
-            return "Queue: opens the upcoming tracks so you can reorder or clear what’s next."
+            return compact
+                ? "Opens upcoming tracks to reorder or clear."
+                : "Queue: opens the upcoming tracks so you can reorder or clear what’s next."
         case .lyrics:
-            return "Song / Lyrics: switch panes for the player or synced lyrics. Swipe up on art also opens Lyrics."
+            return compact
+                ? "Song / Lyrics panes. Swipe up on art opens Lyrics."
+                : "Song / Lyrics: switch panes for the player or synced lyrics. Swipe up on art also opens Lyrics."
         }
     }
 
-    var accessibilityLabel: String { "\(title). \(caption)" }
+    var accessibilityLabel: String {
+        "Now Playing, step \(rawValue + 1) of \(Self.allCases.count). \(title). \(caption(compact: true))"
+    }
 
     var symbolName: String {
         switch self {
@@ -773,354 +816,485 @@ enum OnboardingNowPlayingStep: Int, CaseIterable {
         case .repeat: return "repeat"
         case .keepPlaying: return "infinity"
         case .queue: return "list.bullet"
-        case .lyrics: return "text.quote"
+        case .lyrics: return "text.alignleft"
         }
     }
 }
 
-/// Close-up Now Playing control lesson — large buttons, one step at a time.
+/// One fixed Now Playing mock; each step only changes the highlight + caption.
 struct OnboardingNowPlayingLessonView: View {
     let step: OnboardingNowPlayingStep
+    var stepDirection: Int = 1
     var reduceMotion: Bool
-    /// Tap the lesson (or Continue) to advance within the page.
+    var accessibilityLayout: Bool
     var onAdvance: (() -> Void)? = nil
 
+    @State private var artDragX: CGFloat = 0
+    @State private var artIndex: Int = 0
     @State private var swipeHintOffset: CGFloat = 0
 
+    private let artPalettes: [[Color]] = [
+        [Color(hex: "#264653"), Color(hex: "#2A9D8F")],
+        [Color(hex: "#E76F51"), Color(hex: "#264653")],
+        [Color(hex: "#1D3557"), Color(hex: "#457B9D")],
+    ]
+
     var body: some View {
-        VStack(spacing: 18) {
-            stepBadge
-
-            Group {
-                switch step {
-                case .artSwipe:
-                    artSwipeCloseup
-                case .shuffle:
-                    shuffleCloseup
-                case .repeat:
-                    repeatCloseup
-                case .keepPlaying:
-                    keepPlayingCloseup
-                case .queue:
-                    queueCloseup
-                case .lyrics:
-                    lyricsCloseup
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(DromeTheme.elevated))
-            .overlay {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(DromeTheme.accent.opacity(0.35), lineWidth: 1.5)
-            }
-
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: step.symbolName)
-                    .font(.system(size: 28, weight: .semibold))
+        VStack(spacing: accessibilityLayout ? 10 : 14) {
+            // Fixed title card — stays for all 6 steps.
+            HStack(spacing: 10) {
+                Image(systemName: "play.square.fill")
+                    .font(.system(size: accessibilityLayout ? 18 : 16, weight: .semibold))
                     .foregroundStyle(DromeTheme.accent)
-                    .frame(width: 36, height: 36)
-                    .accessibilityHidden(true)
-                Text(step.caption)
-                    .font(.body)
+                Text("Now Playing")
+                    .font(accessibilityLayout ? .headline.weight(.bold) : .subheadline.weight(.bold))
                     .foregroundStyle(.white)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 4)
+            .accessibilityAddTraits(.isHeader)
+
+            playerMock
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, accessibilityLayout ? 6 : 10)
+                .padding(.horizontal, accessibilityLayout ? 6 : 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .fill(DromeTheme.elevated))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(DromeTheme.accent.opacity(0.28), lineWidth: 1.5)
+                }
+
+            // Step name + caption slide a few points (or crossfade with Reduce Motion).
+            stepCopy
+                .id(step)
+                .transition(stepTransition)
+                .contentShape(Rectangle())
+                .onTapGesture { onAdvance?() }
+
+            if showsStateChips {
+                stateChips
+                    .padding(.top, 2)
+            }
+        }
+        .onAppear { restartSwipeHint() }
+        .onChange(of: step) { _, _ in
+            artDragX = 0
+            restartSwipeHint()
+        }
+        .onChange(of: reduceMotion) { _, _ in restartSwipeHint() }
+    }
+
+    private var stepTransition: AnyTransition {
+        if reduceMotion {
+            return .opacity
+        }
+        let x = CGFloat(14 * stepDirection)
+        return .asymmetric(
+            insertion: .opacity.combined(with: .offset(x: x)),
+            removal: .opacity.combined(with: .offset(x: -x)))
+    }
+
+    private var stepCopy: some View {
+        VStack(spacing: accessibilityLayout ? 6 : 8) {
+            Text(step.title)
+                .font(accessibilityLayout ? .title3.weight(.bold) : .title3.weight(.semibold))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: step.symbolName)
+                    .font(.system(size: accessibilityLayout ? 22 : 20, weight: .semibold))
+                    .foregroundStyle(DromeTheme.accent)
+                    .frame(width: 28, height: 28)
+                    .accessibilityHidden(true)
+                Text(step.caption(compact: accessibilityLayout))
+                    .font(accessibilityLayout ? .subheadline : .body)
+                    .foregroundStyle(DromeTheme.muted)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 4)
+        }
+        .padding(.horizontal, 4)
+    }
 
-            if onAdvance != nil {
-                Text("Tap anywhere to continue")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(DromeTheme.muted)
+    // MARK: Single player mock
+
+    private var playerMock: some View {
+        VStack(spacing: accessibilityLayout ? 8 : 10) {
+            songLyricsPicker
+            albumArt
+            trackMeta
+            progressBar
+            transportRow
+            bottomBar
+        }
+    }
+
+    private var songLyricsPicker: some View {
+        let active = step == .lyrics
+        return HStack(spacing: 0) {
+            pickerChip("Song", selected: step != .lyrics)
+            pickerChip("Lyrics", selected: active)
+        }
+        .padding(3)
+        .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay {
+            if active {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(DromeTheme.accent, lineWidth: 2)
             }
         }
-        .padding(.horizontal, 8)
-        .contentShape(Rectangle())
-        .onTapGesture { onAdvance?() }
-        .onAppear { restartSwipeHint() }
-        .onChange(of: step) { _, _ in restartSwipeHint() }
-        .onChange(of: reduceMotion) { _, _ in restartSwipeHint() }
+        .padding(.horizontal, accessibilityLayout ? 8 : 28)
+        .opacity(active ? 1 : 0.55)
     }
 
-    private var stepBadge: some View {
-        Text("Now Playing · \(step.rawValue + 1) of \(OnboardingNowPlayingStep.allCases.count)")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(DromeTheme.muted)
-    }
-
-    // MARK: Art swipe
-
-    private var artSwipeCloseup: some View {
-        ZStack {
-            HStack(spacing: 10) {
-                MockArtTile(
-                    colors: [Color(hex: "#264653"), Color(hex: "#2A9D8F")],
-                    corner: 12,
-                    symbol: "music.note")
-                    .frame(width: 120, height: 120)
-                    .offset(x: reduceMotion ? 0 : swipeHintOffset)
-
-                MockArtTile(
-                    colors: [Color(hex: "#E76F51"), Color(hex: "#264653")],
-                    corner: 12,
-                    symbol: "music.note")
-                    .frame(width: 120, height: 120)
-                    .opacity(0.9)
-                    .offset(x: reduceMotion ? 8 : swipeHintOffset + 8)
+    private func pickerChip(_ title: String, selected: Bool) -> some View {
+        Text(title)
+            .font(.system(size: accessibilityLayout ? 12 : 13, weight: .semibold))
+            .foregroundStyle(selected ? .white : DromeTheme.muted)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, accessibilityLayout ? 7 : 8)
+            .background {
+                if selected {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(DromeTheme.elevated)
+                }
             }
-            .frame(width: 200, height: 120)
+    }
+
+    private var albumArt: some View {
+        let active = step == .artSwipe
+        let size: CGFloat = accessibilityLayout ? 120 : 148
+        return ZStack {
+            HStack(spacing: 12) {
+                artTile(index: artIndex)
+                    .frame(width: size, height: size)
+                    .offset(x: artDragX + (reduceMotion || !active ? 0 : swipeHintOffset))
+                artTile(index: (artIndex + 1) % artPalettes.count)
+                    .frame(width: size, height: size)
+                    .offset(x: artDragX + (reduceMotion || !active ? 10 : swipeHintOffset + 10))
+            }
+            .frame(width: size + 8, height: size)
             .clipped()
 
-            if reduceMotion {
+            if active, reduceMotion {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.left")
                     Text("swipe")
                     Image(systemName: "chevron.right")
                 }
-                .font(.system(size: 13, weight: .bold))
+                .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
                 .background(Color.black.opacity(0.55), in: Capsule())
-            } else {
+            } else if active {
                 Image(systemName: "hand.draw.fill")
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(.white)
-                    .padding(10)
+                    .padding(8)
                     .background(Color.black.opacity(0.45), in: Circle())
-                    .offset(x: swipeHintOffset * 0.5)
+                    .offset(x: swipeHintOffset * 0.45)
             }
         }
-        .padding(.vertical, 16)
-        .accessibilityLabel("Swipe album art left for next, right for previous")
+        .padding(active ? 4 : 0)
+        .background {
+            if active {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(DromeTheme.accent.opacity(0.12))
+            }
+        }
+        .overlay {
+            if active {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(DromeTheme.accent, lineWidth: 2)
+            }
+        }
+        .opacity(active || step == .lyrics ? 1 : 0.7)
+        .highPriorityGesture(artSwipeGesture(artWidth: size))
+        .accessibilityLabel("Album artwork. Swipe left or right to preview next or previous.")
+    }
+
+    private func artTile(index: Int) -> some View {
+        let colors = artPalettes[index % artPalettes.count]
+        return MockArtTile(colors: colors, corner: 12, symbol: "music.note")
+    }
+
+    /// Fake song change only — never advances the tour page/step.
+    private func artSwipeGesture(artWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 16)
+            .onChanged { value in
+                guard step == .artSwipe else { return }
+                guard abs(value.translation.width) > abs(value.translation.height) * 0.7 else { return }
+                var t = Transaction(); t.disablesAnimations = true
+                withTransaction(t) { artDragX = value.translation.width }
+            }
+            .onEnded { value in
+                guard step == .artSwipe else {
+                    withAnimation(.easeOut(duration: 0.2)) { artDragX = 0 }
+                    return
+                }
+                let dx = value.translation.width
+                let threshold = min(70, artWidth * 0.28)
+                if dx < -threshold {
+                    withAnimation(.easeInOut(duration: reduceMotion ? 0.15 : 0.28)) {
+                        artDragX = -artWidth * 0.85
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + (reduceMotion ? 0.16 : 0.28)) {
+                        artIndex = (artIndex + 1) % artPalettes.count
+                        artDragX = artWidth * 0.35
+                        withAnimation(.easeOut(duration: 0.22)) { artDragX = 0 }
+                    }
+                } else if dx > threshold {
+                    withAnimation(.easeInOut(duration: reduceMotion ? 0.15 : 0.28)) {
+                        artDragX = artWidth * 0.85
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + (reduceMotion ? 0.16 : 0.28)) {
+                        artIndex = (artIndex + artPalettes.count - 1) % artPalettes.count
+                        artDragX = -artWidth * 0.35
+                        withAnimation(.easeOut(duration: 0.22)) { artDragX = 0 }
+                    }
+                } else {
+                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
+                        artDragX = 0
+                    }
+                }
+            }
     }
 
     private func restartSwipeHint() {
         swipeHintOffset = 0
         guard step == .artSwipe, !reduceMotion else { return }
         withAnimation(.easeInOut(duration: 0.95).repeatForever(autoreverses: true)) {
-            swipeHintOffset = -22
+            swipeHintOffset = -18
         }
     }
 
-    // MARK: Shuffle — Off vs Smart (on)
-
-    private var shuffleCloseup: some View {
-        VStack(spacing: 14) {
-            largeTransportRow(highlight: .shuffle)
-            HStack(spacing: 16) {
-                stateChip(
-                    icon: "shuffle",
-                    label: "Off",
-                    detail: "In order",
-                    on: false)
-                stateChip(
-                    icon: "shuffle",
-                    label: "Smart",
-                    detail: "Rating-weighted",
-                    on: true,
-                    badge: true)
-                stateChip(
-                    icon: "shuffle",
-                    label: "Random",
-                    detail: "Uniform",
-                    on: true)
-            }
-            .padding(.horizontal, 12)
+    private var trackMeta: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(artIndex == 0 ? "Midnight Drive" : (artIndex == 1 ? "Neon Harbor" : "Glass Roads"))
+                .font(.system(size: accessibilityLayout ? 14 : 15, weight: .bold))
+                .foregroundStyle(.white)
+            Text(artIndex == 0 ? "Neon Harbor" : (artIndex == 1 ? "Glass Roads" : "Midnight Drive"))
+                .font(.system(size: accessibilityLayout ? 11 : 12))
+                .foregroundStyle(Color.white.opacity(0.65))
         }
-        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, accessibilityLayout ? 8 : 16)
+        .opacity(0.85)
     }
 
-    // MARK: Repeat — Off / All / One
-
-    private var repeatCloseup: some View {
-        VStack(spacing: 14) {
-            largeTransportRow(highlight: .repeat)
-            HStack(spacing: 16) {
-                stateChip(icon: "repeat", label: "Off", detail: "No loop", on: false)
-                stateChip(icon: "repeat", label: "List", detail: "Tap once", on: true)
-                stateChip(icon: "repeat.1", label: "One", detail: "Tap twice", on: true)
+    private var progressBar: some View {
+        Capsule()
+            .fill(Color.white.opacity(0.18))
+            .frame(height: 3)
+            .overlay(alignment: .leading) {
+                Capsule()
+                    .fill(.white)
+                    .frame(width: 64, height: 3)
             }
-            .padding(.horizontal, 12)
-        }
-        .padding(.vertical, 14)
+            .padding(.horizontal, accessibilityLayout ? 8 : 16)
+            .opacity(0.55)
     }
 
-    // MARK: Keep Playing ∞
-
-    private var keepPlayingCloseup: some View {
-        VStack(spacing: 14) {
-            largeBottomBar(highlight: .keepPlaying)
-            HStack(spacing: 20) {
-                stateChip(icon: "infinity", label: "Off", detail: "Queue ends", on: false)
-                stateChip(icon: "infinity", label: "On", detail: "Adds similar", on: true)
-            }
-            .padding(.horizontal, 12)
-        }
-        .padding(.vertical, 14)
-    }
-
-    // MARK: Queue
-
-    private var queueCloseup: some View {
-        VStack(spacing: 14) {
-            largeBottomBar(highlight: .queue)
-            stateChip(icon: "list.bullet", label: "Queue", detail: "Up next", on: true)
-                .padding(.horizontal, 12)
-        }
-        .padding(.vertical, 14)
-    }
-
-    // MARK: Lyrics
-
-    private var lyricsCloseup: some View {
-        VStack(spacing: 14) {
-            HStack(spacing: 0) {
-                pickerChip("Song", selected: true)
-                pickerChip("Lyrics", selected: false)
-            }
-            .padding(3)
-            .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(DromeTheme.accent, lineWidth: 2)
-            }
-            .padding(.horizontal, 28)
-
-            Text("Also: swipe up on artwork")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(DromeTheme.muted)
-        }
-        .padding(.vertical, 18)
-    }
-
-    private func pickerChip(_ title: String, selected: Bool) -> some View {
-        Text(title)
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(selected ? .white : DromeTheme.muted)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
-            .background {
-                if selected {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(DromeTheme.elevated)
-                }
-            }
-    }
-
-    // MARK: Large chrome rows
-
-    private enum TransportHighlight { case shuffle, `repeat` }
-    private enum BottomHighlight { case keepPlaying, queue }
-
-    private func largeTransportRow(highlight: TransportHighlight) -> some View {
+    private var transportRow: some View {
         HStack {
-            largeIcon(
+            controlIcon(
                 "shuffle",
-                tint: highlight == .shuffle ? DromeTheme.accent : Color.white.opacity(0.35),
-                ring: highlight == .shuffle,
-                badge: highlight == .shuffle)
-            Spacer(minLength: 8)
+                tint: step == .shuffle ? DromeTheme.accent : Color.white.opacity(0.45),
+                active: step == .shuffle,
+                badge: step == .shuffle)
+            Spacer(minLength: 6)
             Image(systemName: "backward.fill")
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.3))
-            Image(systemName: "pause.circle.fill")
-                .font(.system(size: 40))
-                .foregroundStyle(Color.white.opacity(0.4))
+                .font(.system(size: accessibilityLayout ? 16 : 18, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.35))
+            // Real Now Playing: white filled disc + black glyph.
+            ZStack {
+                Circle().fill(Color.white).frame(width: accessibilityLayout ? 44 : 52, height: accessibilityLayout ? 44 : 52)
+                Image(systemName: "pause.fill")
+                    .font(.system(size: accessibilityLayout ? 14 : 16, weight: .bold))
+                    .foregroundStyle(.black)
+            }
             Image(systemName: "forward.fill")
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.3))
-            Spacer(minLength: 8)
-            largeIcon(
-                highlight == .repeat ? "repeat" : "repeat",
-                tint: highlight == .repeat ? DromeTheme.accent : Color.white.opacity(0.35),
-                ring: highlight == .repeat)
+                .font(.system(size: accessibilityLayout ? 16 : 18, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.35))
+            Spacer(minLength: 6)
+            controlIcon(
+                step == .repeat ? "repeat" : "repeat",
+                tint: step == .repeat ? DromeTheme.accent : Color.white.opacity(0.45),
+                active: step == .repeat)
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, accessibilityLayout ? 8 : 14)
     }
 
-    private func largeBottomBar(highlight: BottomHighlight) -> some View {
+    private var bottomBar: some View {
         HStack {
-            largeIcon("hifispeaker", tint: Color.white.opacity(0.35), ring: false)
+            controlIcon("hifispeaker", tint: Color.white.opacity(0.35), active: false)
             Spacer()
-            largeIcon(
+            controlIcon(
                 "infinity",
-                tint: highlight == .keepPlaying ? DromeTheme.accent : Color.white.opacity(0.35),
-                ring: highlight == .keepPlaying)
+                tint: step == .keepPlaying ? DromeTheme.accent : Color.white.opacity(0.45),
+                active: step == .keepPlaying)
             Spacer()
-            largeIcon(
+            controlIcon(
                 "list.bullet",
-                tint: highlight == .queue ? .white : Color.white.opacity(0.35),
-                ring: highlight == .queue)
+                tint: step == .queue ? .white : Color.white.opacity(0.45),
+                active: step == .queue)
         }
-        .padding(.horizontal, 28)
+        .padding(.horizontal, accessibilityLayout ? 12 : 22)
+        .padding(.bottom, 2)
     }
 
-    private func largeIcon(
+    private func controlIcon(
         _ systemName: String,
         tint: Color,
-        ring: Bool,
+        active: Bool,
         badge: Bool = false
     ) -> some View {
         Image(systemName: systemName)
-            .font(.system(size: 26, weight: .semibold))
+            .font(.system(size: accessibilityLayout ? 16 : 18, weight: .semibold))
             .foregroundStyle(tint)
-            .frame(width: 52, height: 52)
+            .frame(width: accessibilityLayout ? 36 : 40, height: accessibilityLayout ? 36 : 40)
             .overlay(alignment: .topTrailing) {
                 if badge {
                     Image(systemName: "star.fill")
-                        .font(.system(size: 10))
+                        .font(.system(size: 8))
                         .foregroundStyle(DromeTheme.accent)
-                        .offset(x: -4, y: 10)
+                        .offset(x: -2, y: 8)
                 }
             }
             .background {
-                if ring {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                if active {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(DromeTheme.accent.opacity(0.14))
                 }
             }
             .overlay {
-                if ring {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                if active {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .stroke(DromeTheme.accent, lineWidth: 2)
                 }
             }
     }
 
-    private func stateChip(
-        icon: String,
-        label: String,
-        detail: String,
-        on: Bool,
-        badge: Bool = false
+    // MARK: On / off chips
+
+    private var showsStateChips: Bool {
+        switch step {
+        case .shuffle, .repeat, .keepPlaying: return true
+        default: return false
+        }
+    }
+
+    @ViewBuilder
+    private var stateChips: some View {
+        let chips: [(String, String, String, Bool, Bool)] = {
+            switch step {
+            case .shuffle:
+                return [
+                    ("shuffle", "Off", "In order", false, false),
+                    ("shuffle", "Smart", "★ weighted", true, true),
+                    ("shuffle", "Random", "Any order", true, false),
+                ]
+            case .repeat:
+                return [
+                    ("repeat", "Off", "No loop", false, false),
+                    ("repeat", "List", "Once", true, false),
+                    ("repeat.1", "One", "Twice", true, false),
+                ]
+            case .keepPlaying:
+                return [
+                    ("infinity", "Off", "Ends", false, false),
+                    ("infinity", "On", "Similar", true, false),
+                ]
+            default:
+                return []
+            }
+        }()
+
+        Group {
+            if accessibilityLayout {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(chips.enumerated()), id: \.offset) { _, chip in
+                        stateChipRow(icon: chip.0, label: chip.1, detail: chip.2, on: chip.3, badge: chip.4)
+                    }
+                }
+            } else {
+                HStack(spacing: 10) {
+                    ForEach(Array(chips.enumerated()), id: \.offset) { _, chip in
+                        stateChipColumn(icon: chip.0, label: chip.1, detail: chip.2, on: chip.3, badge: chip.4)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private func stateChipColumn(
+        icon: String, label: String, detail: String, on: Bool, badge: Bool
     ) -> some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             Image(systemName: icon)
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(on ? DromeTheme.accent : Color.white.opacity(0.4))
-                .frame(width: 40, height: 40)
                 .overlay(alignment: .topTrailing) {
                     if badge {
                         Image(systemName: "star.fill")
-                            .font(.system(size: 8))
+                            .font(.system(size: 7))
                             .foregroundStyle(DromeTheme.accent)
-                            .offset(x: 2, y: 6)
+                            .offset(x: 6, y: -2)
                     }
                 }
             Text(label)
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             Text(detail)
                 .font(.caption2)
                 .foregroundStyle(DromeTheme.muted)
-                .multilineTextAlignment(.center)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private func stateChipRow(
+        icon: String, label: String, detail: String, on: Bool, badge: Bool
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(on ? DromeTheme.accent : Color.white.opacity(0.4))
+                .frame(width: 24)
+                .overlay(alignment: .topTrailing) {
+                    if badge {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 7))
+                            .foregroundStyle(DromeTheme.accent)
+                            .offset(x: 4, y: -2)
+                    }
+                }
+            Text(label)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            Text("·")
+                .foregroundStyle(DromeTheme.muted)
+            Text(detail)
+                .font(.subheadline)
+                .foregroundStyle(DromeTheme.muted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Spacer(minLength: 0)
+            Text(on ? "On" : "Off")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(on ? DromeTheme.accent : DromeTheme.muted)
+        }
     }
 }
 

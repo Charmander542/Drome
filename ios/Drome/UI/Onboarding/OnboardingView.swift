@@ -11,13 +11,18 @@ struct OnboardingView: View {
     @State private var page = 0
     @State private var searchFocus: OnboardingSearchFocus = .library
     @State private var searchCycleToken = 0
-    /// Sub-steps on the Now Playing controls lesson (Continue advances these).
+    /// Sub-steps on the Now Playing controls lesson.
     @State private var nowPlayingStep: OnboardingNowPlayingStep = .artSwipe
+    /// Direction for the small step slide (+1 forward, -1 back).
+    @State private var nowPlayingStepDirection: Int = 1
+    /// Lets programmatic page changes bypass the NP swipe interceptor.
+    @State private var allowTabPageChange = false
 
     private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
 
     private let searchPageIndex = 2
     private let nowPlayingControlsPageIndex = 4
+    private let nowPlayingStepCount = OnboardingNowPlayingStep.allCases.count
 
     private let pages: [OnboardingTourPage] = [
         OnboardingTourPage(
@@ -30,15 +35,15 @@ struct OnboardingView: View {
             accessibilityMockLabel: "Your Library preview. The Home, Search, Your Library, and Podcasts tabs are highlighted in the tab bar."),
         OnboardingTourPage(
             title: "Search three ways",
-            caption: "Library, Spotify wishlist, and Podcasts — tap the quote icon for lyrics in Library.",
-            accessibilityMockLabel: "Search screen. Use the Library, Spotify, and Podcasts segmented control; the quote button enables lyrics search when Library is selected."),
+            caption: "Library, Spotify, and Podcasts — in Library, pick Lyrics in the filter chips to search lyrics.",
+            accessibilityMockLabel: "Search screen. Use Library, Spotify, or Podcasts. In Library mode, the filter chips are All, Songs, Albums, Artists, and Lyrics."),
         OnboardingTourPage(
             title: "Rate with stars",
             caption: "High ratings shape mixes; one or two stars send a track to Out of Rotation.",
             accessibilityMockLabel: "Star rating is on the Now Playing screen, below the track title. One or two stars move a track to Out of Rotation."),
         OnboardingTourPage(
             title: "Now Playing controls",
-            caption: "", // Replaced by per-step captions.
+            caption: "",
             accessibilityMockLabel: ""),
         OnboardingTourPage(
             title: "Playlists & sharing",
@@ -53,16 +58,46 @@ struct OnboardingView: View {
     private var isNowPlayingLesson: Bool { page == nowPlayingControlsPageIndex }
 
     private var pageAccessibilityLabel: String {
-        isNowPlayingLesson ? nowPlayingStep.accessibilityLabel : pages[page].accessibilityMockLabel
+        if isNowPlayingLesson {
+            return "Now Playing, step \(nowPlayingStep.rawValue + 1) of \(nowPlayingStepCount). \(nowPlayingStep.caption(compact: accessibilityLayout))"
+        }
+        return pages[page].accessibilityMockLabel
     }
 
     private var continueLabel: String {
-        if isNowPlayingLesson,
-           nowPlayingStep.rawValue < OnboardingNowPlayingStep.allCases.count - 1 {
+        if isNowPlayingLesson {
+            let n = nowPlayingStep.rawValue + 1
+            if n < nowPlayingStepCount {
+                return "Continue · \(n) of \(nowPlayingStepCount)"
+            }
             return "Continue"
         }
         if page < pages.count - 1 { return "Continue" }
         return "Start listening"
+    }
+
+    /// Intercept TabView swipes on the Now Playing lesson so they move steps, not pages.
+    private var pageSelection: Binding<Int> {
+        Binding(
+            get: { page },
+            set: { newPage in
+                if allowTabPageChange {
+                    page = newPage
+                    return
+                }
+                if page == nowPlayingControlsPageIndex, newPage != page {
+                    // On the swipe-art tip, horizontal drags only animate the mock
+                    // cover — Continue / caption tap advance. Reject TabView paging.
+                    if nowPlayingStep == .artSwipe { return }
+                    if newPage > page {
+                        advance()
+                    } else {
+                        goBack()
+                    }
+                    return
+                }
+                page = newPage
+            })
     }
 
     var body: some View {
@@ -85,15 +120,15 @@ struct OnboardingView: View {
                 .padding(.horizontal, 8)
                 .padding(.top, 4)
 
-                TabView(selection: $page) {
+                TabView(selection: pageSelection) {
                     ForEach(Array(pages.enumerated()), id: \.offset) { index, _ in
                         pageContent(index: index)
                             .tag(index)
                     }
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
-                .animation(.easeInOut(duration: 0.28), value: page)
-                .animation(.easeInOut(duration: 0.28), value: nowPlayingStep)
+                .animation(reduceMotion ? .easeInOut(duration: 0.2) : .easeInOut(duration: 0.28), value: page)
+                .animation(reduceMotion ? .easeInOut(duration: 0.2) : .easeInOut(duration: 0.28), value: nowPlayingStep)
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 bottomChrome
@@ -104,6 +139,7 @@ struct OnboardingView: View {
             if newPage == searchPageIndex { restartSearchCycle() }
             if newPage == nowPlayingControlsPageIndex {
                 nowPlayingStep = .artSwipe
+                nowPlayingStepDirection = 1
             }
         }
         .onAppear {
@@ -132,17 +168,40 @@ struct OnboardingView: View {
         }
     }
 
+    private func commitPage(_ newPage: Int) {
+        allowTabPageChange = true
+        page = newPage
+        allowTabPageChange = false
+    }
+
     private func advance() {
         if isNowPlayingLesson,
            let next = OnboardingNowPlayingStep(rawValue: nowPlayingStep.rawValue + 1) {
-            withAnimation(.easeInOut(duration: 0.28)) { nowPlayingStep = next }
+            nowPlayingStepDirection = 1
+            withAnimation(stepAnimation) { nowPlayingStep = next }
             return
         }
         if page < pages.count - 1 {
-            withAnimation(.easeInOut(duration: 0.28)) { page += 1 }
+            withAnimation(.easeInOut(duration: 0.28)) { commitPage(page + 1) }
         } else {
             finish()
         }
+    }
+
+    private func goBack() {
+        if isNowPlayingLesson, nowPlayingStep.rawValue > 0,
+           let prev = OnboardingNowPlayingStep(rawValue: nowPlayingStep.rawValue - 1) {
+            nowPlayingStepDirection = -1
+            withAnimation(stepAnimation) { nowPlayingStep = prev }
+            return
+        }
+        if page > 0 {
+            withAnimation(.easeInOut(duration: 0.28)) { commitPage(page - 1) }
+        }
+    }
+
+    private var stepAnimation: Animation {
+        reduceMotion ? .easeInOut(duration: 0.2) : .easeInOut(duration: 0.28)
     }
 
     private func pageContent(index: Int) -> some View {
@@ -152,10 +211,12 @@ struct OnboardingView: View {
                     if index == nowPlayingControlsPageIndex {
                         OnboardingNowPlayingLessonView(
                             step: nowPlayingStep,
+                            stepDirection: nowPlayingStepDirection,
                             reduceMotion: reduceMotion,
+                            accessibilityLayout: accessibilityLayout,
                             onAdvance: advance)
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, accessibilityLayout ? 12 : 16)
+                            .padding(.horizontal, accessibilityLayout ? 12 : 16)
+                            .padding(.bottom, accessibilityLayout ? 8 : 10)
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel(pageAccessibilityLabel)
                             .accessibilityHint("Double tap to continue")
@@ -169,20 +230,17 @@ struct OnboardingView: View {
                             .padding(.bottom, accessibilityLayout ? 12 : 14)
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel(pages[index].accessibilityMockLabel)
-                    }
 
-                    Text(index == nowPlayingControlsPageIndex ? nowPlayingStep.title : pages[index].title)
-                        .font(DromeTheme.titleFont)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.white)
-                        .lineLimit(accessibilityLayout ? 3 : 2)
-                        .minimumScaleFactor(0.85)
-                        .padding(.horizontal, 28)
-                        .padding(.bottom, accessibilityLayout ? 6 : 8)
-                        .accessibilityAddTraits(.isHeader)
+                        Text(pages[index].title)
+                            .font(DromeTheme.titleFont)
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.white)
+                            .lineLimit(accessibilityLayout ? 3 : 2)
+                            .minimumScaleFactor(0.85)
+                            .padding(.horizontal, 28)
+                            .padding(.bottom, accessibilityLayout ? 6 : 8)
+                            .accessibilityAddTraits(.isHeader)
 
-                    // Lesson view already shows icon + caption next to the close-up.
-                    if index != nowPlayingControlsPageIndex {
                         Text(pages[index].caption)
                             .font(.body)
                             .foregroundStyle(DromeTheme.muted)
@@ -193,11 +251,10 @@ struct OnboardingView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
                 .padding(.top, accessibilityLayout ? 2 : 6)
-                .padding(.bottom, accessibilityLayout ? 24 : 8)
-                // Vertically balance the block in leftover space at default sizes.
+                .padding(.bottom, accessibilityLayout ? 20 : 8)
                 .frame(
                     minHeight: accessibilityLayout ? nil : max(geo.size.height - 8, 0),
-                    alignment: .center)
+                    alignment: index == nowPlayingControlsPageIndex ? .top : .center)
             }
             .scrollIndicators(accessibilityLayout ? .visible : .automatic)
         }
@@ -206,7 +263,7 @@ struct OnboardingView: View {
                 colors: [.clear, DromeTheme.background],
                 startPoint: .top,
                 endPoint: .bottom)
-                .frame(height: accessibilityLayout ? 36 : 16)
+                .frame(height: accessibilityLayout ? 28 : 16)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
@@ -263,13 +320,21 @@ struct OnboardingView: View {
         HStack(spacing: 6) {
             ForEach(0..<pages.count, id: \.self) { index in
                 Button {
-                    withAnimation(.easeInOut(duration: 0.28)) { page = index }
+                    withAnimation(.easeInOut(duration: 0.28)) { commitPage(index) }
                 } label: {
-                    Capsule()
-                        .fill(index == page ? DromeTheme.accent : DromeTheme.divider)
-                        .frame(width: index == page ? 18 : 7, height: 7)
-                        .frame(minWidth: 44, minHeight: 44)
-                        .contentShape(Rectangle())
+                    Group {
+                        if index == page, isNowPlayingLesson {
+                            OnboardingStepProgressPill(
+                                progress: CGFloat(nowPlayingStep.rawValue + 1) / CGFloat(nowPlayingStepCount),
+                                reduceMotion: reduceMotion)
+                        } else {
+                            Capsule()
+                                .fill(index == page ? DromeTheme.accent : DromeTheme.divider)
+                                .frame(width: index == page ? 18 : 7, height: 7)
+                        }
+                    }
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityHidden(true)
@@ -283,12 +348,7 @@ struct OnboardingView: View {
             case .increment:
                 advance()
             case .decrement:
-                if isNowPlayingLesson, nowPlayingStep.rawValue > 0,
-                   let prev = OnboardingNowPlayingStep(rawValue: nowPlayingStep.rawValue - 1) {
-                    withAnimation(.easeInOut(duration: 0.28)) { nowPlayingStep = prev }
-                } else if page > 0 {
-                    withAnimation(.easeInOut(duration: 0.28)) { page -= 1 }
-                }
+                goBack()
             @unknown default:
                 break
             }
@@ -297,7 +357,7 @@ struct OnboardingView: View {
 
     private var tourPageValue: String {
         if isNowPlayingLesson {
-            return "Page \(page + 1) of \(pages.count), tip \(nowPlayingStep.rawValue + 1) of \(OnboardingNowPlayingStep.allCases.count)"
+            return "Page \(page + 1) of \(pages.count), Now Playing step \(nowPlayingStep.rawValue + 1) of \(nowPlayingStepCount)"
         }
         return "Page \(page + 1) of \(pages.count)"
     }
@@ -314,6 +374,29 @@ struct OnboardingView: View {
     private func finish() {
         OnboardingPreference.markCompleted(userKey: userKey)
         onFinished()
+    }
+}
+
+/// Wider active page pill that fills left→right across Now Playing sub-steps.
+private struct OnboardingStepProgressPill: View {
+    let progress: CGFloat
+    var reduceMotion: Bool
+
+    var body: some View {
+        GeometryReader { geo in
+            let clamped = min(max(progress, 0), 1)
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(DromeTheme.divider)
+                Capsule()
+                    .fill(DromeTheme.accent)
+                    .frame(width: max(geo.size.width * clamped, geo.size.height))
+                    .animation(
+                        reduceMotion ? .easeInOut(duration: 0.15) : .easeInOut(duration: 0.28),
+                        value: clamped)
+            }
+        }
+        .frame(width: 56, height: 7)
     }
 }
 
