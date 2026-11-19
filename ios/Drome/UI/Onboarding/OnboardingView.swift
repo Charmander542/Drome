@@ -1,39 +1,45 @@
 import SwiftUI
 
-/// First-run walkthrough after sign-in. One idea per page — skip anytime.
+/// First-run walkthrough after sign-in. Device-style mocks show where
+/// controls live — skip anytime.
 struct OnboardingView: View {
     let userKey: String
     var onFinished: () -> Void
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var page = 0
+    @State private var searchFocus: OnboardingSearchFocus = .library
 
-    @ScaledMetric(relativeTo: .largeTitle) private var heroDiameter: CGFloat = 132
-    @ScaledMetric(relativeTo: .largeTitle) private var heroSymbolPointSize: CGFloat = 46
+    @ScaledMetric(relativeTo: .largeTitle) private var mockMaxHeight: CGFloat = 380
 
     private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
 
-    private let pages: [OnboardingPage] = [
-        OnboardingPage(
-            systemImage: "waveform",
+    private let pages: [OnboardingTourPage] = [
+        OnboardingTourPage(
             title: "Welcome to Drome",
-            body: "Your private library, tuned to your taste — ratings, playlists, and mixes that stay yours."),
-        OnboardingPage(
-            systemImage: "rectangle.stack.fill",
+            caption: "Daily Mixes and Vibe Tuner live on Home — your private library, tuned to you.",
+            accessibilityMockLabel: "Home screen preview with Vibe Tuner near the top and the tab bar at the bottom."),
+        OnboardingTourPage(
             title: "Browse your library",
-            body: "Home surfaces Daily Mixes and Vibe Tuner. Search finds tracks fast. Library holds playlists, artists, albums, and more."),
-        OnboardingPage(
-            systemImage: "star.fill",
+            caption: "Home, Search, Your Library, and Podcasts sit in the tab bar.",
+            accessibilityMockLabel: "Your Library preview. The Home, Search, Your Library, and Podcasts tabs are highlighted in the tab bar."),
+        OnboardingTourPage(
+            title: "Search three ways",
+            caption: "Library, Spotify wishlist, and Podcasts — tap the quote icon for lyrics in Library.",
+            accessibilityMockLabel: "Search screen. Use the Library, Spotify, and Podcasts segmented control; the quote button enables lyrics search when Library is selected."),
+        OnboardingTourPage(
             title: "Stars teach your taste",
-            body: "High ratings bias mixes toward what you love. Rate one or two stars and that track lands in Out of Rotation — shuffle and autoplay stop suggesting it."),
-        OnboardingPage(
-            systemImage: "music.note.list",
+            caption: "High ratings shape mixes; one or two stars send a track to Out of Rotation.",
+            accessibilityMockLabel: "Star rating is on the Now Playing screen, below the track title. One or two stars move a track to Out of Rotation."),
+        OnboardingTourPage(
             title: "Build & share playlists",
-            body: "Create a playlist, share a link on your server, or make it public for your household."),
-        OnboardingPage(
-            systemImage: "infinity",
+            caption: "Create with + in Your Library; Share is in the track ··· menu.",
+            accessibilityMockLabel: "Your Library plus button creates a playlist. Share is in the Now Playing or track more menu."),
+        OnboardingTourPage(
             title: "Keep the music going",
-            body: "Daily Mixes and Vibe Tuner follow your ratings. With Keep Playing on, Infinite Shuffle tops up the queue when tracks run out."),
+            caption: "In Settings, turn on Keep Playing so Infinite Shuffle tops up the queue.",
+            accessibilityMockLabel: "Keep Playing toggle is in Settings. When on, Infinite Shuffle adds songs when the queue ends."),
     ]
 
     var body: some View {
@@ -48,7 +54,6 @@ struct OnboardingView: View {
                     Spacer()
                     Button("Skip") { finish() }
                         .font(.subheadline.weight(.semibold))
-                        // Brighter than muted (~0.62), clearly weaker than white CTA label.
                         .foregroundStyle(Color.white.opacity(0.88))
                         .padding(.horizontal, 12)
                         .frame(minWidth: 44, minHeight: 44)
@@ -59,7 +64,7 @@ struct OnboardingView: View {
 
                 TabView(selection: $page) {
                     ForEach(Array(pages.enumerated()), id: \.offset) { index, item in
-                        pageContent(item)
+                        pageContent(item, index: index)
                             .tag(index)
                     }
                 }
@@ -71,26 +76,59 @@ struct OnboardingView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .onChange(of: page) { _, newPage in
+            if newPage == 2 { restartSearchCycle() }
+        }
+        .onAppear {
+            if page == 2 { restartSearchCycle() }
+        }
+        .task(id: searchCycleToken) {
+            await runSearchHighlightCycle()
+        }
     }
 
-    private func pageContent(_ item: OnboardingPage) -> some View {
+    /// Bumps when we should restart the Search-page highlight cycle.
+    @State private var searchCycleToken = 0
+
+    private func restartSearchCycle() {
+        searchFocus = .library
+        searchCycleToken &+= 1
+    }
+
+    private func runSearchHighlightCycle() async {
+        guard page == 2, !reduceMotion else { return }
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 1_900_000_000)
+            guard page == 2, !reduceMotion else { return }
+            let all = OnboardingSearchFocus.allCases
+            let next = ((searchFocus.rawValue + 1) % all.count)
+            withAnimation(.easeInOut(duration: 0.28)) {
+                searchFocus = OnboardingSearchFocus(rawValue: next) ?? .library
+            }
+        }
+    }
+
+    private func pageContent(_ item: OnboardingTourPage, index: Int) -> some View {
         ScrollView {
             VStack(spacing: 0) {
-                if showHero {
-                    hero(for: item)
-                        .padding(.bottom, accessibilityLayout ? 16 : 26)
-                        .accessibilityHidden(true)
-                }
+                deviceMock(for: index)
+                    .frame(maxWidth: accessibilityLayout ? 280 : 320)
+                    .frame(height: mockHeight)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, accessibilityLayout ? 14 : 18)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(item.accessibilityMockLabel)
 
                 Text(item.title)
                     .font(DromeTheme.titleFont)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 28)
-                    .padding(.bottom, accessibilityLayout ? 8 : 12)
+                    .padding(.bottom, accessibilityLayout ? 6 : 8)
                     .accessibilityAddTraits(.isHeader)
 
-                Text(item.body)
+                Text(item.caption)
                     .font(.body)
                     .foregroundStyle(DromeTheme.muted)
                     .multilineTextAlignment(.center)
@@ -98,8 +136,7 @@ struct OnboardingView: View {
                     .padding(.horizontal, 28)
             }
             .frame(maxWidth: .infinity, alignment: .top)
-            // Pin hero + title to a consistent top anchor; only body length varies.
-            .padding(.top, accessibilityLayout ? 8 : 20)
+            .padding(.top, accessibilityLayout ? 4 : 12)
             .padding(.bottom, accessibilityLayout ? 40 : 28)
         }
         .scrollIndicators(accessibilityLayout ? .visible : .automatic)
@@ -114,54 +151,38 @@ struct OnboardingView: View {
         }
     }
 
-    private var showHero: Bool {
-        // Collapse fully at larger AX sizes; keep a compact hero at AX1.
-        switch dynamicTypeSize {
-        case .accessibility2, .accessibility3, .accessibility4, .accessibility5:
-            return false
-        default:
-            return true
+    private var mockHeight: CGFloat {
+        if accessibilityLayout {
+            // Shrink but keep a readable phone aspect; title/caption stay below.
+            return min(max(mockMaxHeight * 0.55, 180), 240)
         }
+        return min(max(mockMaxHeight, 320), 400)
     }
 
-    private var compactHero: Bool { accessibilityLayout }
-
-    private func hero(for item: OnboardingPage) -> some View {
-        let diameter = compactHero
-            ? min(heroDiameter * 0.62, 88)
-            : min(max(heroDiameter, 112), 160)
-        let symbolSize = compactHero
-            ? min(heroSymbolPointSize * 0.62, 30)
-            : min(max(heroSymbolPointSize, 40), 56)
-
-        return ZStack {
-            Circle()
-                .fill(
-                    RadialGradient(
-                        colors: [
-                            DromeTheme.accent.opacity(0.28),
-                            DromeTheme.accent.opacity(0.08),
-                            .clear,
-                        ],
-                        center: .center,
-                        startRadius: diameter * 0.12,
-                        endRadius: diameter * 0.72))
-                .frame(width: diameter * 1.35, height: diameter * 1.35)
-
-            Circle()
-                .fill(DromeTheme.accent.opacity(0.14))
-                .frame(width: diameter, height: diameter)
-
-            Circle()
-                .stroke(DromeTheme.accent.opacity(0.28), lineWidth: 1)
-                .frame(width: diameter, height: diameter)
-
-            Image(systemName: item.systemImage)
-                .font(.system(size: symbolSize, weight: .semibold))
-                .foregroundStyle(DromeTheme.accent)
-                .symbolRenderingMode(.hierarchical)
+    @ViewBuilder
+    private func deviceMock(for index: Int) -> some View {
+        OnboardingPhoneFrame {
+            Group {
+                switch index {
+                case 0:
+                    OnboardingHomeMock(reduceMotion: reduceMotion, highlightVibe: true)
+                case 1:
+                    OnboardingBrowseMock(reduceMotion: reduceMotion)
+                case 2:
+                    OnboardingSearchMock(
+                        focus: searchFocus,
+                        reduceMotion: reduceMotion,
+                        showAllCallouts: reduceMotion)
+                case 3:
+                    OnboardingNowPlayingMock(reduceMotion: reduceMotion)
+                case 4:
+                    OnboardingPlaylistsMock(reduceMotion: reduceMotion)
+                default:
+                    OnboardingSettingsMock(reduceMotion: reduceMotion)
+                }
+            }
+            .allowsHitTesting(false)
         }
-        .frame(height: diameter * 1.2)
     }
 
     private var bottomChrome: some View {
@@ -225,8 +246,8 @@ struct OnboardingView: View {
 
     private var ambientGlow: some View {
         RadialGradient(
-            colors: [DromeTheme.accent.opacity(0.14), DromeTheme.accent.opacity(0.04), .clear],
-            center: UnitPoint(x: 0.5, y: 0.18),
+            colors: [DromeTheme.accent.opacity(0.12), DromeTheme.accent.opacity(0.03), .clear],
+            center: UnitPoint(x: 0.5, y: 0.16),
             startRadius: 20,
             endRadius: 380)
         .ignoresSafeArea()
@@ -238,8 +259,8 @@ struct OnboardingView: View {
     }
 }
 
-private struct OnboardingPage {
-    let systemImage: String
+private struct OnboardingTourPage {
     let title: String
-    let body: String
+    let caption: String
+    let accessibilityMockLabel: String
 }
