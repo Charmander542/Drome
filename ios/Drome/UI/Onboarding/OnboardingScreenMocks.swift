@@ -18,13 +18,13 @@ struct OnboardingSpotlightRing<Content: View>: View {
             .background {
                 if isActive {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(DromeTheme.accent.opacity(0.12))
+                        .fill(DromeTheme.accent.opacity(OnboardingTourChrome.highlightFillOpacity))
                 }
             }
             .overlay {
                 if isActive {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(DromeTheme.accent, lineWidth: 2)
+                        .stroke(DromeTheme.accent, lineWidth: OnboardingTourChrome.highlightStroke)
                         .scaleEffect(pulse && !reduceMotion ? 1.04 : 1)
                         .opacity(pulse && !reduceMotion ? 0.55 : 1)
                 }
@@ -93,10 +93,51 @@ struct OnboardingSpotlight<Content: View>: View {
     }
 }
 
+/// Shared tour chrome — keep every page (including Now Playing tips) in sync.
+enum OnboardingTourChrome {
+    // Phone mock canvas
+    static let mockWidth: CGFloat = 300
+    static let mockHeight: CGFloat = 420
+    static let mockCornerRadius: CGFloat = 28
+    static let mockBorderOpacity: Double = 0.14
+    static let mockBorderWidth: CGFloat = 1
+    static let mockShadowRadius: CGFloat = 18
+    static let mockShadowY: CGFloat = 10
+    static let mockShadowOpacity: Double = 0.45
+
+    // Highlight ring (spotlight)
+    static let highlightStroke: CGFloat = 2
+    static let highlightFillOpacity: Double = 0.12
+    static let highlightCorner: CGFloat = 10
+
+    // Page copy
+    static let mockMaxWidth: CGFloat = 320
+    static let mockMaxWidthAX: CGFloat = 280
+    static let mockMaxHeight: CGFloat = 380
+    static let mockMaxHeightAX: CGFloat = 220
+    static let mockHorizontalPadding: CGFloat = 28
+    static let mockBottomSpacing: CGFloat = 14
+    static let mockBottomSpacingAX: CGFloat = 12
+    static let titleBottomSpacing: CGFloat = 8
+    static let titleBottomSpacingAX: CGFloat = 6
+    static let captionHorizontalPadding: CGFloat = 28
+
+    // Continue CTA
+    static let continueCorner: CGFloat = 14
+    static let continueVerticalPadding: CGFloat = 16
+
+    // Transitions
+    static let pageTransitionX: CGFloat = 18
+    static let stepTransitionX: CGFloat = 14
+
+    // Cover art in player mocks
+    static let coverCorner: CGFloat = 10
+}
+
 enum OnboardingMockDesign {
     /// Intrinsic canvas — mocks always lay out at this size, then scale to fit.
-    static let width: CGFloat = 300
-    static let height: CGFloat = 420
+    static let width: CGFloat = OnboardingTourChrome.mockWidth
+    static let height: CGFloat = OnboardingTourChrome.mockHeight
 }
 
 struct OnboardingPhoneFrame<Content: View>: View {
@@ -131,16 +172,19 @@ struct OnboardingScaledPhonePreview<Content: View>: View {
                         .frame(
                             width: OnboardingMockDesign.width,
                             height: OnboardingMockDesign.height)
-                        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: OnboardingTourChrome.mockCornerRadius, style: .continuous))
                         .overlay {
-                            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                                .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                            RoundedRectangle(cornerRadius: OnboardingTourChrome.mockCornerRadius, style: .continuous)
+                                .stroke(Color.white.opacity(OnboardingTourChrome.mockBorderOpacity), lineWidth: OnboardingTourChrome.mockBorderWidth)
                         }
                         .scaleEffect(scale)
                         .frame(width: geo.size.width, height: geo.size.height)
                 }
             }
-            .shadow(color: .black.opacity(0.45), radius: 18, y: 10)
+            .shadow(
+                color: .black.opacity(OnboardingTourChrome.mockShadowOpacity),
+                radius: OnboardingTourChrome.mockShadowRadius,
+                y: OnboardingTourChrome.mockShadowY)
     }
 }
 
@@ -732,9 +776,13 @@ struct OnboardingNowPlayingMock: View {
                             .frame(width: 48, height: 3)
                     }
                     .padding(.horizontal, 16)
+                    .opacity(0.45)
                 HStack(spacing: 24) {
                     Image(systemName: "shuffle")
+                        .foregroundStyle(.white.opacity(0.55))
                     Image(systemName: "backward.fill")
+                        .foregroundStyle(.white.opacity(0.55))
+                    // Match real Now Playing / NP lesson: white disc + black glyph.
                     ZStack {
                         Circle().fill(Color.white).frame(width: 26, height: 26)
                         Image(systemName: "pause.fill")
@@ -742,12 +790,12 @@ struct OnboardingNowPlayingMock: View {
                             .foregroundStyle(.black)
                     }
                     Image(systemName: "forward.fill")
+                        .foregroundStyle(.white.opacity(0.55))
                     Image(systemName: "repeat")
+                        .foregroundStyle(.white.opacity(0.55))
                 }
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.85))
             }
-            .opacity(0.4)
 
             Spacer(minLength: 4)
         }
@@ -755,7 +803,7 @@ struct OnboardingNowPlayingMock: View {
     }
 }
 
-/// Manual steps on the Now Playing controls lesson (Continue advances).
+/// Manual steps on the Now Playing controls lesson (Continue / swipe advances).
 enum OnboardingNowPlayingStep: Int, CaseIterable {
     case artSwipe
     case shuffle
@@ -784,24 +832,24 @@ enum OnboardingNowPlayingStep: Int, CaseIterable {
                 : "Swipe album art left for the next song, right for the previous."
         case .shuffle:
             return compact
-                ? "Off: in order. Smart: higher-rated. Random: any order."
-                : "Shuffle: Off plays in list order. Smart favors higher-rated tracks. Random plays this list in random order."
+                ? "Off: order. Smart: ★ rated. Random: any."
+                : "Off plays in list order. Smart favors higher-rated tracks. Random plays this list in random order."
         case .repeat:
             return compact
-                ? "Tap once for the list, twice for one song."
-                : "Repeat: tap once to repeat the list, twice for one song, again to turn off."
+                ? "Once: list. Twice: one song."
+                : "Tap once to repeat the list, twice for one song, again to turn off."
         case .keepPlaying:
             return compact
                 ? "On: similar songs when the queue ends."
-                : "∞ Keep Playing: when your queue ends, Drome keeps playing similar songs."
+                : "When your queue ends, Drome keeps playing similar songs."
         case .queue:
             return compact
                 ? "Opens upcoming tracks to reorder or clear."
-                : "Queue: opens the upcoming tracks so you can reorder or clear what’s next."
+                : "Opens the upcoming tracks so you can reorder or clear what’s next."
         case .lyrics:
             return compact
                 ? "Song / Lyrics panes. Swipe up on art opens Lyrics."
-                : "Song / Lyrics: switch panes for the player or synced lyrics. Swipe up on art also opens Lyrics."
+                : "Switch panes for the player or synced lyrics. Swipe up on art also opens Lyrics."
         }
     }
 
@@ -821,17 +869,17 @@ enum OnboardingNowPlayingStep: Int, CaseIterable {
     }
 }
 
-/// One fixed Now Playing mock; each step only changes the highlight + caption.
-struct OnboardingNowPlayingLessonView: View {
+/// Now Playing player chrome inside the shared phone-frame mock.
+/// Highlight moves per tip; layout stays fixed so height doesn’t jump.
+struct OnboardingNowPlayingControlsMock: View {
     let step: OnboardingNowPlayingStep
-    var stepDirection: Int = 1
     var reduceMotion: Bool
-    var accessibilityLayout: Bool
-    var onAdvance: (() -> Void)? = nil
+    var onArtDragActiveChange: ((Bool) -> Void)? = nil
 
     @State private var artDragX: CGFloat = 0
     @State private var artIndex: Int = 0
     @State private var swipeHintOffset: CGFloat = 0
+    @State private var isAnimatingCover = false
 
     private let artPalettes: [[Color]] = [
         [Color(hex: "#264653"), Color(hex: "#2A9D8F")],
@@ -839,147 +887,101 @@ struct OnboardingNowPlayingLessonView: View {
         [Color(hex: "#1D3557"), Color(hex: "#457B9D")],
     ]
 
+    private let coverSize: CGFloat = 118
+
     var body: some View {
-        VStack(spacing: accessibilityLayout ? 10 : 14) {
-            // Fixed title card — stays for all 6 steps.
-            HStack(spacing: 10) {
-                Image(systemName: "play.square.fill")
-                    .font(.system(size: accessibilityLayout ? 18 : 16, weight: .semibold))
-                    .foregroundStyle(DromeTheme.accent)
-                Text("Now Playing")
-                    .font(accessibilityLayout ? .headline.weight(.bold) : .subheadline.weight(.bold))
-                    .foregroundStyle(.white)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 4)
-            .accessibilityAddTraits(.isHeader)
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(Color.white.opacity(0.28))
+                .frame(width: 34, height: 4)
+                .padding(.top, 8)
+                .padding(.bottom, 8)
+                .opacity(0.5)
 
-            playerMock
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, accessibilityLayout ? 6 : 10)
-                .padding(.horizontal, accessibilityLayout ? 6 : 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(DromeTheme.elevated))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(DromeTheme.accent.opacity(0.28), lineWidth: 1.5)
-                }
+            songLyricsPicker
+                .padding(.horizontal, 36)
+                .padding(.bottom, 10)
 
-            // Step name + caption slide a few points (or crossfade with Reduce Motion).
-            stepCopy
-                .id(step)
-                .transition(stepTransition)
-                .contentShape(Rectangle())
-                .onTapGesture { onAdvance?() }
+            albumArt
+                .padding(.bottom, 10)
 
-            if showsStateChips {
-                stateChips
-                    .padding(.top, 2)
-            }
+            trackMeta
+                .padding(.horizontal, 18)
+                .padding(.bottom, 8)
+
+            progressBar
+                .padding(.horizontal, 18)
+                .padding(.bottom, 10)
+
+            transportRow
+                .padding(.horizontal, 14)
+                .padding(.bottom, 10)
+
+            bottomBar
+                .padding(.horizontal, 22)
+                .padding(.bottom, 8)
+
+            // Reserved chip slot — constant height across all tips.
+            stateChipSlot
+                .frame(height: 72)
+                .padding(.horizontal, 12)
+
+            Spacer(minLength: 0)
         }
+        .background(DromeTheme.background)
         .onAppear { restartSwipeHint() }
         .onChange(of: step) { _, _ in
             artDragX = 0
+            isAnimatingCover = false
+            onArtDragActiveChange?(false)
             restartSwipeHint()
         }
         .onChange(of: reduceMotion) { _, _ in restartSwipeHint() }
     }
 
-    private var stepTransition: AnyTransition {
-        if reduceMotion {
-            return .opacity
-        }
-        let x = CGFloat(14 * stepDirection)
-        return .asymmetric(
-            insertion: .opacity.combined(with: .offset(x: x)),
-            removal: .opacity.combined(with: .offset(x: -x)))
-    }
-
-    private var stepCopy: some View {
-        VStack(spacing: accessibilityLayout ? 6 : 8) {
-            Text(step.title)
-                .font(accessibilityLayout ? .title3.weight(.bold) : .title3.weight(.semibold))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
-
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: step.symbolName)
-                    .font(.system(size: accessibilityLayout ? 22 : 20, weight: .semibold))
-                    .foregroundStyle(DromeTheme.accent)
-                    .frame(width: 28, height: 28)
-                    .accessibilityHidden(true)
-                Text(step.caption(compact: accessibilityLayout))
-                    .font(accessibilityLayout ? .subheadline : .body)
-                    .foregroundStyle(DromeTheme.muted)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-            }
-        }
-        .padding(.horizontal, 4)
-    }
-
-    // MARK: Single player mock
-
-    private var playerMock: some View {
-        VStack(spacing: accessibilityLayout ? 8 : 10) {
-            songLyricsPicker
-            albumArt
-            trackMeta
-            progressBar
-            transportRow
-            bottomBar
-        }
-    }
-
     private var songLyricsPicker: some View {
         let active = step == .lyrics
-        return HStack(spacing: 0) {
-            pickerChip("Song", selected: step != .lyrics)
-            pickerChip("Lyrics", selected: active)
-        }
-        .padding(3)
-        .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay {
-            if active {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(DromeTheme.accent, lineWidth: 2)
+        return OnboardingSpotlightRing(
+            isActive: active,
+            reduceMotion: reduceMotion,
+            cornerRadius: 9
+        ) {
+            HStack(spacing: 0) {
+                pickerChip("Song", selected: step != .lyrics)
+                pickerChip("Lyrics", selected: active)
             }
+            .padding(3)
+            .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
-        .padding(.horizontal, accessibilityLayout ? 8 : 28)
         .opacity(active ? 1 : 0.55)
     }
 
     private func pickerChip(_ title: String, selected: Bool) -> some View {
         Text(title)
-            .font(.system(size: accessibilityLayout ? 12 : 13, weight: .semibold))
+            .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(selected ? .white : DromeTheme.muted)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, accessibilityLayout ? 7 : 8)
+            .padding(.vertical, 6)
             .background {
                 if selected {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(DromeTheme.elevated)
                 }
             }
     }
 
+    /// One square cover; next cover only appears while swiping.
     private var albumArt: some View {
         let active = step == .artSwipe
-        let size: CGFloat = accessibilityLayout ? 120 : 148
         return ZStack {
-            HStack(spacing: 12) {
-                artTile(index: artIndex)
-                    .frame(width: size, height: size)
-                    .offset(x: artDragX + (reduceMotion || !active ? 0 : swipeHintOffset))
-                artTile(index: (artIndex + 1) % artPalettes.count)
-                    .frame(width: size, height: size)
-                    .offset(x: artDragX + (reduceMotion || !active ? 10 : swipeHintOffset + 10))
-            }
-            .frame(width: size + 8, height: size)
-            .clipped()
+            // Incoming cover sits off-screen and slides in with the drag.
+            artTile(index: (artIndex + 1) % artPalettes.count)
+                .frame(width: coverSize, height: coverSize)
+                .offset(x: coverSize + 10 + artDragX)
+
+            artTile(index: artIndex)
+                .frame(width: coverSize, height: coverSize)
+                .offset(x: artDragX + (active && !reduceMotion && !isAnimatingCover ? swipeHintOffset : 0))
 
             if active, reduceMotion {
                 HStack(spacing: 6) {
@@ -987,77 +989,76 @@ struct OnboardingNowPlayingLessonView: View {
                     Text("swipe")
                     Image(systemName: "chevron.right")
                 }
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(Color.black.opacity(0.55), in: Capsule())
-            } else if active {
+            } else if active, !isAnimatingCover {
                 Image(systemName: "hand.draw.fill")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.white)
                     .padding(8)
                     .background(Color.black.opacity(0.45), in: Circle())
-                    .offset(x: swipeHintOffset * 0.45)
+                    .offset(x: swipeHintOffset * 0.4)
+                    .allowsHitTesting(false)
             }
         }
+        .frame(width: coverSize, height: coverSize)
+        .clipped()
         .padding(active ? 4 : 0)
         .background {
             if active {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(DromeTheme.accent.opacity(0.12))
+                RoundedRectangle(cornerRadius: OnboardingTourChrome.coverCorner + 4, style: .continuous)
+                    .fill(DromeTheme.accent.opacity(OnboardingTourChrome.highlightFillOpacity))
             }
         }
         .overlay {
             if active {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(DromeTheme.accent, lineWidth: 2)
+                RoundedRectangle(cornerRadius: OnboardingTourChrome.coverCorner + 4, style: .continuous)
+                    .stroke(DromeTheme.accent, lineWidth: OnboardingTourChrome.highlightStroke)
             }
         }
-        .opacity(active || step == .lyrics ? 1 : 0.7)
-        .highPriorityGesture(artSwipeGesture(artWidth: size))
+        .opacity(active || step == .lyrics ? 1 : 0.75)
+        .highPriorityGesture(artSwipeGesture)
         .accessibilityLabel("Album artwork. Swipe left or right to preview next or previous.")
     }
 
     private func artTile(index: Int) -> some View {
-        let colors = artPalettes[index % artPalettes.count]
-        return MockArtTile(colors: colors, corner: 12, symbol: "music.note")
+        MockArtTile(
+            colors: artPalettes[index % artPalettes.count],
+            corner: OnboardingTourChrome.coverCorner,
+            symbol: "music.note")
     }
 
-    /// Fake song change only — never advances the tour page/step.
-    private func artSwipeGesture(artWidth: CGFloat) -> some Gesture {
+    /// Fake song-change only — never advances tour steps. Marks art drag active
+    /// so the page-level swipe gesture does not also fire.
+    private var artSwipeGesture: some Gesture {
         DragGesture(minimumDistance: 16)
             .onChanged { value in
-                guard step == .artSwipe else { return }
+                guard step == .artSwipe, !isAnimatingCover else { return }
                 guard abs(value.translation.width) > abs(value.translation.height) * 0.7 else { return }
+                onArtDragActiveChange?(true)
                 var t = Transaction(); t.disablesAnimations = true
                 withTransaction(t) { artDragX = value.translation.width }
             }
             .onEnded { value in
-                guard step == .artSwipe else {
+                defer {
+                    // Release after the cover animation settles.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        onArtDragActiveChange?(false)
+                    }
+                }
+                guard step == .artSwipe, !isAnimatingCover else {
                     withAnimation(.easeOut(duration: 0.2)) { artDragX = 0 }
                     return
                 }
                 let dx = value.translation.width
-                let threshold = min(70, artWidth * 0.28)
+                let threshold = coverSize * 0.28
                 if dx < -threshold {
-                    withAnimation(.easeInOut(duration: reduceMotion ? 0.15 : 0.28)) {
-                        artDragX = -artWidth * 0.85
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + (reduceMotion ? 0.16 : 0.28)) {
-                        artIndex = (artIndex + 1) % artPalettes.count
-                        artDragX = artWidth * 0.35
-                        withAnimation(.easeOut(duration: 0.22)) { artDragX = 0 }
-                    }
+                    completeCoverSwipe(goingNext: true)
                 } else if dx > threshold {
-                    withAnimation(.easeInOut(duration: reduceMotion ? 0.15 : 0.28)) {
-                        artDragX = artWidth * 0.85
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + (reduceMotion ? 0.16 : 0.28)) {
-                        artIndex = (artIndex + artPalettes.count - 1) % artPalettes.count
-                        artDragX = -artWidth * 0.35
-                        withAnimation(.easeOut(duration: 0.22)) { artDragX = 0 }
-                    }
+                    completeCoverSwipe(goingNext: false)
                 } else {
                     withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
                         artDragX = 0
@@ -1066,26 +1067,42 @@ struct OnboardingNowPlayingLessonView: View {
             }
     }
 
+    private func completeCoverSwipe(goingNext: Bool) {
+        isAnimatingCover = true
+        let target = goingNext ? -coverSize - 10 : coverSize + 10
+        withAnimation(.easeInOut(duration: reduceMotion ? 0.15 : 0.28)) {
+            artDragX = target
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (reduceMotion ? 0.16 : 0.28)) {
+            if goingNext {
+                artIndex = (artIndex + 1) % artPalettes.count
+            } else {
+                artIndex = (artIndex + artPalettes.count - 1) % artPalettes.count
+            }
+            artDragX = goingNext ? coverSize * 0.25 : -coverSize * 0.25
+            withAnimation(.easeOut(duration: 0.2)) { artDragX = 0 }
+            isAnimatingCover = false
+        }
+    }
+
     private func restartSwipeHint() {
         swipeHintOffset = 0
         guard step == .artSwipe, !reduceMotion else { return }
         withAnimation(.easeInOut(duration: 0.95).repeatForever(autoreverses: true)) {
-            swipeHintOffset = -18
+            swipeHintOffset = -14
         }
     }
 
     private var trackMeta: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(artIndex == 0 ? "Midnight Drive" : (artIndex == 1 ? "Neon Harbor" : "Glass Roads"))
-                .font(.system(size: accessibilityLayout ? 14 : 15, weight: .bold))
+                .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(.white)
             Text(artIndex == 0 ? "Neon Harbor" : (artIndex == 1 ? "Glass Roads" : "Midnight Drive"))
-                .font(.system(size: accessibilityLayout ? 11 : 12))
+                .font(.system(size: 11))
                 .foregroundStyle(Color.white.opacity(0.65))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, accessibilityLayout ? 8 : 16)
-        .opacity(0.85)
     }
 
     private var progressBar: some View {
@@ -1093,11 +1110,8 @@ struct OnboardingNowPlayingLessonView: View {
             .fill(Color.white.opacity(0.18))
             .frame(height: 3)
             .overlay(alignment: .leading) {
-                Capsule()
-                    .fill(.white)
-                    .frame(width: 64, height: 3)
+                Capsule().fill(.white).frame(width: 56, height: 3)
             }
-            .padding(.horizontal, accessibilityLayout ? 8 : 16)
             .opacity(0.55)
     }
 
@@ -1108,27 +1122,25 @@ struct OnboardingNowPlayingLessonView: View {
                 tint: step == .shuffle ? DromeTheme.accent : Color.white.opacity(0.45),
                 active: step == .shuffle,
                 badge: step == .shuffle)
-            Spacer(minLength: 6)
+            Spacer(minLength: 4)
             Image(systemName: "backward.fill")
-                .font(.system(size: accessibilityLayout ? 16 : 18, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.35))
-            // Real Now Playing: white filled disc + black glyph.
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.4))
             ZStack {
-                Circle().fill(Color.white).frame(width: accessibilityLayout ? 44 : 52, height: accessibilityLayout ? 44 : 52)
+                Circle().fill(Color.white).frame(width: 44, height: 44)
                 Image(systemName: "pause.fill")
-                    .font(.system(size: accessibilityLayout ? 14 : 16, weight: .bold))
+                    .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(.black)
             }
             Image(systemName: "forward.fill")
-                .font(.system(size: accessibilityLayout ? 16 : 18, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.35))
-            Spacer(minLength: 6)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.4))
+            Spacer(minLength: 4)
             controlIcon(
-                step == .repeat ? "repeat" : "repeat",
+                "repeat",
                 tint: step == .repeat ? DromeTheme.accent : Color.white.opacity(0.45),
                 active: step == .repeat)
         }
-        .padding(.horizontal, accessibilityLayout ? 8 : 14)
     }
 
     private var bottomBar: some View {
@@ -1145,8 +1157,6 @@ struct OnboardingNowPlayingLessonView: View {
                 tint: step == .queue ? .white : Color.white.opacity(0.45),
                 active: step == .queue)
         }
-        .padding(.horizontal, accessibilityLayout ? 12 : 22)
-        .padding(.bottom, 2)
     }
 
     private func controlIcon(
@@ -1155,146 +1165,73 @@ struct OnboardingNowPlayingLessonView: View {
         active: Bool,
         badge: Bool = false
     ) -> some View {
-        Image(systemName: systemName)
-            .font(.system(size: accessibilityLayout ? 16 : 18, weight: .semibold))
-            .foregroundStyle(tint)
-            .frame(width: accessibilityLayout ? 36 : 40, height: accessibilityLayout ? 36 : 40)
-            .overlay(alignment: .topTrailing) {
-                if badge {
-                    Image(systemName: "star.fill")
-                        .font(.system(size: 8))
-                        .foregroundStyle(DromeTheme.accent)
-                        .offset(x: -2, y: 8)
+        OnboardingSpotlightRing(
+            isActive: active,
+            reduceMotion: reduceMotion,
+            cornerRadius: 8
+        ) {
+            Image(systemName: systemName)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 32, height: 32)
+                .overlay(alignment: .topTrailing) {
+                    if badge {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 7))
+                            .foregroundStyle(DromeTheme.accent)
+                            .offset(x: -1, y: 6)
+                    }
                 }
-            }
-            .background {
-                if active {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(DromeTheme.accent.opacity(0.14))
-                }
-            }
-            .overlay {
-                if active {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(DromeTheme.accent, lineWidth: 2)
-                }
-            }
-    }
-
-    // MARK: On / off chips
-
-    private var showsStateChips: Bool {
-        switch step {
-        case .shuffle, .repeat, .keepPlaying: return true
-        default: return false
         }
     }
 
+    /// Always reserved; empty tips keep the same mock height.
     @ViewBuilder
-    private var stateChips: some View {
-        let chips: [(String, String, String, Bool, Bool)] = {
-            switch step {
-            case .shuffle:
-                return [
-                    ("shuffle", "Off", "In order", false, false),
-                    ("shuffle", "Smart", "★ weighted", true, true),
-                    ("shuffle", "Random", "Any order", true, false),
-                ]
-            case .repeat:
-                return [
-                    ("repeat", "Off", "No loop", false, false),
-                    ("repeat", "List", "Once", true, false),
-                    ("repeat.1", "One", "Twice", true, false),
-                ]
-            case .keepPlaying:
-                return [
-                    ("infinity", "Off", "Ends", false, false),
-                    ("infinity", "On", "Similar", true, false),
-                ]
-            default:
-                return []
-            }
-        }()
-
-        Group {
-            if accessibilityLayout {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(chips.enumerated()), id: \.offset) { _, chip in
-                        stateChipRow(icon: chip.0, label: chip.1, detail: chip.2, on: chip.3, badge: chip.4)
-                    }
-                }
-            } else {
-                HStack(spacing: 10) {
-                    ForEach(Array(chips.enumerated()), id: \.offset) { _, chip in
-                        stateChipColumn(icon: chip.0, label: chip.1, detail: chip.2, on: chip.3, badge: chip.4)
-                    }
-                }
-            }
+    private var stateChipSlot: some View {
+        switch step {
+        case .shuffle:
+            chipStack([
+                ("Off", "Order", false),
+                ("Smart", "★ rated", true),
+                ("Random", "Any", true),
+            ])
+        case .repeat:
+            chipStack([
+                ("Off", "None", false),
+                ("List", "Once", true),
+                ("One", "Twice", true),
+            ])
+        case .keepPlaying:
+            chipStack([
+                ("Off", "Ends", false),
+                ("On", "Similar", true),
+            ])
+        default:
+            Color.clear
         }
-        .padding(.horizontal, 4)
     }
 
-    private func stateChipColumn(
-        icon: String, label: String, detail: String, on: Bool, badge: Bool
-    ) -> some View {
-        VStack(spacing: 4) {
-            Image(systemName: icon)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(on ? DromeTheme.accent : Color.white.opacity(0.4))
-                .overlay(alignment: .topTrailing) {
-                    if badge {
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 7))
-                            .foregroundStyle(DromeTheme.accent)
-                            .offset(x: 6, y: -2)
-                    }
+    private func chipStack(_ items: [(String, String, Bool)]) -> some View {
+        // Vertical so AX5 never mid-word truncates; same layout at default size.
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                HStack(spacing: 8) {
+                    Text(item.0)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text(item.1)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(DromeTheme.muted)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Text(item.2 ? "On" : "Off")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(item.2 ? DromeTheme.accent : DromeTheme.muted)
                 }
-            Text(label)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-            Text(detail)
-                .font(.caption2)
-                .foregroundStyle(DromeTheme.muted)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
+            }
         }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func stateChipRow(
-        icon: String, label: String, detail: String, on: Bool, badge: Bool
-    ) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(on ? DromeTheme.accent : Color.white.opacity(0.4))
-                .frame(width: 24)
-                .overlay(alignment: .topTrailing) {
-                    if badge {
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 7))
-                            .foregroundStyle(DromeTheme.accent)
-                            .offset(x: 4, y: -2)
-                    }
-                }
-            Text(label)
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-            Text("·")
-                .foregroundStyle(DromeTheme.muted)
-            Text(detail)
-                .font(.subheadline)
-                .foregroundStyle(DromeTheme.muted)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-            Spacer(minLength: 0)
-            Text(on ? "On" : "Off")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(on ? DromeTheme.accent : DromeTheme.muted)
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
