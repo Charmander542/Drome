@@ -31,6 +31,18 @@ struct LoginView: View {
     /// Slightly roomier at AX so Wishlist doesn't sit flush against the button.
     private var footerGap: CGFloat { accessibilityLayout ? 16 : 0 }
 
+    /// Long URL prompts shrink to fit at AX5; use a short label and keep
+    /// the full examples in the helper text instead.
+    private var companionPlaceholder: String {
+        accessibilityLayout ? "Companion URL" : "https://wishlist.example.com"
+    }
+
+    private var companionHelper: String {
+        accessibilityLayout
+            ? "Example: https://wishlist.example.com\nLAN: http://host:4534"
+            : "LAN example: http://host:4534"
+    }
+
     var body: some View {
         NavigationStack {
             // Pin Sign In in the layout (not an overlay) so its height becomes a
@@ -96,8 +108,8 @@ struct LoginView: View {
                                     autocapitalization: .never,
                                     contentType: .URL,
                                     submitLabel: .go,
-                                    placeholder: "https://wishlist.example.com",
-                                    helper: "LAN example: http://host:4534"
+                                    placeholder: companionPlaceholder,
+                                    helper: companionHelper
                                 )
 
                                 Toggle(isOn: $allowSelfSigned) {
@@ -106,6 +118,7 @@ struct LoginView: View {
                                         Text("Only for your own Navidrome host.")
                                             .font(.caption)
                                             .foregroundStyle(DromeTheme.muted)
+                                            .fixedSize(horizontal: false, vertical: true)
                                     }
                                 }
                                 .tint(DromeTheme.accent)
@@ -119,16 +132,17 @@ struct LoginView: View {
                                     .id("loginError")
                             }
 
-                            // Extra scroll room so a focused row can move up into
-                            // the viewport above the pinned chrome.
+                            // Extra scroll room so companion helper + toggle can
+                            // move fully above the pinned Sign In chrome at AX.
                             Color.clear
-                                .frame(minHeight: accessibilityLayout ? 180 : 120)
+                                .frame(minHeight: accessibilityLayout ? 320 : 120)
                                 .frame(maxWidth: .infinity)
                                 .contentShape(Rectangle())
                                 .onTapGesture { focusedField = nil }
+                                .accessibilityHidden(true)
                         }
                         .padding(.horizontal, 24)
-                        .padding(.bottom, 24)
+                        .padding(.bottom, accessibilityLayout ? 48 : 24)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .scrollDismissesKeyboard(.interactively)
@@ -249,10 +263,13 @@ struct LoginView: View {
 
     /// Pin the focused field near the top of the remaining viewport (below the
     /// status bar, above the sticky Sign In chrome) after the keyboard settles.
+    /// Wishlist uses a higher anchor at AX so its multi-line helper stays on-screen.
     private func scrollFieldIntoView(_ field: Field, proxy: ScrollViewProxy) {
+        let anchorY: CGFloat =
+            (field == .wishlist && accessibilityLayout) ? 0.08 : 0.18
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
             withAnimation(.easeOut(duration: 0.25)) {
-                proxy.scrollTo(field, anchor: UnitPoint(x: 0.5, y: 0.18))
+                proxy.scrollTo(field, anchor: UnitPoint(x: 0.5, y: anchorY))
             }
         }
     }
@@ -300,7 +317,11 @@ struct LoginView: View {
                 Text(helper)
                     .font(.caption)
                     .foregroundStyle(DromeTheme.muted)
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(nil)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel(helper.replacingOccurrences(of: "\n", with: ", "))
             }
         }
         .id(field)

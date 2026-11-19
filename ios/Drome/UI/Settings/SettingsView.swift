@@ -7,6 +7,7 @@ struct SettingsView: View {
     @EnvironmentObject private var lyricsIndexer: LyricsIndexer
     @EnvironmentObject private var player: PlayerEngine
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var wishlistURLText = ""
     @State private var savedMessage: String?
@@ -14,6 +15,13 @@ struct SettingsView: View {
     @State private var scanMessage: String?
     @State private var scanFailed = false
     @AppStorage(LaunchIntroPreference.hapticKey) private var hapticIntro = false
+
+    /// Long URL prompts shrink to fit at AX5; keep the full example in the footer.
+    private var companionPlaceholder: String {
+        dynamicTypeSize.isAccessibilitySize
+            ? "Companion URL"
+            : "https://wishlist.example.com"
+    }
 
     var body: some View {
         List {
@@ -38,9 +46,7 @@ struct SettingsView: View {
             .listRowBackground(DromeTheme.elevated)
 
             Section {
-                // LocalizedStringKey placeholder scales with the field font at AX sizes.
-                // Avoid prompt: Text(…).font(…) — that pins the placeholder size.
-                TextField("https://wishlist.example.com", text: $wishlistURLText)
+                TextField(companionPlaceholder, text: $wishlistURLText)
                     .font(.body)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -54,8 +60,9 @@ struct SettingsView: View {
             } header: {
                 Text("Wishlist companion")
             } footer: {
-                Text("Companion server for Spotify wishlist downloads and Drome Connect (play on another phone or Apple TV). LAN example: http://host:4534")
+                Text("Companion server for Spotify wishlist downloads and Drome Connect (play on another phone or Apple TV). Example: https://wishlist.example.com — LAN: http://host:4534")
                     .font(.footnote)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .listRowBackground(DromeTheme.elevated)
 
