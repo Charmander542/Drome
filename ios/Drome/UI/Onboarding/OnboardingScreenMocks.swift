@@ -114,7 +114,7 @@ enum OnboardingTourChrome {
     static let mockMaxWidth: CGFloat = 320
     static let mockMaxWidthAX: CGFloat = 280
     static let mockMaxHeight: CGFloat = 380
-    static let mockMaxHeightAX: CGFloat = 220
+    static let mockMaxHeightAX: CGFloat = 240
     static let mockHorizontalPadding: CGFloat = 28
     static let mockBottomSpacing: CGFloat = 14
     static let mockBottomSpacingAX: CGFloat = 12
@@ -874,7 +874,9 @@ enum OnboardingNowPlayingStep: Int, CaseIterable {
 struct OnboardingNowPlayingControlsMock: View {
     let step: OnboardingNowPlayingStep
     var reduceMotion: Bool
-    var onArtDragActiveChange: ((Bool) -> Void)? = nil
+    /// Tour coordinate space name — cover frame is reported here so page swipes
+    /// starting on the art tip don’t steal the drag.
+    var tourCoordinateSpace: String = "onboardingTour"
 
     @State private var artDragX: CGFloat = 0
     @State private var artIndex: Int = 0
@@ -933,7 +935,6 @@ struct OnboardingNowPlayingControlsMock: View {
         .onChange(of: step) { _, _ in
             artDragX = 0
             isAnimatingCover = false
-            onArtDragActiveChange?(false)
             restartSwipeHint()
         }
         .onChange(of: reduceMotion) { _, _ in restartSwipeHint() }
@@ -970,18 +971,25 @@ struct OnboardingNowPlayingControlsMock: View {
             }
     }
 
-    /// One square cover; next cover only appears while swiping.
+    /// One square cover; next cover fills under the current so the hint never shows a dark gap.
     private var albumArt: some View {
         let active = step == .artSwipe
+        let hint = (active && !reduceMotion && !isAnimatingCover) ? swipeHintOffset : 0
         return ZStack {
-            // Incoming cover sits off-screen and slides in with the drag.
+            // Underlay — always fills the ring (next cover during left-hint / drag).
             artTile(index: (artIndex + 1) % artPalettes.count)
                 .frame(width: coverSize, height: coverSize)
-                .offset(x: coverSize + 10 + artDragX)
 
             artTile(index: artIndex)
                 .frame(width: coverSize, height: coverSize)
-                .offset(x: artDragX + (active && !reduceMotion && !isAnimatingCover ? swipeHintOffset : 0))
+                .offset(x: artDragX + hint)
+
+            // Previous cover peeks in from the left when dragging right.
+            if artDragX > 0 {
+                artTile(index: (artIndex + artPalettes.count - 1) % artPalettes.count)
+                    .frame(width: coverSize, height: coverSize)
+                    .offset(x: artDragX - coverSize - 10)
+            }
 
             if active, reduceMotion {
                 HStack(spacing: 6) {
@@ -994,18 +1002,19 @@ struct OnboardingNowPlayingControlsMock: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(Color.black.opacity(0.55), in: Capsule())
+                .allowsHitTesting(false)
             } else if active, !isAnimatingCover {
                 Image(systemName: "hand.draw.fill")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.white)
                     .padding(8)
                     .background(Color.black.opacity(0.45), in: Circle())
-                    .offset(x: swipeHintOffset * 0.4)
+                    .offset(x: hint * 0.4)
                     .allowsHitTesting(false)
             }
         }
         .frame(width: coverSize, height: coverSize)
-        .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: OnboardingTourChrome.coverCorner, style: .continuous))
         .padding(active ? 4 : 0)
         .background {
             if active {
@@ -1020,6 +1029,16 @@ struct OnboardingNowPlayingControlsMock: View {
             }
         }
         .opacity(active || step == .lyrics ? 1 : 0.75)
+        .background {
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: OnboardingArtCoverFrameKey.self,
+                    value: active
+                        ? geo.frame(in: .named(tourCoordinateSpace))
+                        : .null)
+            }
+        }
+        // highPriority so this wins over the parent’s (non-priority) tour drag.
         .highPriorityGesture(artSwipeGesture)
         .accessibilityLabel("Album artwork. Swipe left or right to preview next or previous.")
     }
@@ -1031,30 +1050,22 @@ struct OnboardingNowPlayingControlsMock: View {
             symbol: "music.note")
     }
 
-    /// Fake song-change only — never advances tour steps. Marks art drag active
-    /// so the page-level swipe gesture does not also fire.
+    /// Fake song-change only — never advances tour steps.
     private var artSwipeGesture: some Gesture {
-        DragGesture(minimumDistance: 16)
+        DragGesture(minimumDistance: 12)
             .onChanged { value in
                 guard step == .artSwipe, !isAnimatingCover else { return }
-                guard abs(value.translation.width) > abs(value.translation.height) * 0.7 else { return }
-                onArtDragActiveChange?(true)
+                guard abs(value.translation.width) > abs(value.translation.height) * 0.55 else { return }
                 var t = Transaction(); t.disablesAnimations = true
                 withTransaction(t) { artDragX = value.translation.width }
             }
             .onEnded { value in
-                defer {
-                    // Release after the cover animation settles.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                        onArtDragActiveChange?(false)
-                    }
-                }
                 guard step == .artSwipe, !isAnimatingCover else {
                     withAnimation(.easeOut(duration: 0.2)) { artDragX = 0 }
                     return
                 }
                 let dx = value.translation.width
-                let threshold = coverSize * 0.28
+                let threshold = coverSize * 0.22
                 if dx < -threshold {
                     completeCoverSwipe(goingNext: true)
                 } else if dx > threshold {
@@ -1069,7 +1080,7 @@ struct OnboardingNowPlayingControlsMock: View {
 
     private func completeCoverSwipe(goingNext: Bool) {
         isAnimatingCover = true
-        let target = goingNext ? -coverSize - 10 : coverSize + 10
+        let target = goingNext ? -coverSize : coverSize
         withAnimation(.easeInOut(duration: reduceMotion ? 0.15 : 0.28)) {
             artDragX = target
         }
@@ -1079,8 +1090,7 @@ struct OnboardingNowPlayingControlsMock: View {
             } else {
                 artIndex = (artIndex + artPalettes.count - 1) % artPalettes.count
             }
-            artDragX = goingNext ? coverSize * 0.25 : -coverSize * 0.25
-            withAnimation(.easeOut(duration: 0.2)) { artDragX = 0 }
+            artDragX = 0
             isAnimatingCover = false
         }
     }

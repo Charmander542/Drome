@@ -15,13 +15,19 @@ struct OnboardingView: View {
     @State private var nowPlayingStepDirection: Int = 1
     /// One physical swipe → one advance (blocks art+page double-fire).
     @State private var gestureLockUntil: Date = .distantPast
-    @State private var artDragActive = false
+    /// Cover frame in the tour coordinate space (step 1 art tip only).
+    @State private var artCoverFrame: CGRect = .null
+    /// When entering NP by swiping back from Playlists, land on tip 6.
+    @State private var enterNowPlayingAtEnd = false
 
     private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
 
     private let searchPageIndex = 2
     private let nowPlayingControlsPageIndex = 4
     private let nowPlayingStepCount = OnboardingNowPlayingStep.allCases.count
+
+    /// Named space so tour drag can exclude the cover hit target.
+    private let tourSpace = "onboardingTour"
 
     private let pages: [OnboardingTourPage] = [
         OnboardingTourPage(
@@ -42,7 +48,7 @@ struct OnboardingView: View {
             accessibilityMockLabel: "Star rating is on the Now Playing screen, below the track title. One or two stars move a track to Out of Rotation."),
         OnboardingTourPage(
             title: "Now Playing",
-            caption: "", // Per-step caption below.
+            caption: "",
             accessibilityMockLabel: ""),
         OnboardingTourPage(
             title: "Playlists & sharing",
@@ -56,24 +62,17 @@ struct OnboardingView: View {
 
     private var isNowPlayingLesson: Bool { page == nowPlayingControlsPageIndex }
 
-    private var displayedTitle: String {
-        // Fixed "Now Playing" title — same chrome as every other page title.
-        pages[page].title
-    }
+    private var displayedTitle: String { pages[page].title }
 
     private var displayedCaption: String {
         if isNowPlayingLesson {
-            let tip = nowPlayingStep.title
-            let body = nowPlayingStep.caption(compact: accessibilityLayout)
-            return "\(tip) — \(body)"
+            return "\(nowPlayingStep.title) — \(nowPlayingStep.caption(compact: accessibilityLayout))"
         }
         return pages[page].caption
     }
 
     private var pageAccessibilityLabel: String {
-        if isNowPlayingLesson {
-            return nowPlayingStep.accessibilityLabel
-        }
+        if isNowPlayingLesson { return nowPlayingStep.accessibilityLabel }
         return pages[page].accessibilityMockLabel
     }
 
@@ -88,6 +87,9 @@ struct OnboardingView: View {
         if page < pages.count - 1 { return "Continue" }
         return "Start listening"
     }
+
+    /// Fixed caption slot so 2- vs 3-line copy doesn’t shift mock/title.
+    private var captionSlotHeight: CGFloat { accessibilityLayout ? 96 : 64 }
 
     var body: some View {
         ZStack {
@@ -109,12 +111,14 @@ struct OnboardingView: View {
                 .padding(.horizontal, 8)
                 .padding(.top, 4)
 
-                // Owned paging — no UIPageViewController. Dots / CTA / content stay in sync.
                 pageChrome
                     .id(page)
                     .transition(pageTransition)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .highPriorityGesture(tourDragGesture)
+                    // Not highPriority — cover’s highPriorityGesture must win on step 1.
+                    .gesture(tourDragGesture)
+                    .coordinateSpace(name: tourSpace)
+                    .onPreferenceChange(OnboardingArtCoverFrameKey.self) { artCoverFrame = $0 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 bottomChrome
@@ -122,13 +126,18 @@ struct OnboardingView: View {
         }
         .preferredColorScheme(.dark)
         .animation(chromeAnimation, value: page)
-        .onChange(of: page) { _, newPage in
+        .onChange(of: page) { oldPage, newPage in
             if newPage == searchPageIndex { restartSearchCycle() }
             if newPage == nowPlayingControlsPageIndex {
-                nowPlayingStep = .artSwipe
-                nowPlayingStepDirection = 1
+                if enterNowPlayingAtEnd || oldPage > nowPlayingControlsPageIndex {
+                    nowPlayingStep = .lyrics
+                    nowPlayingStepDirection = -1
+                } else {
+                    nowPlayingStep = .artSwipe
+                    nowPlayingStepDirection = 1
+                }
+                enterNowPlayingAtEnd = false
             }
-            artDragActive = false
         }
         .onAppear {
             if page == searchPageIndex { restartSearchCycle() }
@@ -138,7 +147,6 @@ struct OnboardingView: View {
         }
     }
 
-    /// Same motion language for tour page changes.
     private var pageTransition: AnyTransition {
         if reduceMotion { return .opacity }
         return .asymmetric(
@@ -146,7 +154,6 @@ struct OnboardingView: View {
             removal: .opacity.combined(with: .offset(x: -OnboardingTourChrome.pageTransitionX)))
     }
 
-    /// Tip caption uses the same small slide/crossfade as page changes (scaled).
     private var stepTransition: AnyTransition {
         if reduceMotion { return .opacity }
         let x = OnboardingTourChrome.stepTransitionX * CGFloat(nowPlayingStepDirection)
@@ -160,15 +167,24 @@ struct OnboardingView: View {
     }
 
     private var tourDragGesture: some Gesture {
-        DragGesture(minimumDistance: 28, coordinateSpace: .local)
+        DragGesture(minimumDistance: 28, coordinateSpace: .named(tourSpace))
             .onEnded { value in
-                guard !artDragActive else { return }
+                // Drags that begin on the cover are owned by the art tip.
+                if isNowPlayingLesson,
+                   nowPlayingStep == .artSwipe,
+                   artCoverFrame.contains(value.startLocation) {
+                    return
+                }
                 guard Date() >= gestureLockUntil else { return }
                 let dx = value.translation.width
                 let dy = value.translation.height
                 guard abs(dx) > abs(dy) * 1.25, abs(dx) > 48 else { return }
                 lockGesture()
-                if dx < 0 { advance() } else { goBack() }
+                if dx < 0 {
+                    advance(allowFinish: false)
+                } else {
+                    goBack()
+                }
             }
     }
 
@@ -195,10 +211,14 @@ struct OnboardingView: View {
     }
 
     private func commitPage(_ newPage: Int) {
+        if newPage == nowPlayingControlsPageIndex, page > nowPlayingControlsPageIndex {
+            enterNowPlayingAtEnd = true
+        }
         page = newPage
     }
 
-    private func advance() {
+    /// - Parameter allowFinish: Swipes never dismiss; only Start listening does.
+    private func advance(allowFinish: Bool = true) {
         if isNowPlayingLesson,
            let next = OnboardingNowPlayingStep(rawValue: nowPlayingStep.rawValue + 1) {
             nowPlayingStepDirection = 1
@@ -207,7 +227,7 @@ struct OnboardingView: View {
         }
         if page < pages.count - 1 {
             commitPage(page + 1)
-        } else {
+        } else if allowFinish {
             finish()
         }
     }
@@ -220,6 +240,10 @@ struct OnboardingView: View {
             return
         }
         if page > 0 {
+            // Leaving Playlists (or later) back into NP → tip 6.
+            if page - 1 == nowPlayingControlsPageIndex {
+                enterNowPlayingAtEnd = true
+            }
             commitPage(page - 1)
         }
     }
@@ -228,89 +252,70 @@ struct OnboardingView: View {
 
     private var pageChrome: some View {
         GeometryReader { geo in
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(spacing: 0) {
-                        phonePreview(for: page)
-                            .frame(
-                                maxWidth: accessibilityLayout
-                                    ? OnboardingTourChrome.mockMaxWidthAX
-                                    : OnboardingTourChrome.mockMaxWidth)
-                            .frame(
-                                maxHeight: accessibilityLayout
-                                    ? OnboardingTourChrome.mockMaxHeightAX
-                                    : OnboardingTourChrome.mockMaxHeight)
-                            .frame(maxWidth: .infinity)
-                            .padding(.horizontal, OnboardingTourChrome.mockHorizontalPadding)
-                            .padding(
-                                .bottom,
-                                accessibilityLayout
-                                    ? OnboardingTourChrome.mockBottomSpacingAX
-                                    : OnboardingTourChrome.mockBottomSpacing)
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel(pageAccessibilityLabel)
+            ScrollView {
+                VStack(spacing: 0) {
+                    phonePreview(for: page)
+                        .frame(
+                            maxWidth: accessibilityLayout
+                                ? OnboardingTourChrome.mockMaxWidthAX
+                                : OnboardingTourChrome.mockMaxWidth)
+                        .frame(
+                            maxHeight: accessibilityLayout
+                                ? OnboardingTourChrome.mockMaxHeightAX
+                                : OnboardingTourChrome.mockMaxHeight)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, OnboardingTourChrome.mockHorizontalPadding)
+                        .padding(
+                            .bottom,
+                            accessibilityLayout
+                                ? OnboardingTourChrome.mockBottomSpacingAX
+                                : OnboardingTourChrome.mockBottomSpacing)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(pageAccessibilityLabel)
 
-                        Text(displayedTitle)
-                            .font(DromeTheme.titleFont)
-                            .multilineTextAlignment(.center)
-                            .foregroundStyle(.white)
-                            .lineLimit(accessibilityLayout ? 3 : 2)
-                            .minimumScaleFactor(0.85)
-                            .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
-                            .padding(
-                                .bottom,
-                                accessibilityLayout
-                                    ? OnboardingTourChrome.titleBottomSpacingAX
-                                    : OnboardingTourChrome.titleBottomSpacing)
-                            .accessibilityAddTraits(.isHeader)
-                            .id("tour-title")
+                    Text(displayedTitle)
+                        .font(DromeTheme.titleFont)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.white)
+                        .lineLimit(accessibilityLayout ? 3 : 2)
+                        .minimumScaleFactor(0.85)
+                        .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
+                        .padding(
+                            .bottom,
+                            accessibilityLayout
+                                ? OnboardingTourChrome.titleBottomSpacingAX
+                                : OnboardingTourChrome.titleBottomSpacing)
+                        .accessibilityAddTraits(.isHeader)
 
-                        Text(displayedCaption)
-                            .font(.body)
-                            .foregroundStyle(DromeTheme.muted)
-                            .multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
-                            .frame(minHeight: accessibilityLayout ? 72 : 56, alignment: .top)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                guard isNowPlayingLesson else { return }
-                                lockGesture()
-                                advance()
-                            }
-                            .id(isNowPlayingLesson ? "np-cap-\(nowPlayingStep.rawValue)" : "tour-caption")
-                            .transition(stepTransition)
-                            .animation(chromeAnimation, value: nowPlayingStep)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .top)
-                    .padding(.top, accessibilityLayout ? 2 : 6)
-                    .padding(.bottom, accessibilityLayout ? 20 : 8)
-                    // Same vertical balance for every page (incl. NP tips).
-                    .frame(
-                        minHeight: accessibilityLayout ? nil : max(geo.size.height - 8, 0),
-                        alignment: .center)
+                    Text(displayedCaption)
+                        .font(.body)
+                        .foregroundStyle(DromeTheme.muted)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(accessibilityLayout ? 4 : 3)
+                        .minimumScaleFactor(0.9)
+                        .frame(maxWidth: .infinity, alignment: .top)
+                        .frame(height: captionSlotHeight, alignment: .top)
+                        .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            guard isNowPlayingLesson else { return }
+                            lockGesture()
+                            advance(allowFinish: false)
+                        }
+                        .id(isNowPlayingLesson ? "np-cap-\(nowPlayingStep.rawValue)" : "tour-caption")
+                        .transition(stepTransition)
+                        .animation(chromeAnimation, value: nowPlayingStep)
                 }
-                .scrollIndicators(accessibilityLayout ? .visible : .automatic)
-                .onChange(of: nowPlayingStep) { _, step in
-                    guard isNowPlayingLesson, accessibilityLayout else { return }
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        proxy.scrollTo("np-cap-\(step.rawValue)", anchor: .bottom)
-                    }
-                }
-                .onAppear {
-                    guard isNowPlayingLesson, accessibilityLayout else { return }
-                    proxy.scrollTo("np-cap-\(nowPlayingStep.rawValue)", anchor: .bottom)
-                }
+                .frame(maxWidth: .infinity, alignment: .top)
+                .padding(.top, accessibilityLayout ? 2 : 6)
+                // Keep last lines clear of the opaque bottom chrome.
+                .padding(.bottom, accessibilityLayout ? 12 : 8)
+                .frame(
+                    minHeight: accessibilityLayout ? nil : max(geo.size.height - 8, 0),
+                    alignment: .center)
             }
-        }
-        .overlay(alignment: .bottom) {
-            LinearGradient(
-                colors: [.clear, DromeTheme.background],
-                startPoint: .top,
-                endPoint: .bottom)
-                .frame(height: accessibilityLayout ? 20 : 16)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+            .scrollIndicators(accessibilityLayout ? .visible : .automatic)
+            .scrollBounceBehavior(.basedOnSize)
         }
     }
 
@@ -334,7 +339,7 @@ struct OnboardingView: View {
                         OnboardingNowPlayingControlsMock(
                             step: nowPlayingStep,
                             reduceMotion: reduceMotion,
-                            onArtDragActiveChange: { artDragActive = $0 })
+                            tourCoordinateSpace: tourSpace)
                     case 5:
                         OnboardingPlaylistsMock(reduceMotion: reduceMotion)
                     default:
@@ -352,7 +357,7 @@ struct OnboardingView: View {
 
             Button {
                 lockGesture()
-                advance()
+                advance(allowFinish: true)
             } label: {
                 Text(continueLabel)
                     .font(.headline.weight(.semibold))
@@ -370,9 +375,10 @@ struct OnboardingView: View {
             .padding(.horizontal, 24)
             .accessibilityIdentifier("onboarding-continue")
         }
-        .padding(.top, 4)
+        .padding(.top, 8)
         .padding(.bottom, 10)
-        .background(DromeTheme.background.opacity(0.001))
+        // Opaque so scroll content never peeks under dots / CTA (AX5).
+        .background(DromeTheme.background)
     }
 
     private var pageDots: some View {
@@ -382,7 +388,8 @@ struct OnboardingView: View {
                     lockGesture()
                     commitPage(index)
                 } label: {
-                    Group {
+                    // Reserve pill width on every active page so page 5 doesn’t shift.
+                    ZStack {
                         if index == page, isNowPlayingLesson {
                             OnboardingStepProgressPill(
                                 progress: CGFloat(nowPlayingStep.rawValue + 1) / CGFloat(nowPlayingStepCount),
@@ -393,6 +400,7 @@ struct OnboardingView: View {
                                 .frame(width: index == page ? 18 : 7, height: 7)
                         }
                     }
+                    .frame(width: index == page ? 56 : 7, height: 7)
                     .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
                 }
@@ -406,7 +414,7 @@ struct OnboardingView: View {
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment:
-                lockGesture(); advance()
+                lockGesture(); advance(allowFinish: true)
             case .decrement:
                 lockGesture(); goBack()
             @unknown default:
@@ -434,6 +442,15 @@ struct OnboardingView: View {
     private func finish() {
         OnboardingPreference.markCompleted(userKey: userKey)
         onFinished()
+    }
+}
+
+/// Cover hit target reported by the NP art tip (tour coordinate space).
+struct OnboardingArtCoverFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .null
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        // Always take the latest report so leaving the art tip clears the hit target.
+        value = nextValue()
     }
 }
 
