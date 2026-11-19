@@ -74,13 +74,17 @@ struct PlaylistDetailView: View {
             Button("Save") { Task { await rename() } }
             Button("Cancel", role: .cancel) {}
         }
-        .confirmationDialog("Delete Playlist?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
-            Button("Delete “\(playlist?.name ?? "Playlist")”", role: .destructive) {
-                Task { await deletePlaylist() }
+        .confirmationDialog(
+            removeConfirmTitle,
+            isPresented: $showDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(removeConfirmButtonTitle, role: .destructive) {
+                Task { await deleteOrHidePlaylist() }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes the playlist from Navidrome. Songs stay in your library.")
+            Text(removeConfirmMessage)
         }
         .sheet(isPresented: $showAddSongs) {
             NavigationStack {
@@ -125,7 +129,12 @@ struct PlaylistDetailView: View {
                     flash("Downloading…")
                 },
                 onBulkOutOfRotation: { showBulkOORConfirm = true },
-                onDelete: { showDeleteConfirm = true }
+                onHide: {
+                    hidePlaylistLocally()
+                },
+                onDelete: { showDeleteConfirm = true },
+                deleteLabel: removeConfirmButtonTitle,
+                deleteSystemImage: removesViaHide ? "eye.slash" : "trash"
             )
             .dromeSession(session)
             .presentationDetents([.medium, .large])
@@ -515,10 +524,45 @@ struct PlaylistDetailView: View {
         }
     }
 
-    private func deletePlaylist() async {
+    private var removesViaHide: Bool {
+        let candidate = playlist?.asPlaylist ?? placeholder
+        guard let candidate else { return false }
+        return PlaylistOrderStore.shouldHideInsteadOfDelete(
+            candidate, username: session.account.username)
+    }
+
+    private var removeConfirmTitle: String {
+        removesViaHide ? "Hide Playlist?" : "Delete Playlist?"
+    }
+
+    private var removeConfirmButtonTitle: String {
+        let name = playlist?.name ?? placeholder?.name ?? "Playlist"
+        return removesViaHide ? "Hide “\(name)”" : "Delete “\(name)”"
+    }
+
+    private var removeConfirmMessage: String {
+        if removesViaHide {
+            return "Hides this playlist from your library only. Other people on the server keep it."
+        }
+        return "This removes the playlist from Navidrome. Songs stay in your library."
+    }
+
+    private func hidePlaylistLocally() {
         guard !isSystem else { return }
+        PlaylistOrderStore.hide(playlistID, userKey: session.account.userKey)
+        onDeleted?()
+        dismiss()
+    }
+
+    private func deleteOrHidePlaylist() async {
+        guard !isSystem else { return }
+        if removesViaHide {
+            hidePlaylistLocally()
+            return
+        }
         do {
             try await session.client.deletePlaylist(id: playlistID)
+            PlaylistOrderStore.unhide(playlistID, userKey: session.account.userKey)
             onDeleted?()
             dismiss()
         } catch {
@@ -774,7 +818,10 @@ struct PlaylistMoreSheet: View {
     var onTogglePublic: () -> Void
     var onDownload: () -> Void
     var onBulkOutOfRotation: () -> Void
+    var onHide: () -> Void
     var onDelete: () -> Void
+    var deleteLabel: String = "Delete Playlist"
+    var deleteSystemImage: String = "trash"
 
     var body: some View {
         NavigationStack {
@@ -846,12 +893,21 @@ struct PlaylistMoreSheet: View {
 
                 if !isSystem {
                     Section {
+                        Button {
+                            dismissThen(onHide)
+                        } label: {
+                            Label("Hide from My Library", systemImage: "eye.slash")
+                        }
+                        .listRowBackground(DromeTheme.elevated)
+
                         Button(role: .destructive) {
                             dismissThen(onDelete)
                         } label: {
-                            Label("Delete Playlist", systemImage: "trash")
+                            Label(deleteLabel, systemImage: deleteSystemImage)
                         }
                         .listRowBackground(DromeTheme.elevated)
+                    } footer: {
+                        Text("Hide is local to your account. Shared playlists can’t be deleted for everyone — that action hides them for you instead.")
                     }
                 }
             }

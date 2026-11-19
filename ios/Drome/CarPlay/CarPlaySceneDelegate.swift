@@ -374,6 +374,10 @@ final class CarPlaySceneDelegate: UIResponder,
             let frequent = (try? await frequentTask) ?? []
             let newest = (try? await newestTask) ?? []
             let playlists = (try? await playlistsTask) ?? []
+            let userKey = session.account.userKey
+            let visiblePlaylists = playlists.filter {
+                !PlaylistOrderStore.isHidden($0.id, userKey: userKey)
+            }
 
             var sections: [CPListSection] = []
 
@@ -401,7 +405,7 @@ final class CarPlaySceneDelegate: UIResponder,
                     sectionIndexTitle: nil))
             }
 
-            let ranked = rankedHomePlaylists(playlists, recent: recent)
+            let ranked = rankedHomePlaylists(visiblePlaylists, recent: recent)
             if !ranked.isEmpty {
                 sections.append(CPListSection(
                     items: playlistItems(ranked, session: session),
@@ -1080,6 +1084,10 @@ final class CarPlaySceneDelegate: UIResponder,
 
         Task {
             let lists = (try? await session.client.playlists()) ?? []
+            let userKey = session.account.userKey
+            let visibleLists = lists.filter {
+                !PlaylistOrderStore.isHidden($0.id, userKey: userKey)
+            }
             var sections: [CPListSection] = []
 
             var shortcuts: [CPListItem] = []
@@ -1144,13 +1152,13 @@ final class CarPlaySceneDelegate: UIResponder,
 
             sections.append(CPListSection(items: shortcuts, header: "Browse", sectionIndexTitle: nil))
 
-            if lists.isEmpty {
+            if visibleLists.isEmpty {
                 sections.append(CPListSection(items: [
                     CPListItem(text: "No playlists", detailText: "Create one on your iPhone")
                 ], header: "Playlists", sectionIndexTitle: nil))
             } else {
                 sections.append(CPListSection(
-                    items: playlistItems(lists, session: session),
+                    items: playlistItems(visibleLists, session: session),
                     header: "Playlists",
                     sectionIndexTitle: nil))
             }

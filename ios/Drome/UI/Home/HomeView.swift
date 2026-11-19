@@ -158,7 +158,10 @@ struct HomeView: View {
             recentEntries = recent
             frequent = freq
             newest = neu
-            homePlaylists = Self.rankedHomePlaylists(lists, recent: recent)
+            let visible = lists.filter {
+                !PlaylistOrderStore.isHidden($0.id, userKey: userKey)
+            }
+            homePlaylists = Self.rankedHomePlaylists(visible, recent: recent)
         } catch {
             self.error = error.localizedDescription
         }

@@ -76,6 +76,8 @@ struct LibraryView: View {
     @State private var playlistToRename: Playlist?
     @State private var renameText = ""
     @State private var playlistToDelete: Playlist?
+    /// Server playlists currently hidden on this account (local only).
+    @State private var hiddenPlaylists: [Playlist] = []
     @State private var scanStatusText: String?
     @Namespace private var filterUnderlineNamespace
     /// Tabs the user has opened — kept mounted so switches stay instant.
@@ -109,11 +111,19 @@ struct LibraryView: View {
                 if filter == .playlists, isReorderingPlaylists {
                     Button("Done") { isReorderingPlaylists = false }
                 } else if filter == .playlists {
-                    Button {
-                        newPlaylistName = ""
-                        showCreatePlaylist = true
-                    } label: {
-                        Label("New Playlist", systemImage: "plus")
+                    HStack(spacing: 12) {
+                        Button {
+                            isReorderingPlaylists = true
+                        } label: {
+                            Label("Reorder", systemImage: "line.3.horizontal")
+                        }
+                        .disabled(playlists.isEmpty)
+                        Button {
+                            newPlaylistName = ""
+                            showCreatePlaylist = true
+                        } label: {
+                            Label("New Playlist", systemImage: "plus")
+                        }
                     }
                 }
             }
@@ -177,22 +187,45 @@ struct LibraryView: View {
             Button("Cancel", role: .cancel) { playlistToRename = nil }
         }
         .confirmationDialog(
-            "Delete Playlist?",
+            removeDialogTitle,
             isPresented: Binding(
                 get: { playlistToDelete != nil },
                 set: { if !$0 { playlistToDelete = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("Delete “\(playlistToDelete?.name ?? "")”", role: .destructive) {
-                if let playlist = playlistToDelete {
-                    Task { await deletePlaylist(playlist) }
+            if let playlist = playlistToDelete {
+                let hideOnly = PlaylistOrderStore.shouldHideInsteadOfDelete(
+                    playlist, username: session.account.username)
+                Button(hideOnly ? "Hide “\(playlist.name)”" : "Delete “\(playlist.name)”",
+                       role: .destructive) {
+                    Task { await removePlaylist(playlist) }
                 }
             }
             Button("Cancel", role: .cancel) { playlistToDelete = nil }
         } message: {
-            Text("This removes the playlist from Navidrome. Songs stay in your library.")
+            Text(removeDialogMessage)
         }
+    }
+
+    private var removeDialogTitle: String {
+        guard let playlist = playlistToDelete else { return "Remove Playlist?" }
+        if PlaylistOrderStore.shouldHideInsteadOfDelete(
+            playlist, username: session.account.username) {
+            return "Hide Playlist?"
+        }
+        return "Delete Playlist?"
+    }
+
+    private var removeDialogMessage: String {
+        guard let playlist = playlistToDelete else {
+            return "Remove this playlist from your library?"
+        }
+        if PlaylistOrderStore.shouldHideInsteadOfDelete(
+            playlist, username: session.account.username) {
+            return "Hides “\(playlist.name)” from your library only. Other people on the server keep it — songs stay put."
+        }
+        return "This removes the playlist from Navidrome. Songs stay in your library."
     }
 
     private var filterBar: some View {
@@ -433,9 +466,35 @@ struct LibraryView: View {
                         .font(.body.weight(.semibold))
                 }
                 .listRowBackground(DromeTheme.elevated)
+
+                if !hiddenPlaylists.isEmpty {
+                    NavigationLink {
+                        HiddenPlaylistsView(
+                            playlists: hiddenPlaylists,
+                            onUnhide: { playlist in
+                                unhidePlaylist(playlist)
+                            }
+                        )
+                    } label: {
+                        HStack {
+                            Label("Hidden Playlists", systemImage: "eye.slash")
+                                .font(.body.weight(.semibold))
+                            Spacer()
+                            Text("\(hiddenPlaylists.count)")
+                                .foregroundStyle(DromeTheme.muted)
+                        }
+                    }
+                    .listRowBackground(DromeTheme.elevated)
+                }
             }
 
             Section {
+                if isReorderingPlaylists {
+                    Text("Drag the handles to reorder. Hidden and system playlists stay put.")
+                        .font(.caption)
+                        .foregroundStyle(DromeTheme.muted)
+                        .listRowBackground(Color.clear)
+                }
                 if playlists.isEmpty && !isLoading {
                     Text("No playlists yet.")
                         .foregroundStyle(DromeTheme.muted)
@@ -448,8 +507,7 @@ struct LibraryView: View {
                         } else {
                             NavigationLink {
                                 PlaylistDetailView(playlistID: playlist.id, placeholder: playlist) {
-                                    playlists.removeAll { $0.id == playlist.id }
-                                    persistPlaylistOrder()
+                                    hidePlaylistLocally(playlist)
                                 }
                             } label: {
                                 playlistRow(playlist)
@@ -476,10 +534,21 @@ struct LibraryView: View {
                             } label: {
                                 Label("Reorder Playlists", systemImage: "line.3.horizontal")
                             }
+                            Button {
+                                hidePlaylistLocally(playlist)
+                            } label: {
+                                Label("Hide", systemImage: "eye.slash")
+                            }
                             Button(role: .destructive) {
                                 playlistToDelete = playlist
                             } label: {
-                                Label("Delete", systemImage: "trash")
+                                Label(
+                                    PlaylistOrderStore.shouldHideInsteadOfDelete(
+                                        playlist, username: session.account.username)
+                                    ? "Hide" : "Delete",
+                                    systemImage: PlaylistOrderStore.shouldHideInsteadOfDelete(
+                                        playlist, username: session.account.username)
+                                    ? "eye.slash" : "trash")
                             }
                         }
                     }
@@ -488,8 +557,20 @@ struct LibraryView: View {
                             Button(role: .destructive) {
                                 playlistToDelete = playlist
                             } label: {
-                                Label("Delete", systemImage: "trash")
+                                Label(
+                                    PlaylistOrderStore.shouldHideInsteadOfDelete(
+                                        playlist, username: session.account.username)
+                                    ? "Hide" : "Delete",
+                                    systemImage: PlaylistOrderStore.shouldHideInsteadOfDelete(
+                                        playlist, username: session.account.username)
+                                    ? "eye.slash" : "trash")
                             }
+                            Button {
+                                hidePlaylistLocally(playlist)
+                            } label: {
+                                Label("Hide", systemImage: "eye.slash")
+                            }
+                            .tint(.gray)
                             Button {
                                 renameText = playlist.name
                                 playlistToRename = playlist
@@ -886,17 +967,49 @@ struct LibraryView: View {
     }
 
     private func applyPlaylists(_ list: [Playlist]) {
-        playlists = PlaylistOrderStore.ordered(list, serverKey: session.account.serverKey)
+        let userKey = session.account.userKey
+        let serverKey = session.account.serverKey
+        let hiddenIDs = PlaylistOrderStore.hiddenIDs(userKey: userKey)
+        hiddenPlaylists = list
+            .filter { hiddenIDs.contains($0.id) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        playlists = PlaylistOrderStore.visibleOrdered(
+            list, userKey: userKey, serverKey: serverKey)
     }
 
     private func persistPlaylistOrder() {
-        let key = session.account.serverKey
-        PlaylistOrderStore.save(playlists.map(\.id), serverKey: key)
-        LibraryListCatalog.storePlaylists(playlists, serverKey: key)
+        let userKey = session.account.userKey
+        let serverKey = session.account.serverKey
+        PlaylistOrderStore.save(playlists.map(\.id), userKey: userKey)
+        // Catalog keeps the visible list for Home / Watch chrome.
+        LibraryListCatalog.storePlaylists(playlists, serverKey: serverKey)
     }
 
     private func movePlaylist(from source: IndexSet, to destination: Int) {
         playlists.move(fromOffsets: source, toOffset: destination)
+        persistPlaylistOrder()
+    }
+
+    private func hidePlaylistLocally(_ playlist: Playlist) {
+        guard !rotation.isSystemPlaylist(playlist) else { return }
+        PlaylistOrderStore.hide(playlist.id, userKey: session.account.userKey)
+        playlists.removeAll { $0.id == playlist.id }
+        if !hiddenPlaylists.contains(where: { $0.id == playlist.id }) {
+            hiddenPlaylists.append(playlist)
+            hiddenPlaylists.sort {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        }
+        persistPlaylistOrder()
+        if openedPlaylist?.id == playlist.id { openedPlaylist = nil }
+    }
+
+    private func unhidePlaylist(_ playlist: Playlist) {
+        PlaylistOrderStore.unhide(playlist.id, userKey: session.account.userKey)
+        hiddenPlaylists.removeAll { $0.id == playlist.id }
+        if !playlists.contains(where: { $0.id == playlist.id }) {
+            playlists.append(playlist)
+        }
         persistPlaylistOrder()
     }
 
@@ -1908,16 +2021,68 @@ struct LibraryView: View {
         }
     }
 
-    private func deletePlaylist(_ playlist: Playlist) async {
+    private func removePlaylist(_ playlist: Playlist) async {
         playlistToDelete = nil
         guard !rotation.isSystemPlaylist(playlist) else { return }
+        if PlaylistOrderStore.shouldHideInsteadOfDelete(
+            playlist, username: session.account.username) {
+            hidePlaylistLocally(playlist)
+            return
+        }
         do {
             try await session.client.deletePlaylist(id: playlist.id)
             playlists.removeAll { $0.id == playlist.id }
+            hiddenPlaylists.removeAll { $0.id == playlist.id }
+            PlaylistOrderStore.unhide(playlist.id, userKey: session.account.userKey)
             persistPlaylistOrder()
         } catch {
             self.error = error.localizedDescription
         }
+    }
+}
+
+/// Local-only list of playlists this account chose to hide.
+struct HiddenPlaylistsView: View {
+    let playlists: [Playlist]
+    var onUnhide: (Playlist) -> Void
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(playlists) { playlist in
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(playlist.name)
+                                .font(DromeTheme.rowTitle)
+                            Text(hiddenSubtitle(playlist))
+                                .font(.caption)
+                                .foregroundStyle(DromeTheme.muted)
+                        }
+                        Spacer(minLength: 0)
+                        Button("Unhide") {
+                            onUnhide(playlist)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(DromeTheme.accent)
+                    }
+                    .listRowBackground(DromeTheme.elevated)
+                }
+            } footer: {
+                Text("Hidden playlists stay on the server for everyone else. Unhide brings them back to your library.")
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(DromeTheme.background)
+        .navigationTitle("Hidden Playlists")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func hiddenSubtitle(_ playlist: Playlist) -> String {
+        var parts: [String] = []
+        if let owner = playlist.owner { parts.append(owner) }
+        if playlist.songCount != nil { parts.append(playlist.songCountLabel) }
+        if playlist.isPublic == true { parts.append("Shared") }
+        return parts.isEmpty ? "Hidden on this device" : parts.joined(separator: " · ")
     }
 }
 
