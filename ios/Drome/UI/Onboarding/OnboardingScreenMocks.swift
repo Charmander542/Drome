@@ -656,6 +656,7 @@ struct OnboardingNowPlayingMock: View {
 }
 
 enum OnboardingNowPlayingFocus: Int, CaseIterable {
+    case artSwipe
     case lyrics
     case shuffle
     case `repeat`
@@ -665,6 +666,7 @@ enum OnboardingNowPlayingFocus: Int, CaseIterable {
 
     var callout: String {
         switch self {
+        case .artSwipe: return "Swipe art to skip"
         case .lyrics: return "Song / Lyrics"
         case .shuffle: return "Smart shuffle"
         case .repeat: return "Repeat"
@@ -675,7 +677,7 @@ enum OnboardingNowPlayingFocus: Int, CaseIterable {
     }
 
     static var combinedCallout: String {
-        "Shuffle · Repeat · ∞ · Queue · AirPlay · Lyrics"
+        "Swipe art · Shuffle · Repeat · ∞ · Queue · AirPlay · Lyrics"
     }
 }
 
@@ -684,6 +686,12 @@ struct OnboardingNowPlayingControlsMock: View {
     var focus: OnboardingNowPlayingFocus
     var reduceMotion: Bool
     var showAllCallouts: Bool = false
+
+    @State private var swipeHintOffset: CGFloat = 0
+
+    private var highlightingArt: Bool {
+        showAllCallouts || focus == .artSwipe
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -711,13 +719,8 @@ struct OnboardingNowPlayingControlsMock: View {
                 .padding(.horizontal, 24)
                 .padding(.bottom, 6)
 
-            MockArtTile(
-                colors: [Color(hex: "#264653"), Color(hex: "#2A9D8F")],
-                corner: 8,
-                symbol: "music.note")
-                .frame(width: 72, height: 72)
+            artSwipeHero
                 .padding(.bottom, 6)
-                .opacity(0.4)
 
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -735,7 +738,7 @@ struct OnboardingNowPlayingControlsMock: View {
             }
             .padding(.horizontal, 14)
             .padding(.bottom, 4)
-            .opacity(0.4)
+            .opacity(highlightingArt ? 0.35 : 0.4)
 
             // Stars shown dimmed — taught on the previous page.
             HStack(spacing: 3) {
@@ -761,14 +764,85 @@ struct OnboardingNowPlayingControlsMock: View {
             transportRow
                 .padding(.horizontal, 8)
                 .padding(.bottom, 6)
+                .opacity(highlightingArt ? 0.35 : 1)
 
             bottomBar
                 .padding(.horizontal, 10)
                 .padding(.bottom, 6)
+                .opacity(highlightingArt ? 0.35 : 1)
 
             Spacer(minLength: 0)
         }
         .background(DromeTheme.background)
+        .onAppear { restartSwipeHint() }
+        .onChange(of: focus) { _, _ in restartSwipeHint() }
+        .onChange(of: reduceMotion) { _, _ in restartSwipeHint() }
+    }
+
+    /// Album-art strip: swipe left → next, swipe right → previous (matches
+    /// `artSwipeGesture` in NowPlayingView).
+    private var artSwipeHero: some View {
+        let ring = !showAllCallouts && focus == .artSwipe
+        return OnboardingSpotlightRing(isActive: ring || showAllCallouts, reduceMotion: reduceMotion, cornerRadius: 10) {
+            ZStack {
+                // Peek of next cover on the right (as if swiping left).
+                HStack(spacing: 6) {
+                    MockArtTile(
+                        colors: [Color(hex: "#264653"), Color(hex: "#2A9D8F")],
+                        corner: 8,
+                        symbol: "music.note")
+                        .frame(width: 64, height: 64)
+                        .offset(x: highlightingArt ? swipeHintOffset : 0)
+
+                    MockArtTile(
+                        colors: [Color(hex: "#E76F51"), Color(hex: "#264653")],
+                        corner: 8,
+                        symbol: "music.note")
+                        .frame(width: 64, height: 64)
+                        .opacity(highlightingArt ? 0.85 : 0.25)
+                        .offset(x: highlightingArt ? swipeHintOffset : 12)
+                }
+                .frame(width: 120, height: 64)
+                .clipped()
+
+                if highlightingArt {
+                    swipeHintChrome
+                }
+            }
+            .frame(width: 120, height: 72)
+        }
+    }
+
+    @ViewBuilder
+    private var swipeHintChrome: some View {
+        if reduceMotion || showAllCallouts {
+            HStack(spacing: 4) {
+                Image(systemName: "chevron.left")
+                Image(systemName: "hand.draw")
+                Image(systemName: "chevron.right")
+            }
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.black.opacity(0.55), in: Capsule())
+        } else {
+            Image(systemName: "hand.draw.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(6)
+                .background(Color.black.opacity(0.45), in: Circle())
+                .offset(x: swipeHintOffset * 0.55)
+        }
+    }
+
+    private func restartSwipeHint() {
+        swipeHintOffset = 0
+        guard highlightingArt, !reduceMotion, !showAllCallouts else { return }
+        // Negative offset = art sliding left, revealing next cover (skip forward).
+        withAnimation(.easeInOut(duration: 0.95).repeatForever(autoreverses: true)) {
+            swipeHintOffset = -18
+        }
     }
 
     private var songLyricsPicker: some View {

@@ -43,8 +43,8 @@ struct OnboardingView: View {
             accessibilityMockLabel: "Star rating is on the Now Playing screen, below the track title. One or two stars move a track to Out of Rotation."),
         OnboardingTourPage(
             title: "Now Playing controls",
-            caption: "∞ is Keep Playing when the queue ends. Shuffle cycles Smart → Random → Off.",
-            accessibilityMockLabel: "Music Now Playing controls: Song and Lyrics picker, Smart shuffle, repeat, Keep Playing infinity button, queue, and AirPlay or Connect."),
+            caption: "Swipe album art left for next, right for previous. ∞ is Keep Playing when the queue ends.",
+            accessibilityMockLabel: "Music Now Playing: swipe album art left for next song and right for previous. Also Song and Lyrics, Smart shuffle, repeat, Keep Playing infinity, queue, and AirPlay."),
         OnboardingTourPage(
             title: "Playlists & sharing",
             caption: "Create with + in Your Library; Share Playlist is in a playlist’s ··· menu.",
@@ -111,7 +111,7 @@ struct OnboardingView: View {
     }
 
     private func restartNowPlayingCycle() {
-        nowPlayingFocus = .shuffle
+        nowPlayingFocus = .artSwipe
         nowPlayingCycleToken &+= 1
     }
 
