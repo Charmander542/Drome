@@ -21,11 +21,11 @@ struct OnboardingView: View {
         OnboardingPage(
             systemImage: "rectangle.stack.fill",
             title: "Browse your library",
-            body: "Home surfaces Daily Mixes and vibes. Search finds tracks fast. Library holds playlists, artists, albums, and more."),
+            body: "Home surfaces Daily Mixes and Vibe Tuner. Search finds tracks fast. Library holds playlists, artists, albums, and more."),
         OnboardingPage(
             systemImage: "star.fill",
-            title: "Rate what you love",
-            body: "Rate a track 1–2★ and it lands in Out of Rotation — shuffle and autoplay stop suggesting it."),
+            title: "Stars teach your taste",
+            body: "High ratings bias mixes toward what you love. Rate one or two stars and that track lands in Out of Rotation — shuffle and autoplay stop suggesting it."),
         OnboardingPage(
             systemImage: "music.note.list",
             title: "Build & share playlists",
@@ -33,7 +33,7 @@ struct OnboardingView: View {
         OnboardingPage(
             systemImage: "infinity",
             title: "Keep the music going",
-            body: "Daily Mixes, the Vibe tuner, and Keep Playing with Infinite Shuffle keep discovering from your taste."),
+            body: "Daily Mixes and Vibe Tuner follow your ratings. With Keep Playing on, Infinite Shuffle tops up the queue when tracks run out."),
     ]
 
     var body: some View {
@@ -48,11 +48,14 @@ struct OnboardingView: View {
                     Spacer()
                     Button("Skip") { finish() }
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.white.opacity(0.78))
-                        .padding(.horizontal, 20)
-                        .padding(.top, 8)
-                        .padding(.bottom, 4)
+                        // Brighter than muted (~0.62), clearly weaker than white CTA label.
+                        .foregroundStyle(Color.white.opacity(0.88))
+                        .padding(.horizontal, 12)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
+                .padding(.horizontal, 8)
+                .padding(.top, 4)
 
                 TabView(selection: $page) {
                     ForEach(Array(pages.enumerated()), id: \.offset) { index, item in
@@ -70,50 +73,44 @@ struct OnboardingView: View {
         .preferredColorScheme(.dark)
     }
 
-    @ViewBuilder
     private func pageContent(_ item: OnboardingPage) -> some View {
-        let stack = VStack(spacing: 0) {
-            if !accessibilityLayout {
-                Spacer(minLength: 12)
+        ScrollView {
+            VStack(spacing: 0) {
+                if showHero {
+                    hero(for: item)
+                        .padding(.bottom, accessibilityLayout ? 16 : 26)
+                        .accessibilityHidden(true)
+                }
+
+                Text(item.title)
+                    .font(DromeTheme.titleFont)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, accessibilityLayout ? 8 : 12)
+                    .accessibilityAddTraits(.isHeader)
+
+                Text(item.body)
+                    .font(.body)
+                    .foregroundStyle(DromeTheme.muted)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 28)
             }
-
-            if showHero {
-                hero(for: item)
-                    .padding(.bottom, accessibilityLayout ? 16 : 26)
-                    .accessibilityHidden(true)
-            }
-
-            Text(item.title)
-                .font(DromeTheme.titleFont)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 28)
-                .padding(.bottom, accessibilityLayout ? 8 : 12)
-
-            Text(item.body)
-                .font(.body)
-                .foregroundStyle(DromeTheme.muted)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 28)
-
-            if !accessibilityLayout {
-                Spacer(minLength: 12)
-            } else {
-                Spacer(minLength: 8)
-            }
+            .frame(maxWidth: .infinity, alignment: .top)
+            // Pin hero + title to a consistent top anchor; only body length varies.
+            .padding(.top, accessibilityLayout ? 8 : 20)
+            .padding(.bottom, accessibilityLayout ? 40 : 28)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-
-        if accessibilityLayout {
-            ScrollView {
-                stack
-                    .padding(.top, 4)
-                    .padding(.bottom, 8)
-            }
-            .scrollIndicators(.hidden)
-        } else {
-            stack
+        .scrollIndicators(accessibilityLayout ? .visible : .automatic)
+        .overlay(alignment: .bottom) {
+            LinearGradient(
+                colors: [.clear, DromeTheme.background],
+                startPoint: .top,
+                endPoint: .bottom)
+                .frame(height: accessibilityLayout ? 40 : 24)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
     }
 
@@ -206,11 +203,24 @@ struct OnboardingView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Page \(index + 1)")
+                .accessibilityHidden(true)
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Page \(page + 1) of \(pages.count)")
+        .accessibilityLabel("Page")
+        .accessibilityValue("Page \(page + 1) of \(pages.count)")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment:
+                guard page < pages.count - 1 else { return }
+                withAnimation(.easeInOut(duration: 0.28)) { page += 1 }
+            case .decrement:
+                guard page > 0 else { return }
+                withAnimation(.easeInOut(duration: 0.28)) { page -= 1 }
+            @unknown default:
+                break
+            }
+        }
     }
 
     private var ambientGlow: some View {
