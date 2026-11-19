@@ -37,6 +37,14 @@ struct RootView: View {
     }
 
     private func evaluateOnboarding(for session: AppSession) {
+        #if DEBUG
+        // Pair with `-UITestPodcastMini` to land signed-in and force the tour
+        // regardless of the per-account completion flag.
+        if ProcessInfo.processInfo.arguments.contains("-UITestShowOnboarding") {
+            showOnboarding = true
+            return
+        }
+        #endif
         showOnboarding = !OnboardingPreference.hasCompleted(userKey: session.account.userKey)
     }
 }

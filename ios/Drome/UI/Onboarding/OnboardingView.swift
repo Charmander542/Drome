@@ -5,29 +5,35 @@ struct OnboardingView: View {
     let userKey: String
     var onFinished: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var page = 0
+
+    @ScaledMetric(relativeTo: .largeTitle) private var heroDiameter: CGFloat = 132
+    @ScaledMetric(relativeTo: .largeTitle) private var heroSymbolPointSize: CGFloat = 46
+
+    private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
 
     private let pages: [OnboardingPage] = [
         OnboardingPage(
             systemImage: "waveform",
             title: "Welcome to Drome",
-            body: "Your private library, tuned to how you listen — ratings, playlists, mixes, and playback that stays yours even when the catalog grows."),
+            body: "Your private library, tuned to your taste — ratings, playlists, and mixes that stay yours."),
         OnboardingPage(
             systemImage: "rectangle.stack.fill",
             title: "Browse your library",
-            body: "Home surfaces Daily Mixes and vibes. Search finds tracks fast. Your Library holds playlists, artists, albums, downloads, and Top Rated."),
+            body: "Home surfaces Daily Mixes and vibes. Search finds tracks fast. Library holds playlists, artists, albums, and more."),
         OnboardingPage(
             systemImage: "star.fill",
             title: "Rate what you love",
-            body: "Stars teach Drome your taste. Tracks you rate 1–2★ land in Out of Rotation so shuffle and autoplay stop suggesting them — even if someone else added them to the server."),
+            body: "Rate a track 1–2★ and it lands in Out of Rotation — shuffle and autoplay stop suggesting it."),
         OnboardingPage(
             systemImage: "music.note.list",
             title: "Build & share playlists",
-            body: "Create playlists from Library or any track menu. Share a link with friends on your server, or make a playlist public so household accounts can play and edit it."),
+            body: "Create a playlist, share a link on your server, or make it public for your household."),
         OnboardingPage(
             systemImage: "infinity",
             title: "Keep the music going",
-            body: "Daily Mixes and the Vibe tuner pick from your signals. Turn on Keep Playing in Settings and Infinite Shuffle fills the queue from similar artists — biased to your ratings, not the whole house’s play counts."),
+            body: "Daily Mixes, the Vibe tuner, and Keep Playing with Infinite Shuffle keep discovering from your taste."),
     ]
 
     var body: some View {
@@ -35,15 +41,17 @@ struct OnboardingView: View {
             DromeTheme.background.ignoresSafeArea()
             ambientGlow
                 .allowsHitTesting(false)
+                .accessibilityHidden(true)
 
             VStack(spacing: 0) {
                 HStack {
                     Spacer()
                     Button("Skip") { finish() }
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(DromeTheme.muted)
+                        .foregroundStyle(Color.white.opacity(0.78))
                         .padding(.horizontal, 20)
-                        .padding(.top, 12)
+                        .padding(.top, 8)
+                        .padding(.bottom, 4)
                 }
 
                 TabView(selection: $page) {
@@ -54,73 +62,151 @@ struct OnboardingView: View {
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .animation(.easeInOut(duration: 0.28), value: page)
-
-                pageDots
-                    .padding(.bottom, 20)
-
-                Button {
-                    if page < pages.count - 1 {
-                        withAnimation(.easeInOut(duration: 0.28)) { page += 1 }
-                    } else {
-                        finish()
-                    }
-                } label: {
-                    Text(page < pages.count - 1 ? "Continue" : "Start listening")
-                        .font(.headline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(DromeTheme.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .foregroundStyle(.white)
-                }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 28)
-                .accessibilityIdentifier("onboarding-continue")
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                bottomChrome
             }
         }
         .preferredColorScheme(.dark)
     }
 
+    @ViewBuilder
     private func pageContent(_ item: OnboardingPage) -> some View {
-        VStack(spacing: 28) {
-            Spacer(minLength: 24)
-            ZStack {
-                Circle()
-                    .fill(DromeTheme.accent.opacity(0.16))
-                    .frame(width: 148, height: 148)
-                Circle()
-                    .stroke(DromeTheme.accent.opacity(0.35), lineWidth: 1)
-                    .frame(width: 148, height: 148)
-                Image(systemName: item.systemImage)
-                    .font(.system(size: 52, weight: .semibold))
-                    .foregroundStyle(DromeTheme.accent)
-                    .symbolRenderingMode(.hierarchical)
+        let stack = VStack(spacing: 0) {
+            if !accessibilityLayout {
+                Spacer(minLength: 12)
             }
-            .accessibilityHidden(true)
 
-            VStack(spacing: 14) {
-                Text(item.title)
-                    .font(DromeTheme.headlineFont)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.white)
-                Text(item.body)
-                    .font(.body)
-                    .foregroundStyle(DromeTheme.muted)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+            if showHero {
+                hero(for: item)
+                    .padding(.bottom, accessibilityLayout ? 16 : 26)
+                    .accessibilityHidden(true)
             }
-            .padding(.horizontal, 28)
 
-            Spacer(minLength: 24)
+            Text(item.title)
+                .font(DromeTheme.titleFont)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 28)
+                .padding(.bottom, accessibilityLayout ? 8 : 12)
+
+            Text(item.body)
+                .font(.body)
+                .foregroundStyle(DromeTheme.muted)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 28)
+
+            if !accessibilityLayout {
+                Spacer(minLength: 12)
+            } else {
+                Spacer(minLength: 8)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
+        if accessibilityLayout {
+            ScrollView {
+                stack
+                    .padding(.top, 4)
+                    .padding(.bottom, 8)
+            }
+            .scrollIndicators(.hidden)
+        } else {
+            stack
         }
     }
 
+    private var showHero: Bool {
+        // Collapse fully at larger AX sizes; keep a compact hero at AX1.
+        switch dynamicTypeSize {
+        case .accessibility2, .accessibility3, .accessibility4, .accessibility5:
+            return false
+        default:
+            return true
+        }
+    }
+
+    private var compactHero: Bool { accessibilityLayout }
+
+    private func hero(for item: OnboardingPage) -> some View {
+        let diameter = compactHero
+            ? min(heroDiameter * 0.62, 88)
+            : min(max(heroDiameter, 112), 160)
+        let symbolSize = compactHero
+            ? min(heroSymbolPointSize * 0.62, 30)
+            : min(max(heroSymbolPointSize, 40), 56)
+
+        return ZStack {
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            DromeTheme.accent.opacity(0.28),
+                            DromeTheme.accent.opacity(0.08),
+                            .clear,
+                        ],
+                        center: .center,
+                        startRadius: diameter * 0.12,
+                        endRadius: diameter * 0.72))
+                .frame(width: diameter * 1.35, height: diameter * 1.35)
+
+            Circle()
+                .fill(DromeTheme.accent.opacity(0.14))
+                .frame(width: diameter, height: diameter)
+
+            Circle()
+                .stroke(DromeTheme.accent.opacity(0.28), lineWidth: 1)
+                .frame(width: diameter, height: diameter)
+
+            Image(systemName: item.systemImage)
+                .font(.system(size: symbolSize, weight: .semibold))
+                .foregroundStyle(DromeTheme.accent)
+                .symbolRenderingMode(.hierarchical)
+        }
+        .frame(height: diameter * 1.2)
+    }
+
+    private var bottomChrome: some View {
+        VStack(spacing: 14) {
+            pageDots
+
+            Button {
+                if page < pages.count - 1 {
+                    withAnimation(.easeInOut(duration: 0.28)) { page += 1 }
+                } else {
+                    finish()
+                }
+            } label: {
+                Text(page < pages.count - 1 ? "Continue" : "Start listening")
+                    .font(.headline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(DromeTheme.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .foregroundStyle(.white)
+            }
+            .padding(.horizontal, 24)
+            .accessibilityIdentifier("onboarding-continue")
+        }
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+        .background(DromeTheme.background.opacity(0.001))
+    }
+
     private var pageDots: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             ForEach(0..<pages.count, id: \.self) { index in
-                Capsule()
-                    .fill(index == page ? DromeTheme.accent : Color.white.opacity(0.22))
-                    .frame(width: index == page ? 18 : 7, height: 7)
-                    .animation(.easeInOut(duration: 0.22), value: page)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.28)) { page = index }
+                } label: {
+                    Capsule()
+                        .fill(index == page ? DromeTheme.accent : DromeTheme.divider)
+                        .frame(width: index == page ? 18 : 7, height: 7)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Page \(index + 1)")
             }
         }
         .accessibilityElement(children: .ignore)
@@ -129,10 +215,10 @@ struct OnboardingView: View {
 
     private var ambientGlow: some View {
         RadialGradient(
-            colors: [DromeTheme.accent.opacity(0.22), .clear],
-            center: .top,
-            startRadius: 40,
-            endRadius: 420)
+            colors: [DromeTheme.accent.opacity(0.14), DromeTheme.accent.opacity(0.04), .clear],
+            center: UnitPoint(x: 0.5, y: 0.18),
+            startRadius: 20,
+            endRadius: 380)
         .ignoresSafeArea()
     }
 
