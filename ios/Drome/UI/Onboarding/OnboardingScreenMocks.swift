@@ -290,6 +290,7 @@ struct OnboardingBrowseMock: View {
             VStack(spacing: 0) {
                 libraryRow("Create playlist", "plus.circle.fill", accent: true)
                 libraryRow("Downloaded", "arrow.down.circle.fill")
+                libraryRow("Wishlist", "heart.fill")
                 libraryRow("Top Rated", "star.fill")
                 libraryRow("Out of Rotation", "lock.fill")
             }
@@ -614,6 +615,7 @@ struct OnboardingPlaylistsMock: View {
 
             VStack(spacing: 0) {
                 row("Create playlist", "plus.circle.fill", accent: true)
+                row("Wishlist", "heart.fill")
                 row("Top Rated", "star.fill")
                 row("Road Trip", "music.note.list")
             }
