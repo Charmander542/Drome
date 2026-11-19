@@ -10,6 +10,8 @@ final class ConnectController: ObservableObject {
     /// True when another device is active and this one should not play audio.
     @Published private(set) var isRemote: Bool = false
     @Published private(set) var serverStatus: String?
+    /// Optional rebuild tip; omitted for auth / unreachable-host failures.
+    @Published private(set) var serverHelpCaption: String?
     /// Device id currently being transferred to / taking control on (shows spinner in picker).
     @Published private(set) var busyDeviceId: String?
     @Published var notice: String?
@@ -249,18 +251,18 @@ final class ConnectController: ObservableObject {
             capabilities: ["audio", "remote", "transfer"])
         do {
             _ = try await client.putDevice(body)
-            if serverStatus != nil { serverStatus = nil }
+            clearServerStatus()
         } catch {
-            serverStatus = error.localizedDescription
+            recordServerFailure(error)
         }
     }
 
     private func refreshDevices() async {
         do {
             devices = try await client.listDevices()
-            if serverStatus != nil { serverStatus = nil }
+            clearServerStatus()
         } catch {
-            serverStatus = error.localizedDescription
+            recordServerFailure(error)
         }
         if let session = try? await client.getSession() {
             remoteSession = session
@@ -400,5 +402,15 @@ final class ConnectController: ObservableObject {
         let name = UIDevice.current.name
         return name.isEmpty ? "iPhone" : name
         #endif
+    }
+
+    private func clearServerStatus() {
+        if serverStatus != nil { serverStatus = nil }
+        if serverHelpCaption != nil { serverHelpCaption = nil }
+    }
+
+    private func recordServerFailure(_ error: Error) {
+        serverStatus = CompanionNetworkError.shortReason(for: error)
+        serverHelpCaption = CompanionNetworkError.connectHelpCaption(for: error)
     }
 }

@@ -14,6 +14,7 @@ struct HomeView: View {
     @State private var dailyMixes: [DailyMix] = []
     @State private var dailyMixesDate: String?
     @State private var mixesLoading = false
+    @State private var mixesError: String?
     @State private var isLoading = false
     @State private var error: String?
     @State private var showAccounts = false
@@ -33,7 +34,12 @@ struct HomeView: View {
                         .padding(.top, 4)
 
                     if hasCompanion {
-                        DailyMixRail(mixes: dailyMixes, isLoading: mixesLoading)
+                        DailyMixRail(
+                            mixes: dailyMixes,
+                            isLoading: mixesLoading,
+                            loadError: mixesError,
+                            onRetry: { Task { await loadMixes() } }
+                        )
                     }
 
                     if !recentEntries.isEmpty {
@@ -178,6 +184,7 @@ struct HomeView: View {
         guard let client = session.wishlist else {
             dailyMixes = []
             mixesLoading = false
+            mixesError = nil
             return
         }
         if dailyMixes.isEmpty { mixesLoading = true }
@@ -188,9 +195,18 @@ struct HomeView: View {
         // OOR only for display fetch — play history applies on the next day's
         // build, not by shrinking today's cached mixes after each listen.
         let exclude = Array(session.rotation.excludedIDs)
-        if let response = try? await client.dailyMixes(
-            excludeSongIDs: exclude, recencyHours: PlaybackPreferences.autoplayRecencyHours
-        ), !response.mixes.isEmpty {
+        do {
+            let response = try await client.dailyMixes(
+                excludeSongIDs: exclude, recencyHours: PlaybackPreferences.autoplayRecencyHours
+            )
+            guard !response.mixes.isEmpty else {
+                if dailyMixes.isEmpty {
+                    dailyMixes = []
+                    dailyMixesDate = nil
+                    mixesError = "No mixes yet"
+                }
+                return
+            }
             let cleaned = Self.withoutOutOfRotation(
                 response.mixes, excluded: session.rotation.excludedIDs)
             if dailyMixesDate == response.date,
@@ -200,9 +216,13 @@ struct HomeView: View {
             }
             dailyMixes = cleaned
             dailyMixesDate = response.date
-        } else if dailyMixes.isEmpty {
-            dailyMixes = []
-            dailyMixesDate = nil
+            mixesError = nil
+        } catch {
+            if dailyMixes.isEmpty {
+                dailyMixes = []
+                dailyMixesDate = nil
+                mixesError = CompanionNetworkError.shortReason(for: error)
+            }
         }
     }
 

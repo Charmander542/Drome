@@ -38,7 +38,7 @@ struct SettingsView: View {
             .listRowBackground(DromeTheme.elevated)
 
             Section {
-                TextField("http://host:4534", text: $wishlistURLText)
+                TextField("https://wishlist.example.com or http://host:4534", text: $wishlistURLText)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
@@ -51,7 +51,7 @@ struct SettingsView: View {
             } header: {
                 Text("Wishlist companion")
             } footer: {
-                Text("Companion server for Spotify wishlist downloads and Drome Connect (play on another phone or Apple TV). Example: http://host:4534")
+                Text("Companion server for Spotify wishlist downloads and Drome Connect (play on another phone or Apple TV). Example: https://wishlist.example.com or http://host:4534")
             }
             .listRowBackground(DromeTheme.elevated)
 
@@ -226,9 +226,7 @@ struct SettingsView: View {
         if trimmed.isEmpty {
             account.wishlistURL = nil
         } else {
-            var raw = trimmed
-            if !raw.contains("://") { raw = "http://" + raw }
-            guard let url = URL(string: raw), url.host != nil else {
+            guard let url = ServerURLNormalization.normalize(trimmed) else {
                 savedMessage = "Invalid URL"
                 return
             }

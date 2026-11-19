@@ -358,6 +358,9 @@ final class AppSession: ObservableObject, Identifiable {
     let artistImages: ArtistImageStore
     let connectivity: ConnectivityMonitor
     let connect: ConnectController?
+    /// Cached Connect HTTP client; recreating URLSession on every access leaks sessions.
+    private var cachedConnectClient: DromeConnectClient?
+    private var cachedConnectClientKey: String?
     private var playbackSideEffectCancellables = Set<AnyCancellable>()
     private var artistOwnershipCache: [String: ArtistOwnership]?
     private var artistOwnershipServerKey: String?
@@ -412,19 +415,50 @@ final class AppSession: ObservableObject, Identifiable {
     }
 
     var connectClient: DromeConnectClient? {
-        account.wishlistURL.map { url in
-            let connectConfig = URLSessionConfiguration.default
-            connectConfig.timeoutIntervalForRequest = 12
-            connectConfig.timeoutIntervalForResource = 20
-            let connectSession = URLSession(
-                configuration: connectConfig,
-                delegate: account.allowSelfSigned
-                    ? ServerTrustDelegate(trustedHost: url.host)
-                    : nil,
-                delegateQueue: nil)
-            return DromeConnectClient(baseURL: url, session: connectSession,
-                               authItems: { [client] in client.authQueryItems() })
+        guard let url = account.wishlistURL else {
+            cachedConnectClient = nil
+            cachedConnectClientKey = nil
+            return nil
         }
+        let key = connectCacheKey(url: url)
+        if cachedConnectClientKey == key, let cached = cachedConnectClient {
+            return cached
+        }
+        let built = makeConnectClient(baseURL: url)
+        cachedConnectClient = built
+        cachedConnectClientKey = key
+        return built
+    }
+
+    private func connectCacheKey(url: URL) -> String {
+        Self.connectCacheKey(url: url, account: account)
+    }
+
+    private func makeConnectClient(baseURL: URL) -> DromeConnectClient {
+        Self.makeConnectClient(account: account, client: client, baseURL: baseURL)
+    }
+
+    private static func connectCacheKey(url: URL, account: Account) -> String {
+        "\(url.absoluteString)|\(account.allowSelfSigned)|\(account.username)"
+    }
+
+    private static func makeConnectClient(
+        account: Account, client: SubsonicClient, baseURL: URL
+    ) -> DromeConnectClient {
+        // Short timeouts so a wedged companion can't stall the Connect loop for minutes.
+        let connectConfig = URLSessionConfiguration.default
+        connectConfig.timeoutIntervalForRequest = 12
+        connectConfig.timeoutIntervalForResource = 20
+        let connectSession = URLSession(
+            configuration: connectConfig,
+            delegate: account.allowSelfSigned
+                ? ServerTrustDelegate(trustedHost: baseURL.host)
+                : nil,
+            delegateQueue: nil)
+        return DromeConnectClient(
+            baseURL: baseURL,
+            session: connectSession,
+            authItems: { client.authQueryItems() })
     }
 
     init(account: Account, password: String, database: AppDatabase) {
@@ -438,21 +472,10 @@ final class AppSession: ObservableObject, Identifiable {
         downloads = DownloadManager(client: client, database: database, serverKey: account.serverKey)
         player = PlayerEngine(client: client, ratings: ratings, rotation: rotation, downloads: downloads)
         if let wishlistURL = account.wishlistURL {
-            // Short timeouts so a wedged companion can't stall the Connect loop for minutes.
-            let connectConfig = URLSessionConfiguration.default
-            connectConfig.timeoutIntervalForRequest = 12
-            connectConfig.timeoutIntervalForResource = 20
-            let connectSession = URLSession(
-                configuration: connectConfig,
-                delegate: account.allowSelfSigned
-                    ? ServerTrustDelegate(trustedHost: wishlistURL.host)
-                    : nil,
-                delegateQueue: nil)
-            let connectClient = DromeConnectClient(
-                baseURL: wishlistURL,
-                session: connectSession,
-                authItems: { [client] in client.authQueryItems() })
-            let controller = ConnectController(client: connectClient, player: player)
+            let built = Self.makeConnectClient(account: account, client: client, baseURL: wishlistURL)
+            cachedConnectClient = built
+            cachedConnectClientKey = Self.connectCacheKey(url: wishlistURL, account: account)
+            let controller = ConnectController(client: built, player: player)
             connect = controller
             controller.start()
         } else {

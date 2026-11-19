@@ -98,9 +98,17 @@ struct DromeWishlistClient {
 
     private func sendRaw(path: String, method: String,
                          extraQuery: [URLQueryItem] = [],
-                         body: (some Encodable)? = Optional<Int>.none) async throws -> (Data, Int) {
+                         body: (some Encodable)? = Optional<Int>.none,
+                         timeout: TimeInterval? = nil) async throws -> (Data, Int) {
         var request = URLRequest(url: try url(path, extraQuery: extraQuery))
         request.httpMethod = method
+        // Companion GETs (mixes, search, list) should fail fast; leave session
+        // defaults for long POSTs/downloads that share this URLSession.
+        if let timeout {
+            request.timeoutInterval = timeout
+        } else if method.uppercased() == "GET" {
+            request.timeoutInterval = ServerURLNormalization.companionGETTimeout
+        }
         if let body {
             request.httpBody = try JSONEncoder().encode(body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -109,15 +117,23 @@ struct DromeWishlistClient {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             let message = (try? JSONDecoder().decode(ServerError.self, from: data))?.error
-            throw WishlistError.server(message ?? "Companion server error (HTTP \(status)).")
+            if let message, !message.isEmpty {
+                throw WishlistError.server(message)
+            }
+            if status == 401 || status == 403 {
+                throw WishlistError.server("Auth failed (HTTP \(status)).")
+            }
+            throw WishlistError.server("Companion server error (HTTP \(status)).")
         }
         return (data, status)
     }
 
     private func send<T: Decodable>(_ type: T.Type, path: String, method: String,
                                     extraQuery: [URLQueryItem] = [],
-                                    body: (some Encodable)? = Optional<Int>.none) async throws -> T {
-        let (data, _) = try await sendRaw(path: path, method: method, extraQuery: extraQuery, body: body)
+                                    body: (some Encodable)? = Optional<Int>.none,
+                                    timeout: TimeInterval? = nil) async throws -> T {
+        let (data, _) = try await sendRaw(
+            path: path, method: method, extraQuery: extraQuery, body: body, timeout: timeout)
         if T.self == EmptyWishlistResponse.self {
             return EmptyWishlistResponse() as! T
         }

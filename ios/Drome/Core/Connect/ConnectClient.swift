@@ -49,7 +49,13 @@ struct DromeConnectClient {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             let message = (try? JSONDecoder().decode(ServerError.self, from: data))?.error
-            throw ConnectError.server(message ?? "Connect error (HTTP \(status)).")
+            if let message, !message.isEmpty {
+                throw ConnectError.server(message)
+            }
+            if status == 401 || status == 403 {
+                throw ConnectError.server("Auth failed (HTTP \(status)).")
+            }
+            throw ConnectError.server("Connect error (HTTP \(status)).")
         }
         return data
     }

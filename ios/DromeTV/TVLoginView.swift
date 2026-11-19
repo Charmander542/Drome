@@ -4,7 +4,7 @@ struct TVLoginView: View {
     @EnvironmentObject private var env: AppEnvironment
     @StateObject private var pairing = DromeTVPairingHost()
     @State private var manual = false
-    @State private var serverURL = "http://"
+    @State private var serverURL = "https://"
     @State private var username = ""
     @State private var password = ""
     @State private var wishlistURL = ""
@@ -131,14 +131,6 @@ struct TVLoginView: View {
     }
 
     private func normalizedURL(_ raw: String) -> URL? {
-        var trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return nil }
-        if !trimmed.contains("://") { trimmed = "http://" + trimmed }
-        guard var components = URLComponents(string: trimmed),
-              let host = components.host, !host.isEmpty else { return nil }
-        if components.path.hasSuffix("/") {
-            components.path = String(components.path.dropLast())
-        }
-        return components.url
+        ServerURLNormalization.normalize(raw)
     }
 }
