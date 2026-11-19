@@ -122,14 +122,29 @@ private enum WidgetIdleMetrics {
     static let horizontalPadding: CGFloat = 16
     static let verticalPadding: CGFloat = 12
     static let captionSpacing: CGFloat = 4
-    static let gridCaptionHeight: CGFloat = 24
+    /// Tall enough for two lines of `captionFontSize` without forcing single-line ellipsis.
+    static let gridCaptionHeight: CGFloat = 28
     static let sectionSpacing: CGFloat = 11
+    static let barMarkSize: CGFloat = 14
+    /// Fixed caption metrics so short titles / placeholder art never pick a different size.
+    static let captionFontSize: CGFloat = 11
+    static let captionFontWeight: Font.Weight = .semibold
 
     struct MediumIdleLayout {
         let heroArtSize: CGFloat
         let gridArtSize: CGFloat
         let gridCellWidth: CGFloat
         let gridCellHeight: CGFloat
+        let contentWidth: CGFloat
+        let columnSpacing: CGFloat
+    }
+
+    struct LargeIdleLayout {
+        let artSize: CGFloat
+        let columnSpacing: CGFloat
+        let rowSpacing: CGFloat
+        let maxGridItems: Int
+        let contentWidth: CGFloat
     }
 
     /// Split vertical space between a featured last-played row and a uniform recents grid.
@@ -138,40 +153,85 @@ private enum WidgetIdleMetrics {
         height: CGFloat,
         gridColumns: Int
     ) -> MediumIdleLayout {
-        let columns = CGFloat(max(gridColumns, 1))
+        let columns = max(gridColumns, 1)
+        let columnsCG = CGFloat(columns)
         let innerWidth = width - horizontalPadding * 2
         let innerHeight = height - verticalPadding * 2
         let gridCaptionBlock = captionSpacing + gridCaptionHeight
-        let gridGaps = columnSpacing * (columns - 1)
-        let gridArtByWidth = floor((innerWidth - gridGaps) / columns)
+        let gridGaps = columnSpacing * (columnsCG - 1)
+        let gridArtByWidth = floor((innerWidth - gridGaps) / columnsCG)
 
         // Hero + grid share one square size so art stays 1:1 and fits vertically.
         let verticalBudget = innerHeight - sectionSpacing - gridCaptionBlock
         let artByHeight = floor(verticalBudget / 2)
         let gridArt = max(34, min(gridArtByWidth, artByHeight))
+        let spacing = interItemSpacing(
+            contentWidth: innerWidth,
+            artSize: gridArt,
+            itemCount: columns)
 
         return MediumIdleLayout(
             heroArtSize: gridArt,
             gridArtSize: gridArt,
             gridCellWidth: gridArt,
-            gridCellHeight: gridArt + captionSpacing + gridCaptionHeight)
+            gridCellHeight: gridArt + captionSpacing + gridCaptionHeight,
+            contentWidth: innerWidth,
+            columnSpacing: spacing)
     }
 
-    /// Equal square art for every tile in a fixed-column idle grid (large widget).
-    static func artSize(width: CGFloat, height: CGFloat, columnCount: Int) -> CGFloat {
-        let columns = CGFloat(max(columnCount, 1))
+    /// Header + up to `maxRows` equal tile rows that fit the large widget height.
+    static func largeIdleLayout(
+        width: CGFloat,
+        height: CGFloat,
+        columnCount: Int,
+        maxRows: Int = 2
+    ) -> LargeIdleLayout {
+        let columns = max(columnCount, 1)
+        let rows = max(maxRows, 1)
+        let columnsCG = CGFloat(columns)
+        let rowsCG = CGFloat(rows)
         let innerWidth = width - horizontalPadding * 2
         let innerHeight = height - verticalPadding * 2
         let captionBlock = captionSpacing + gridCaptionHeight
-        let gaps = columnSpacing * (columns - 1)
-        let byWidth = floor((innerWidth - gaps) / columns)
-        let byHeight = floor(innerHeight - captionBlock)
-        return max(36, min(byWidth, byHeight))
+        let gridGaps = columnSpacing * (columnsCG - 1)
+        let artByWidth = floor((innerWidth - gridGaps) / columnsCG)
+
+        // heroArt + section + rows*(art+caption) + (rows-1)*rowSpacing
+        let verticalChrome = sectionSpacing + rowsCG * captionBlock + CGFloat(rows - 1) * columnSpacing
+        let artByHeight = floor((innerHeight - verticalChrome) / (1 + rowsCG))
+        let art = max(36, min(artByWidth, artByHeight))
+        let spacing = interItemSpacing(
+            contentWidth: innerWidth,
+            artSize: art,
+            itemCount: columns)
+
+        return LargeIdleLayout(
+            artSize: art,
+            columnSpacing: spacing,
+            rowSpacing: spacing,
+            maxGridItems: columns * rows,
+            contentWidth: innerWidth)
+    }
+
+    /// Gap that places the first tile flush leading and the last flush trailing for a full row.
+    static func interItemSpacing(
+        contentWidth: CGFloat,
+        artSize: CGFloat,
+        itemCount: Int
+    ) -> CGFloat {
+        let count = max(itemCount, 1)
+        guard count > 1 else { return 0 }
+        let leftover = contentWidth - CGFloat(count) * artSize
+        return max(0, leftover / CGFloat(count - 1))
     }
 
     static func cellWidth(artSize: CGFloat) -> CGFloat { artSize }
     static func cellHeight(artSize: CGFloat) -> CGFloat {
         artSize + captionSpacing + gridCaptionHeight
+    }
+
+    static var tileCaptionFont: Font {
+        .system(size: captionFontSize, weight: captionFontWeight)
     }
 }
 
@@ -318,38 +378,25 @@ private struct MediumIdleView: View {
                 gridColumns: gridColumns)
             let gridItems = Array(items.dropFirst().prefix(gridColumns))
 
-            ZStack(alignment: .topTrailing) {
-                VStack(alignment: .leading, spacing: WidgetIdleMetrics.sectionSpacing) {
-                    if let hero = items.first {
-                        RecentHeroHeader(item: hero, artSize: layout.heroArtSize)
-                    }
+            VStack(alignment: .leading, spacing: WidgetIdleMetrics.sectionSpacing) {
+                RecentHeroHeader(item: items.first, artSize: layout.heroArtSize)
 
-                    if items.isEmpty {
-                        EmptyWidgetView(message: "Play something in Drome")
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if gridItems.isEmpty {
-                        Spacer(minLength: 0)
-                    } else {
-                        HStack(alignment: .top, spacing: WidgetIdleMetrics.columnSpacing) {
-                            ForEach(gridItems) { item in
-                                RecentSquareTile(
-                                    item: item,
-                                    showTitle: true,
-                                    artSize: layout.gridArtSize,
-                                    captionHeight: WidgetIdleMetrics.gridCaptionHeight)
-                                    .frame(
-                                        width: layout.gridCellWidth,
-                                        height: layout.gridCellHeight,
-                                        alignment: .topLeading)
-                            }
-                        }
-                    }
+                if items.isEmpty {
+                    EmptyWidgetView(message: "Play something in Drome")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if gridItems.isEmpty {
+                    Spacer(minLength: 0)
+                } else {
+                    EqualSpacedTileRow(
+                        items: gridItems,
+                        artSize: layout.gridArtSize,
+                        cellHeight: layout.gridCellHeight,
+                        captionHeight: WidgetIdleMetrics.gridCaptionHeight,
+                        columnCount: gridColumns,
+                        columnSpacing: layout.columnSpacing)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-                DromeBarMark(size: 14, color: .white.opacity(0.9))
-                    .padding(.top, 1)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(.horizontal, WidgetIdleMetrics.horizontalPadding)
             .padding(.vertical, WidgetIdleMetrics.verticalPadding)
         }
@@ -361,27 +408,78 @@ private struct MediumIdleView: View {
 private struct LargeCompactRecentsView: View {
     let items: [WidgetRecentItem]
 
+    private let columnCount = 4
+
     var body: some View {
         GeometryReader { geo in
-            let artSize = WidgetIdleMetrics.artSize(
-                width: geo.size.width, height: geo.size.height, columnCount: 4)
-            let columns = Array(repeating: GridItem(.fixed(artSize), spacing: 8), count: 4)
-            VStack(alignment: .leading, spacing: 10) {
-                RecentHeroHeader(item: items.first, artSize: artSize)
+            let layout = WidgetIdleMetrics.largeIdleLayout(
+                width: geo.size.width,
+                height: geo.size.height,
+                columnCount: columnCount,
+                maxRows: 2)
+            let columns = Array(
+                repeating: GridItem(.fixed(layout.artSize), spacing: layout.columnSpacing),
+                count: columnCount)
+
+            VStack(alignment: .leading, spacing: WidgetIdleMetrics.sectionSpacing) {
+                RecentHeroHeader(item: items.first, artSize: layout.artSize)
 
                 if items.isEmpty {
                     EmptyWidgetView(message: "Recently played shows up here")
-                        .frame(maxHeight: .infinity)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                        ForEach(Array(items.dropFirst().prefix(12))) { item in
-                            RecentSquareTile(item: item, showTitle: true, artSize: artSize)
+                    LazyVGrid(
+                        columns: columns,
+                        alignment: .leading,
+                        spacing: layout.rowSpacing
+                    ) {
+                        ForEach(Array(items.dropFirst().prefix(layout.maxGridItems))) { item in
+                            RecentSquareTile(
+                                item: item,
+                                showTitle: true,
+                                artSize: layout.artSize,
+                                cellWidth: layout.artSize,
+                                captionHeight: WidgetIdleMetrics.gridCaptionHeight)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .padding(14)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(.horizontal, WidgetIdleMetrics.horizontalPadding)
+            .padding(.vertical, WidgetIdleMetrics.verticalPadding)
         }
+    }
+}
+
+/// Fixed-pitch tile row using the full-column spacing. Fewer than `columnCount` items
+/// stay leading-aligned (same gaps as a full row); a full row flush-aligns both edges.
+private struct EqualSpacedTileRow: View {
+    let items: [WidgetRecentItem]
+    let artSize: CGFloat
+    let cellHeight: CGFloat
+    let captionHeight: CGFloat
+    let columnCount: Int
+    let columnSpacing: CGFloat
+
+    var body: some View {
+        // Sparse rows keep 5-up art pitch; captions may use the pitch so they wrap into the gap.
+        let pitch = artSize + columnSpacing
+        let captionWidth = items.count < columnCount ? max(artSize, pitch - 2) : artSize
+
+        HStack(alignment: .top, spacing: columnSpacing) {
+            ForEach(items) { item in
+                RecentSquareTile(
+                    item: item,
+                    showTitle: true,
+                    artSize: artSize,
+                    cellWidth: captionWidth,
+                    captionHeight: captionHeight)
+                    // Layout width stays art-sized so spacing matches a full 5-up row.
+                    .frame(width: artSize, height: cellHeight, alignment: .topLeading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -390,32 +488,40 @@ private struct RecentHeroHeader: View {
     var artSize: CGFloat
 
     var body: some View {
-        if let item {
-            Link(destination: URL(string: item.deepLink)!) {
-                HStack(alignment: .center, spacing: 12) {
-                    WidgetArtwork(file: item.artworkFile, cornerRadius: WidgetColors.albumCornerRadius)
-                        .frame(width: artSize, height: artSize)
-                        .fixedSize()
+        HStack(alignment: .center, spacing: 12) {
+            if let item {
+                Link(destination: URL(string: item.deepLink)!) {
+                    HStack(alignment: .center, spacing: 12) {
+                        WidgetArtwork(file: item.artworkFile, cornerRadius: WidgetColors.albumCornerRadius)
+                            .frame(width: artSize, height: artSize)
+                            .fixedSize()
 
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(item.title)
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(.white)
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.88)
-                            .multilineTextAlignment(.leading)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.title)
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(.white)
+                                .lineLimit(2)
+                                .minimumScaleFactor(0.88)
+                                .multilineTextAlignment(.leading)
 
-                        if !item.subtitle.isEmpty {
-                            Text(item.subtitle)
-                                .font(.caption)
-                                .foregroundStyle(.white.opacity(0.68))
-                                .lineLimit(1)
+                            if !item.subtitle.isEmpty {
+                                Text(item.subtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(.white.opacity(0.68))
+                                    .lineLimit(1)
+                            }
                         }
+                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.trailing, 22)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Spacer(minLength: 0)
             }
+
+            // In-flow trailing mark so its trailing edge matches a full tile row.
+            DromeBarMark(size: WidgetIdleMetrics.barMarkSize, color: .white.opacity(0.9))
+                .fixedSize()
         }
     }
 }
@@ -424,9 +530,12 @@ private struct RecentSquareTile: View {
     let item: WidgetRecentItem
     var showTitle: Bool = false
     var artSize: CGFloat
-    var captionHeight: CGFloat = 14
+    /// Horizontal room for the caption; may exceed `artSize` and paint into the inter-tile gap.
+    var cellWidth: CGFloat? = nil
+    var captionHeight: CGFloat = WidgetIdleMetrics.gridCaptionHeight
 
     var body: some View {
+        let captionWidth = cellWidth ?? artSize
         Link(destination: URL(string: item.deepLink)!) {
             VStack(alignment: .leading, spacing: WidgetIdleMetrics.captionSpacing) {
                 WidgetArtwork(file: item.artworkFile, cornerRadius: WidgetColors.albumCornerRadius)
@@ -434,14 +543,16 @@ private struct RecentSquareTile: View {
                     .fixedSize()
                 if showTitle {
                     Text(item.title)
-                        .font(.caption2.weight(.semibold))
+                        .font(WidgetIdleMetrics.tileCaptionFont)
                         .foregroundStyle(.white.opacity(0.92))
                         .lineLimit(2)
-                        .minimumScaleFactor(0.75)
                         .multilineTextAlignment(.leading)
-                        .frame(width: artSize, height: captionHeight, alignment: .topLeading)
+                        .truncationMode(.tail)
+                        .frame(width: captionWidth, height: captionHeight, alignment: .topLeading)
                 }
             }
+            // Keep layout width at art size; wider captions draw into the gap without shifting tiles.
+            .frame(width: artSize, alignment: .topLeading)
         }
     }
 }
@@ -501,14 +612,15 @@ private struct LargePlayingRecentTile: View {
 
     var body: some View {
         Link(destination: URL(string: item.deepLink)!) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: WidgetIdleMetrics.captionSpacing) {
                 WidgetArtwork(file: item.artworkFile, cornerRadius: WidgetColors.albumCornerRadius)
                     .aspectRatio(1, contentMode: .fill)
                 Text(item.title)
-                    .font(.caption2.weight(.semibold))
+                    .font(WidgetIdleMetrics.tileCaptionFont)
                     .foregroundStyle(WidgetPalette.foreground(for: nowPlaying))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
     }

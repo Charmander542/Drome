@@ -26,7 +26,8 @@ struct DromeBarMark: View {
                 }
             }
         }
-        .frame(width: size * 1.35, height: size)
+        // Trailing-align so a top-trailing / header-trailing placement matches neighboring content.
+        .frame(width: size * 1.35, height: size, alignment: .trailing)
         .accessibilityHidden(true)
     }
 }
