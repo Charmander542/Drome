@@ -10,10 +10,13 @@ struct OnboardingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var page = 0
     @State private var searchFocus: OnboardingSearchFocus = .library
-
-    @ScaledMetric(relativeTo: .largeTitle) private var mockMaxHeight: CGFloat = 380
+    @State private var searchCycleToken = 0
 
     private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
+
+    /// Fixed heights — do not scale with Dynamic Type (mocks cap type internally).
+    private var mockHeight: CGFloat { accessibilityLayout ? 200 : 340 }
+    private var mockMaxWidth: CGFloat { accessibilityLayout ? 260 : 300 }
 
     private let pages: [OnboardingTourPage] = [
         OnboardingTourPage(
@@ -29,17 +32,17 @@ struct OnboardingView: View {
             caption: "Library, Spotify wishlist, and Podcasts — tap the quote icon for lyrics in Library.",
             accessibilityMockLabel: "Search screen. Use the Library, Spotify, and Podcasts segmented control; the quote button enables lyrics search when Library is selected."),
         OnboardingTourPage(
-            title: "Stars teach your taste",
+            title: "Rate with stars",
             caption: "High ratings shape mixes; one or two stars send a track to Out of Rotation.",
             accessibilityMockLabel: "Star rating is on the Now Playing screen, below the track title. One or two stars move a track to Out of Rotation."),
         OnboardingTourPage(
-            title: "Build & share playlists",
-            caption: "Create with + in Your Library; Share is in the track ··· menu.",
-            accessibilityMockLabel: "Your Library plus button creates a playlist. Share is in the Now Playing or track more menu."),
+            title: "Playlists & sharing",
+            caption: "Create with + in Your Library; Share Playlist is in a playlist’s ··· menu.",
+            accessibilityMockLabel: "Your Library plus button creates a playlist. Share Playlist is in the playlist detail more menu."),
         OnboardingTourPage(
             title: "Keep the music going",
-            caption: "In Settings, turn on Keep Playing so Infinite Shuffle tops up the queue.",
-            accessibilityMockLabel: "Keep Playing toggle is in Settings. When on, Infinite Shuffle adds songs when the queue ends."),
+            caption: "Open Avatar → Settings, then turn on Keep Playing under Playback.",
+            accessibilityMockLabel: "Settings is opened from the Home avatar menu. Keep Playing is in the Playback section."),
     ]
 
     var body: some View {
@@ -87,9 +90,6 @@ struct OnboardingView: View {
         }
     }
 
-    /// Bumps when we should restart the Search-page highlight cycle.
-    @State private var searchCycleToken = 0
-
     private func restartSearchCycle() {
         searchFocus = .library
         searchCycleToken &+= 1
@@ -101,7 +101,7 @@ struct OnboardingView: View {
             try? await Task.sleep(nanoseconds: 1_900_000_000)
             guard page == 2, !reduceMotion else { return }
             let all = OnboardingSearchFocus.allCases
-            let next = ((searchFocus.rawValue + 1) % all.count)
+            let next = (searchFocus.rawValue + 1) % all.count
             withAnimation(.easeInOut(duration: 0.28)) {
                 searchFocus = OnboardingSearchFocus(rawValue: next) ?? .library
             }
@@ -112,11 +112,18 @@ struct OnboardingView: View {
         ScrollView {
             VStack(spacing: 0) {
                 deviceMock(for: index)
-                    .frame(maxWidth: accessibilityLayout ? 280 : 320)
+                    .frame(maxWidth: mockMaxWidth)
                     .frame(height: mockHeight)
                     .frame(maxWidth: .infinity)
+                    // Clip after sizing so mock content can't spill over title/caption.
+                    .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 28, style: .continuous)
+                            .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.45), radius: 18, y: 10)
                     .padding(.horizontal, 28)
-                    .padding(.bottom, accessibilityLayout ? 14 : 18)
+                    .padding(.bottom, accessibilityLayout ? 12 : 14)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(item.accessibilityMockLabel)
 
@@ -124,6 +131,8 @@ struct OnboardingView: View {
                     .font(DromeTheme.titleFont)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white)
+                    .lineLimit(accessibilityLayout ? 3 : 1)
+                    .minimumScaleFactor(0.85)
                     .padding(.horizontal, 28)
                     .padding(.bottom, accessibilityLayout ? 6 : 8)
                     .accessibilityAddTraits(.isHeader)
@@ -136,27 +145,20 @@ struct OnboardingView: View {
                     .padding(.horizontal, 28)
             }
             .frame(maxWidth: .infinity, alignment: .top)
-            .padding(.top, accessibilityLayout ? 4 : 12)
-            .padding(.bottom, accessibilityLayout ? 40 : 28)
+            .padding(.top, accessibilityLayout ? 2 : 6)
+            .padding(.bottom, accessibilityLayout ? 24 : 8)
         }
         .scrollIndicators(accessibilityLayout ? .visible : .automatic)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .bottom) {
             LinearGradient(
                 colors: [.clear, DromeTheme.background],
                 startPoint: .top,
                 endPoint: .bottom)
-                .frame(height: accessibilityLayout ? 40 : 24)
+                .frame(height: accessibilityLayout ? 36 : 16)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
-    }
-
-    private var mockHeight: CGFloat {
-        if accessibilityLayout {
-            // Shrink but keep a readable phone aspect; title/caption stay below.
-            return min(max(mockMaxHeight * 0.55, 180), 240)
-        }
-        return min(max(mockMaxHeight, 320), 400)
     }
 
     @ViewBuilder
@@ -186,7 +188,7 @@ struct OnboardingView: View {
     }
 
     private var bottomChrome: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 10) {
             pageDots
 
             Button {
@@ -206,7 +208,7 @@ struct OnboardingView: View {
             .padding(.horizontal, 24)
             .accessibilityIdentifier("onboarding-continue")
         }
-        .padding(.top, 8)
+        .padding(.top, 4)
         .padding(.bottom, 10)
         .background(DromeTheme.background.opacity(0.001))
     }
@@ -228,7 +230,7 @@ struct OnboardingView: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Page")
+        .accessibilityLabel("Tour")
         .accessibilityValue("Page \(page + 1) of \(pages.count)")
         .accessibilityAdjustableAction { direction in
             switch direction {
