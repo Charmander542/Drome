@@ -33,6 +33,11 @@ struct PlaylistDetailView: View {
     @State private var coverBump: TimeInterval = 0
     /// Rows painted so far — full `playlist.songs` stays available for Play/Shuffle.
     @State private var visibleSongCount = ProgressiveSongReveal.initial
+    @State private var suggestions: [PlaylistSongSuggester.Suggestion] = []
+    @State private var suggestionsLoading = false
+    @State private var suggestionsError: String?
+    @State private var addingSuggestionIDs: Set<String> = []
+    @State private var suggestionRefreshToken = 0
 
     private var isSystem: Bool {
         guard let playlist else {
@@ -74,13 +79,17 @@ struct PlaylistDetailView: View {
             Button("Save") { Task { await rename() } }
             Button("Cancel", role: .cancel) {}
         }
-        .confirmationDialog("Delete Playlist?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
-            Button("Delete “\(playlist?.name ?? "Playlist")”", role: .destructive) {
-                Task { await deletePlaylist() }
+        .confirmationDialog(
+            removeConfirmTitle,
+            isPresented: $showDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(removeConfirmButtonTitle, role: .destructive) {
+                Task { await deleteOrHidePlaylist() }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes the playlist from Navidrome. Songs stay in your library.")
+            Text(removeConfirmMessage)
         }
         .sheet(isPresented: $showAddSongs) {
             NavigationStack {
@@ -125,7 +134,12 @@ struct PlaylistDetailView: View {
                     flash("Downloading…")
                 },
                 onBulkOutOfRotation: { showBulkOORConfirm = true },
-                onDelete: { showDeleteConfirm = true }
+                onHide: {
+                    hidePlaylistLocally()
+                },
+                onDelete: { showDeleteConfirm = true },
+                deleteLabel: removeConfirmButtonTitle,
+                deleteSystemImage: removesViaHide ? "eye.slash" : "trash"
             )
             .dromeSession(session)
             .presentationDetents([.medium, .large])
@@ -315,10 +329,126 @@ struct PlaylistDetailView: View {
                     }
                 }
             }
+
+            if !isSystem, songsReady, allSongs.count >= 2 {
+                suggestionsSection
+            }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environment(\.editMode, .constant(isEditing ? .active : .inactive))
+        .task(id: "\(playlistID)-\(allSongs.count)-\(suggestionRefreshToken)") {
+            await loadSuggestions()
+        }
+    }
+
+    @ViewBuilder
+    private var suggestionsSection: some View {
+        Section {
+            if suggestionsLoading && suggestions.isEmpty {
+                HStack {
+                    Spacer()
+                    ProgressView()
+                    Text("Finding songs that fit…")
+                        .font(.subheadline)
+                        .foregroundStyle(DromeTheme.muted)
+                    Spacer()
+                }
+                .listRowBackground(Color.clear)
+            } else if let suggestionsError, suggestions.isEmpty {
+                Text(suggestionsError)
+                    .font(.subheadline)
+                    .foregroundStyle(DromeTheme.muted)
+                    .listRowBackground(Color.clear)
+            } else if suggestions.isEmpty {
+                Text("Add a few more tracks and we’ll suggest songs that match this playlist’s vibe.")
+                    .font(.subheadline)
+                    .foregroundStyle(DromeTheme.muted)
+                    .listRowBackground(Color.clear)
+            } else {
+                ForEach(suggestions) { item in
+                    suggestionRow(item)
+                        .listRowBackground(DromeTheme.background)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                }
+            }
+        } header: {
+            HStack {
+                Text("Suggested for this playlist")
+                Spacer()
+                if !suggestions.isEmpty || suggestionsError != nil {
+                    Button {
+                        suggestionRefreshToken &+= 1
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                            .labelStyle(.iconOnly)
+                    }
+                    .disabled(suggestionsLoading)
+                    .accessibilityLabel("Refresh suggestions")
+                }
+            }
+        } footer: {
+            Text("Picks similar artists and genres from what’s already in the list.")
+        }
+    }
+
+    private func suggestionRow(_ item: PlaylistSongSuggester.Suggestion) -> some View {
+        // Custom row so List doesn't swallow the + button (SongRow's whole-row
+        // tap gesture fights nested Buttons inside List).
+        HStack(spacing: 12) {
+            Button {
+                player.play(
+                    [item.song], startAt: 0,
+                    context: PlaybackContext(label: item.song.title, kind: .search))
+            } label: {
+                HStack(spacing: 12) {
+                    RemoteImage(url: session.artworkURL(for: item.song, size: 96))
+                        .frame(width: 48, height: 48)
+                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.song.title)
+                            .font(DromeTheme.rowTitle)
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Text(suggestionSubtitle(item))
+                            .font(.caption)
+                            .foregroundStyle(DromeTheme.muted)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Play \(item.song.title)")
+
+            Button {
+                Task { await addSuggestion(item.song) }
+            } label: {
+                Group {
+                    if addingSuggestionIDs.contains(item.song.id) {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 28, weight: .semibold))
+                            .foregroundStyle(DromeTheme.accent)
+                            .symbolRenderingMode(.hierarchical)
+                    }
+                }
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .disabled(addingSuggestionIDs.contains(item.song.id))
+            .accessibilityLabel("Add \(item.song.title) to playlist")
+        }
+    }
+
+    private func suggestionSubtitle(_ item: PlaylistSongSuggester.Suggestion) -> String {
+        let artist = item.song.displayArtist
+        if artist.isEmpty { return item.reason }
+        return "\(artist) · \(item.reason)"
     }
 
     private func playlistHeader(_ playlist: PlaylistWithSongs) -> some View {
@@ -515,10 +645,45 @@ struct PlaylistDetailView: View {
         }
     }
 
-    private func deletePlaylist() async {
+    private var removesViaHide: Bool {
+        let candidate = playlist?.asPlaylist ?? placeholder
+        guard let candidate else { return false }
+        return PlaylistOrderStore.shouldHideInsteadOfDelete(
+            candidate, username: session.account.username)
+    }
+
+    private var removeConfirmTitle: String {
+        removesViaHide ? "Hide Playlist?" : "Delete Playlist?"
+    }
+
+    private var removeConfirmButtonTitle: String {
+        let name = playlist?.name ?? placeholder?.name ?? "Playlist"
+        return removesViaHide ? "Hide “\(name)”" : "Delete “\(name)”"
+    }
+
+    private var removeConfirmMessage: String {
+        if removesViaHide {
+            return "Hides this playlist from your library only. Other people on the server keep it."
+        }
+        return "This removes the playlist from Navidrome. Songs stay in your library."
+    }
+
+    private func hidePlaylistLocally() {
         guard !isSystem else { return }
+        PlaylistOrderStore.hide(playlistID, userKey: session.account.userKey)
+        onDeleted?()
+        dismiss()
+    }
+
+    private func deleteOrHidePlaylist() async {
+        guard !isSystem else { return }
+        if removesViaHide {
+            hidePlaylistLocally()
+            return
+        }
         do {
             try await session.client.deletePlaylist(id: playlistID)
+            PlaylistOrderStore.unhide(playlistID, userKey: session.account.userKey)
             onDeleted?()
             dismiss()
         } catch {
@@ -530,6 +695,48 @@ struct PlaylistDetailView: View {
         guard let songs = playlist?.songs, !songs.isEmpty, !isSystem else { return }
         await rotation.addAll(songs, manual: true)
         flash("Marked \(songs.count) out of rotation")
+    }
+
+    private func loadSuggestions() async {
+        guard !isSystem else {
+            suggestions = []
+            return
+        }
+        let songs = playlist?.songs ?? []
+        guard songs.count >= 2 else {
+            suggestions = []
+            suggestionsError = nil
+            return
+        }
+        suggestionsLoading = true
+        suggestionsError = nil
+        defer { suggestionsLoading = false }
+
+        let excluded = rotation.excludedIDs
+        let result = await PlaylistSongSuggester.suggest(
+            for: songs,
+            client: session.client,
+            excluding: excluded,
+            limit: 12)
+        guard !Task.isCancelled else { return }
+        suggestions = result
+        if result.isEmpty {
+            suggestionsError = "Couldn't find fresh matches right now. Try Refresh after adding more songs."
+        }
+    }
+
+    private func addSuggestion(_ song: Song) async {
+        guard !isSystem, !addingSuggestionIDs.contains(song.id) else { return }
+        addingSuggestionIDs.insert(song.id)
+        defer { addingSuggestionIDs.remove(song.id) }
+        do {
+            try await session.client.updatePlaylist(id: playlistID, addSongIds: [song.id])
+            suggestions.removeAll { $0.song.id == song.id }
+            await load()
+            flash("Added “\(song.title)”")
+        } catch {
+            flash(error.localizedDescription)
+        }
     }
 
     private func flash(_ message: String) {
@@ -774,7 +981,10 @@ struct PlaylistMoreSheet: View {
     var onTogglePublic: () -> Void
     var onDownload: () -> Void
     var onBulkOutOfRotation: () -> Void
+    var onHide: () -> Void
     var onDelete: () -> Void
+    var deleteLabel: String = "Delete Playlist"
+    var deleteSystemImage: String = "trash"
 
     var body: some View {
         NavigationStack {
@@ -846,12 +1056,21 @@ struct PlaylistMoreSheet: View {
 
                 if !isSystem {
                     Section {
+                        Button {
+                            dismissThen(onHide)
+                        } label: {
+                            Label("Hide from My Library", systemImage: "eye.slash")
+                        }
+                        .listRowBackground(DromeTheme.elevated)
+
                         Button(role: .destructive) {
                             dismissThen(onDelete)
                         } label: {
-                            Label("Delete Playlist", systemImage: "trash")
+                            Label(deleteLabel, systemImage: deleteSystemImage)
                         }
                         .listRowBackground(DromeTheme.elevated)
+                    } footer: {
+                        Text("Hide is local to your account. Shared playlists can’t be deleted for everyone — that action hides them for you instead.")
                     }
                 }
             }

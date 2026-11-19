@@ -1,14 +1,28 @@
 import Foundation
 
-/// User-defined playlist order in the Library tab (per server).
+/// Per-user playlist order + hidden set in the Library tab.
+///
+/// Hidden is local to this account — it never deletes a Navidrome playlist, so
+/// shared / public lists stay intact for everyone else on the server.
 enum PlaylistOrderStore {
-    private static func key(serverKey: String) -> String {
+    private static func orderKey(userKey: String) -> String {
+        "drome.playlistOrder.\(userKey)"
+    }
+
+    private static func legacyOrderKey(serverKey: String) -> String {
         "drome.playlistOrder.\(serverKey)"
     }
 
-    static func ordered(_ playlists: [Playlist], serverKey: String) -> [Playlist] {
-        guard let saved = UserDefaults.standard.stringArray(forKey: key(serverKey: serverKey)),
-              !saved.isEmpty else { return playlists }
+    private static func hiddenKey(userKey: String) -> String {
+        "drome.playlistHidden.\(userKey)"
+    }
+
+    // MARK: - Order
+
+    static func ordered(_ playlists: [Playlist], userKey: String, serverKey: String) -> [Playlist] {
+        let saved = UserDefaults.standard.stringArray(forKey: orderKey(userKey: userKey))
+            ?? UserDefaults.standard.stringArray(forKey: legacyOrderKey(serverKey: serverKey))
+        guard let saved, !saved.isEmpty else { return playlists }
         let byID = Dictionary(uniqueKeysWithValues: playlists.map { ($0.id, $0) })
         var result: [Playlist] = []
         var seen = Set<String>()
@@ -21,7 +35,49 @@ enum PlaylistOrderStore {
         return result
     }
 
-    static func save(_ playlistIDs: [String], serverKey: String) {
-        UserDefaults.standard.set(playlistIDs, forKey: key(serverKey: serverKey))
+    static func save(_ playlistIDs: [String], userKey: String) {
+        UserDefaults.standard.set(playlistIDs, forKey: orderKey(userKey: userKey))
+    }
+
+    // MARK: - Hidden
+
+    static func hiddenIDs(userKey: String) -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: hiddenKey(userKey: userKey)) ?? [])
+    }
+
+    static func isHidden(_ playlistID: String, userKey: String) -> Bool {
+        hiddenIDs(userKey: userKey).contains(playlistID)
+    }
+
+    static func hide(_ playlistID: String, userKey: String) {
+        var ids = hiddenIDs(userKey: userKey)
+        guard ids.insert(playlistID).inserted else { return }
+        UserDefaults.standard.set(Array(ids).sorted(), forKey: hiddenKey(userKey: userKey))
+    }
+
+    static func unhide(_ playlistID: String, userKey: String) {
+        var ids = hiddenIDs(userKey: userKey)
+        guard ids.remove(playlistID) != nil else { return }
+        UserDefaults.standard.set(Array(ids).sorted(), forKey: hiddenKey(userKey: userKey))
+    }
+
+    /// Visible playlists in the user's preferred order.
+    static func visibleOrdered(
+        _ playlists: [Playlist],
+        userKey: String,
+        serverKey: String
+    ) -> [Playlist] {
+        let hidden = hiddenIDs(userKey: userKey)
+        let visible = playlists.filter { !hidden.contains($0.id) }
+        return ordered(visible, userKey: userKey, serverKey: serverKey)
+    }
+
+    /// True when removing this playlist from *your* library must not hit the
+    /// server — public lists and lists owned by someone else stay for the house.
+    static func shouldHideInsteadOfDelete(_ playlist: Playlist, username: String) -> Bool {
+        if playlist.isPublic == true { return true }
+        guard let owner = playlist.owner?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !owner.isEmpty else { return false }
+        return owner.caseInsensitiveCompare(username) != .orderedSame
     }
 }
