@@ -213,34 +213,82 @@ struct SearchView: View {
 
     /// Horizontally scrolling chips so AX5 labels stay readable without wrapping.
     private var resultFilterChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(AppNavigationRouter.SearchResultFilter.allCases) { filter in
-                    let selected = resultFilter == filter
-                    Button {
-                        resultFilter = filter
-                    } label: {
-                        Text(filter.title)
-                            .font(.subheadline.weight(selected ? .semibold : .medium))
-                            .foregroundStyle(selected ? Color.black : Color.white.opacity(0.85))
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(
-                                selected ? DromeTheme.accent : DromeTheme.elevated2,
-                                in: Capsule()
-                            )
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(AppNavigationRouter.SearchResultFilter.allCases) { filter in
+                        let selected = resultFilter == filter
+                        Button {
+                            // Re-tap clears back to All (All stays All).
+                            resultFilter = selected && filter != .all ? .all : filter
+                        } label: {
+                            Text(filter.title)
+                                .font(.subheadline.weight(selected ? .semibold : .medium))
+                                .foregroundStyle(selected ? Color.black : Color.white.opacity(0.85))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(
+                                    selected ? DromeTheme.accent : DromeTheme.elevated2,
+                                    in: Capsule()
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .id(filter)
+                        .accessibilityLabel(filter.title)
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                        .accessibilityHint(
+                            selected && filter != .all
+                                ? "Double tap to show all result types"
+                                : "Filters search results"
+                        )
+                        .accessibilityIdentifier(filter.accessibilityIdentifier)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(filter.title)
-                    .accessibilityAddTraits(selected ? .isSelected : [])
-                    .accessibilityIdentifier(filter.accessibilityIdentifier)
                 }
+            }
+            .onAppear {
+                scrollFilterChip(proxy, to: resultFilter)
+            }
+            .onChange(of: resultFilter) { _, filter in
+                scrollFilterChip(proxy, to: filter)
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Result type filter")
+    }
+
+    private func scrollFilterChip(
+        _ proxy: ScrollViewProxy,
+        to filter: AppNavigationRouter.SearchResultFilter
+    ) {
+        var transaction = Transaction()
+        transaction.animation = .easeOut(duration: 0.2)
+        withTransaction(transaction) {
+            proxy.scrollTo(filter, anchor: .center)
+        }
+    }
+
+    private var libraryEmptyTitle: String {
+        switch resultFilter {
+        case .all: return "Find your music"
+        case .songs: return "Find songs"
+        case .albums: return "Find albums"
+        case .artists: return "Find artists"
+        }
+    }
+
+    private var libraryEmptyMessage: String {
+        switch resultFilter {
+        case .all:
+            return "Try an artist, album, song, podcast, or a line of lyrics."
+        case .songs:
+            return "Try a song title, artist, or a line of lyrics."
+        case .albums:
+            return "Try an album or artist name."
+        case .artists:
+            return "Try an artist name."
+        }
     }
 
     private func lyricsToggleButton(axLayout: Bool) -> some View {
@@ -286,9 +334,9 @@ struct SearchView: View {
                     // In-list so AX empty copy scrolls with the List above the mini player.
                     Section {
                         EmptyStateView(
-                            title: "Find your music",
+                            title: libraryEmptyTitle,
                             systemImage: "magnifyingglass",
-                            message: "Try an artist, album, song, podcast, or a line of lyrics.")
+                            message: libraryEmptyMessage)
                         .listRowBackground(Color.clear)
                         .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 48, trailing: 16))
                     }
@@ -338,9 +386,9 @@ struct SearchView: View {
         .overlay {
             if showCenteredEmpty {
                 EmptyStateView(
-                    title: "Find your music",
+                    title: libraryEmptyTitle,
                     systemImage: "magnifyingglass",
-                    message: "Try an artist, album, song, podcast, or a line of lyrics.")
+                    message: libraryEmptyMessage)
                 .allowsHitTesting(false)
             } else if !trimmed.isEmpty && libraryEmpty && isSearching {
                 ProgressView()
