@@ -10,6 +10,7 @@
 	<true/>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
+		<string>applinks:wishlist.charlesvanhook.com</string>
 		<string>applinks:*.ts.net</string>
 	</array>
 	<key>com.apple.security.application-groups</key>

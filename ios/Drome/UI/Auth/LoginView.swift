@@ -4,7 +4,7 @@ struct LoginView: View {
     @EnvironmentObject private var env: AppEnvironment
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    @State private var serverURL = "http://"
+    @State private var serverURL = "https://"
     @State private var username = ""
     @State private var password = ""
     @State private var wishlistURL = ""
@@ -89,7 +89,7 @@ struct LoginView: View {
                                 autocapitalization: .never,
                                 contentType: .URL,
                                 submitLabel: .go,
-                                placeholder: "http://host:4534"
+                                placeholder: "https://wishlist.example.com or http://host:4534"
                             )
 
                             Toggle(isOn: $allowSelfSigned) {
@@ -374,18 +374,7 @@ struct LoginView: View {
     }
 
     private func normalizedURL(_ raw: String) -> URL? {
-        var trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return nil }
-        if !trimmed.contains("://") {
-            trimmed = "http://" + trimmed
-        }
-        guard var components = URLComponents(string: trimmed),
-              let host = components.host, !host.isEmpty else { return nil }
-        // Strip trailing slash from path for cleaner Subsonic base URLs.
-        if components.path.hasSuffix("/") {
-            components.path = String(components.path.dropLast())
-        }
-        return components.url
+        ServerURLNormalization.normalize(raw)
     }
 }
 

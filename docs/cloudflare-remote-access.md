@@ -117,17 +117,21 @@ From a phone **off Tailscale / off LAN Wi‑Fi** (LTE):
 3. Confirm resilient streaming on cellular.
 4. From LAN: `http://192.168.8.193:4533` still works for Charlie.
 
-### H. Optional companion / share cards
+### H. Companion / share cards (live)
 
-Only if you exposed `drome.`:
+Public companion hostname: **`https://wishlist.charlesvanhook.com`**.
+
+Share links (`/s/<token>`) need an absolute public base URL. Set this on the companion container:
 
 ```bash
 # in .env
-DROME_PUBLIC_URL=https://drome.example.com
+DROME_PUBLIC_URL=https://wishlist.charlesvanhook.com
 docker compose up -d --build drome-server
 ```
 
-Otherwise leave companion private; guests only need the music hostname.
+`share.go` already prefers `DROME_PUBLIC_URL` over `X-Forwarded-*` / request host. Without it, generated share URLs may use an internal or tunnel hostname.
+
+App universal links: `applinks:wishlist.charlesvanhook.com` (plus legacy `applinks:*.ts.net`).
 
 ---
 

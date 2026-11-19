@@ -3,6 +3,8 @@ import SwiftUI
 struct DailyMixRail: View {
     let mixes: [DailyMix]
     var isLoading: Bool = false
+    var loadError: String? = nil
+    var onRetry: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -21,10 +23,17 @@ struct DailyMixRail: View {
                             DailyMixPlaceholder()
                         }
                     } else if mixes.isEmpty {
-                        Text("Couldn’t load Daily Mixes. Check Settings → Wishlist companion and make sure the server is running.")
-                            .font(.caption)
-                            .foregroundStyle(DromeTheme.muted)
-                            .frame(width: 220, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(loadError ?? "Couldn’t load Daily Mixes.")
+                                .font(.caption)
+                                .foregroundStyle(DromeTheme.muted)
+                            if let onRetry {
+                                Button("Retry", action: onRetry)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(DromeTheme.accent)
+                            }
+                        }
+                        .frame(width: 220, alignment: .leading)
                     } else {
                         ForEach(mixes) { mix in
                             NavigationLink {
