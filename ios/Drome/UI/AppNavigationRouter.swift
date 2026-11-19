@@ -26,6 +26,7 @@ final class AppNavigationRouter {
         case songs
         case albums
         case artists
+        case lyrics
 
         var id: String { rawValue }
 
@@ -35,6 +36,7 @@ final class AppNavigationRouter {
             case .songs: return "Songs"
             case .albums: return "Albums"
             case .artists: return "Artists"
+            case .lyrics: return "Lyrics"
             }
         }
 

@@ -26,7 +26,6 @@ struct SearchView: View {
     @State private var source: Source = .library
     @State private var resultFilter: AppNavigationRouter.SearchResultFilter = .all
     @State private var query = ""
-    @State private var includeLyrics = false
     @State private var isSearching = false
     @State private var hasCompletedSearch = false
     @State private var hits: [SearchHit] = []
@@ -43,6 +42,9 @@ struct SearchView: View {
     @State private var matchedSongs: [String: Song] = [:]
     @State private var matchedAlbums: [String: Album] = [:]
 
+    /// Lyrics chip enables the same lyric-index path the old quote toggle used.
+    private var includeLyrics: Bool { resultFilter == .lyrics }
+
     private var searchPrompt: String {
         switch source {
         case .library:
@@ -51,6 +53,7 @@ struct SearchView: View {
             case .songs: return "Search songs…"
             case .albums: return "Search albums…"
             case .artists: return "Search artists…"
+            case .lyrics: return "Search lyrics…"
             }
         case .spotify: return "Search Spotify tracks, albums…"
         case .podcasts: return "Search podcasts or paste feed URL…"
@@ -62,11 +65,13 @@ struct SearchView: View {
         case .all:
             return hits
         case .songs:
-            return hits.filter { $0.kind == .song || $0.kind == .lyrics }
+            return hits.filter { $0.kind == .song }
         case .albums:
             return hits.filter { $0.kind == .album }
         case .artists:
             return hits.filter { $0.kind == .artist }
+        case .lyrics:
+            return hits.filter { $0.kind == .lyrics }
         }
     }
 
@@ -84,6 +89,9 @@ struct SearchView: View {
             return recentItems.filter { $0.kind == .album }
         case .artists:
             return recentItems.filter { $0.kind == .artist }
+        case .lyrics:
+            // Lyrics hits aren't stored in recents.
+            return []
         }
     }
 
@@ -116,6 +124,12 @@ struct SearchView: View {
                 }
                 scheduleSearch(query)
             }
+            .onChange(of: resultFilter) { oldValue, newValue in
+                // Lyrics mode changes what the index query returns — re-run.
+                if (oldValue == .lyrics) != (newValue == .lyrics) {
+                    scheduleSearch(query)
+                }
+            }
             .onChange(of: tabPopToRootTrigger) { _, trigger in
                 guard trigger > 0 else { return }
                 resetToDefault()
@@ -145,7 +159,6 @@ struct SearchView: View {
         source = .library
         resultFilter = .all
         query = ""
-        includeLyrics = false
         isSearching = false
         hasCompletedSearch = false
         hits = []
@@ -173,25 +186,8 @@ struct SearchView: View {
 
     /// Stays visible while the search field is focused (unlike nav toolbar items).
     private var searchControls: some View {
-        let ax = dynamicTypeSize.isAccessibilitySize
-        return VStack(alignment: .leading, spacing: 10) {
-            if ax {
-                // Stack at AX so the lyrics chip isn't clipped beside the segmented control.
-                VStack(alignment: .leading, spacing: 10) {
-                    sourcePicker
-                    if source == .library {
-                        lyricsToggleButton(axLayout: true)
-                    }
-                }
-            } else {
-                // Identical to main at default / XXXL.
-                HStack(spacing: 12) {
-                    sourcePicker
-                    if source == .library {
-                        lyricsToggleButton(axLayout: false)
-                    }
-                }
-            }
+        VStack(alignment: .leading, spacing: 10) {
+            sourcePicker
             if source == .library {
                 resultFilterChips
             }
@@ -275,36 +271,23 @@ struct SearchView: View {
         case .songs: return "Find songs"
         case .albums: return "Find albums"
         case .artists: return "Find artists"
+        case .lyrics: return "Find lyrics"
         }
     }
 
     private var libraryEmptyMessage: String {
         switch resultFilter {
         case .all:
-            return "Try an artist, album, song, podcast, or a line of lyrics."
+            return "Try an artist, album, song, or podcast."
         case .songs:
-            return "Try a song title, artist, or a line of lyrics."
+            return "Try a song title or artist."
         case .albums:
             return "Try an album or artist name."
         case .artists:
             return "Try an artist name."
+        case .lyrics:
+            return "Try a line of lyrics from a song in your library."
         }
-    }
-
-    private func lyricsToggleButton(axLayout: Bool) -> some View {
-        Button {
-            includeLyrics.toggle()
-            scheduleSearch(query)
-        } label: {
-            Image(systemName: "text.quote")
-                .symbolVariant(includeLyrics ? .fill : .none)
-                // Non-AX: match main (`.body` scales through XXXL). AX: fixed so it fits.
-                .font(axLayout ? .system(size: 17, weight: .semibold) : .body.weight(.semibold))
-                .foregroundStyle(includeLyrics ? DromeTheme.accent : Color.white.opacity(0.7))
-                .frame(width: axLayout ? 44 : 36, height: axLayout ? 44 : 36)
-                .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-        .accessibilityLabel(includeLyrics ? "Lyrics search on" : "Lyrics search off")
     }
 
     @ViewBuilder
