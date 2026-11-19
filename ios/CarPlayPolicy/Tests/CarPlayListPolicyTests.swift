@@ -171,52 +171,86 @@ final class CarPlayListPolicyTests: XCTestCase {
     }
 
     func testDepthPathsWithinCarPlayLimit() {
-        let scenarios: [CarPlayListPolicy.DepthScenario] = [
-            .libraryAlbumsLetterItem,
-            .libraryArtistsLetterArtist,
-            .libraryArtistsLetterArtistAlbum,
-            .nowPlayingRateAlert,
-            .searchMirroredThenVoice,
-            .letterMoreInPlace
-        ]
-        for scenario in scenarios {
-            let stack = CarPlayListPolicy.canonicalStack(for: scenario)
-            XCTAssertTrue(
-                CarPlayListPolicy.isWithinLimit(stack),
-                "Scenario \(scenario) stack \(stack) exceeds max depth")
-            XCTAssertEqual(CarPlayListPolicy.depth(of: stack), stack.count)
-        }
+        // Drive the same pushDecision the scene delegate calls.
 
-        // Artist → album is allowed at depth 5; a further NP/rate push is not
-        // part of the canonical stack (NP skipped / rate presented).
-        let artistAlbum = CarPlayListPolicy.canonicalStack(
-            for: .libraryArtistsLetterArtistAlbum)
-        XCTAssertEqual(artistAlbum.count, 5)
-        XCTAssertFalse(
-            CarPlayListPolicy.isWithinLimit(artistAlbum + [.nowPlaying]),
-            "Song → Now Playing from a depth-5 album must not push")
-        XCTAssertFalse(
-            CarPlayListPolicy.isWithinLimit(artistAlbum + [.ratePicker]),
-            "Rate must be presented, not pushed, when stack is already at 5")
-
-        // In-place More… does not appear in the stack at all.
+        // Library → Albums → A → Album → Now Playing → Up Next
+        let albumsUpNext = CarPlayListPolicy.simulateNavigation(steps: [
+            .browse, .letter, .detail, .nowPlaying, .upNext
+        ])
         XCTAssertEqual(
-            CarPlayListPolicy.canonicalStack(for: .letterMoreInPlace).count, 3)
+            albumsUpNext.decisions,
+            [.push, .push, .push, .push, .replaceTop])
+        XCTAssertEqual(albumsUpNext.depth, 5)
+
+        // Same path + queue editor — still ≤5 via replaceTop.
+        let queueEditor = CarPlayListPolicy.simulateNavigation(steps: [
+            .browse, .letter, .detail, .nowPlaying, .upNext, .queueEditor
+        ])
+        XCTAssertEqual(queueEditor.decisions.suffix(2), [.replaceTop, .replaceTop])
+        XCTAssertEqual(queueEditor.depth, 5)
+
+        // Artists → letter → artist → album (depth 5) → Now Playing skipped.
+        let artistAlbumNP = CarPlayListPolicy.simulateNavigation(steps: [
+            .browse, .letter, .detail, .detail, .nowPlaying
+        ])
+        XCTAssertEqual(
+            artistAlbumNP.decisions,
+            [.push, .push, .push, .push, .skip])
+        XCTAssertEqual(artistAlbumNP.depth, 5)
+
+        // Artist ↔ Album at the limit replaces top (no growth).
+        XCTAssertEqual(
+            CarPlayListPolicy.pushDecision(currentDepth: 5, kind: .detail),
+            .replaceTop)
+
+        // Podcast Up Next from Now Playing at depth 5.
+        let podcastUpNext = CarPlayListPolicy.simulateNavigation(steps: [
+            .browse, .nowPlaying, .upNext
+        ])
+        XCTAssertLessThanOrEqual(
+            podcastUpNext.depth, CarPlayListPolicy.absoluteMaxDepth)
+        XCTAssertNotEqual(
+            CarPlayListPolicy.pushDecision(currentDepth: 5, kind: .upNext),
+            .push)
+
+        // In-place More… never calls pushDecision — depth stays at letter.
+        let letterOnly = CarPlayListPolicy.simulateNavigation(steps: [
+            .browse, .letter
+        ])
+        XCTAssertEqual(letterOnly.depth, 3)
+
+        // Mirrored search Voice/Keys: pop overlay then push search (depth stays).
+        XCTAssertEqual(
+            CarPlayListPolicy.pushDecision(currentDepth: 2, kind: .search),
+            .push)
 
         let paths: [[String]] = [
             ["Home"],
             ["Home", "Daily Mixes"],
             ["Your Library", "Albums", "A", "Album"],
-            ["Your Library", "Albums", "A", "Album"],
             ["Your Library", "Artists", "B", "Artist"],
             ["Your Library", "Top Rated", "Album"],
             ["Podcasts", "Show"],
-            ["Now Playing"] // Rate is an action sheet — not a path segment
+            ["Now Playing"]
         ]
         for path in paths {
             XCTAssertTrue(
                 CarPlayListPolicy.assertWithinDepth(path),
                 "Path too deep: \(path)")
+        }
+    }
+
+    func testRatingSheetReachesOneStarAndClear() {
+        XCTAssertEqual(
+            CarPlayListPolicy.reachableRatings(),
+            Set([0, 1, 2, 3, 4, 5]))
+        let low = CarPlayListPolicy.ratingSheetActions(level: .low)
+        XCTAssertTrue(low.contains(.setStars(1)))
+        XCTAssertTrue(low.contains(.clear))
+        XCTAssertEqual(low.count, 2)
+        for level in [CarPlayListPolicy.RatingSheetLevel.high, .mid, .low] {
+            XCTAssertLessThanOrEqual(
+                CarPlayListPolicy.ratingSheetActions(level: level).count, 3)
         }
     }
 
@@ -271,8 +305,7 @@ final class CarPlayListPolicyTests: XCTestCase {
         XCTAssertGreaterThan(pages, 1)
         XCTAssertNotNil(lastPrevious, "Later pages must offer ← Previous")
         XCTAssertEqual(
-            CarPlayListPolicy.depth(
-                of: CarPlayListPolicy.canonicalStack(for: .letterMoreInPlace)),
+            CarPlayListPolicy.simulateNavigation(steps: [.browse, .letter]).depth,
             3)
         let back = CarPlayListPolicy.letterPage(
             buckets[0].items, offset: lastPrevious ?? 0, pageSize: 8)

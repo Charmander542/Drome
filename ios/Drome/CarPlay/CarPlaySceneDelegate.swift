@@ -78,6 +78,9 @@ final class CarPlaySceneDelegate: UIResponder,
         libraryTabTemplate = nil
         podcastsTabTemplate = nil
         mirroredResultsTemplate = nil
+        queueEditorTemplate = nil
+        albumBrowseTemplate = nil
+        albumsBrowseOffset = 0
         sessionConfiguration = nil
         customKeyboard.reset()
         self.interfaceController = nil
@@ -321,18 +324,18 @@ final class CarPlaySceneDelegate: UIResponder,
     }
 
     /// Star rating via action sheet — never pushes (avoids depth 6 from Now Playing).
+    /// Sheet tree from `CarPlayListPolicy.ratingSheetActions` keeps 1–5★ + Clear reachable.
     private func showRatingPicker() {
         guard let session = AppEnvironment.shared?.session,
               let song = session.player.current?.song else { return }
-        presentRatingSheet(song: song, session: session, tier: .high)
+        presentRatingSheet(song: song, session: session, level: .high)
     }
 
-    private enum RatingSheetTier {
-        case high // 5★, 4★, More…
-        case low  // 3★, 2★, 1★ / Clear
-    }
-
-    private func presentRatingSheet(song: Song, session: AppSession, tier: RatingSheetTier) {
+    private func presentRatingSheet(
+        song: Song,
+        session: AppSession,
+        level: CarPlayListPolicy.RatingSheetLevel
+    ) {
         guard let interfaceController else { return }
         let current = session.ratings.rating(for: song)
         let message: String = {
@@ -350,28 +353,27 @@ final class CarPlaySceneDelegate: UIResponder,
             }
         }
 
-        let actions: [CPAlertAction]
-        switch tier {
-        case .high:
-            let moreTitle = current > 0 ? "Lower / Clear…" : "1–3★…"
-            actions = [
-                CPAlertAction(title: "★★★★★", style: .default, handler: apply(5)),
-                CPAlertAction(title: "★★★★", style: .default, handler: apply(4)),
-                CPAlertAction(title: moreTitle, style: .default) { [weak self] _ in
+        let actions: [CPAlertAction] = CarPlayListPolicy.ratingSheetActions(level: level).map { action in
+            switch action {
+            case .setStars(let n):
+                let title = String(repeating: "★", count: n)
+                return CPAlertAction(title: title, style: .default, handler: apply(n))
+            case .clear:
+                return CPAlertAction(title: "Clear rating", style: .destructive, handler: apply(0))
+            case .more(let next):
+                let title: String = {
+                    switch next {
+                    case .mid: return "1–3★…"
+                    case .low: return "★ / Clear…"
+                    case .high: return "More…"
+                    }
+                }()
+                return CPAlertAction(title: title, style: .default) { [weak self] _ in
                     self?.interfaceController?.dismissTemplate(animated: false) { _, _ in
-                        self?.presentRatingSheet(song: song, session: session, tier: .low)
+                        self?.presentRatingSheet(song: song, session: session, level: next)
                     }
                 }
-            ]
-        case .low:
-            // CPActionSheetTemplate allows 3 actions — keep 3★ / 2★ / Clear-or-1★.
-            actions = [
-                CPAlertAction(title: "★★★", style: .default, handler: apply(3)),
-                CPAlertAction(title: "★★", style: .default, handler: apply(2)),
-                current > 0
-                    ? CPAlertAction(title: "Clear rating", style: .destructive, handler: apply(0))
-                    : CPAlertAction(title: "★", style: .default, handler: apply(1))
-            ]
+            }
         }
 
         let sheet = CPActionSheetTemplate(title: "Rate", message: message, actions: actions)
@@ -379,8 +381,8 @@ final class CarPlaySceneDelegate: UIResponder,
     }
 
     private func showPodcastUpNext() {
-        guard let interfaceController,
-              let env = AppEnvironment.shared else { return }
+        guard AppEnvironment.shared != nil else { return }
+        let env = AppEnvironment.shared!
         let player = env.podcastPlayer
         let continuing = env.podcastManager.inProgressEpisodes()
         if continuing.isEmpty {
@@ -388,7 +390,7 @@ final class CarPlaySceneDelegate: UIResponder,
                 emptySection(title: "Nothing queued",
                              detail: "Continue Listening episodes appear here")
             ]))
-            interfaceController.pushTemplate(empty, animated: true, completion: nil)
+            pushTemplate(empty, kind: .upNext)
             return
         }
         let items: [CPListItem] = continuing.prefix(listLimits.maxItems).map { entry in
@@ -406,12 +408,11 @@ final class CarPlaySceneDelegate: UIResponder,
         let list = CPListTemplate(
             title: "Up Next",
             sections: clampSections([CPListSection(items: Array(items))]))
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        pushTemplate(list, kind: .upNext)
     }
 
     private func showQueue() {
-        guard let interfaceController,
-              let session = AppEnvironment.shared?.session else { return }
+        guard let session = AppEnvironment.shared?.session else { return }
         let player = session.player
         let upcoming = player.userQueue + player.contextQueue
 
@@ -421,7 +422,7 @@ final class CarPlaySceneDelegate: UIResponder,
                     CPListItem(text: "Queue is empty", detailText: "Play something to build a queue")
                 ])
             ])
-            interfaceController.pushTemplate(empty, animated: true, completion: nil)
+            pushTemplate(empty, kind: .upNext)
             return
         }
 
@@ -456,12 +457,13 @@ final class CarPlaySceneDelegate: UIResponder,
             CPListSection(items: [manage]),
             CPListSection(items: capped, header: "Up Next", sectionIndexTitle: nil)
         ]))
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        pushTemplate(list, kind: .upNext)
     }
 
+    private weak var queueEditorTemplate: CPListTemplate?
+
     private func showQueueEditor() {
-        guard let interfaceController,
-              let session = AppEnvironment.shared?.session else { return }
+        guard let session = AppEnvironment.shared?.session else { return }
         let player = session.player
         let upcoming = player.userQueue + player.contextQueue
         let items: [CPListItem] = upcoming.map { item in
@@ -473,19 +475,21 @@ final class CarPlaySceneDelegate: UIResponder,
                 session: session)
             row.handler = { [weak self] _, completion in
                 player.removeFromQueue(item)
-                interfaceController.popTemplate(animated: false) { _, _ in
-                    self?.showQueueEditor()
-                    completion()
-                }
+                self?.showQueueEditor()
+                completion()
             }
             return row
         }
-        let list = CPListTemplate(
-            title: "Edit Queue",
-            sections: [CPListSection(items: items.isEmpty
-                                     ? [CPListItem(text: "Queue is empty", detailText: nil)]
-                                     : items)])
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        let sections = [CPListSection(items: items.isEmpty
+                                      ? [CPListItem(text: "Queue is empty", detailText: nil)]
+                                      : items)]
+        if let existing = queueEditorTemplate {
+            applySections(sections, to: existing)
+            return
+        }
+        let list = CPListTemplate(title: "Edit Queue", sections: sections)
+        queueEditorTemplate = list
+        pushTemplate(list, kind: .queueEditor)
     }
 
     private func openNowPlayingAlbum() async {
@@ -1123,7 +1127,7 @@ final class CarPlaySceneDelegate: UIResponder,
                     query: query, session: session, title: "“\(query)”")
             }
         }
-        pushTemplate(template)
+        pushTemplate(template, kind: .search)
     }
 
     /// Real QWERTY on the iPhone; live hits update on CarPlay.
@@ -1151,7 +1155,7 @@ final class CarPlaySceneDelegate: UIResponder,
             }
         ]
         mirroredResultsTemplate = list
-        pushTemplate(list)
+        pushTemplate(list, kind: .search)
 
         NotificationCenter.default.post(name: .dromeFocusCarPlaySearch, object: nil)
 
@@ -2097,7 +2101,7 @@ final class CarPlaySceneDelegate: UIResponder,
                     fallbackName: name,
                     loading: cached == nil || (cached?.songs.isEmpty ?? true),
                     session: session))
-            pushDetailTemplate(placeholder)
+            pushTemplate(placeholder, kind: .detail)
         }
 
         // Prefetch the hero cover at CarPlay size right away.
@@ -2343,7 +2347,7 @@ final class CarPlaySceneDelegate: UIResponder,
                     fallbackName: name,
                     loading: cached == nil,
                     session: session))
-            pushDetailTemplate(placeholder)
+            pushTemplate(placeholder, kind: .detail)
         }
         CarPlayArtwork.prefetch(ids: [coverArt ?? id], session: session, limit: 1)
 
@@ -2542,7 +2546,7 @@ final class CarPlaySceneDelegate: UIResponder,
             list = CPListTemplate(title: "Artists", sections: clampSections([
                 CPListSection(items: [CPListItem(text: "Loading…", detailText: nil)])
             ]))
-            interfaceController.pushTemplate(list, animated: true, completion: nil)
+            pushTemplate(list, kind: .browse)
         }
 
         let indexes: [ArtistIndex]
@@ -2633,7 +2637,7 @@ final class CarPlaySceneDelegate: UIResponder,
             list = existing
         } else {
             list = CPListTemplate(title: letter, sections: [])
-            pushTemplate(list)
+            pushTemplate(list, kind: .letter)
         }
 
         let pageSize = min(listLimits.letterPageSize, max(1, listLimits.maxItems - 2))
@@ -2710,28 +2714,62 @@ final class CarPlaySceneDelegate: UIResponder,
             list = CPListTemplate(title: "Albums", sections: clampSections([
                 CPListSection(items: [CPListItem(text: "Loading…", detailText: nil)])
             ]))
-            interfaceController.pushTemplate(list, animated: true, completion: nil)
+            pushTemplate(list, kind: .browse)
         }
 
-        let albums: [Album]
+        albumBrowseTemplate = list
+        albumsBrowseOffset = 0
+
+        // First page immediately; remaining pages fill in the background.
+        let pageSize = 80
+        let first: [Album]
         do {
-            albums = try await fetchAllAlbumsAlphabetical(session: session)
+            first = try await session.client.albumList(
+                type: .alphabeticalByName, size: pageSize, offset: 0)
         } catch {
             presentError(list)
             return
         }
 
-        let buckets = CarPlayListPolicy.letterBuckets(albums, name: { $0.name })
-
-        if buckets.isEmpty {
+        if first.isEmpty {
             applySections([
                 emptySection(title: "No albums", detail: "Sync your library on iPhone")
             ], to: list)
             return
         }
 
-        applyAlbumLetterIndex(buckets, onto: list, session: session, offset: 0)
+        applyAlbumLetterIndex(
+            CarPlayListPolicy.letterBuckets(first, name: { $0.name }),
+            onto: list, session: session, offset: 0)
+
+        guard first.count >= pageSize else { return }
+
+        Task { [weak self] in
+            guard let self else { return }
+            var all = first
+            var offset = first.count
+            while !Task.isCancelled {
+                let page: [Album]
+                do {
+                    page = try await session.client.albumList(
+                        type: .alphabeticalByName, size: pageSize, offset: offset)
+                } catch {
+                    break
+                }
+                if page.isEmpty { break }
+                all.append(contentsOf: page)
+                offset += page.count
+                let buckets = CarPlayListPolicy.letterBuckets(all, name: { $0.name })
+                let keepOffset = self.albumsBrowseOffset
+                self.applyAlbumLetterIndex(
+                    buckets, onto: list, session: session, offset: keepOffset)
+                if page.count < pageSize || offset >= 50_000 { break }
+            }
+        }
     }
+
+    private weak var albumBrowseTemplate: CPListTemplate?
+    private var albumsBrowseOffset = 0
 
     private func applyAlbumLetterIndex(
         _ buckets: [(letter: String, items: [Album])],
@@ -2740,7 +2778,15 @@ final class CarPlaySceneDelegate: UIResponder,
         offset: Int
     ) {
         let pageSize = max(1, listLimits.maxItems - 2)
-        let page = CarPlayListPolicy.letterPage(buckets, offset: offset, pageSize: pageSize)
+        var page = CarPlayListPolicy.letterPage(buckets, offset: offset, pageSize: pageSize)
+        // Background fills can leave a stale offset past the end — fall back.
+        if page.page.isEmpty, let previous = page.previousOffset {
+            page = CarPlayListPolicy.letterPage(
+                buckets, offset: previous, pageSize: pageSize)
+            albumsBrowseOffset = previous
+        } else {
+            albumsBrowseOffset = offset
+        }
         var letterItems: [CPListItem] = []
         if let previous = page.previousOffset {
             let back = actionItem(
@@ -2794,7 +2840,7 @@ final class CarPlaySceneDelegate: UIResponder,
             list = existing
         } else {
             list = CPListTemplate(title: letter, sections: [])
-            pushTemplate(list)
+            pushTemplate(list, kind: .letter)
         }
 
         let pageSize = min(listLimits.letterPageSize, max(1, listLimits.maxItems - 2))
@@ -2828,24 +2874,6 @@ final class CarPlaySceneDelegate: UIResponder,
             items.append(more)
         }
         applySections([CPListSection(items: items)], to: list)
-    }
-
-    /// Page through alphabetical album lists (main uses 80/page) so albums past
-    /// the old single-request 500 cap still appear in A–Z buckets.
-    private func fetchAllAlbumsAlphabetical(session: AppSession) async throws -> [Album] {
-        let pageSize = 80
-        var offset = 0
-        var all: [Album] = []
-        while true {
-            let page = try await session.client.albumList(
-                type: .alphabeticalByName, size: pageSize, offset: offset)
-            all.append(contentsOf: page)
-            if page.count < pageSize { break }
-            offset += page.count
-            // Soft ceiling — Subsonic offsets are not always trustworthy forever.
-            if offset >= 50_000 { break }
-        }
-        return all
     }
 
     private func actionItem(
@@ -2902,7 +2930,7 @@ final class CarPlaySceneDelegate: UIResponder,
             placeholder = CPListTemplate(
                 title: name,
                 sections: [CPListSection(items: loadingItems)])
-            interfaceController.pushTemplate(placeholder, animated: true, completion: nil)
+            pushTemplate(placeholder, kind: .detail)
         }
 
         guard let playlist = try? await session.client.playlist(id: id) else {
@@ -3004,11 +3032,7 @@ final class CarPlaySceneDelegate: UIResponder,
     private func pushNowPlaying() {
         guard let interfaceController else { return }
         if interfaceController.topTemplate is CPNowPlayingTemplate { return }
-        // At max depth (e.g. Library→Artists→Letter→Artist→Album), skip the
-        // push — playback still starts; the system Now Playing affordance works.
-        guard canPushTemplate else { return }
-        interfaceController.pushTemplate(
-            CPNowPlayingTemplate.shared, animated: true, completion: nil)
+        pushTemplate(CPNowPlayingTemplate.shared, kind: .nowPlaying)
     }
 
     // MARK: - Depth-safe template pushes
@@ -3017,37 +3041,33 @@ final class CarPlaySceneDelegate: UIResponder,
         interfaceController?.templates.count ?? 0
     }
 
-    private var canPushTemplate: Bool {
-        templateStackDepth < CarPlayListPolicy.absoluteMaxDepth
-    }
-
-    /// True when we can push, or replace the top template (Artist↔Album at depth 5).
+    /// True when Go to artist / nested detail can still appear (push or replace).
     private var canPushOrReplaceDetail: Bool {
-        templateStackDepth <= CarPlayListPolicy.absoluteMaxDepth
+        CarPlayListPolicy.pushDecision(
+            currentDepth: templateStackDepth, kind: .detail) != .skip
     }
 
-    private func pushTemplate(_ template: CPTemplate, animated: Bool = true) {
+    /// Every CarPlay push goes through `CarPlayListPolicy.pushDecision`.
+    private func pushTemplate(
+        _ template: CPTemplate,
+        kind: CarPlayListPolicy.PushKind,
+        animated: Bool = true
+    ) {
         guard let interfaceController else { return }
-        guard canPushTemplate else {
-            DromeDiagnostics.log(
-                "carplay push skipped at depth \(templateStackDepth)",
-                category: .session)
-            return
-        }
-        interfaceController.pushTemplate(template, animated: animated, completion: nil)
-    }
-
-    /// Push a detail screen; if already at the CarPlay max, pop then push so
-    /// Artist ↔ Album does not grow past depth 5.
-    private func pushDetailTemplate(_ template: CPTemplate, animated: Bool = true) {
-        guard let interfaceController else { return }
-        if canPushTemplate {
+        let decision = CarPlayListPolicy.pushDecision(
+            currentDepth: templateStackDepth, kind: kind)
+        switch decision {
+        case .push:
             interfaceController.pushTemplate(template, animated: animated, completion: nil)
-            return
-        }
-        interfaceController.popTemplate(animated: false) { [weak self] _, _ in
-            self?.interfaceController?.pushTemplate(
-                template, animated: animated, completion: nil)
+        case .replaceTop:
+            interfaceController.popTemplate(animated: false) { [weak self] _, _ in
+                self?.interfaceController?.pushTemplate(
+                    template, animated: animated, completion: nil)
+            }
+        case .skip:
+            DromeDiagnostics.log(
+                "carplay push skipped kind=\(kind.rawValue) depth=\(templateStackDepth)",
+                category: .session)
         }
     }
 

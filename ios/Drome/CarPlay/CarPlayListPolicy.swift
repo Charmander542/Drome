@@ -202,55 +202,109 @@ enum CarPlayListPolicy: Sendable {
         return (page, nil, previous, 0)
     }
 
-    /// Real CarPlay stack segments (root included). In-place More…/Previous
-    /// are omitted — they do not push.
-    enum StackSegment: String, Sendable, Equatable {
-        case rootTab
-        case browseList          // Artists / Albums A–Z index
-        case letterContents      // one letter’s items
-        case detail              // album / artist / playlist detail
-        case nestedDetail        // album opened from artist (must stay ≤5)
+    /// What the scene delegate is about to put on the CarPlay stack.
+    /// In-place More…/Previous and presented sheets are not push kinds.
+    enum PushKind: String, Sendable, Equatable {
+        case browse          // Artists / Albums / Top Rated / …
+        case letter          // one letter’s contents
+        case detail          // album / artist / playlist
         case nowPlaying
-        case ratePicker          // must not push when NP already at depth 5
-        case searchOverlay       // mirrored search / keyboard
+        case upNext          // Queue / podcast Up Next
+        case queueEditor
+        case search          // mirrored search / keyboard / results
     }
 
-    /// Depth of a proposed stack. Segments that are presented (alert) or
-    /// in-place updates are not included by the caller.
-    static func depth(of stack: [StackSegment]) -> Int { stack.count }
-
-    static func isWithinLimit(_ stack: [StackSegment]) -> Bool {
-        depth(of: stack) <= absoluteMaxDepth
+    /// Decision the scene delegate must honor for every push.
+    enum PushDecision: String, Sendable, Equatable {
+        case push
+        case replaceTop
+        case skip
     }
 
-    /// Canonical stacks after the depth-cap fixes (for XCTest).
-    static func canonicalStack(for scenario: DepthScenario) -> [StackSegment] {
-        switch scenario {
-        case .libraryAlbumsLetterItem:
-            return [.rootTab, .browseList, .letterContents, .detail]
-        case .libraryArtistsLetterArtist:
-            return [.rootTab, .browseList, .letterContents, .detail]
-        case .libraryArtistsLetterArtistAlbum:
-            // Album replaces further push when at limit — stack stays at 5.
-            return [.rootTab, .browseList, .letterContents, .detail, .nestedDetail]
-        case .nowPlayingRateAlert:
-            // Rating uses a presented alert, not a push.
-            return [.rootTab, .nowPlaying]
-        case .searchMirroredThenVoice:
-            // Voice/Keys pop the mirrored overlay before opening search.
-            return [.rootTab, .searchOverlay]
-        case .letterMoreInPlace:
-            return [.rootTab, .browseList, .letterContents]
+    /// Pure push policy used by `CarPlaySceneDelegate` and XCTest.
+    /// - `nowPlaying` at the limit is **skipped** (system NP affordance still works).
+    /// - Other kinds **replace the top** at the limit so Up Next / Artist↔Album fit.
+    static func pushDecision(
+        currentDepth: Int,
+        kind: PushKind,
+        maxDepth: Int = absoluteMaxDepth
+    ) -> PushDecision {
+        let depth = max(0, currentDepth)
+        let limit = max(1, maxDepth)
+        switch kind {
+        case .nowPlaying:
+            return depth < limit ? .push : .skip
+        case .browse, .letter, .detail, .upNext, .queueEditor, .search:
+            if depth < limit { return .push }
+            if depth == limit { return .replaceTop }
+            return .skip
         }
     }
 
-    enum DepthScenario: Sendable, Equatable {
-        case libraryAlbumsLetterItem
-        case libraryArtistsLetterArtist
-        case libraryArtistsLetterArtistAlbum
-        case nowPlayingRateAlert
-        case searchMirroredThenVoice
-        case letterMoreInPlace
+    /// Walk a navigation sequence the way the delegate does (root tab = depth 1).
+    /// Returns the final stack depth and each step’s decision.
+    static func simulateNavigation(
+        steps: [PushKind],
+        rootDepth: Int = 1,
+        maxDepth: Int = absoluteMaxDepth
+    ) -> (depth: Int, decisions: [PushDecision]) {
+        var depth = max(1, rootDepth)
+        var decisions: [PushDecision] = []
+        for kind in steps {
+            let decision = pushDecision(
+                currentDepth: depth, kind: kind, maxDepth: maxDepth)
+            decisions.append(decision)
+            switch decision {
+            case .push:
+                depth += 1
+            case .replaceTop, .skip:
+                break
+            }
+        }
+        return (depth, decisions)
+    }
+
+    // MARK: - Rating action sheet (presented — never pushed)
+
+    /// CarPlay action sheets allow 3 actions; walk high → mid → low for 1–5★ + Clear.
+    enum RatingSheetLevel: String, Sendable, Equatable {
+        case high
+        case mid
+        case low
+    }
+
+    enum RatingSheetAction: Sendable, Equatable {
+        case setStars(Int)
+        case clear
+        case more(RatingSheetLevel)
+    }
+
+    static func ratingSheetActions(level: RatingSheetLevel) -> [RatingSheetAction] {
+        switch level {
+        case .high:
+            return [.setStars(5), .setStars(4), .more(.mid)]
+        case .mid:
+            return [.setStars(3), .setStars(2), .more(.low)]
+        case .low:
+            // Always expose 1★ (Out of Rotation) and Clear — never swap them.
+            return [.setStars(1), .clear]
+        }
+    }
+
+    /// Every star value plus clear (0) reachable by walking the sheet tree.
+    static func reachableRatings() -> Set<Int> {
+        var seen: Set<Int> = []
+        func walk(_ level: RatingSheetLevel) {
+            for action in ratingSheetActions(level: level) {
+                switch action {
+                case .setStars(let n): seen.insert(n)
+                case .clear: seen.insert(0)
+                case .more(let next): walk(next)
+                }
+            }
+        }
+        walk(.high)
+        return seen
     }
 
     // MARK: - Shared template blueprints (scene delegate + XCTest)
