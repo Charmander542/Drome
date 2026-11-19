@@ -393,41 +393,62 @@ struct PlaylistDetailView: View {
     }
 
     private func suggestionRow(_ item: PlaylistSongSuggester.Suggestion) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            SongRow(
-                song: item.song,
-                showAlbum: true,
-                trailing: AnyView(suggestionAddButton(for: item.song)),
-                enablesSwipeActions: false,
-                onPlay: {
-                    player.play(
-                        [item.song], startAt: 0,
-                        context: PlaybackContext(label: item.song.title, kind: .search))
+        // Custom row so List doesn't swallow the + button (SongRow's whole-row
+        // tap gesture fights nested Buttons inside List).
+        HStack(spacing: 12) {
+            Button {
+                player.play(
+                    [item.song], startAt: 0,
+                    context: PlaybackContext(label: item.song.title, kind: .search))
+            } label: {
+                HStack(spacing: 12) {
+                    RemoteImage(url: session.artworkURL(for: item.song, size: 96))
+                        .frame(width: 48, height: 48)
+                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.song.title)
+                            .font(DromeTheme.rowTitle)
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Text(suggestionSubtitle(item))
+                            .font(.caption)
+                            .foregroundStyle(DromeTheme.muted)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-            )
-            Text(item.reason)
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(DromeTheme.muted)
-                .padding(.leading, 68)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Play \(item.song.title)")
+
+            Button {
+                Task { await addSuggestion(item.song) }
+            } label: {
+                Group {
+                    if addingSuggestionIDs.contains(item.song.id) {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 28, weight: .semibold))
+                            .foregroundStyle(DromeTheme.accent)
+                            .symbolRenderingMode(.hierarchical)
+                    }
+                }
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .disabled(addingSuggestionIDs.contains(item.song.id))
+            .accessibilityLabel("Add \(item.song.title) to playlist")
         }
     }
 
-    private func suggestionAddButton(for song: Song) -> some View {
-        Button {
-            Task { await addSuggestion(song) }
-        } label: {
-            if addingSuggestionIDs.contains(song.id) {
-                ProgressView()
-                    .frame(width: 28, height: 28)
-            } else {
-                Image(systemName: "plus.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(DromeTheme.accent)
-            }
-        }
-        .buttonStyle(.plain)
-        .disabled(addingSuggestionIDs.contains(song.id))
-        .accessibilityLabel("Add \(song.title) to playlist")
+    private func suggestionSubtitle(_ item: PlaylistSongSuggester.Suggestion) -> String {
+        let artist = item.song.displayArtist
+        if artist.isEmpty { return item.reason }
+        return "\(artist) · \(item.reason)"
     }
 
     private func playlistHeader(_ playlist: PlaylistWithSongs) -> some View {
