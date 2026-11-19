@@ -11,16 +11,11 @@ struct OnboardingView: View {
     @State private var page = 0
     @State private var searchFocus: OnboardingSearchFocus = .library
     @State private var searchCycleToken = 0
-    @State private var nowPlayingFocus: OnboardingNowPlayingFocus = .shuffle
-    @State private var nowPlayingCycleToken = 0
+    /// Sub-steps on the Now Playing controls lesson (Continue advances these).
+    @State private var nowPlayingStep: OnboardingNowPlayingStep = .artSwipe
 
     private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
 
-    /// Fixed heights — do not scale with Dynamic Type (mocks cap type internally).
-    private var mockHeight: CGFloat { accessibilityLayout ? 200 : 340 }
-    private var mockMaxWidth: CGFloat { accessibilityLayout ? 260 : 300 }
-
-    /// Page indices for highlight cycles.
     private let searchPageIndex = 2
     private let nowPlayingControlsPageIndex = 4
 
@@ -43,8 +38,8 @@ struct OnboardingView: View {
             accessibilityMockLabel: "Star rating is on the Now Playing screen, below the track title. One or two stars move a track to Out of Rotation."),
         OnboardingTourPage(
             title: "Now Playing controls",
-            caption: "Swipe album art left for next, right for previous. ∞ is Keep Playing when the queue ends.",
-            accessibilityMockLabel: "Music Now Playing: swipe album art left for next song and right for previous. Also Song and Lyrics, Smart shuffle, repeat, Keep Playing infinity, queue, and AirPlay."),
+            caption: "", // Replaced by per-step captions.
+            accessibilityMockLabel: ""),
         OnboardingTourPage(
             title: "Playlists & sharing",
             caption: "Create with + in Your Library; Share Playlist is in a playlist’s ··· menu.",
@@ -54,6 +49,29 @@ struct OnboardingView: View {
             caption: "The same Keep Playing switch also lives under Avatar → Settings → Playback.",
             accessibilityMockLabel: "Settings is opened from the Home avatar menu. Keep Playing is in the Playback section — the same setting as the Now Playing infinity button."),
     ]
+
+    private var isNowPlayingLesson: Bool { page == nowPlayingControlsPageIndex }
+
+    private var pageTitle: String {
+        isNowPlayingLesson ? nowPlayingStep.title : pages[page].title
+    }
+
+    private var pageCaption: String {
+        isNowPlayingLesson ? nowPlayingStep.caption : pages[page].caption
+    }
+
+    private var pageAccessibilityLabel: String {
+        isNowPlayingLesson ? nowPlayingStep.accessibilityLabel : pages[page].accessibilityMockLabel
+    }
+
+    private var continueLabel: String {
+        if isNowPlayingLesson,
+           nowPlayingStep.rawValue < OnboardingNowPlayingStep.allCases.count - 1 {
+            return "Continue"
+        }
+        if page < pages.count - 1 { return "Continue" }
+        return "Start listening"
+    }
 
     var body: some View {
         ZStack {
@@ -76,13 +94,14 @@ struct OnboardingView: View {
                 .padding(.top, 4)
 
                 TabView(selection: $page) {
-                    ForEach(Array(pages.enumerated()), id: \.offset) { index, item in
-                        pageContent(item, index: index)
+                    ForEach(Array(pages.enumerated()), id: \.offset) { index, _ in
+                        pageContent(index: index)
                             .tag(index)
                     }
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .animation(.easeInOut(duration: 0.28), value: page)
+                .animation(.easeInOut(duration: 0.28), value: nowPlayingStep)
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 bottomChrome
@@ -91,28 +110,21 @@ struct OnboardingView: View {
         .preferredColorScheme(.dark)
         .onChange(of: page) { _, newPage in
             if newPage == searchPageIndex { restartSearchCycle() }
-            if newPage == nowPlayingControlsPageIndex { restartNowPlayingCycle() }
+            if newPage == nowPlayingControlsPageIndex {
+                nowPlayingStep = .artSwipe
+            }
         }
         .onAppear {
             if page == searchPageIndex { restartSearchCycle() }
-            if page == nowPlayingControlsPageIndex { restartNowPlayingCycle() }
         }
         .task(id: searchCycleToken) {
             await runSearchHighlightCycle()
-        }
-        .task(id: nowPlayingCycleToken) {
-            await runNowPlayingHighlightCycle()
         }
     }
 
     private func restartSearchCycle() {
         searchFocus = .library
         searchCycleToken &+= 1
-    }
-
-    private func restartNowPlayingCycle() {
-        nowPlayingFocus = .artSwipe
-        nowPlayingCycleToken &+= 1
     }
 
     private func runSearchHighlightCycle() async {
@@ -128,61 +140,69 @@ struct OnboardingView: View {
         }
     }
 
-    private func runNowPlayingHighlightCycle() async {
-        guard page == nowPlayingControlsPageIndex, !reduceMotion else { return }
-        while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 1_900_000_000)
-            guard page == nowPlayingControlsPageIndex, !reduceMotion else { return }
-            let all = OnboardingNowPlayingFocus.allCases
-            let next = (nowPlayingFocus.rawValue + 1) % all.count
-            withAnimation(.easeInOut(duration: 0.28)) {
-                nowPlayingFocus = OnboardingNowPlayingFocus(rawValue: next) ?? .shuffle
-            }
+    private func advance() {
+        if isNowPlayingLesson,
+           let next = OnboardingNowPlayingStep(rawValue: nowPlayingStep.rawValue + 1) {
+            withAnimation(.easeInOut(duration: 0.28)) { nowPlayingStep = next }
+            return
+        }
+        if page < pages.count - 1 {
+            withAnimation(.easeInOut(duration: 0.28)) { page += 1 }
+        } else {
+            finish()
         }
     }
 
-    private func pageContent(_ item: OnboardingTourPage, index: Int) -> some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                deviceMock(for: index)
-                    .frame(maxWidth: mockMaxWidth)
-                    .frame(height: mockHeight)
-                    .frame(maxWidth: .infinity)
-                    // Clip after sizing so mock content can't spill over title/caption.
-                    .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 28, style: .continuous)
-                            .stroke(Color.white.opacity(0.14), lineWidth: 1)
+    private func pageContent(index: Int) -> some View {
+        GeometryReader { geo in
+            ScrollView {
+                VStack(spacing: 0) {
+                    if index == nowPlayingControlsPageIndex {
+                        OnboardingNowPlayingLessonView(
+                            step: nowPlayingStep,
+                            reduceMotion: reduceMotion)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, accessibilityLayout ? 12 : 16)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(pageAccessibilityLabel)
+                    } else {
+                        phonePreview(for: index)
+                            .frame(maxWidth: accessibilityLayout ? 280 : 320)
+                            .frame(maxHeight: accessibilityLayout ? 220 : 380)
+                            .frame(maxWidth: .infinity)
+                            .padding(.horizontal, 28)
+                            .padding(.bottom, accessibilityLayout ? 12 : 14)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(pages[index].accessibilityMockLabel)
                     }
-                    .shadow(color: .black.opacity(0.45), radius: 18, y: 10)
-                    .padding(.horizontal, 28)
-                    .padding(.bottom, accessibilityLayout ? 12 : 14)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(item.accessibilityMockLabel)
 
-                Text(item.title)
-                    .font(DromeTheme.titleFont)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.white)
-                    .lineLimit(accessibilityLayout ? 3 : 1)
-                    .minimumScaleFactor(0.85)
-                    .padding(.horizontal, 28)
-                    .padding(.bottom, accessibilityLayout ? 6 : 8)
-                    .accessibilityAddTraits(.isHeader)
+                    Text(index == nowPlayingControlsPageIndex ? nowPlayingStep.title : pages[index].title)
+                        .font(DromeTheme.titleFont)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.white)
+                        .lineLimit(accessibilityLayout ? 3 : 2)
+                        .minimumScaleFactor(0.85)
+                        .padding(.horizontal, 28)
+                        .padding(.bottom, accessibilityLayout ? 6 : 8)
+                        .accessibilityAddTraits(.isHeader)
 
-                Text(item.caption)
-                    .font(.body)
-                    .foregroundStyle(DromeTheme.muted)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 28)
+                    Text(index == nowPlayingControlsPageIndex ? nowPlayingStep.caption : pages[index].caption)
+                        .font(.body)
+                        .foregroundStyle(DromeTheme.muted)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 28)
+                }
+                .frame(maxWidth: .infinity, alignment: .top)
+                .padding(.top, accessibilityLayout ? 2 : 6)
+                .padding(.bottom, accessibilityLayout ? 24 : 8)
+                // Vertically balance the block in leftover space at default sizes.
+                .frame(
+                    minHeight: accessibilityLayout ? nil : max(geo.size.height - 8, 0),
+                    alignment: .center)
             }
-            .frame(maxWidth: .infinity, alignment: .top)
-            .padding(.top, accessibilityLayout ? 2 : 6)
-            .padding(.bottom, accessibilityLayout ? 24 : 8)
+            .scrollIndicators(accessibilityLayout ? .visible : .automatic)
         }
-        .scrollIndicators(accessibilityLayout ? .visible : .automatic)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .bottom) {
             LinearGradient(
                 colors: [.clear, DromeTheme.background],
@@ -194,34 +214,30 @@ struct OnboardingView: View {
         }
     }
 
-    @ViewBuilder
-    private func deviceMock(for index: Int) -> some View {
-        OnboardingPhoneFrame {
-            Group {
-                switch index {
-                case 0:
-                    OnboardingHomeMock(reduceMotion: reduceMotion, highlightVibe: true)
-                case 1:
-                    OnboardingBrowseMock(reduceMotion: reduceMotion)
-                case 2:
-                    OnboardingSearchMock(
-                        focus: searchFocus,
-                        reduceMotion: reduceMotion,
-                        showAllCallouts: reduceMotion)
-                case 3:
-                    OnboardingNowPlayingMock(reduceMotion: reduceMotion)
-                case 4:
-                    OnboardingNowPlayingControlsMock(
-                        focus: nowPlayingFocus,
-                        reduceMotion: reduceMotion,
-                        showAllCallouts: reduceMotion)
-                case 5:
-                    OnboardingPlaylistsMock(reduceMotion: reduceMotion)
-                default:
-                    OnboardingSettingsMock(reduceMotion: reduceMotion)
+    private func phonePreview(for index: Int) -> some View {
+        OnboardingScaledPhonePreview {
+            OnboardingPhoneFrame {
+                Group {
+                    switch index {
+                    case 0:
+                        OnboardingHomeMock(reduceMotion: reduceMotion, highlightVibe: true)
+                    case 1:
+                        OnboardingBrowseMock(reduceMotion: reduceMotion)
+                    case 2:
+                        OnboardingSearchMock(
+                            focus: searchFocus,
+                            reduceMotion: reduceMotion,
+                            showAllCallouts: reduceMotion)
+                    case 3:
+                        OnboardingNowPlayingMock(reduceMotion: reduceMotion)
+                    case 5:
+                        OnboardingPlaylistsMock(reduceMotion: reduceMotion)
+                    default:
+                        OnboardingSettingsMock(reduceMotion: reduceMotion)
+                    }
                 }
+                .allowsHitTesting(false)
             }
-            .allowsHitTesting(false)
         }
     }
 
@@ -229,14 +245,8 @@ struct OnboardingView: View {
         VStack(spacing: 10) {
             pageDots
 
-            Button {
-                if page < pages.count - 1 {
-                    withAnimation(.easeInOut(duration: 0.28)) { page += 1 }
-                } else {
-                    finish()
-                }
-            } label: {
-                Text(page < pages.count - 1 ? "Continue" : "Start listening")
+            Button(action: advance) {
+                Text(continueLabel)
                     .font(.headline.weight(.semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
@@ -269,19 +279,29 @@ struct OnboardingView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Tour")
-        .accessibilityValue("Page \(page + 1) of \(pages.count)")
+        .accessibilityValue(tourPageValue)
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment:
-                guard page < pages.count - 1 else { return }
-                withAnimation(.easeInOut(duration: 0.28)) { page += 1 }
+                advance()
             case .decrement:
-                guard page > 0 else { return }
-                withAnimation(.easeInOut(duration: 0.28)) { page -= 1 }
+                if isNowPlayingLesson, nowPlayingStep.rawValue > 0,
+                   let prev = OnboardingNowPlayingStep(rawValue: nowPlayingStep.rawValue - 1) {
+                    withAnimation(.easeInOut(duration: 0.28)) { nowPlayingStep = prev }
+                } else if page > 0 {
+                    withAnimation(.easeInOut(duration: 0.28)) { page -= 1 }
+                }
             @unknown default:
                 break
             }
         }
+    }
+
+    private var tourPageValue: String {
+        if isNowPlayingLesson {
+            return "Page \(page + 1) of \(pages.count), tip \(nowPlayingStep.rawValue + 1) of \(OnboardingNowPlayingStep.allCases.count)"
+        }
+        return "Page \(page + 1) of \(pages.count)"
     }
 
     private var ambientGlow: some View {
