@@ -236,7 +236,7 @@ private enum WatchWidgetColors {
     static let elevated = Color(red: 0.22, green: 0.20, blue: 0.19)
 }
 
-#if DEBUG
+// Available in Release too — TimelineProvider.placeholder references this.
 extension WatchPlaybackPayload {
     static var placeholder: WatchPlaybackPayload {
         WatchPlaybackPayload(
@@ -257,4 +257,3 @@ extension WatchPlaybackPayload {
             artworkSongId: nil)
     }
 }
-#endif
