@@ -86,7 +86,7 @@ struct SettingsView: View {
             } header: {
                 Text("Launch")
             } footer: {
-                Text("Haptic intro replaces the boot sound with a vibration. Replay the tour anytime to walk through Home, Search, ratings, playlists, and Keep Playing.")
+                Text("Haptic intro replaces the boot sound with a vibration. Replay the tour anytime to walk through Home, Search, ratings, Now Playing controls, playlists, and Keep Playing.")
             }
             .listRowBackground(DromeTheme.elevated)
 

@@ -11,12 +11,18 @@ struct OnboardingView: View {
     @State private var page = 0
     @State private var searchFocus: OnboardingSearchFocus = .library
     @State private var searchCycleToken = 0
+    @State private var nowPlayingFocus: OnboardingNowPlayingFocus = .shuffle
+    @State private var nowPlayingCycleToken = 0
 
     private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
 
     /// Fixed heights — do not scale with Dynamic Type (mocks cap type internally).
     private var mockHeight: CGFloat { accessibilityLayout ? 200 : 340 }
     private var mockMaxWidth: CGFloat { accessibilityLayout ? 260 : 300 }
+
+    /// Page indices for highlight cycles.
+    private let searchPageIndex = 2
+    private let nowPlayingControlsPageIndex = 4
 
     private let pages: [OnboardingTourPage] = [
         OnboardingTourPage(
@@ -36,13 +42,17 @@ struct OnboardingView: View {
             caption: "High ratings shape mixes; one or two stars send a track to Out of Rotation.",
             accessibilityMockLabel: "Star rating is on the Now Playing screen, below the track title. One or two stars move a track to Out of Rotation."),
         OnboardingTourPage(
+            title: "Now Playing controls",
+            caption: "∞ is Keep Playing when the queue ends. Shuffle cycles Smart → Random → Off.",
+            accessibilityMockLabel: "Music Now Playing controls: Song and Lyrics picker, Smart shuffle, repeat, Keep Playing infinity button, queue, and AirPlay or Connect."),
+        OnboardingTourPage(
             title: "Playlists & sharing",
             caption: "Create with + in Your Library; Share Playlist is in a playlist’s ··· menu.",
             accessibilityMockLabel: "Your Library plus button creates a playlist. Share Playlist is in the playlist detail more menu."),
         OnboardingTourPage(
             title: "Keep the music going",
-            caption: "Open Avatar → Settings, then turn on Keep Playing under Playback.",
-            accessibilityMockLabel: "Settings is opened from the Home avatar menu. Keep Playing is in the Playback section."),
+            caption: "The same Keep Playing switch also lives under Avatar → Settings → Playback.",
+            accessibilityMockLabel: "Settings is opened from the Home avatar menu. Keep Playing is in the Playback section — the same setting as the Now Playing infinity button."),
     ]
 
     var body: some View {
@@ -80,13 +90,18 @@ struct OnboardingView: View {
         }
         .preferredColorScheme(.dark)
         .onChange(of: page) { _, newPage in
-            if newPage == 2 { restartSearchCycle() }
+            if newPage == searchPageIndex { restartSearchCycle() }
+            if newPage == nowPlayingControlsPageIndex { restartNowPlayingCycle() }
         }
         .onAppear {
-            if page == 2 { restartSearchCycle() }
+            if page == searchPageIndex { restartSearchCycle() }
+            if page == nowPlayingControlsPageIndex { restartNowPlayingCycle() }
         }
         .task(id: searchCycleToken) {
             await runSearchHighlightCycle()
+        }
+        .task(id: nowPlayingCycleToken) {
+            await runNowPlayingHighlightCycle()
         }
     }
 
@@ -95,15 +110,33 @@ struct OnboardingView: View {
         searchCycleToken &+= 1
     }
 
+    private func restartNowPlayingCycle() {
+        nowPlayingFocus = .shuffle
+        nowPlayingCycleToken &+= 1
+    }
+
     private func runSearchHighlightCycle() async {
-        guard page == 2, !reduceMotion else { return }
+        guard page == searchPageIndex, !reduceMotion else { return }
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 1_900_000_000)
-            guard page == 2, !reduceMotion else { return }
+            guard page == searchPageIndex, !reduceMotion else { return }
             let all = OnboardingSearchFocus.allCases
             let next = (searchFocus.rawValue + 1) % all.count
             withAnimation(.easeInOut(duration: 0.28)) {
                 searchFocus = OnboardingSearchFocus(rawValue: next) ?? .library
+            }
+        }
+    }
+
+    private func runNowPlayingHighlightCycle() async {
+        guard page == nowPlayingControlsPageIndex, !reduceMotion else { return }
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 1_900_000_000)
+            guard page == nowPlayingControlsPageIndex, !reduceMotion else { return }
+            let all = OnboardingNowPlayingFocus.allCases
+            let next = (nowPlayingFocus.rawValue + 1) % all.count
+            withAnimation(.easeInOut(duration: 0.28)) {
+                nowPlayingFocus = OnboardingNowPlayingFocus(rawValue: next) ?? .shuffle
             }
         }
     }
@@ -178,6 +211,11 @@ struct OnboardingView: View {
                 case 3:
                     OnboardingNowPlayingMock(reduceMotion: reduceMotion)
                 case 4:
+                    OnboardingNowPlayingControlsMock(
+                        focus: nowPlayingFocus,
+                        reduceMotion: reduceMotion,
+                        showAllCallouts: reduceMotion)
+                case 5:
                     OnboardingPlaylistsMock(reduceMotion: reduceMotion)
                 default:
                     OnboardingSettingsMock(reduceMotion: reduceMotion)

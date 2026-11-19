@@ -655,6 +655,239 @@ struct OnboardingNowPlayingMock: View {
     }
 }
 
+enum OnboardingNowPlayingFocus: Int, CaseIterable {
+    case lyrics
+    case shuffle
+    case `repeat`
+    case keepPlaying
+    case queue
+    case connect
+
+    var callout: String {
+        switch self {
+        case .lyrics: return "Song / Lyrics"
+        case .shuffle: return "Smart shuffle"
+        case .repeat: return "Repeat"
+        case .keepPlaying: return "Keep playing ∞"
+        case .queue: return "Queue"
+        case .connect: return "AirPlay"
+        }
+    }
+
+    static var combinedCallout: String {
+        "Shuffle · Repeat · ∞ · Queue · AirPlay · Lyrics"
+    }
+}
+
+/// Full music Now Playing chrome with cycling control spotlights.
+struct OnboardingNowPlayingControlsMock: View {
+    var focus: OnboardingNowPlayingFocus
+    var reduceMotion: Bool
+    var showAllCallouts: Bool = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(Color.white.opacity(0.28))
+                .frame(width: 34, height: 4)
+                .padding(.top, 6)
+                .padding(.bottom, 4)
+
+            // Fixed callout slot (Search-page pattern).
+            ZStack {
+                if showAllCallouts {
+                    OnboardingCalloutLabel(text: OnboardingNowPlayingFocus.combinedCallout)
+                } else {
+                    OnboardingCalloutLabel(text: focus.callout)
+                        .id(focus)
+                        .transition(.opacity)
+                }
+            }
+            .frame(height: 20)
+            .padding(.bottom, 2)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: focus)
+
+            songLyricsPicker
+                .padding(.horizontal, 24)
+                .padding(.bottom, 6)
+
+            MockArtTile(
+                colors: [Color(hex: "#264653"), Color(hex: "#2A9D8F")],
+                corner: 8,
+                symbol: "music.note")
+                .frame(width: 72, height: 72)
+                .padding(.bottom, 6)
+                .opacity(0.4)
+
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Midnight Drive")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text("Neon Harbor")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.65))
+                }
+                Spacer()
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 4)
+            .opacity(0.4)
+
+            // Stars shown dimmed — taught on the previous page.
+            HStack(spacing: 3) {
+                ForEach(1...5, id: \.self) { star in
+                    Image(systemName: star <= 4 ? "star.fill" : "star")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(star <= 4 ? RatingStyle.color(for: 4) : DromeTheme.muted)
+                }
+            }
+            .padding(.bottom, 6)
+            .opacity(0.35)
+
+            Capsule()
+                .fill(Color.white.opacity(0.18))
+                .frame(height: 2)
+                .overlay(alignment: .leading) {
+                    Capsule().fill(.white).frame(width: 40, height: 2)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 6)
+                .opacity(0.4)
+
+            transportRow
+                .padding(.horizontal, 8)
+                .padding(.bottom, 6)
+
+            bottomBar
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
+
+            Spacer(minLength: 0)
+        }
+        .background(DromeTheme.background)
+    }
+
+    private var songLyricsPicker: some View {
+        let ring = !showAllCallouts && focus == .lyrics
+        return OnboardingSpotlightRing(isActive: ring, reduceMotion: reduceMotion, cornerRadius: 7) {
+            HStack(spacing: 0) {
+                pickerChip("Song", selected: true)
+                pickerChip("Lyrics", selected: false)
+            }
+            .padding(2)
+            .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+    }
+
+    private func pickerChip(_ title: String, selected: Bool) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(selected ? .white : DromeTheme.muted)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 5)
+            .background {
+                if selected {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(DromeTheme.elevated)
+                }
+            }
+    }
+
+    private var transportRow: some View {
+        HStack {
+            transportIcon(
+                systemName: "shuffle",
+                active: true,
+                focusCase: .shuffle,
+                badge: true
+            )
+            Spacer(minLength: 0)
+            Image(systemName: "backward.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.45))
+                .frame(width: 28, height: 28)
+            Image(systemName: "pause.circle.fill")
+                .font(.system(size: 26))
+                .foregroundStyle(.white.opacity(0.55))
+            Image(systemName: "forward.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.45))
+                .frame(width: 28, height: 28)
+            Spacer(minLength: 0)
+            transportIcon(
+                systemName: "repeat",
+                active: true,
+                focusCase: .repeat
+            )
+        }
+        .frame(height: 36)
+    }
+
+    private func transportIcon(
+        systemName: String,
+        active: Bool,
+        focusCase: OnboardingNowPlayingFocus,
+        badge: Bool = false
+    ) -> some View {
+        let ring = !showAllCallouts && focus == focusCase
+        return OnboardingSpotlightRing(isActive: ring, reduceMotion: reduceMotion, cornerRadius: 8) {
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(active ? DromeTheme.accent : Color.white.opacity(0.45))
+                .frame(width: 28, height: 28)
+                .overlay(alignment: .topTrailing) {
+                    if badge {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 6))
+                            .foregroundStyle(DromeTheme.accent)
+                            .offset(x: 1, y: 4)
+                    }
+                }
+        }
+    }
+
+    private var bottomBar: some View {
+        HStack {
+            bottomIcon(
+                systemName: "hifispeaker",
+                tint: .white,
+                focusCase: .connect
+            )
+            Spacer()
+            bottomIcon(
+                systemName: "infinity",
+                tint: DromeTheme.accent,
+                focusCase: .keepPlaying
+            )
+            Spacer()
+            bottomIcon(
+                systemName: "list.bullet",
+                tint: .white,
+                focusCase: .queue
+            )
+        }
+        .frame(height: 32)
+    }
+
+    private func bottomIcon(
+        systemName: String,
+        tint: Color,
+        focusCase: OnboardingNowPlayingFocus
+    ) -> some View {
+        let ring = !showAllCallouts && focus == focusCase
+        return OnboardingSpotlightRing(isActive: ring, reduceMotion: reduceMotion, cornerRadius: 8) {
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 28, height: 28)
+        }
+    }
+}
+
 struct OnboardingPlaylistsMock: View {
     var reduceMotion: Bool
 
