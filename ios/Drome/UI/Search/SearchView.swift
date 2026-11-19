@@ -186,7 +186,8 @@ struct SearchView: View {
 
     /// Stays visible while the search field is focused (unlike nav toolbar items).
     private var searchControls: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let ax = dynamicTypeSize.isAccessibilitySize
+        return VStack(alignment: .leading, spacing: 10) {
             sourcePicker
             if source == .library {
                 resultFilterChips

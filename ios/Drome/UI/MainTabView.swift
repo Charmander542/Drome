@@ -136,7 +136,7 @@ struct MainTabView: View {
             router.selectTab(.search)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dromeOpenPlaylist)) { _ in
-            selectedTab = 2
+            router.selectTab(.library)
         }
         // Do not auto-present Now Playing on foreground — `isPlaying` races with
         // AVPlayer restore, so the sheet either never appeared or slid in after
