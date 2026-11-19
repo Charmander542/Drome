@@ -52,14 +52,6 @@ struct OnboardingView: View {
 
     private var isNowPlayingLesson: Bool { page == nowPlayingControlsPageIndex }
 
-    private var pageTitle: String {
-        isNowPlayingLesson ? nowPlayingStep.title : pages[page].title
-    }
-
-    private var pageCaption: String {
-        isNowPlayingLesson ? nowPlayingStep.caption : pages[page].caption
-    }
-
     private var pageAccessibilityLabel: String {
         isNowPlayingLesson ? nowPlayingStep.accessibilityLabel : pages[page].accessibilityMockLabel
     }
