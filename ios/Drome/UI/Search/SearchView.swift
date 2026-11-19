@@ -125,7 +125,8 @@ struct SearchView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
-        .background(DromeTheme.background.opacity(0.94))
+        // AX: solid fill so scrolled list text doesn't bleed through the inset header.
+        .background(ax ? DromeTheme.background : DromeTheme.background.opacity(0.94))
     }
 
     private var sourcePicker: some View {

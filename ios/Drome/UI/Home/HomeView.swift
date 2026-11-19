@@ -53,20 +53,26 @@ struct HomeView: View {
                     }
 
                     if let error, recentEntries.isEmpty && frequent.isEmpty && newest.isEmpty {
-                        // Only drop expandsToFill at AX sizes so Try Again can scroll;
-                        // default/XXXL keep the original centered block.
-                        ErrorStateView(
-                            message: error,
-                            expandsToFill: !dynamicTypeSize.isAccessibilitySize
-                        ) {
-                            Task { await loadAll() }
+                        if dynamicTypeSize.isAccessibilitySize {
+                            // Intrinsic height so Try Again stays reachable above the mini player.
+                            ErrorStateView(message: error, expandsToFill: false) {
+                                Task { await loadAll() }
+                            }
+                        } else {
+                            // Exact main call — keeps the block’s vertical position identical.
+                            ErrorStateView(message: error) { Task { await loadAll() } }
                         }
                     } else if !isLoading && recentEntries.isEmpty && frequent.isEmpty
                                 && newest.isEmpty && dailyMixes.isEmpty {
-                        EmptyStateView(title: "Your library is empty",
-                                       message: "Add music to Navidrome and pull to refresh.")
-                            .frame(height: dynamicTypeSize.isAccessibilitySize ? nil : 220)
-                            .padding(.vertical, dynamicTypeSize.isAccessibilitySize ? 24 : 0)
+                        if dynamicTypeSize.isAccessibilitySize {
+                            EmptyStateView(title: "Your library is empty",
+                                           message: "Add music to Navidrome and pull to refresh.")
+                                .padding(.vertical, 24)
+                        } else {
+                            EmptyStateView(title: "Your library is empty",
+                                           message: "Add music to Navidrome and pull to refresh.")
+                                .frame(height: 220)
+                        }
                     }
                 }
                 .padding(.vertical, 12)
@@ -110,6 +116,7 @@ struct HomeView: View {
                 }
             }
         }
+        .modifier(HomeAXNavChrome(enabled: dynamicTypeSize.isAccessibilitySize))
         .sheet(isPresented: $showAccounts) {
             AccountSwitcherSheet().environmentObject(env)
         }
@@ -230,6 +237,23 @@ struct HomeView: View {
             var cleaned = mix
             cleaned.songs = songs
             return cleaned
+        }
+    }
+}
+
+/// Opaque nav bar only at accessibility sizes so scrolled Vibe chips don't
+/// show through / sit under a clear toolbar. No-op at default / XXXL.
+private struct HomeAXNavChrome: ViewModifier {
+    let enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .toolbarBackground(DromeTheme.background, for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
+        } else {
+            content
         }
     }
 }
