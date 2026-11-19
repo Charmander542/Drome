@@ -96,7 +96,8 @@ struct LoginView: View {
                                     autocapitalization: .never,
                                     contentType: .URL,
                                     submitLabel: .go,
-                                    placeholder: "https://wishlist.example.com or http://host:4534"
+                                    placeholder: "https://wishlist.example.com",
+                                    helper: "LAN example: http://host:4534"
                                 )
 
                                 Toggle(isOn: $allowSelfSigned) {
@@ -270,7 +271,8 @@ struct LoginView: View {
         autocapitalization: TextInputAutocapitalization,
         contentType: UITextContentType?,
         submitLabel: SubmitLabel,
-        placeholder: String? = nil
+        placeholder: String? = nil,
+        helper: String? = nil
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
@@ -278,7 +280,8 @@ struct LoginView: View {
                 .foregroundStyle(DromeTheme.muted)
                 .accessibilityHidden(true)
 
-            TextField("", text: text, prompt: Text(placeholder ?? title))
+            TextField("", text: text, prompt: Text(placeholder ?? title).font(.body))
+                .font(.body)
                 .keyboardType(keyboard)
                 .textInputAutocapitalization(autocapitalization)
                 .autocorrectionDisabled()
@@ -290,6 +293,13 @@ struct LoginView: View {
                 .focused($focusedField, equals: field)
                 .accessibilityLabel(title)
                 .onSubmit { advanceFocus(from: field) }
+
+            if let helper {
+                Text(helper)
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .id(field)
     }

@@ -435,10 +435,19 @@ struct SearchView: View {
                     }
                 } else if let error, spotifyHits.isEmpty {
                     Section {
-                        Text(error)
-                            .font(.subheadline)
-                            .foregroundStyle(DromeTheme.muted)
-                            .listRowBackground(DromeTheme.background)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(error)
+                                .font(.subheadline)
+                                .foregroundStyle(DromeTheme.muted)
+                            Button("Retry") {
+                                let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+                                guard !q.isEmpty else { return }
+                                Task { await runSpotifySearch(q) }
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(DromeTheme.accent)
+                        }
+                        .listRowBackground(DromeTheme.background)
                     }
                 } else if spotifyHits.isEmpty && hasCompletedSearch && !isSearching {
                     Section {
@@ -1337,7 +1346,7 @@ struct SearchView: View {
             spotifyHits = hits
             await resolveLibraryMatches(hits)
         } catch {
-            self.error = error.localizedDescription
+            self.error = CompanionNetworkError.shortReason(for: error)
         }
     }
 
@@ -1377,7 +1386,7 @@ struct SearchView: View {
             _ = try await wishlist.add(spotifyLink: hit.spotifyUrl)
             addedSpotifyIDs.insert(hit.spotifyId)
         } catch {
-            self.error = error.localizedDescription
+            self.error = CompanionNetworkError.shortReason(for: error)
         }
     }
 

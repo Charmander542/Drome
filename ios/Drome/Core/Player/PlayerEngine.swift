@@ -1044,8 +1044,10 @@ final class PlayerEngine: ObservableObject {
         #endif
     }
 
+    #if !os(tvOS)
     /// Hold play() until the first packets are buffered so remote audio
     /// doesn't start into an empty pipe (clicks / static / grain).
+    /// tvOS uses `waitUntilItemReady` + `retryCurrentAfterDecodeFailure` instead.
     private func waitUntilItemReadyForPlayback(_ item: AVPlayerItem) {
         itemReadyCancellable?.cancel()
         itemReadyTimeout?.cancel()
@@ -1108,6 +1110,7 @@ final class PlayerEngine: ObservableObject {
             }
         }
     }
+    #endif
 
     /// Local files can start immediately; remote streams need a real buffer.
     private func itemIsSafeToStart(_ item: AVPlayerItem) -> Bool {

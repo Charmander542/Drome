@@ -903,7 +903,7 @@ final class CarPlaySceneDelegate: UIResponder,
     }
 
     private func showDailyMixList(_ mixes: [DailyMix], session: AppSession) {
-        guard let interfaceController else { return }
+        guard interfaceController != nil else { return }
         let items: [CPListItem] = mixes.map { mix in
             let item = listItem(
                 text: mix.title,
@@ -921,11 +921,11 @@ final class CarPlaySceneDelegate: UIResponder,
         let list = CPListTemplate(
             title: "Daily Mixes",
             sections: clampSections([CPListSection(items: items)]))
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        pushTemplate(list, kind: .browse)
     }
 
     private func showVibeList(session: AppSession) {
-        guard let interfaceController else { return }
+        guard interfaceController != nil else { return }
         let items: [CPListItem] = MoodVibe.spectrum.map { vibe in
             let item = actionItem(
                 title: vibe.title, detail: vibe.blurb, systemImage: vibe.symbol)
@@ -941,11 +941,11 @@ final class CarPlaySceneDelegate: UIResponder,
         let list = CPListTemplate(
             title: "Vibe Tuner",
             sections: clampSections([CPListSection(items: items)]))
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        pushTemplate(list, kind: .browse)
     }
 
     private func showRecentList(_ recent: [RecentPlayEntry], session: AppSession) {
-        guard let interfaceController else { return }
+        guard interfaceController != nil else { return }
         let items = recent.prefix(listLimits.maxItems).compactMap { recentItem($0, session: session) }
         let list = CPListTemplate(
             title: "Recently Played",
@@ -954,29 +954,29 @@ final class CarPlaySceneDelegate: UIResponder,
                     ? emptySection(title: "Nothing here yet", detail: "Play something to fill this list")
                     : CPListSection(items: Array(items))
             ]))
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        pushTemplate(list, kind: .browse)
     }
 
     private func showAlbumList(_ albums: [Album], title: String, session: AppSession) {
-        guard let interfaceController else { return }
+        guard interfaceController != nil else { return }
         let capped = Array(albums.prefix(listLimits.maxItems))
         let list = CPListTemplate(
             title: title,
             sections: clampSections([
                 CPListSection(items: albumItems(capped, session: session))
             ]))
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        pushTemplate(list, kind: .browse)
     }
 
     private func showPlaylistList(_ playlists: [Playlist], session: AppSession) {
-        guard let interfaceController else { return }
+        guard interfaceController != nil else { return }
         let capped = Array(playlists.prefix(listLimits.maxItems))
         let list = CPListTemplate(
             title: "Playlists",
             sections: clampSections([
                 CPListSection(items: playlistItems(capped, session: session))
             ]))
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        pushTemplate(list, kind: .browse)
     }
 
     private func recentItem(_ entry: RecentPlayEntry, session: AppSession) -> CPListItem? {
@@ -1211,7 +1211,7 @@ final class CarPlaySceneDelegate: UIResponder,
     /// Push Apple’s search template (native keyboard). Uses the completion
     /// handler so unsupported templates fail softly instead of throwing.
     private func pushSystemSearchTemplate(completion: @escaping (Bool) -> Void) {
-        guard let interfaceController else {
+        guard interfaceController != nil else {
             completion(false)
             return
         }
@@ -1225,7 +1225,7 @@ final class CarPlaySceneDelegate: UIResponder,
         // Prefer the completion-based API (no exception). Also wrap in the
         // ObjC catcher for older call paths that still throw.
         let ok = DromeExceptionCatcher.perform {
-            interfaceController.pushTemplate(search, animated: true) { success, _ in
+            self.pushTemplate(search, kind: .search) { success in
                 if !success {
                     self.searchTemplate = nil
                 }
@@ -1479,14 +1479,14 @@ final class CarPlaySceneDelegate: UIResponder,
     }
 
     private func showSearchResults(query: String, session: AppSession, title: String) async {
-        guard let interfaceController else { return }
+        guard interfaceController != nil else { return }
         let result = (try? await session.client.search(
             query, artistCount: 12, albumCount: 12, songCount: 24))
             ?? SearchResult3(artist: nil, album: nil, song: nil)
         let filtered = await filterSearchResult(result, session: session)
         let sections = makeSearchSections(from: filtered, query: query, session: session)
         let list = CPListTemplate(title: title, sections: sections)
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        pushTemplate(list, kind: .search)
     }
 
     // MARK: - Podcasts
@@ -1591,7 +1591,7 @@ final class CarPlaySceneDelegate: UIResponder,
         manager: PodcastManager,
         player: PodcastPlayer
     ) {
-        guard let interfaceController else { return }
+        guard interfaceController != nil else { return }
         let episodes = (try? manager.episodes(for: show.feedURL)) ?? []
         let cap = min(listLimits.maxItems, CarPlayListPolicy.detailTrackCap)
         let items: [CPListItem] = episodes.prefix(cap).map { episode in
@@ -1618,7 +1618,7 @@ final class CarPlaySceneDelegate: UIResponder,
             sections: clampSections([CPListSection(items: items.isEmpty
                                      ? [CPListItem(text: "No episodes", detailText: "Refresh on iPhone")]
                                      : Array(items))]))
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        pushTemplate(list, kind: .detail)
     }
 
     // MARK: - Library
@@ -1785,7 +1785,7 @@ final class CarPlaySceneDelegate: UIResponder,
     }
 
     private func showDownloads(session: AppSession) {
-        guard let interfaceController else { return }
+        guard interfaceController != nil else { return }
         let songs = session.downloads.downloadedSongs()
             .sorted {
                 ($0.album ?? "").localizedCaseInsensitiveCompare($1.album ?? "") == .orderedAscending
@@ -1794,7 +1794,7 @@ final class CarPlaySceneDelegate: UIResponder,
             let empty = CPListTemplate(title: "Downloaded", sections: clampSections([
                 emptySection(title: "No downloads", detail: "Download music on your iPhone")
             ]))
-            interfaceController.pushTemplate(empty, animated: true, completion: nil)
+            pushTemplate(empty, kind: .browse)
             return
         }
 
@@ -1810,12 +1810,12 @@ final class CarPlaySceneDelegate: UIResponder,
             remaining -= items.count
         }
         let list = CPListTemplate(title: "Downloaded", sections: clampSections(sections))
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        pushTemplate(list, kind: .browse)
     }
 
     /// Flattened Top Rated — one screen with 5★ / 4★ / albums (no menu → collection → … chain).
     private func showTopRatedFlat(session: AppSession) async {
-        guard let interfaceController else { return }
+        guard interfaceController != nil else { return }
 
         let five = session.ratings.cachedSongs(minRating: 5)
         let fourPlus = session.ratings.cachedSongs(minRating: 4)
@@ -1871,14 +1871,14 @@ final class CarPlaySceneDelegate: UIResponder,
         }
 
         let list = CPListTemplate(title: "Top Rated", sections: clampSections(sections))
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        pushTemplate(list, kind: .browse)
     }
 
     private func showGenres(
         session: AppSession,
         updating existing: CPListTemplate? = nil
     ) async {
-        guard let interfaceController else { return }
+        guard interfaceController != nil else { return }
 
         let list: CPListTemplate
         if let existing {
@@ -1887,7 +1887,7 @@ final class CarPlaySceneDelegate: UIResponder,
             list = CPListTemplate(title: "Genres", sections: clampSections([
                 CPListSection(items: [CPListItem(text: "Loading…", detailText: nil)])
             ]))
-            interfaceController.pushTemplate(list, animated: true, completion: nil)
+            pushTemplate(list, kind: .browse)
         }
 
         let raw: [Genre]
@@ -1930,7 +1930,7 @@ final class CarPlaySceneDelegate: UIResponder,
     }
 
     private func showGenre(_ genre: NormalizedGenre, session: AppSession) async {
-        guard let interfaceController else { return }
+        guard interfaceController != nil else { return }
         var songs: [Song] = []
         var albums: [Album] = []
         await withTaskGroup(of: (albums: [Album], songs: [Song]).self) { group in
@@ -1978,7 +1978,7 @@ final class CarPlaySceneDelegate: UIResponder,
             sections = [emptySection(title: "Nothing found", detail: "No songs or albums for this genre")]
         }
         let list = CPListTemplate(title: genre.displayName, sections: clampSections(sections))
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        pushTemplate(list, kind: .detail)
     }
 
     // MARK: - Shared detail screens
@@ -3059,23 +3059,33 @@ final class CarPlaySceneDelegate: UIResponder,
     private func pushTemplate(
         _ template: CPTemplate,
         kind: CarPlayListPolicy.PushKind,
-        animated: Bool = true
+        animated: Bool = true,
+        completion: ((Bool) -> Void)? = nil
     ) {
-        guard let interfaceController else { return }
+        guard let interfaceController else {
+            completion?(false)
+            return
+        }
         let decision = CarPlayListPolicy.pushDecision(
             currentDepth: templateStackDepth, kind: kind)
         switch decision {
         case .push:
-            interfaceController.pushTemplate(template, animated: animated, completion: nil)
+            interfaceController.pushTemplate(template, animated: animated) { success, _ in
+                completion?(success)
+            }
         case .replaceTop:
             interfaceController.popTemplate(animated: false) { [weak self] _, _ in
                 self?.interfaceController?.pushTemplate(
-                    template, animated: animated, completion: nil)
+                    template, animated: animated
+                ) { success, _ in
+                    completion?(success)
+                }
             }
         case .skip:
             DromeDiagnostics.log(
                 "carplay push skipped kind=\(kind.rawValue) depth=\(templateStackDepth)",
                 category: .session)
+            completion?(false)
         }
     }
 

@@ -142,7 +142,22 @@ struct WishlistView: View {
 
             if let error {
                 Section {
-                    Text(error).foregroundStyle(.red).font(.subheadline)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(error)
+                            .foregroundStyle(.red)
+                            .font(.subheadline)
+                        Button("Retry") {
+                            Task {
+                                await load()
+                                let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if q.count >= 2 {
+                                    await runSearch(q)
+                                }
+                            }
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(DromeTheme.accent)
+                    }
                 }
                 .listRowBackground(Color.clear)
             }
@@ -376,7 +391,7 @@ struct WishlistView: View {
             error = nil
         } catch {
             if !Task.isCancelled {
-                self.error = error.localizedDescription
+                self.error = CompanionNetworkError.shortReason(for: error)
             }
         }
     }
@@ -389,7 +404,7 @@ struct WishlistView: View {
         do {
             entries = try await client.list()
         } catch {
-            self.error = error.localizedDescription
+            self.error = CompanionNetworkError.shortReason(for: error)
         }
     }
 
@@ -401,7 +416,7 @@ struct WishlistView: View {
         do {
             try await applyAddResult(client.add(spotifyLink: hit.spotifyUrl))
         } catch {
-            self.error = error.localizedDescription
+            self.error = CompanionNetworkError.shortReason(for: error)
         }
     }
 
@@ -429,7 +444,7 @@ struct WishlistView: View {
             try await applyAddResult(result)
             pasteURL = ""
         } catch {
-            self.error = error.localizedDescription
+            self.error = CompanionNetworkError.shortReason(for: error)
         }
     }
 
@@ -552,7 +567,7 @@ struct WishlistView: View {
         do {
             try await client.share(id: entry.id, with: trimmed)
         } catch {
-            self.error = error.localizedDescription
+            self.error = CompanionNetworkError.shortReason(for: error)
         }
     }
 }

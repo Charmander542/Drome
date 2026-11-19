@@ -38,7 +38,12 @@ struct SettingsView: View {
             .listRowBackground(DromeTheme.elevated)
 
             Section {
-                TextField("https://wishlist.example.com or http://host:4534", text: $wishlistURLText)
+                TextField(
+                    "",
+                    text: $wishlistURLText,
+                    prompt: Text("https://wishlist.example.com").font(.body)
+                )
+                    .font(.body)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
@@ -51,7 +56,8 @@ struct SettingsView: View {
             } header: {
                 Text("Wishlist companion")
             } footer: {
-                Text("Companion server for Spotify wishlist downloads and Drome Connect (play on another phone or Apple TV). Example: https://wishlist.example.com or http://host:4534")
+                Text("Companion server for Spotify wishlist downloads and Drome Connect (play on another phone or Apple TV). LAN example: http://host:4534")
+                    .font(.footnote)
             }
             .listRowBackground(DromeTheme.elevated)
 

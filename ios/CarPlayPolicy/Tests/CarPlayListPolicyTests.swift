@@ -224,13 +224,45 @@ final class CarPlayListPolicyTests: XCTestCase {
             CarPlayListPolicy.pushDecision(currentDepth: 2, kind: .search),
             .push)
 
+        // Formerly unguarded Home / Library shortcuts — same pushDecision path.
+        let homeShortcuts = CarPlayListPolicy.simulateNavigation(steps: [
+            .browse, // Daily Mix / Vibe / Recent / Downloads / Top Rated / Genres
+            .detail, // Genre / podcast episodes
+            .nowPlaying
+        ])
+        XCTAssertEqual(homeShortcuts.decisions, [.push, .push, .push])
+        XCTAssertLessThanOrEqual(
+            homeShortcuts.depth, CarPlayListPolicy.absoluteMaxDepth)
+
+        let libraryBrowseAtLimit = CarPlayListPolicy.simulateNavigation(steps: [
+            .browse, .browse, .browse, .browse, .browse
+        ])
+        XCTAssertEqual(
+            libraryBrowseAtLimit.decisions.last,
+            .replaceTop)
+        XCTAssertEqual(libraryBrowseAtLimit.depth, 5)
+
+        let searchResults = CarPlayListPolicy.simulateNavigation(steps: [
+            .search, .search
+        ])
+        XCTAssertEqual(searchResults.decisions, [.push, .push])
+        XCTAssertEqual(
+            CarPlayListPolicy.pushDecision(currentDepth: 5, kind: .search),
+            .replaceTop)
+
         let paths: [[String]] = [
             ["Home"],
             ["Home", "Daily Mixes"],
+            ["Home", "Vibe Tuner"],
+            ["Home", "Recently Played"],
             ["Your Library", "Albums", "A", "Album"],
             ["Your Library", "Artists", "B", "Artist"],
+            ["Your Library", "Playlists"],
+            ["Your Library", "Downloaded"],
             ["Your Library", "Top Rated", "Album"],
+            ["Your Library", "Genres", "Rock"],
             ["Podcasts", "Show"],
+            ["Search", "Results"],
             ["Now Playing"]
         ]
         for path in paths {
