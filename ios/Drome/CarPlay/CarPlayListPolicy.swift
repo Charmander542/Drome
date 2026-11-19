@@ -2,8 +2,10 @@ import Foundation
 
 /// Pure list / hierarchy policy for CarPlay audio apps.
 ///
-/// Keeps clamping and depth rules testable without a CarPlay session or
-/// `xcodebuild`. Live templates pass runtime `CPListTemplate` maxima in.
+/// Keeps clamping, depth rules, and Home/Library template *structure* testable
+/// without a CarPlay session or `xcodebuild`. Live templates pass runtime
+/// `CPListTemplate` maxima in; `buildHomeSpec` / `buildLibrarySpec` are the
+/// same blueprints the scene delegate follows.
 enum CarPlayListPolicy: Sendable {
     /// CarPlay audio entitlement cap (root included).
     static let absoluteMaxDepth = 5
@@ -16,6 +18,9 @@ enum CarPlayListPolicy: Sendable {
     /// Library playlist / browse caps when not in limited UI.
     static let libraryBrowseCap = 40
     static let detailTrackCap = 80
+    /// Page size inside a letter list (More… pushes one extra level).
+    static let letterPageSize = 20
+    static let letterPageSizeLimited = 8
 
     struct Limits: Sendable, Equatable {
         var maxSections: Int
@@ -34,6 +39,10 @@ enum CarPlayListPolicy: Sendable {
                 items = min(items, limitedListItemCap)
             }
             return Limits(maxSections: sections, maxItems: items, listsLimited: listsLimited)
+        }
+
+        var letterPageSize: Int {
+            listsLimited ? letterPageSizeLimited : CarPlayListPolicy.letterPageSize
         }
     }
 
@@ -81,6 +90,27 @@ enum CarPlayListPolicy: Sendable {
         var totalItems: Int { sections.reduce(0) { $0 + $1.items.count } }
     }
 
+    /// Inputs for the shared Home blueprint (also used by XCTest fixtures).
+    struct HomeInput: Sendable, Equatable {
+        var serverError: Bool
+        var recentTitles: [String]
+        var frequentTitles: [String]
+        var playlistTitles: [String]
+        var mixTitles: [String]
+        var vibeTitles: [String]
+
+        static let empty = HomeInput(
+            serverError: false,
+            recentTitles: [], frequentTitles: [], playlistTitles: [],
+            mixTitles: [], vibeTitles: [])
+    }
+
+    struct LibraryInput: Sendable, Equatable {
+        var serverError: Bool
+        var playlistTitles: [String]
+        var downloadedCount: Int
+    }
+
     /// Clamp section/item counts to CarPlay maxima. Preserves leading sections
     /// (quick actions / errors) and trims trailing items first within a section.
     static func clamp(_ sections: [SectionSpec], limits: Limits) -> [SectionSpec] {
@@ -101,11 +131,11 @@ enum CarPlayListPolicy: Sendable {
         return result
     }
 
-    /// Letter buckets for A–Z browse (replaces “Load More” push chains).
+    /// Letter buckets for A–Z browse. Returns **full** sorted lists per letter
+    /// (callers page with `letterPage` + More… — no unreachable truncation).
     static func letterBuckets<T>(
         _ values: [T],
         name: (T) -> String,
-        maxPerLetter: Int,
         maxLetters: Int
     ) -> [(letter: String, items: [T])] {
         let grouped = Dictionary(grouping: values) { value -> String in
@@ -124,14 +154,31 @@ enum CarPlayListPolicy: Sendable {
             let items = (grouped[letter] ?? []).sorted {
                 name($0).localizedCaseInsensitiveCompare(name($1)) == .orderedAscending
             }
-            return (letter, Array(items.prefix(maxPerLetter)))
+            return (letter, items)
         }
     }
 
-    // MARK: - Fixture trees (for XCTest / DEBUG dumps)
+    /// One page of a letter list, plus whether More… is needed.
+    static func letterPage<T>(
+        _ items: [T],
+        offset: Int,
+        pageSize: Int
+    ) -> (page: [T], nextOffset: Int?, remaining: Int) {
+        let size = max(1, pageSize)
+        let page = Array(items.dropFirst(offset).prefix(size))
+        let next = offset + page.count
+        if next < items.count {
+            return (page, next, items.count - next)
+        }
+        return (page, nil, 0)
+    }
 
-    static func fixtureHome(online: Bool, empty: Bool, serverError: Bool) -> TemplateSpec {
-        if serverError {
+    // MARK: - Shared template blueprints (scene delegate + XCTest)
+
+    /// Structure the CarPlay Home tab follows. Image-row sections use the row
+    /// title only (no duplicate section header).
+    static func buildHomeSpec(_ input: HomeInput, tileCap: Int = homeImageRowTiles) -> TemplateSpec {
+        if input.serverError {
             return TemplateSpec(
                 title: "Home",
                 tabTitle: "Home",
@@ -139,12 +186,50 @@ enum CarPlayListPolicy: Sendable {
                     SectionSpec(items: [
                         ItemSpec(title: "Can't reach your server",
                                  subtitle: "Check Wi‑Fi or your Navidrome URL"),
-                        ItemSpec(title: "Retry", subtitle: "Try loading Home again",
+                        ItemSpec(title: "Retry", subtitle: "Try loading again",
                                  hasImage: true)
                     ])
                 ])
         }
-        if empty {
+
+        var sections: [SectionSpec] = []
+        var quick: [ItemSpec] = [
+            ItemSpec(title: "Shuffle All", subtitle: "Random from your library", hasImage: true)
+        ]
+        let cap = max(1, tileCap)
+        if !input.mixTitles.isEmpty {
+            quick.append(ItemSpec(
+                title: "Daily Mixes", hasImage: true,
+                imageRowTitles: Array(input.mixTitles.prefix(cap))))
+        }
+        if !input.vibeTitles.isEmpty {
+            quick.append(ItemSpec(
+                title: "Vibe Tuner", hasImage: true,
+                imageRowTitles: Array(input.vibeTitles.prefix(cap))))
+        }
+        sections.append(SectionSpec(header: "Quick Play", items: quick))
+
+        if !input.recentTitles.isEmpty {
+            sections.append(SectionSpec(items: [
+                ItemSpec(title: "Recently Played", hasImage: true,
+                         imageRowTitles: Array(input.recentTitles.prefix(cap)))
+            ]))
+        }
+        if !input.frequentTitles.isEmpty {
+            sections.append(SectionSpec(items: [
+                ItemSpec(title: "Jump Back In", hasImage: true,
+                         imageRowTitles: Array(input.frequentTitles.prefix(cap)))
+            ]))
+        }
+        if !input.playlistTitles.isEmpty {
+            sections.append(SectionSpec(items: [
+                ItemSpec(title: "Playlists", hasImage: true,
+                         imageRowTitles: Array(input.playlistTitles.prefix(cap)))
+            ]))
+        }
+
+        let onlyQuick = sections.count == 1 && quick.count <= 1
+        if onlyQuick {
             return TemplateSpec(
                 title: "Home",
                 tabTitle: "Home",
@@ -155,48 +240,11 @@ enum CarPlayListPolicy: Sendable {
                     ])
                 ])
         }
-        if !online {
-            return TemplateSpec(
-                title: "Home",
-                tabTitle: "Home",
-                sections: [
-                    SectionSpec(items: [
-                        ItemSpec(title: "Can't reach your server",
-                                 subtitle: "Check Wi‑Fi or your Navidrome URL"),
-                        ItemSpec(title: "Retry", hasImage: true)
-                    ])
-                ])
-        }
-
-        return TemplateSpec(
-            title: "Home",
-            tabTitle: "Home",
-            sections: [
-                SectionSpec(header: "Quick Play", items: [
-                    ItemSpec(title: "Shuffle All", subtitle: "Random from your library",
-                             hasImage: true),
-                    ItemSpec(title: "Daily Mixes", hasImage: true,
-                             imageRowTitles: ["Daily Mix 1", "Daily Mix 2", "Daily Mix 3"]),
-                    ItemSpec(title: "Vibe Tuner", hasImage: true,
-                             imageRowTitles: ["Hype", "Chill", "Feel-Good", "Focus"])
-                ]),
-                SectionSpec(header: "Recently Played", items: [
-                    ItemSpec(title: "Recently Played", hasImage: true,
-                             imageRowTitles: ["Song A", "Album B", "Mix C", "Playlist D"])
-                ]),
-                SectionSpec(header: "Jump Back In", items: [
-                    ItemSpec(title: "Jump Back In", hasImage: true,
-                             imageRowTitles: ["Album 1", "Album 2", "Album 3"])
-                ]),
-                SectionSpec(header: "Playlists", items: [
-                    ItemSpec(title: "Playlists", hasImage: true,
-                             imageRowTitles: ["Gym", "Focus", "Road Trip"])
-                ])
-            ])
+        return TemplateSpec(title: "Home", tabTitle: "Home", sections: sections)
     }
 
-    static func fixtureLibrary(serverError: Bool, playlistCount: Int) -> TemplateSpec {
-        if serverError {
+    static func buildLibrarySpec(_ input: LibraryInput, playlistCap: Int) -> TemplateSpec {
+        if input.serverError {
             return TemplateSpec(
                 title: "Your Library",
                 tabTitle: "Your Library",
@@ -209,14 +257,22 @@ enum CarPlayListPolicy: Sendable {
                 ])
         }
         let browse = [
-            ItemSpec(title: "Downloaded", hasImage: true, accessory: "disclosure"),
-            ItemSpec(title: "Artists", hasImage: true, accessory: "disclosure"),
-            ItemSpec(title: "Albums", hasImage: true, accessory: "disclosure"),
-            ItemSpec(title: "Top Rated", hasImage: true, accessory: "disclosure"),
-            ItemSpec(title: "Genres", hasImage: true, accessory: "disclosure")
+            ItemSpec(
+                title: "Downloaded",
+                subtitle: input.downloadedCount == 0
+                    ? "Offline music" : "\(input.downloadedCount) songs",
+                hasImage: true, accessory: "disclosure"),
+            ItemSpec(title: "Artists", subtitle: "Browse your artists",
+                     hasImage: true, accessory: "disclosure"),
+            ItemSpec(title: "Albums", subtitle: "A–Z by album name",
+                     hasImage: true, accessory: "disclosure"),
+            ItemSpec(title: "Top Rated", subtitle: "5★, 4★ & up, top albums",
+                     hasImage: true, accessory: "disclosure"),
+            ItemSpec(title: "Genres", subtitle: "Browse by genre",
+                     hasImage: true, accessory: "disclosure")
         ]
-        let playlists = (0..<playlistCount).map {
-            ItemSpec(title: "Playlist \($0)", hasImage: true, accessory: "disclosure")
+        let playlists = Array(input.playlistTitles.prefix(max(0, playlistCap))).map {
+            ItemSpec(title: $0, hasImage: true, accessory: "disclosure")
         }
         return TemplateSpec(
             title: "Your Library",
@@ -230,7 +286,7 @@ enum CarPlayListPolicy: Sendable {
             ])
     }
 
-    static func fixtureSearchChooser() -> TemplateSpec {
+    static func buildSearchChooserSpec() -> TemplateSpec {
         TemplateSpec(
             title: "Search",
             tabTitle: "Search",
@@ -244,6 +300,38 @@ enum CarPlayListPolicy: Sendable {
             ])
     }
 
+    // MARK: - Fixture trees (XCTest)
+
+    static func fixtureHome(online: Bool, empty: Bool, serverError: Bool) -> TemplateSpec {
+        if serverError || !online {
+            return buildHomeSpec(HomeInput(
+                serverError: true,
+                recentTitles: [], frequentTitles: [], playlistTitles: [],
+                mixTitles: [], vibeTitles: []))
+        }
+        if empty {
+            return buildHomeSpec(.empty)
+        }
+        return buildHomeSpec(HomeInput(
+            serverError: false,
+            recentTitles: ["Song A", "Album B", "Mix C", "Playlist D"],
+            frequentTitles: ["Album 1", "Album 2", "Album 3"],
+            playlistTitles: ["Gym", "Focus", "Road Trip"],
+            mixTitles: ["Daily Mix 1", "Daily Mix 2", "Daily Mix 3"],
+            vibeTitles: ["Hype", "Chill", "Feel-Good", "Focus"]))
+    }
+
+    static func fixtureLibrary(serverError: Bool, playlistCount: Int) -> TemplateSpec {
+        buildLibrarySpec(
+            LibraryInput(
+                serverError: serverError,
+                playlistTitles: (0..<playlistCount).map { "Playlist \($0)" },
+                downloadedCount: 12),
+            playlistCap: libraryBrowseCap)
+    }
+
+    static func fixtureSearchChooser() -> TemplateSpec { buildSearchChooserSpec() }
+
     static func fixtureNowPlayingMusicButtons() -> [String] {
         ["Rate", "Shuffle", "Repeat", "Autoplay"]
     }
@@ -255,7 +343,33 @@ enum CarPlayListPolicy: Sendable {
     /// Max navigation depth for common paths (root tab counts as 1).
     static func depth(for path: [String]) -> Int { path.count }
 
-    static func assertWithinDepth(_ path: [String], file: StaticString = #file, line: UInt = #line) -> Bool {
+    static func assertWithinDepth(_ path: [String]) -> Bool {
         depth(for: path) <= absoluteMaxDepth
+    }
+
+    /// Text dump used by XCTest / DEBUG (no CarPlay framework required).
+    static func dumpSpec(_ spec: TemplateSpec, limits: Limits) -> String {
+        let clamped = clamp(spec.sections, limits: limits)
+        var lines: [String] = []
+        lines.append("tab=\(spec.tabTitle ?? spec.title) title=\(spec.title)")
+        lines.append(
+            "sections=\(clamped.count)/\(limits.maxSections) items=\(clamped.reduce(0) { $0 + $1.items.count })/\(limits.maxItems)")
+        for (si, section) in clamped.enumerated() {
+            lines.append("  section[\(si)] header=\(section.header ?? "nil") items=\(section.items.count)")
+            for (ii, item) in section.items.enumerated() {
+                var row = "    [\(ii)] \"\(item.title)\""
+                if let sub = item.subtitle { row += " — \"\(sub)\"" }
+                row += " img=\(item.hasImage ? "y" : "n")"
+                if let acc = item.accessory { row += " accessory=\(acc)" }
+                if let tiles = item.imageRowTitles {
+                    row += " tiles=[\(tiles.joined(separator: ", "))]"
+                }
+                lines.append(row)
+            }
+        }
+        if let np = spec.nowPlayingButtons {
+            lines.append("  nowPlayingButtons: \(np.joined(separator: ", "))")
+        }
+        return lines.joined(separator: "\n")
     }
 }

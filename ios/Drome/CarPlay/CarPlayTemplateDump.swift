@@ -39,27 +39,7 @@ enum CarPlayTemplateDump {
     }
 
     static func dumpSpec(_ spec: CarPlayListPolicy.TemplateSpec, limits: CarPlayListPolicy.Limits) -> String {
-        let clamped = CarPlayListPolicy.clamp(spec.sections, limits: limits)
-        var lines: [String] = []
-        lines.append("tab=\(spec.tabTitle ?? spec.title) title=\(spec.title)")
-        lines.append("sections=\(clamped.count)/\(limits.maxSections) items=\(clamped.reduce(0) { $0 + $1.items.count })/\(limits.maxItems)")
-        for (si, section) in clamped.enumerated() {
-            lines.append("  section[\(si)] header=\(section.header ?? "nil") items=\(section.items.count)")
-            for (ii, item) in section.items.enumerated() {
-                var row = "    [\(ii)] \"\(item.title)\""
-                if let sub = item.subtitle { row += " — \"\(sub)\"" }
-                row += " img=\(item.hasImage ? "y" : "n")"
-                if let acc = item.accessory { row += " accessory=\(acc)" }
-                if let tiles = item.imageRowTitles {
-                    row += " tiles=[\(tiles.joined(separator: ", "))]"
-                }
-                lines.append(row)
-            }
-        }
-        if let np = spec.nowPlayingButtons {
-            lines.append("  nowPlayingButtons: \(np.joined(separator: ", "))")
-        }
-        return lines.joined(separator: "\n")
+        CarPlayListPolicy.dumpSpec(spec, limits: limits)
     }
 
     // MARK: - Live templates
@@ -104,7 +84,7 @@ enum CarPlayTemplateDump {
             return
         }
         if let grid = template as? CPGridTemplate {
-            lines.append("\(pad)CPGridTemplate title=\"\(grid.titleVariants.first ?? "")\" buttons=\(grid.gridButtons.count)")
+            lines.append("\(pad)CPGridTemplate title=\"\(grid.title ?? "")\" buttons=\(grid.gridButtons.count)")
             return
         }
         lines.append("\(pad)\(String(describing: type(of: template)))")

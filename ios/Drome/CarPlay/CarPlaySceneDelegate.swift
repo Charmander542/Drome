@@ -148,6 +148,8 @@ final class CarPlaySceneDelegate: UIResponder,
     }
 
     @objc private func sessionChanged() {
+        // Drop cached rails/playlists so a new account/server never paints stale Home.
+        CarPlayHomeCache.invalidate()
         rebuildRoot()
     }
 
@@ -194,9 +196,7 @@ final class CarPlaySceneDelegate: UIResponder,
         // Prefer jumping straight into system search / voice when the Search tab is selected.
         guard selectedTemplate === searchTabTemplate,
               let session = AppEnvironment.shared?.session else { return }
-        if systemSearchSupported != false {
-            openSearch(session: session)
-        }
+        openSearch(session: session)
     }
 
 #if DEBUG
@@ -267,41 +267,37 @@ final class CarPlaySceneDelegate: UIResponder,
 
         let player = session.player
         let rating = player.current.map { session.ratings.rating(for: $0.song) } ?? 0
-        let rateSymbol = rating > 0 ? "heart.fill" : "heart"
+        // Star reflects the real 1–5 rating; tap opens a one-level picker (never clobber stars).
+        let rateSymbol = rating > 0 ? "star.fill" : "star"
         let rateImage = UIImage(systemName: rateSymbol) ?? UIImage()
         let rate = CPNowPlayingImageButton(image: rateImage) { [weak self] _ in
-            self?.toggleNowPlayingRating()
+            self?.showRatingPicker()
         }
+        rate.isSelected = rating > 0
+
         let shuffle = CPNowPlayingShuffleButton { [weak self] _ in
             AppEnvironment.shared?.session?.player.cycleShuffleMode()
             self?.refreshNowPlayingButtons()
         }
+        shuffle.isSelected = player.shuffleMode != .off
+
         let repeatButton = CPNowPlayingRepeatButton { [weak self] _ in
             AppEnvironment.shared?.session?.player.cycleRepeatMode()
             self?.refreshNowPlayingButtons()
         }
-        // Selected state makes Autoplay (∞) glanceable alongside system shuffle/repeat.
+        repeatButton.isSelected = player.repeatMode != .off
+
+        // Set isSelected on the button *before* updateNowPlayingButtons — post-hoc
+        // writes on the shared template’s copies do not stick for custom image buttons.
         let autoplayImage = UIImage(systemName: "infinity") ?? UIImage()
         let autoplay = CPNowPlayingImageButton(image: autoplayImage) { [weak self] _ in
             guard let player = AppEnvironment.shared?.session?.player else { return }
             player.autoplayEnabled.toggle()
             self?.refreshNowPlayingButtons()
         }
+        autoplay.isSelected = player.autoplayEnabled
 
         np.updateNowPlayingButtons([rate, shuffle, repeatButton, autoplay])
-
-        let buttons = np.nowPlayingButtons
-        for button in buttons {
-            if button is CPNowPlayingShuffleButton {
-                button.isSelected = player.shuffleMode != .off
-            } else if button is CPNowPlayingRepeatButton {
-                button.isSelected = player.repeatMode != .off
-            }
-        }
-        let images = buttons.compactMap { $0 as? CPNowPlayingImageButton }
-        // [0] = rate heart, [1] = autoplay ∞
-        if images.count >= 1 { images[0].isSelected = rating > 0 }
-        if images.count >= 2 { images[1].isSelected = player.autoplayEnabled }
     }
 
     func nowPlayingTemplateUpNextButtonTapped(_ nowPlayingTemplate: CPNowPlayingTemplate) {
@@ -320,13 +316,43 @@ final class CarPlaySceneDelegate: UIResponder,
         Task { await openNowPlayingAlbum() }
     }
 
-    /// Single-tap favorite toggle (5★ ↔ clear) — no pushed star list.
-    private func toggleNowPlayingRating() {
-        guard let session = AppEnvironment.shared?.session,
+    /// One-level star picker — preserves existing 1–4★ ratings (no heart overwrite).
+    private func showRatingPicker() {
+        guard let interfaceController,
+              let session = AppEnvironment.shared?.session,
               let song = session.player.current?.song else { return }
+
         let current = session.ratings.rating(for: song)
-        session.ratings.setRating(current >= 5 ? 0 : 5, for: song)
-        refreshNowPlayingButtons()
+        var items: [CPListItem] = (1...5).map { stars in
+            let filled = String(repeating: "★", count: stars)
+            let empty = String(repeating: "☆", count: 5 - stars)
+            let item = CPListItem(
+                text: "\(filled)\(empty)",
+                detailText: stars == current ? "Current rating" : nil)
+            item.handler = { [weak self] _, completion in
+                session.ratings.setRating(stars, for: song)
+                self?.refreshNowPlayingButtons()
+                interfaceController.popTemplate(animated: true) { _, _ in
+                    completion()
+                }
+            }
+            return item
+        }
+
+        let clear = CPListItem(text: "Clear rating", detailText: nil)
+        clear.handler = { [weak self] _, completion in
+            session.ratings.setRating(0, for: song)
+            self?.refreshNowPlayingButtons()
+            interfaceController.popTemplate(animated: true) { _, _ in
+                completion()
+            }
+        }
+        items.append(clear)
+
+        let list = CPListTemplate(
+            title: "Rate",
+            sections: clampSections([CPListSection(items: items)]))
+        interfaceController.pushTemplate(list, animated: true, completion: nil)
     }
 
     private func showPodcastUpNext() {
@@ -497,8 +523,8 @@ final class CarPlaySceneDelegate: UIResponder,
                 userKey: session.account.userKey, limit: 30)) ?? []
 
             // Kick network work in parallel; apply once when everything settles.
+            // (No unused “newest” rail — Jump Back In covers frequent albums.)
             async let frequentTask = session.client.albumList(type: .frequent, size: 16)
-            async let newestTask = session.client.albumList(type: .newest, size: 16)
             async let mixesTask = self.fetchDailyMixes(session: session)
             async let playlistsTask = self.fetchPlaylists(session: session)
 
@@ -512,16 +538,6 @@ final class CarPlaySceneDelegate: UIResponder,
                 frequentOK = false
             }
 
-            let newestOK: Bool
-            let newest: [Album]
-            do {
-                newest = try await newestTask
-                newestOK = true
-            } catch {
-                newest = CarPlayHomeCache.cachedNewest
-                newestOK = false
-            }
-
             let playlistsOutcome = await playlistsTask
             let mixes = await mixesTask
             guard !Task.isCancelled else { return }
@@ -530,11 +546,10 @@ final class CarPlaySceneDelegate: UIResponder,
             if playlistsOutcome.ok {
                 CarPlayHomeCache.storePlaylists(playlists)
             }
-            CarPlayHomeCache.storeRails(frequent: frequent, newest: newest)
+            CarPlayHomeCache.storeRails(frequent: frequent, newest: [])
             CarPlayHomeCache.storeDailyMixes(mixes)
 
-            let serverFailed = (!frequentOK && !newestOK && !playlistsOutcome.ok)
-                || (!frequentOK && !newestOK && playlists.isEmpty)
+            let serverFailed = !frequentOK && !playlistsOutcome.ok
             let error: String?
             if serverFailed && frequent.isEmpty && playlists.isEmpty {
                 let message = "Can't reach your server"
@@ -556,7 +571,6 @@ final class CarPlaySceneDelegate: UIResponder,
             self.applySections(sections, to: template)
             CarPlayArtwork.prefetch(
                 ids: frequent.map { $0.coverArt ?? $0.id }
-                    + newest.map { $0.coverArt ?? $0.id }
                     + mixes.prefix(8).flatMap(\.coverArtIds)
                     + playlists.prefix(8).map { $0.coverArt ?? $0.id },
                 session: session)
@@ -611,8 +625,8 @@ final class CarPlaySceneDelegate: UIResponder,
                 completion()
             }
             // Prefetch real covers into the row asynchronously.
-            Task { @MainActor in
-                await self.refreshImageRow(
+            Task { @MainActor [weak self] in
+                await self?.refreshImageRow(
                     row, covers: tiles.map { ($0.title, $0.coverArtIds.first, $0.songs.first?.coverArt) },
                     session: session, style: .playlist)
             }
@@ -640,6 +654,7 @@ final class CarPlaySceneDelegate: UIResponder,
 
         sections.append(CPListSection(items: quickItems, header: "Quick Play", sectionIndexTitle: nil))
 
+        // Image-row sections: row title only — no duplicate section header.
         let recentEntries = Array(recent.prefix(tileCap))
         if !recentEntries.isEmpty {
             let images = recentEntries.map { entry -> UIImage in
@@ -657,14 +672,15 @@ final class CarPlaySceneDelegate: UIResponder,
                 self?.showRecentList(recent, session: session)
                 completion()
             }
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
                 await self.refreshImageRow(
                     row,
                     covers: recentEntries.map { self.recentCover($0) },
                     session: session,
                     style: .album)
             }
-            sections.append(CPListSection(items: [row], header: "Recently Played", sectionIndexTitle: nil))
+            sections.append(CPListSection(items: [row], header: nil, sectionIndexTitle: nil))
         }
 
         if !frequent.isEmpty {
@@ -688,14 +704,14 @@ final class CarPlaySceneDelegate: UIResponder,
                 self?.showAlbumList(frequent, title: "Jump Back In", session: session)
                 completion()
             }
-            Task { @MainActor in
-                await self.refreshImageRow(
+            Task { @MainActor [weak self] in
+                await self?.refreshImageRow(
                     row,
                     covers: albums.map { ($0.name, $0.coverArt, $0.id) },
                     session: session,
                     style: .album)
             }
-            sections.append(CPListSection(items: [row], header: "Jump Back In", sectionIndexTitle: nil))
+            sections.append(CPListSection(items: [row], header: nil, sectionIndexTitle: nil))
         }
 
         let ranked = rankedHomePlaylists(playlists, recent: recent)
@@ -719,14 +735,14 @@ final class CarPlaySceneDelegate: UIResponder,
                 self?.showPlaylistList(ranked, session: session)
                 completion()
             }
-            Task { @MainActor in
-                await self.refreshImageRow(
+            Task { @MainActor [weak self] in
+                await self?.refreshImageRow(
                     row,
                     covers: lists.map { ($0.name, $0.coverArt, $0.id) },
                     session: session,
                     style: .playlist)
             }
-            sections.append(CPListSection(items: [row], header: "Playlists", sectionIndexTitle: nil))
+            sections.append(CPListSection(items: [row], header: nil, sectionIndexTitle: nil))
         }
 
         if sections.count <= 1 && quickItems.count <= 1 {
@@ -1050,27 +1066,23 @@ final class CarPlaySceneDelegate: UIResponder,
 
     /// Prefer Apple’s `CPSearchTemplate`; otherwise mirror the iPhone QWERTY.
     private func openSearch(session: AppSession) {
-        if systemSearchSupported == false {
-            openMirroredPhoneSearch(session: session)
+        // Limit UI hides the system keyboard — go straight to the letter pad
+        // (never present an alert and push a search template at the same time).
+        if let limits = sessionConfiguration?.limitedUserInterfaces,
+           limits.contains(.keyboard) {
+            openCustomKeyboard(session: session)
             return
         }
 
-        // If the vehicle / Simulator has Limit UI on, the system keyboard is hidden.
-        if let limits = sessionConfiguration?.limitedUserInterfaces,
-           limits.contains(.keyboard) {
-            presentSimpleAlert(
-                title: "Keyboard limited",
-                message: "Turn off Limit UI in CarPlay Simulator, or search while parked.")
-        }
-
-        // Soft probe — completion path never freezes the UI waiting on an exception.
+        // Soft probe each time. A failed push must *not* permanently disable
+        // system search for the session (Limit UI / transient failures recover).
         pushSystemSearchTemplate { [weak self] ok in
             guard let self else { return }
             if ok {
                 self.systemSearchSupported = true
                 return
             }
-            self.systemSearchSupported = false
+            // One-shot fallback for this attempt only.
             self.openMirroredPhoneSearch(session: session)
         }
     }
@@ -1809,18 +1821,29 @@ final class CarPlaySceneDelegate: UIResponder,
         interfaceController.pushTemplate(list, animated: true, completion: nil)
     }
 
-    private func showGenres(session: AppSession) async {
+    private func showGenres(
+        session: AppSession,
+        updating existing: CPListTemplate? = nil
+    ) async {
         guard let interfaceController else { return }
+
+        let list: CPListTemplate
+        if let existing {
+            list = existing
+        } else {
+            list = CPListTemplate(title: "Genres", sections: clampSections([
+                CPListSection(items: [CPListItem(text: "Loading…", detailText: nil)])
+            ]))
+            interfaceController.pushTemplate(list, animated: true, completion: nil)
+        }
+
         let raw: [Genre]
         do {
             raw = try await session.client.genres()
         } catch {
-            let list = CPListTemplate(title: "Genres", sections: clampSections([
-                serverErrorSection { [weak self] in
-                    Task { await self?.showGenres(session: session) }
-                }
-            ]))
-            interfaceController.pushTemplate(list, animated: true, completion: nil)
+            applySections([serverErrorSection { [weak self] in
+                Task { await self?.showGenres(session: session, updating: list) }
+            }], to: list)
             return
         }
         let genres = GenreNormalizer.shared.groupedGenres(raw)
@@ -1846,12 +1869,11 @@ final class CarPlaySceneDelegate: UIResponder,
             }
             return item
         }
-        let list = CPListTemplate(
-            title: "Genres",
-            sections: clampSections([CPListSection(items: items.isEmpty
-                                     ? [CPListItem(text: "No genres", detailText: nil)]
-                                     : Array(items))]))
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        applySections([
+            CPListSection(items: items.isEmpty
+                          ? [CPListItem(text: "No genres", detailText: nil)]
+                          : Array(items))
+        ], to: list)
     }
 
     private func showGenre(_ genre: NormalizedGenre, session: AppSession) async {
@@ -2407,57 +2429,76 @@ final class CarPlaySceneDelegate: UIResponder,
         albumItems(albums, session: session)
     }
 
-    private func showArtistsBrowse(session: AppSession) async {
+    private func showArtistsBrowse(
+        session: AppSession,
+        updating existing: CPListTemplate? = nil
+    ) async {
         guard let interfaceController else { return }
+
+        func presentError(_ template: CPListTemplate) {
+            applySections([serverErrorSection { [weak self] in
+                Task { await self?.showArtistsBrowse(session: session, updating: template) }
+            }], to: template)
+        }
+
+        let list: CPListTemplate
+        if let existing {
+            list = existing
+        } else {
+            list = CPListTemplate(title: "Artists", sections: clampSections([
+                CPListSection(items: [CPListItem(text: "Loading…", detailText: nil)])
+            ]))
+            interfaceController.pushTemplate(list, animated: true, completion: nil)
+        }
+
         let indexes: [ArtistIndex]
         do {
             indexes = try await session.client.artists()
         } catch {
-            let list = CPListTemplate(title: "Artists", sections: clampSections([
-                serverErrorSection { [weak self] in
-                    Task { await self?.showArtistsBrowse(session: session) }
-                }
-            ]))
-            interfaceController.pushTemplate(list, animated: true, completion: nil)
+            presentError(list)
             return
         }
         let artists = await filteredBrowseArtists(indexes.flatMap(\.artists), session: session)
-        let perLetter = listsLimited ? 8 : 20
         let buckets = CarPlayListPolicy.letterBuckets(
-            artists, name: { $0.name }, maxPerLetter: perLetter, maxLetters: listLimits.maxSections)
+            artists, name: { $0.name }, maxLetters: listLimits.maxSections)
         CarPlayArtwork.prefetch(
             ids: artists.prefix(40).map { $0.coverArt ?? $0.id },
             session: session)
 
         if buckets.isEmpty {
-            let list = CPListTemplate(title: "Artists", sections: clampSections([
+            applySections([
                 emptySection(title: "No artists", detail: "Sync your library on iPhone")
-            ]))
-            interfaceController.pushTemplate(list, animated: true, completion: nil)
+            ], to: list)
             return
         }
 
-        // Letter index → artists for that letter (depth 2 from root tab, not a Load More chain).
+        // Letter index → artists for that letter (More… pages within the letter).
         let letterItems: [CPListItem] = buckets.map { bucket in
             let item = libraryShortcut(
                 title: bucket.letter,
                 detail: "\(bucket.items.count) artists",
                 systemImage: "person.2.fill")
             item.handler = { [weak self] _, completion in
-                self?.showArtistLetter(bucket.letter, artists: bucket.items, session: session)
+                self?.showArtistLetter(
+                    bucket.letter, artists: bucket.items, session: session, offset: 0)
                 completion()
             }
             return item
         }
-        let list = CPListTemplate(
-            title: "Artists",
-            sections: clampSections([CPListSection(items: letterItems)]))
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        applySections([CPListSection(items: letterItems)], to: list)
     }
 
-    private func showArtistLetter(_ letter: String, artists: [Artist], session: AppSession) {
+    private func showArtistLetter(
+        _ letter: String,
+        artists: [Artist],
+        session: AppSession,
+        offset: Int
+    ) {
         guard let interfaceController else { return }
-        let items: [CPListItem] = artists.prefix(listLimits.maxItems).map { artist in
+        let pageSize = min(listLimits.letterPageSize, listLimits.maxItems - 1)
+        let page = CarPlayListPolicy.letterPage(artists, offset: offset, pageSize: pageSize)
+
+        var items: [CPListItem] = page.page.map { artist in
             let item = listItem(
                 text: artist.name,
                 detail: artist.albumCount.map { "\($0) albums" } ?? "Artist",
@@ -2478,39 +2519,65 @@ final class CarPlaySceneDelegate: UIResponder,
             }
             return item
         }
+        if let next = page.nextOffset {
+            let more = actionItem(
+                title: "More…",
+                detail: "\(page.remaining) more",
+                systemImage: "ellipsis.circle")
+            more.handler = { [weak self] _, completion in
+                self?.showArtistLetter(
+                    letter, artists: artists, session: session, offset: next)
+                completion()
+            }
+            items.append(more)
+        }
+
+        let title = offset == 0 ? letter : "\(letter) · more"
         let list = CPListTemplate(
-            title: letter,
-            sections: clampSections([CPListSection(items: Array(items))]))
+            title: title,
+            sections: clampSections([CPListSection(items: items)]))
         interfaceController.pushTemplate(list, animated: true, completion: nil)
     }
 
-    /// A–Z letter index instead of “Load More” push chains (keeps depth ≤4).
-    private func showAlbumsBrowse(session: AppSession) async {
+    /// A–Z letter index; More… within a letter is one extra level (still ≤5).
+    private func showAlbumsBrowse(
+        session: AppSession,
+        updating existing: CPListTemplate? = nil
+    ) async {
         guard let interfaceController else { return }
+
+        func presentError(_ template: CPListTemplate) {
+            applySections([serverErrorSection { [weak self] in
+                Task { await self?.showAlbumsBrowse(session: session, updating: template) }
+            }], to: template)
+        }
+
+        let list: CPListTemplate
+        if let existing {
+            list = existing
+        } else {
+            list = CPListTemplate(title: "Albums", sections: clampSections([
+                CPListSection(items: [CPListItem(text: "Loading…", detailText: nil)])
+            ]))
+            interfaceController.pushTemplate(list, animated: true, completion: nil)
+        }
+
         let page: [Album]
         do {
-            // One generous fetch — letter buckets replace paging pushes.
             page = try await session.client.albumList(
                 type: .alphabeticalByName, size: 500, offset: 0)
         } catch {
-            let list = CPListTemplate(title: "Albums", sections: clampSections([
-                serverErrorSection { [weak self] in
-                    Task { await self?.showAlbumsBrowse(session: session) }
-                }
-            ]))
-            interfaceController.pushTemplate(list, animated: true, completion: nil)
+            presentError(list)
             return
         }
 
-        let perLetter = listsLimited ? 8 : 24
         let buckets = CarPlayListPolicy.letterBuckets(
-            page, name: { $0.name }, maxPerLetter: perLetter, maxLetters: listLimits.maxSections)
+            page, name: { $0.name }, maxLetters: listLimits.maxSections)
 
         if buckets.isEmpty {
-            let list = CPListTemplate(title: "Albums", sections: clampSections([
+            applySections([
                 emptySection(title: "No albums", detail: "Sync your library on iPhone")
-            ]))
-            interfaceController.pushTemplate(list, animated: true, completion: nil)
+            ], to: list)
             return
         }
 
@@ -2520,25 +2587,41 @@ final class CarPlaySceneDelegate: UIResponder,
                 detail: "\(bucket.items.count) albums",
                 systemImage: "square.stack.fill")
             item.handler = { [weak self] _, completion in
-                self?.showAlbumLetter(bucket.letter, albums: bucket.items, session: session)
+                self?.showAlbumLetter(
+                    bucket.letter, albums: bucket.items, session: session, offset: 0)
                 completion()
             }
             return item
         }
-        let list = CPListTemplate(
-            title: "Albums",
-            sections: clampSections([CPListSection(items: letterItems)]))
-        interfaceController.pushTemplate(list, animated: true, completion: nil)
+        applySections([CPListSection(items: letterItems)], to: list)
     }
 
-    private func showAlbumLetter(_ letter: String, albums: [Album], session: AppSession) {
+    private func showAlbumLetter(
+        _ letter: String,
+        albums: [Album],
+        session: AppSession,
+        offset: Int
+    ) {
         guard let interfaceController else { return }
-        let capped = Array(albums.prefix(listLimits.maxItems))
+        let pageSize = min(listLimits.letterPageSize, listLimits.maxItems - 1)
+        let page = CarPlayListPolicy.letterPage(albums, offset: offset, pageSize: pageSize)
+        var items = albumItems(page.page, session: session)
+        if let next = page.nextOffset {
+            let more = actionItem(
+                title: "More…",
+                detail: "\(page.remaining) more",
+                systemImage: "ellipsis.circle")
+            more.handler = { [weak self] _, completion in
+                self?.showAlbumLetter(
+                    letter, albums: albums, session: session, offset: next)
+                completion()
+            }
+            items.append(more)
+        }
+        let title = offset == 0 ? letter : "\(letter) · more"
         let list = CPListTemplate(
-            title: letter,
-            sections: clampSections([
-                CPListSection(items: albumItems(capped, session: session))
-            ]))
+            title: title,
+            sections: clampSections([CPListSection(items: items)]))
         interfaceController.pushTemplate(list, animated: true, completion: nil)
     }
 
