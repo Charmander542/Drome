@@ -124,6 +124,9 @@ private enum WidgetIdleMetrics {
     static let captionSpacing: CGFloat = 4
     static let gridCaptionHeight: CGFloat = 24
     static let sectionSpacing: CGFloat = 11
+    /// Fixed caption metrics so short titles / placeholder art never pick a different size.
+    static let captionFontSize: CGFloat = 11
+    static let captionFontWeight: Font.Weight = .semibold
 
     struct MediumIdleLayout {
         let heroArtSize: CGFloat
@@ -169,9 +172,25 @@ private enum WidgetIdleMetrics {
         return max(36, min(byWidth, byHeight))
     }
 
+    /// Gap that places the first tile flush leading and the last flush trailing.
+    static func interItemSpacing(
+        contentWidth: CGFloat,
+        artSize: CGFloat,
+        itemCount: Int
+    ) -> CGFloat {
+        let count = max(itemCount, 1)
+        guard count > 1 else { return 0 }
+        let leftover = contentWidth - CGFloat(count) * artSize
+        return max(0, leftover / CGFloat(count - 1))
+    }
+
     static func cellWidth(artSize: CGFloat) -> CGFloat { artSize }
     static func cellHeight(artSize: CGFloat) -> CGFloat {
         artSize + captionSpacing + gridCaptionHeight
+    }
+
+    static var tileCaptionFont: Font {
+        .system(size: captionFontSize, weight: captionFontWeight)
     }
 }
 
@@ -330,19 +349,11 @@ private struct MediumIdleView: View {
                     } else if gridItems.isEmpty {
                         Spacer(minLength: 0)
                     } else {
-                        HStack(alignment: .top, spacing: WidgetIdleMetrics.columnSpacing) {
-                            ForEach(gridItems) { item in
-                                RecentSquareTile(
-                                    item: item,
-                                    showTitle: true,
-                                    artSize: layout.gridArtSize,
-                                    captionHeight: WidgetIdleMetrics.gridCaptionHeight)
-                                    .frame(
-                                        width: layout.gridCellWidth,
-                                        height: layout.gridCellHeight,
-                                        alignment: .topLeading)
-                            }
-                        }
+                        EqualSpacedTileRow(
+                            items: gridItems,
+                            artSize: layout.gridArtSize,
+                            cellHeight: layout.gridCellHeight,
+                            captionHeight: WidgetIdleMetrics.gridCaptionHeight)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -361,27 +372,74 @@ private struct MediumIdleView: View {
 private struct LargeCompactRecentsView: View {
     let items: [WidgetRecentItem]
 
+    private let columnCount = 4
+
     var body: some View {
         GeometryReader { geo in
             let artSize = WidgetIdleMetrics.artSize(
-                width: geo.size.width, height: geo.size.height, columnCount: 4)
-            let columns = Array(repeating: GridItem(.fixed(artSize), spacing: 8), count: 4)
-            VStack(alignment: .leading, spacing: 10) {
-                RecentHeroHeader(item: items.first, artSize: artSize)
+                width: geo.size.width, height: geo.size.height, columnCount: columnCount)
+            let contentWidth = geo.size.width - WidgetIdleMetrics.horizontalPadding * 2
+            let spacing = WidgetIdleMetrics.interItemSpacing(
+                contentWidth: contentWidth,
+                artSize: artSize,
+                itemCount: columnCount)
+            let columns = Array(
+                repeating: GridItem(.fixed(artSize), spacing: spacing),
+                count: columnCount)
 
-                if items.isEmpty {
-                    EmptyWidgetView(message: "Recently played shows up here")
-                        .frame(maxHeight: .infinity)
-                } else {
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                        ForEach(Array(items.dropFirst().prefix(12))) { item in
-                            RecentSquareTile(item: item, showTitle: true, artSize: artSize)
+            ZStack(alignment: .topTrailing) {
+                VStack(alignment: .leading, spacing: WidgetIdleMetrics.sectionSpacing) {
+                    RecentHeroHeader(item: items.first, artSize: artSize)
+
+                    if items.isEmpty {
+                        EmptyWidgetView(message: "Recently played shows up here")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        LazyVGrid(columns: columns, alignment: .leading, spacing: spacing) {
+                            ForEach(Array(items.dropFirst().prefix(12))) { item in
+                                RecentSquareTile(
+                                    item: item,
+                                    showTitle: true,
+                                    artSize: artSize,
+                                    captionHeight: WidgetIdleMetrics.gridCaptionHeight)
+                            }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+                DromeBarMark(size: 14, color: .white.opacity(0.9))
+                    .padding(.top, 1)
             }
-            .padding(14)
+            .padding(.horizontal, WidgetIdleMetrics.horizontalPadding)
+            .padding(.vertical, WidgetIdleMetrics.verticalPadding)
         }
+    }
+}
+
+/// Single row of fixed-size tiles with equal gaps; first/last flush to the content edges.
+private struct EqualSpacedTileRow: View {
+    let items: [WidgetRecentItem]
+    let artSize: CGFloat
+    let cellHeight: CGFloat
+    let captionHeight: CGFloat
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                if index > 0 {
+                    Spacer(minLength: 0)
+                }
+                RecentSquareTile(
+                    item: item,
+                    showTitle: true,
+                    artSize: artSize,
+                    captionHeight: captionHeight)
+                    .frame(width: artSize, height: cellHeight, alignment: .topLeading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: items.count <= 1 ? .center : .leading)
     }
 }
 
@@ -424,7 +482,7 @@ private struct RecentSquareTile: View {
     let item: WidgetRecentItem
     var showTitle: Bool = false
     var artSize: CGFloat
-    var captionHeight: CGFloat = 14
+    var captionHeight: CGFloat = WidgetIdleMetrics.gridCaptionHeight
 
     var body: some View {
         Link(destination: URL(string: item.deepLink)!) {
@@ -434,10 +492,9 @@ private struct RecentSquareTile: View {
                     .fixedSize()
                 if showTitle {
                     Text(item.title)
-                        .font(.caption2.weight(.semibold))
+                        .font(WidgetIdleMetrics.tileCaptionFont)
                         .foregroundStyle(.white.opacity(0.92))
                         .lineLimit(2)
-                        .minimumScaleFactor(0.75)
                         .multilineTextAlignment(.leading)
                         .frame(width: artSize, height: captionHeight, alignment: .topLeading)
                 }
@@ -501,14 +558,15 @@ private struct LargePlayingRecentTile: View {
 
     var body: some View {
         Link(destination: URL(string: item.deepLink)!) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: WidgetIdleMetrics.captionSpacing) {
                 WidgetArtwork(file: item.artworkFile, cornerRadius: WidgetColors.albumCornerRadius)
                     .aspectRatio(1, contentMode: .fill)
                 Text(item.title)
-                    .font(.caption2.weight(.semibold))
+                    .font(WidgetIdleMetrics.tileCaptionFont)
                     .foregroundStyle(WidgetPalette.foreground(for: nowPlaying))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
     }
