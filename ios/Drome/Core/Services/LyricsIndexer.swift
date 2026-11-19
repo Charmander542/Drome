@@ -56,6 +56,7 @@ final class LyricsIndexer: ObservableObject {
     func reindexFromStart() {
         stop()
         try? database.setLyricsIndexOffset(serverKey: serverKey, offset: 0)
+        Task { await LyricsFuzzyIndex.shared.invalidate() }
         start()
     }
 

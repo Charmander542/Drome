@@ -19,6 +19,7 @@ type server struct {
 	downloads *downloadWorker
 	connect   *connectHub
 	mixes     *mixHub
+	lyrics    *lyricsIndex
 }
 
 func (s *server) routes() http.Handler {
@@ -44,6 +45,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /apple-app-site-association", s.handleAppleAppSiteAssociation)
 	s.registerConnectRoutes(mux)
 	s.registerMixRoutes(mux)
+	s.registerLyricsRoutes(mux)
 	return logRequests(mux)
 }
 

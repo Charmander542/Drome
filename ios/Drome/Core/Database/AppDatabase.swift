@@ -13,13 +13,67 @@ struct CachedLyrics {
     var source: String // "navidrome.v2" | "lrclib.v3" | legacy | "none"
 }
 
-struct LyricsSearchMatch: Identifiable {
+struct LyricsSearchMatch: Identifiable, Sendable {
     var id: String { songId }
     var songId: String
     var title: String
     var artist: String
     var album: String
+    /// Display snippet (matched line, optionally with neighbors).
     var snippet: String
+    /// Exact matched lyric line (for VoiceOver / highlighting).
+    var matchedLine: String
+    /// UTF-16 offsets into `snippet` for matched words: (location, length).
+    var matchUTF16Ranges: [(location: Int, length: Int)]
+    var score: Double
+    var accessibilityLabel: String
+    /// `local` cache hit or `server` companion merge.
+    var source: String
+
+    init(
+        songId: String,
+        title: String,
+        artist: String,
+        album: String,
+        snippet: String,
+        matchedLine: String? = nil,
+        matchUTF16Ranges: [(location: Int, length: Int)] = [],
+        score: Double = 0,
+        accessibilityLabel: String? = nil,
+        source: String = "local"
+    ) {
+        self.songId = songId
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.snippet = snippet
+        let line = matchedLine ?? snippet
+        self.matchedLine = line
+        self.matchUTF16Ranges = matchUTF16Ranges
+        self.score = score
+        self.accessibilityLabel = accessibilityLabel ?? "Lyric match: \(line)"
+        self.source = source
+    }
+
+    static func from(hit: LyricsFuzzySearch.Hit, source: String = "local") -> LyricsSearchMatch {
+        let utf16: [(location: Int, length: Int)] = hit.matchRanges.compactMap { range in
+            let ns = NSRange(range, in: hit.snippet)
+            guard ns.location != NSNotFound, ns.length > 0 else { return nil }
+            return (ns.location, ns.length)
+        }
+        return LyricsSearchMatch(
+            songId: hit.songId,
+            title: hit.title,
+            artist: hit.artist,
+            album: hit.album,
+            snippet: hit.snippet,
+            matchedLine: hit.matchedLine,
+            matchUTF16Ranges: utf16,
+            score: hit.score,
+            accessibilityLabel: hit.accessibilityLabel,
+            source: source
+        )
+    }
 }
 
 struct DownloadRecord {
@@ -303,8 +357,23 @@ final class AppDatabase: @unchecked Sendable {
         }
     }
 
-    /// Approximate full-text search over cached lyrics. Each word is matched
-    /// as a prefix so partially remembered lines still hit.
+    /// Rows used to build the on-device fuzzy lyrics index.
+    func lyricsCorpus(serverKey: String) throws -> [CachedLyrics] {
+        try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT * FROM lyrics
+                WHERE server_key = ? AND source != 'none' AND content != ''
+                """, arguments: [serverKey])
+            return rows.map {
+                CachedLyrics(serverKey: $0["server_key"], songId: $0["song_id"],
+                             title: $0["title"], artist: $0["artist"], album: $0["album"],
+                             synced: $0["synced"], content: $0["content"], source: $0["source"])
+            }
+        }
+    }
+
+    /// Legacy FTS5 prefix search — kept for diagnostics / fallback. Prefer
+    /// `LyricsFuzzyIndex` for typo-tolerant lyrics lookup.
     func searchLyrics(serverKey: String, query: String, limit: Int = 40) throws -> [LyricsSearchMatch] {
         let tokens = query
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
