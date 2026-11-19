@@ -143,6 +143,50 @@ struct DromeWishlistClient {
         ).results
     }
 
+    /// Fuzzy lyrics search against the companion's library-wide index (.lrc sidecars).
+    /// Failures should be treated as empty — local cache remains the offline path.
+    func searchLyrics(query: String, limit: Int = 40) async throws -> [LyricsSearchMatch] {
+        struct RemoteHit: Decodable {
+            var songId: String?
+            var title: String
+            var artist: String
+            var album: String
+            var snippet: String
+            var matchedLine: String?
+            var score: Double?
+            var matchRanges: [[Int]]?
+        }
+        struct Response: Decodable { var results: [RemoteHit] }
+        let response = try await send(
+            Response.self,
+            path: "/lyrics/search",
+            method: "GET",
+            extraQuery: [
+                URLQueryItem(name: "q", value: query),
+                URLQueryItem(name: "limit", value: String(min(max(limit, 1), 80))),
+            ]
+        )
+        return response.results.map { hit in
+            let ranges: [(location: Int, length: Int)] = (hit.matchRanges ?? []).compactMap { pair in
+                guard pair.count >= 2, pair[0] >= 0, pair[1] > 0 else { return nil }
+                return (pair[0], pair[1])
+            }
+            let line = hit.matchedLine ?? hit.snippet
+            return LyricsSearchMatch(
+                songId: hit.songId ?? "",
+                title: hit.title,
+                artist: hit.artist,
+                album: hit.album,
+                snippet: hit.snippet,
+                matchedLine: line,
+                matchUTF16Ranges: ranges,
+                score: hit.score ?? 0,
+                accessibilityLabel: "Lyric match: \(line)",
+                source: "server"
+            )
+        }
+    }
+
     /// Track-focused search used by missing-track recommend UIs.
     func searchSpotify(query: String, limit: Int = 10) async throws -> [SpotifySearchHit] {
         try await search(query: query, types: "track", limit: limit)

@@ -287,7 +287,7 @@ struct SearchView: View {
         case .artists:
             return "Try an artist name."
         case .lyrics:
-            return "Try a line of lyrics from a song in your library."
+            return "Try a line you remember — typos and mixed-up words are OK."
         }
     }
 
@@ -981,16 +981,43 @@ struct SearchView: View {
                 } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         hitLabel(hit, shape: .rounded, showsCover: false)
-                        Text(lyric.snippet)
-                            .font(.caption)
-                            .foregroundStyle(DromeTheme.accent)
-                            .lineLimit(2)
-                            .padding(.leading, 60)
+                        lyricSnippetView(lyric)
+                            .padding(.leading, dynamicTypeSize.isAccessibilitySize ? 0 : 60)
                     }
                 }
                 .buttonStyle(.plain)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(hit.title), \(hit.subtitle). \(lyric.accessibilityLabel)")
             }
         }
+    }
+
+    @ViewBuilder
+    private func lyricSnippetView(_ lyric: LyricsSearchMatch) -> some View {
+        Text(highlightedLyricSnippet(lyric))
+            .font(.caption)
+            .foregroundStyle(DromeTheme.muted)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityHidden(true) // spoken via the row label
+    }
+
+    private func highlightedLyricSnippet(_ lyric: LyricsSearchMatch) -> AttributedString {
+        var attributed = AttributedString(lyric.snippet)
+        attributed.foregroundColor = DromeTheme.muted
+        let ns = lyric.snippet as NSString
+        for range in lyric.matchUTF16Ranges {
+            guard range.location >= 0,
+                  range.length > 0,
+                  range.location + range.length <= ns.length else { continue }
+            let nsRange = NSRange(location: range.location, length: range.length)
+            guard let stringRange = Range(nsRange, in: lyric.snippet),
+                  let attrRange = Range(stringRange, in: attributed) else { continue }
+            attributed[attrRange].foregroundColor = DromeTheme.accent
+            attributed[attrRange].font = Font.caption.weight(.bold)
+        }
+        return attributed
     }
 
     private func rememberHit(_ hit: SearchHit) {
@@ -1182,7 +1209,9 @@ struct SearchView: View {
                 ?? SearchResult3(artist: nil, album: nil, song: nil)
             let lyrics: [LyricsSearchMatch]
             if wantLyrics {
-                lyrics = (try? db.searchLyrics(serverKey: serverKey, query: q)) ?? []
+                await LyricsFuzzyIndex.shared.ensureReady(serverKey: serverKey, database: db)
+                let fuzzy = await LyricsFuzzyIndex.shared.search(query: q, limit: 40)
+                lyrics = fuzzy.map { LyricsSearchMatch.from(hit: $0, source: "local") }
             } else {
                 lyrics = []
             }
@@ -1211,26 +1240,29 @@ struct SearchView: View {
             let db = session.database
             let wantLyrics = includeLyrics
             let client = session.client
+            let wishlist = session.wishlist
             let ownership = await session.artistOwnershipStats()
             let songsIndexed = await session.songsIndexComplete()
             let hideCredits = LibraryArtistFilter.hideCreditOnlyArtists
-            let ranked = try await Task.detached(priority: .userInitiated) {
-                let metadata = try await client.search(q, artistCount: 20, albumCount: 20, songCount: 40)
-                let lyrics: [LyricsSearchMatch]
-                if wantLyrics {
-                    lyrics = (try? db.searchLyrics(serverKey: serverKey, query: q)) ?? []
-                } else {
-                    lyrics = []
-                }
-                let artistFilter: ((Artist) -> Bool)? = hideCredits
-                    ? { LibraryArtistFilter.isVisible($0, ownership: ownership[$0.id], songsIndexed: songsIndexed) }
-                    : nil
-                return (SearchRanker.rank(
-                    query: q, result: metadata, lyrics: lyrics, artistFilter: artistFilter), metadata.songs)
-            }.value
+
+            async let metadataTask = client.search(q, artistCount: 20, albumCount: 20, songCount: 40)
+            async let localLyricsTask = loadLocalLyricsHits(
+                wantLyrics: wantLyrics, serverKey: serverKey, database: db, query: q)
+            async let serverLyricsTask = loadServerLyricsHits(
+                wantLyrics: wantLyrics, wishlist: wishlist, query: q)
+
+            let metadata = try await metadataTask
+            let lyrics = mergeLyricsHits(
+                local: await localLyricsTask,
+                server: await serverLyricsTask)
+            let artistFilter: ((Artist) -> Bool)? = hideCredits
+                ? { LibraryArtistFilter.isVisible($0, ownership: ownership[$0.id], songsIndexed: songsIndexed) }
+                : nil
+            let ranked = SearchRanker.rank(
+                query: q, result: metadata, lyrics: lyrics, artistFilter: artistFilter)
             guard !Task.isCancelled else { return }
-            hits = ranked.0
-            let songs = ranked.1
+            hits = ranked
+            let songs = metadata.songs
             Task { @MainActor in
                 await Task.yield()
                 session.ratings.ingest(songs)
@@ -1240,6 +1272,55 @@ struct SearchView: View {
                 self.error = error.localizedDescription
             }
         }
+    }
+
+    private func loadLocalLyricsHits(
+        wantLyrics: Bool,
+        serverKey: String,
+        database: AppDatabase,
+        query: String
+    ) async -> [LyricsSearchMatch] {
+        guard wantLyrics else { return [] }
+        await LyricsFuzzyIndex.shared.ensureReady(serverKey: serverKey, database: database)
+        let fuzzy = await LyricsFuzzyIndex.shared.search(query: query, limit: 40)
+        return fuzzy.map { LyricsSearchMatch.from(hit: $0, source: "local") }
+    }
+
+    private func loadServerLyricsHits(
+        wantLyrics: Bool,
+        wishlist: DromeWishlistClient?,
+        query: String
+    ) async -> [LyricsSearchMatch] {
+        guard wantLyrics, let wishlist else { return [] }
+        return (try? await wishlist.searchLyrics(query: query, limit: 40)) ?? []
+    }
+
+    /// Prefer the higher-scoring hit per song; local wins ties so offline
+    /// highlighting ranges stay coherent.
+    private func mergeLyricsHits(
+        local: [LyricsSearchMatch],
+        server: [LyricsSearchMatch]
+    ) -> [LyricsSearchMatch] {
+        var best: [String: LyricsSearchMatch] = [:]
+        for hit in local where !hit.songId.isEmpty {
+            best[hit.songId] = hit
+        }
+        for hit in server {
+            let key: String
+            if !hit.songId.isEmpty {
+                key = hit.songId
+            } else {
+                key = "meta:\(hit.title.lowercased())|\(hit.artist.lowercased())"
+            }
+            if let existing = best[key] {
+                if hit.score > existing.score + 0.5 {
+                    best[key] = hit
+                }
+            } else {
+                best[key] = hit
+            }
+        }
+        return Array(best.values).sorted { $0.score > $1.score }
     }
 
     private func runSpotifySearch(_ q: String) async {
@@ -1301,7 +1382,20 @@ struct SearchView: View {
 
     private func playLyricsHit(_ hit: LyricsSearchMatch) async {
         do {
-            let song = try await session.client.song(id: hit.songId)
+            let song: Song
+            if !hit.songId.isEmpty {
+                song = try await session.client.song(id: hit.songId)
+            } else {
+                let result = try await session.client.search(
+                    "\(hit.title) \(hit.artist)",
+                    artistCount: 0, albumCount: 0, songCount: 20)
+                guard let match = result.songs.first(where: {
+                    $0.title.localizedCaseInsensitiveCompare(hit.title) == .orderedSame
+                }) ?? result.songs.first else {
+                    throw URLError(.resourceUnavailable)
+                }
+                song = match
+            }
             session.player.play([song], startAt: 0,
                         context: PlaybackContext(label: "Lyrics search", kind: .search))
             NowPlayingPresenter.open()

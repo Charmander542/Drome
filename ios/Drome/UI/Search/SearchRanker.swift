@@ -89,8 +89,11 @@ enum SearchRanker {
             // Lyrics matches are useful but should sit below strong metadata hits.
             let titleScore = matchScore(name: lyric.title, query: q, kind: .lyrics)
             let artistScore = matchScore(name: lyric.artist, query: q, kind: .lyrics) * 0.8
-            let lyricBonus: Double = lyric.snippet.localizedCaseInsensitiveContains(q) ? 120 : 40
-            let score = max(titleScore, artistScore) + lyricBonus
+            // Fuzzy line score dominates; metadata is a small tie-break.
+            let lineScore = lyric.score > 0 ? lyric.score : (
+                lyric.snippet.localizedCaseInsensitiveContains(q) ? 120 : 40
+            )
+            let score = lineScore + max(titleScore, artistScore) * 0.05
             hits.append(SearchHit(
                 id: "lyrics-\(lyric.songId)",
                 kind: .lyrics,
