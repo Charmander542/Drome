@@ -59,7 +59,8 @@ enum PlaybackPreferences {
     static var remoteMaxBitRate: Int { 192 }
 
     /// Cap getCoverArt `size=` over Funnel/remote so grids don't pull 600–1200px.
-    static var remoteCoverMaxSize: Int { 200 }
+    /// `nonisolated`: pure constant; called from nonisolated `SubsonicClient`.
+    nonisolated static var remoteCoverMaxSize: Int { 200 }
 
     /// Bitrate for compressed streams given the configured Navidrome host.
     static func preferredMaxBitRate(serverHost: String?) -> Int {
@@ -68,14 +69,16 @@ enum PlaybackPreferences {
     }
 
     /// Clamp requested cover pixel size when the server host is remote.
-    static func clampedCoverSize(_ requested: Int, serverHost: String?) -> Int {
+    /// `nonisolated`: pure (host + constant); safe off the main actor.
+    nonisolated static func clampedCoverSize(_ requested: Int, serverHost: String?) -> Int {
         guard requested > 0 else { return requested }
         if isLocalNetworkHost(serverHost) { return requested }
         return min(requested, remoteCoverMaxSize)
     }
 
     /// True when `host` looks like a LAN address (not Tailscale CGNAT / public).
-    static func isLocalNetworkHost(_ host: String?) -> Bool {
+    /// `nonisolated`: pure string classification; no shared mutable state.
+    nonisolated static func isLocalNetworkHost(_ host: String?) -> Bool {
         guard let host, !host.isEmpty else { return false }
         let lower = host.lowercased()
         if lower == "localhost" || lower.hasSuffix(".local") { return true }
