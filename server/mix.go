@@ -59,10 +59,20 @@ func (t mixTrack) tasteScore() float64 {
 	if t.UserRating > 0 {
 		s += float64(t.UserRating * t.UserRating)
 	} else {
-		s += 4 // unrated sits near 2★ so new libraries still mix
+		// Unrated used to sit near 2★ (+4). On shared Navidrome libraries that
+		// let other users' music dominate Daily Mixes — keep a tiny base so
+		// cold-start still works, but require stars/ratings to climb.
+		s += 0.75
 	}
 	if t.PlayCount > 0 {
-		s += math.Log2(1 + float64(t.PlayCount))
+		boost := math.Log2(1 + float64(t.PlayCount))
+		// Play counts on a shared server mix every listener. Only trust them
+		// fully when this user has starred or rated the track.
+		if t.UserRating > 0 || t.isStarred() {
+			s += boost
+		} else {
+			s += boost * 0.15
+		}
 	}
 	return s
 }

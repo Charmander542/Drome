@@ -268,7 +268,7 @@ enum SongShare {
 
 /// Center pill so Share doesn’t feel dead while cover / token upload runs.
 @MainActor
-private enum SharePrepHUD {
+enum SharePrepHUD {
     private static weak var container: UIView?
     static var isVisible: Bool { container != nil }
 
