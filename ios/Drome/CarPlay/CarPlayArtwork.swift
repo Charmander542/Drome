@@ -89,6 +89,19 @@ enum CarPlayArtwork {
 
     // MARK: - Load
 
+    /// Public loader for `CPListImageRowItem` tiles (returns car-scaled image).
+    static func loadForRow(url: URL, session: AppSession) async -> UIImage? {
+        prepare()
+        let cacheKey = url.absoluteString as NSString
+        if let scaled = scaledCache.object(forKey: cacheKey) {
+            return scaled
+        }
+        guard let image = await loadImage(url: url, session: session) else { return nil }
+        let scaled = carListImage(from: image)
+        scaledCache.setObject(scaled, forKey: cacheKey)
+        return scaled
+    }
+
     private static func loadImage(url: URL, session: AppSession) async -> UIImage? {
         if let image = await ImageLoader.shared.image(for: url) {
             return image

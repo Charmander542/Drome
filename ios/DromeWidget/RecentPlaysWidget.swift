@@ -797,7 +797,7 @@ enum WidgetColors {
     static let muted = Color(white: 0.62)
 }
 
-#if DEBUG
+// Available in Release too — TimelineProvider.placeholder references this.
 extension WidgetRecentSnapshot {
     static var placeholder: WidgetRecentSnapshot {
         WidgetRecentSnapshot(
@@ -852,6 +852,7 @@ extension WidgetRecentSnapshot {
     }
 }
 
+#if DEBUG
 #Preview(as: .systemSmall) {
     RecentPlaysWidget()
 } timeline: {
