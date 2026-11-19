@@ -56,6 +56,21 @@ enum CarPlayListPolicy: Sendable {
         }
     }
 
+    /// Stable row identity — never match Library rows by display title alone.
+    enum ItemRole: String, Sendable, Equatable {
+        case browseDownloaded
+        case browseArtists
+        case browseAlbums
+        case browseTopRated
+        case browseGenres
+        case playlist
+        case emptyPlaylists
+        case message
+        case retry
+        case action
+        case imageRow
+    }
+
     struct ItemSpec: Sendable, Equatable {
         var title: String
         var subtitle: String?
@@ -63,22 +78,34 @@ enum CarPlayListPolicy: Sendable {
         var accessory: String?
         /// Image-row tile titles (when this item represents a `CPListImageRowItem`).
         var imageRowTitles: [String]?
+        var role: ItemRole
+        /// Stable playlist (or other) id — required for `.playlist` rows.
+        var id: String?
 
         init(
             title: String,
             subtitle: String? = nil,
             hasImage: Bool = false,
             accessory: String? = nil,
-            imageRowTitles: [String]? = nil
+            imageRowTitles: [String]? = nil,
+            role: ItemRole = .message,
+            id: String? = nil
         ) {
             self.title = title
             self.subtitle = subtitle
             self.hasImage = hasImage
             self.accessory = accessory
             self.imageRowTitles = imageRowTitles
+            self.role = role
+            self.id = id
         }
 
-        var isImageRow: Bool { imageRowTitles != nil }
+        var isImageRow: Bool { imageRowTitles != nil || role == .imageRow }
+    }
+
+    struct PlaylistRef: Sendable, Equatable {
+        var id: String
+        var title: String
     }
 
     struct TemplateSpec: Sendable, Equatable {
@@ -107,7 +134,7 @@ enum CarPlayListPolicy: Sendable {
 
     struct LibraryInput: Sendable, Equatable {
         var serverError: Bool
-        var playlistTitles: [String]
+        var playlists: [PlaylistRef]
         var downloadedCount: Int
     }
 
@@ -157,33 +184,73 @@ enum CarPlayListPolicy: Sendable {
         }
     }
 
-    /// One page of a list (letter index or letter contents). More… must update
-    /// the current template in place — never push another level.
+    /// One page of a list (letter index or letter contents). More… / Previous
+    /// must update the current template in place — never push another level.
     static func letterPage<T>(
         _ items: [T],
         offset: Int,
         pageSize: Int
-    ) -> (page: [T], nextOffset: Int?, remaining: Int) {
+    ) -> (page: [T], nextOffset: Int?, previousOffset: Int?, remaining: Int) {
         let size = max(1, pageSize)
-        let page = Array(items.dropFirst(offset).prefix(size))
-        let next = offset + page.count
+        let start = max(0, offset)
+        let page = Array(items.dropFirst(start).prefix(size))
+        let next = start + page.count
+        let previous: Int? = start > 0 ? max(0, start - size) : nil
         if next < items.count {
-            return (page, next, items.count - next)
+            return (page, next, previous, items.count - next)
         }
-        return (page, nil, 0)
+        return (page, nil, previous, 0)
     }
 
-    /// Depth for Library → Artists/Albums → letter → (optional in-place More) → item.
-    /// In-place More… does **not** add depth.
-    static func browseDepth(
-        repeatedMorePages: Int,
-        opensItem: Bool,
-        listsLimited: Bool
-    ) -> Int {
-        // root tab(1) + browse list(2) + letter page(3) + optional item(4)
-        _ = repeatedMorePages
-        _ = listsLimited
-        return opensItem ? 4 : 3
+    /// Real CarPlay stack segments (root included). In-place More…/Previous
+    /// are omitted — they do not push.
+    enum StackSegment: String, Sendable, Equatable {
+        case rootTab
+        case browseList          // Artists / Albums A–Z index
+        case letterContents      // one letter’s items
+        case detail              // album / artist / playlist detail
+        case nestedDetail        // album opened from artist (must stay ≤5)
+        case nowPlaying
+        case ratePicker          // must not push when NP already at depth 5
+        case searchOverlay       // mirrored search / keyboard
+    }
+
+    /// Depth of a proposed stack. Segments that are presented (alert) or
+    /// in-place updates are not included by the caller.
+    static func depth(of stack: [StackSegment]) -> Int { stack.count }
+
+    static func isWithinLimit(_ stack: [StackSegment]) -> Bool {
+        depth(of: stack) <= absoluteMaxDepth
+    }
+
+    /// Canonical stacks after the depth-cap fixes (for XCTest).
+    static func canonicalStack(for scenario: DepthScenario) -> [StackSegment] {
+        switch scenario {
+        case .libraryAlbumsLetterItem:
+            return [.rootTab, .browseList, .letterContents, .detail]
+        case .libraryArtistsLetterArtist:
+            return [.rootTab, .browseList, .letterContents, .detail]
+        case .libraryArtistsLetterArtistAlbum:
+            // Album replaces further push when at limit — stack stays at 5.
+            return [.rootTab, .browseList, .letterContents, .detail, .nestedDetail]
+        case .nowPlayingRateAlert:
+            // Rating uses a presented alert, not a push.
+            return [.rootTab, .nowPlaying]
+        case .searchMirroredThenVoice:
+            // Voice/Keys pop the mirrored overlay before opening search.
+            return [.rootTab, .searchOverlay]
+        case .letterMoreInPlace:
+            return [.rootTab, .browseList, .letterContents]
+        }
+    }
+
+    enum DepthScenario: Sendable, Equatable {
+        case libraryAlbumsLetterItem
+        case libraryArtistsLetterArtist
+        case libraryArtistsLetterArtistAlbum
+        case nowPlayingRateAlert
+        case searchMirroredThenVoice
+        case letterMoreInPlace
     }
 
     // MARK: - Shared template blueprints (scene delegate + XCTest)
@@ -198,46 +265,53 @@ enum CarPlayListPolicy: Sendable {
                 sections: [
                     SectionSpec(items: [
                         ItemSpec(title: "Can't reach your server",
-                                 subtitle: "Check Wi‑Fi or your Navidrome URL"),
+                                 subtitle: "Check Wi‑Fi or your Navidrome URL",
+                                 role: .message),
                         ItemSpec(title: "Retry", subtitle: "Try loading again",
-                                 hasImage: true)
+                                 hasImage: true, role: .retry)
                     ])
                 ])
         }
 
         var sections: [SectionSpec] = []
         var quick: [ItemSpec] = [
-            ItemSpec(title: "Shuffle All", subtitle: "Random from your library", hasImage: true)
+            ItemSpec(title: "Shuffle All", subtitle: "Random from your library",
+                     hasImage: true, role: .action)
         ]
         let cap = max(1, tileCap)
         if !input.mixTitles.isEmpty {
             quick.append(ItemSpec(
                 title: "Daily Mixes", hasImage: true,
-                imageRowTitles: Array(input.mixTitles.prefix(cap))))
+                imageRowTitles: Array(input.mixTitles.prefix(cap)),
+                role: .imageRow))
         }
         if !input.vibeTitles.isEmpty {
             quick.append(ItemSpec(
                 title: "Vibe Tuner", hasImage: true,
-                imageRowTitles: Array(input.vibeTitles.prefix(cap))))
+                imageRowTitles: Array(input.vibeTitles.prefix(cap)),
+                role: .imageRow))
         }
         sections.append(SectionSpec(header: "Quick Play", items: quick))
 
         if !input.recentTitles.isEmpty {
             sections.append(SectionSpec(items: [
                 ItemSpec(title: "Recently Played", hasImage: true,
-                         imageRowTitles: Array(input.recentTitles.prefix(cap)))
+                         imageRowTitles: Array(input.recentTitles.prefix(cap)),
+                         role: .imageRow)
             ]))
         }
         if !input.frequentTitles.isEmpty {
             sections.append(SectionSpec(items: [
                 ItemSpec(title: "Jump Back In", hasImage: true,
-                         imageRowTitles: Array(input.frequentTitles.prefix(cap)))
+                         imageRowTitles: Array(input.frequentTitles.prefix(cap)),
+                         role: .imageRow)
             ]))
         }
         if !input.playlistTitles.isEmpty {
             sections.append(SectionSpec(items: [
                 ItemSpec(title: "Playlists", hasImage: true,
-                         imageRowTitles: Array(input.playlistTitles.prefix(cap)))
+                         imageRowTitles: Array(input.playlistTitles.prefix(cap)),
+                         role: .imageRow)
             ]))
         }
 
@@ -249,7 +323,8 @@ enum CarPlayListPolicy: Sendable {
                 sections: [
                     SectionSpec(items: [
                         ItemSpec(title: "Nothing here yet",
-                                 subtitle: "Play music on your iPhone to fill Home")
+                                 subtitle: "Play music on your iPhone to fill Home",
+                                 role: .message)
                     ])
                 ])
         }
@@ -264,8 +339,9 @@ enum CarPlayListPolicy: Sendable {
                 sections: [
                     SectionSpec(items: [
                         ItemSpec(title: "Can't reach your server",
-                                 subtitle: "Check Wi‑Fi or your Navidrome URL"),
-                        ItemSpec(title: "Retry", hasImage: true)
+                                 subtitle: "Check Wi‑Fi or your Navidrome URL",
+                                 role: .message),
+                        ItemSpec(title: "Retry", hasImage: true, role: .retry)
                     ])
                 ])
         }
@@ -274,18 +350,25 @@ enum CarPlayListPolicy: Sendable {
                 title: "Downloaded",
                 subtitle: input.downloadedCount == 0
                     ? "Offline music" : "\(input.downloadedCount) songs",
-                hasImage: true, accessory: "disclosure"),
+                hasImage: true, accessory: "disclosure",
+                role: .browseDownloaded),
             ItemSpec(title: "Artists", subtitle: "Browse your artists",
-                     hasImage: true, accessory: "disclosure"),
+                     hasImage: true, accessory: "disclosure",
+                     role: .browseArtists),
             ItemSpec(title: "Albums", subtitle: "A–Z by album name",
-                     hasImage: true, accessory: "disclosure"),
+                     hasImage: true, accessory: "disclosure",
+                     role: .browseAlbums),
             ItemSpec(title: "Top Rated", subtitle: "5★, 4★ & up, top albums",
-                     hasImage: true, accessory: "disclosure"),
+                     hasImage: true, accessory: "disclosure",
+                     role: .browseTopRated),
             ItemSpec(title: "Genres", subtitle: "Browse by genre",
-                     hasImage: true, accessory: "disclosure")
+                     hasImage: true, accessory: "disclosure",
+                     role: .browseGenres)
         ]
-        let playlists = Array(input.playlistTitles.prefix(max(0, playlistCap))).map {
-            ItemSpec(title: $0, hasImage: true, accessory: "disclosure")
+        let playlists = Array(input.playlists.prefix(max(0, playlistCap))).map {
+            ItemSpec(
+                title: $0.title, hasImage: true, accessory: "disclosure",
+                role: .playlist, id: $0.id)
         }
         return TemplateSpec(
             title: "Your Library",
@@ -294,7 +377,8 @@ enum CarPlayListPolicy: Sendable {
                 SectionSpec(header: "Browse", items: browse),
                 SectionSpec(header: "Playlists", items: playlists.isEmpty
                             ? [ItemSpec(title: "No playlists",
-                                        subtitle: "Create one on your iPhone")]
+                                        subtitle: "Create one on your iPhone",
+                                        role: .emptyPlaylists)]
                             : playlists)
             ])
     }
@@ -306,9 +390,9 @@ enum CarPlayListPolicy: Sendable {
             sections: [
                 SectionSpec(items: [
                     ItemSpec(title: "Voice search", subtitle: "Dictation in the search field",
-                             hasImage: true),
+                             hasImage: true, role: .action),
                     ItemSpec(title: "Keyboard", subtitle: "On-screen letter pad",
-                             hasImage: true)
+                             hasImage: true, role: .action)
                 ])
             ])
     }
@@ -338,7 +422,9 @@ enum CarPlayListPolicy: Sendable {
         buildLibrarySpec(
             LibraryInput(
                 serverError: serverError,
-                playlistTitles: (0..<playlistCount).map { "Playlist \($0)" },
+                playlists: (0..<playlistCount).map {
+                    PlaylistRef(id: "pl-\($0)", title: "Playlist \($0)")
+                },
                 downloadedCount: 12),
             playlistCap: libraryBrowseCap)
     }
@@ -372,6 +458,8 @@ enum CarPlayListPolicy: Sendable {
             for (ii, item) in section.items.enumerated() {
                 var row = "    [\(ii)] \"\(item.title)\""
                 if let sub = item.subtitle { row += " — \"\(sub)\"" }
+                row += " role=\(item.role.rawValue)"
+                if let id = item.id { row += " id=\(id)" }
                 row += " img=\(item.hasImage ? "y" : "n")"
                 if let acc = item.accessory { row += " accessory=\(acc)" }
                 if let tiles = item.imageRowTitles {

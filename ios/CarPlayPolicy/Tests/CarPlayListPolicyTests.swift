@@ -98,7 +98,9 @@ final class CarPlayListPolicyTests: XCTestCase {
         let library = CarPlayListPolicy.buildLibrarySpec(
             CarPlayListPolicy.LibraryInput(
                 serverError: false,
-                playlistTitles: (0..<40).map { "Playlist \($0)" },
+                playlists: (0..<40).map {
+                    CarPlayListPolicy.PlaylistRef(id: "id-\($0)", title: "Playlist \($0)")
+                },
                 downloadedCount: 3),
             playlistCap: 7)
         XCTAssertEqual(library.tabTitle, "Your Library")
@@ -108,6 +110,45 @@ final class CarPlayListPolicyTests: XCTestCase {
         let dump = CarPlayListPolicy.dumpSpec(library, limits: limitedLimits)
         print("--- CarPlay Library dump ---\n\(dump)")
         XCTAssertTrue(dump.contains("Your Library"))
+    }
+
+    /// Duplicate playlist titles + a playlist named like a browse shortcut must
+    /// keep distinct stable ids / roles (never match Library rows by title alone).
+    func testLibraryPlaylistsMatchByIdNotTitle() {
+        let input = CarPlayListPolicy.LibraryInput(
+            serverError: false,
+            playlists: [
+                .init(id: "pl-a", title: "Chill"),
+                .init(id: "pl-b", title: "Chill"),
+                .init(id: "pl-albums", title: "Albums"),
+                .init(id: "pl-artists", title: "Artists")
+            ],
+            downloadedCount: 0)
+        let spec = CarPlayListPolicy.buildLibrarySpec(input, playlistCap: 40)
+        let browse = spec.sections.first { $0.header == "Browse" }?.items ?? []
+        let playlistSection = spec.sections.first { $0.header == "Playlists" }?.items ?? []
+
+        XCTAssertEqual(browse.map(\.role), [
+            .browseDownloaded, .browseArtists, .browseAlbums, .browseTopRated, .browseGenres
+        ])
+        XCTAssertEqual(browse.first { $0.role == .browseAlbums }?.title, "Albums")
+
+        XCTAssertEqual(playlistSection.count, 4)
+        XCTAssertEqual(playlistSection.map(\.role), Array(repeating: .playlist, count: 4))
+        XCTAssertEqual(playlistSection.map(\.id), ["pl-a", "pl-b", "pl-albums", "pl-artists"])
+        XCTAssertEqual(playlistSection.map(\.title), ["Chill", "Chill", "Albums", "Artists"])
+
+        // Title collision must not blur browse vs playlist identity.
+        let albumBrowse = browse.first { $0.role == .browseAlbums }
+        let albumPlaylist = playlistSection.first { $0.id == "pl-albums" }
+        XCTAssertNotEqual(albumBrowse?.role, albumPlaylist?.role)
+        XCTAssertEqual(albumBrowse?.title, albumPlaylist?.title)
+
+        let byID = Dictionary(uniqueKeysWithValues: input.playlists.map { ($0.id, $0) })
+        XCTAssertEqual(byID.count, 4, "IDs stay unique even when titles collide")
+        for item in playlistSection {
+            XCTAssertNotNil(item.id.flatMap { byID[$0] })
+        }
     }
 
     func testSearchChooserLabels() {
@@ -130,34 +171,47 @@ final class CarPlayListPolicyTests: XCTestCase {
     }
 
     func testDepthPathsWithinCarPlayLimit() {
-        // In-place More… does not add depth — even many pages stay at letter depth.
-        for limited in [false, true] {
-            for morePages in [0, 1, 2, 5, 20] {
-                let letterOnly = CarPlayListPolicy.browseDepth(
-                    repeatedMorePages: morePages, opensItem: false, listsLimited: limited)
-                let withItem = CarPlayListPolicy.browseDepth(
-                    repeatedMorePages: morePages, opensItem: true, listsLimited: limited)
-                XCTAssertLessThanOrEqual(
-                    letterOnly, CarPlayListPolicy.absoluteMaxDepth,
-                    "limited=\(limited) more=\(morePages) letter-only")
-                XCTAssertLessThanOrEqual(
-                    withItem, CarPlayListPolicy.absoluteMaxDepth,
-                    "limited=\(limited) more=\(morePages) opens item")
-                XCTAssertEqual(letterOnly, 3)
-                XCTAssertEqual(withItem, 4)
-            }
+        let scenarios: [CarPlayListPolicy.DepthScenario] = [
+            .libraryAlbumsLetterItem,
+            .libraryArtistsLetterArtist,
+            .libraryArtistsLetterArtistAlbum,
+            .nowPlayingRateAlert,
+            .searchMirroredThenVoice,
+            .letterMoreInPlace
+        ]
+        for scenario in scenarios {
+            let stack = CarPlayListPolicy.canonicalStack(for: scenario)
+            XCTAssertTrue(
+                CarPlayListPolicy.isWithinLimit(stack),
+                "Scenario \(scenario) stack \(stack) exceeds max depth")
+            XCTAssertEqual(CarPlayListPolicy.depth(of: stack), stack.count)
         }
+
+        // Artist → album is allowed at depth 5; a further NP/rate push is not
+        // part of the canonical stack (NP skipped / rate presented).
+        let artistAlbum = CarPlayListPolicy.canonicalStack(
+            for: .libraryArtistsLetterArtistAlbum)
+        XCTAssertEqual(artistAlbum.count, 5)
+        XCTAssertFalse(
+            CarPlayListPolicy.isWithinLimit(artistAlbum + [.nowPlaying]),
+            "Song → Now Playing from a depth-5 album must not push")
+        XCTAssertFalse(
+            CarPlayListPolicy.isWithinLimit(artistAlbum + [.ratePicker]),
+            "Rate must be presented, not pushed, when stack is already at 5")
+
+        // In-place More… does not appear in the stack at all.
+        XCTAssertEqual(
+            CarPlayListPolicy.canonicalStack(for: .letterMoreInPlace).count, 3)
 
         let paths: [[String]] = [
             ["Home"],
             ["Home", "Daily Mixes"],
             ["Your Library", "Albums", "A", "Album"],
-            // More… is in-place — path stays Library → Albums → A → Album
             ["Your Library", "Albums", "A", "Album"],
             ["Your Library", "Artists", "B", "Artist"],
             ["Your Library", "Top Rated", "Album"],
             ["Podcasts", "Show"],
-            ["Now Playing", "Rate"]
+            ["Now Playing"] // Rate is an action sheet — not a path segment
         ]
         for path in paths {
             XCTAssertTrue(
@@ -200,20 +254,28 @@ final class CarPlayListPolicyTests: XCTestCase {
             buckets[0].items, offset: 0, pageSize: 8)
         XCTAssertEqual(page.page.count, 8)
         XCTAssertEqual(page.nextOffset, 8)
-        // Simulate many in-place More… pages — depth helper stays flat.
+        XCTAssertNil(page.previousOffset)
+
+        // Simulate many in-place More… pages — stack stays at letter depth.
         var offset = 0
         var pages = 0
+        var lastPrevious: Int?
         while true {
             let p = CarPlayListPolicy.letterPage(
                 buckets[0].items, offset: offset, pageSize: 8)
             pages += 1
+            lastPrevious = p.previousOffset
             guard let next = p.nextOffset else { break }
             offset = next
         }
         XCTAssertGreaterThan(pages, 1)
+        XCTAssertNotNil(lastPrevious, "Later pages must offer ← Previous")
         XCTAssertEqual(
-            CarPlayListPolicy.browseDepth(
-                repeatedMorePages: pages, opensItem: true, listsLimited: true),
-            4)
+            CarPlayListPolicy.depth(
+                of: CarPlayListPolicy.canonicalStack(for: .letterMoreInPlace)),
+            3)
+        let back = CarPlayListPolicy.letterPage(
+            buckets[0].items, offset: lastPrevious ?? 0, pageSize: 8)
+        XCTAssertFalse(back.page.isEmpty)
     }
 }
