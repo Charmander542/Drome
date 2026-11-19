@@ -79,10 +79,14 @@ struct SettingsView: View {
 
             Section {
                 Toggle("Haptic intro", isOn: $hapticIntro)
+                Button("Replay feature tour") {
+                    OnboardingPresenter.replay()
+                    dismiss()
+                }
             } header: {
                 Text("Launch")
             } footer: {
-                Text("Replaces the boot sound with a vibration timed to the same drum hits.")
+                Text("Haptic intro replaces the boot sound with a vibration. Replay the tour anytime to walk through ratings, playlists, and mixes.")
             }
             .listRowBackground(DromeTheme.elevated)
 

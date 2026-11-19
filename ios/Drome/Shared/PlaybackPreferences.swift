@@ -52,18 +52,18 @@ enum PlaybackPreferences {
     }
 
     /// Cellular stream bitrate (kbps) when on LTE/5G against a LAN Navidrome.
-    static var cellularMaxBitRate: Int { 256 }
+    nonisolated static var cellularMaxBitRate: Int { 256 }
 
     /// Funnel / Tailscale / public-host stream bitrate (kbps). Lower than cellular
     /// to spare home upload when resilient streaming is on.
-    static var remoteMaxBitRate: Int { 192 }
+    nonisolated static var remoteMaxBitRate: Int { 192 }
 
     /// Cap getCoverArt `size=` over Funnel/remote so grids don't pull 600–1200px.
     /// `nonisolated`: pure constant; called from nonisolated `SubsonicClient`.
     nonisolated static var remoteCoverMaxSize: Int { 200 }
 
     /// Bitrate for compressed streams given the configured Navidrome host.
-    static func preferredMaxBitRate(serverHost: String?) -> Int {
+    nonisolated static func preferredMaxBitRate(serverHost: String?) -> Int {
         if !isLocalNetworkHost(serverHost) { return remoteMaxBitRate }
         return cellularMaxBitRate
     }

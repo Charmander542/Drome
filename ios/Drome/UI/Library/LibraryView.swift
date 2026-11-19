@@ -72,6 +72,7 @@ struct LibraryView: View {
     @State private var error: String?
     @State private var showCreatePlaylist = false
     @State private var newPlaylistName = ""
+    @State private var openedPlaylist: Playlist?
     @State private var playlistToRename: Playlist?
     @State private var renameText = ""
     @State private var playlistToDelete: Playlist?
@@ -145,6 +146,19 @@ struct LibraryView: View {
                 } else {
                     artistWindow = []
                 }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dromeOpenPlaylist)) { note in
+            guard let id = note.userInfo?[PlaylistPresenter.playlistIDKey] as? String,
+                  !id.isEmpty else { return }
+            filter = .playlists
+            Task { await openPlaylist(id: id) }
+        }
+        .navigationDestination(item: $openedPlaylist) { playlist in
+            PlaylistDetailView(playlistID: playlist.id, placeholder: playlist) {
+                playlists.removeAll { $0.id == playlist.id }
+                persistPlaylistOrder()
+                openedPlaylist = nil
             }
         }
         .alert("New Playlist", isPresented: $showCreatePlaylist) {
@@ -1851,10 +1865,31 @@ struct LibraryView: View {
             let created = try await session.client.createPlaylist(name: name)
             filter = .playlists
             await load(forceNetwork: true)
-            if !playlists.contains(where: { $0.id == created.id }) {
-                playlists.insert(created.asPlaylist, at: 0)
+            let playlist = created.asPlaylist
+            if !playlists.contains(where: { $0.id == playlist.id }) {
+                playlists.insert(playlist, at: 0)
                 persistPlaylistOrder()
             }
+            // Drop straight into the new playlist so adding songs is one tap away.
+            openedPlaylist = playlist
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func openPlaylist(id: String) async {
+        if let existing = playlists.first(where: { $0.id == id }) {
+            openedPlaylist = existing
+            return
+        }
+        do {
+            let detailed = try await session.client.playlist(id: id)
+            let playlist = detailed.asPlaylist
+            if !playlists.contains(where: { $0.id == playlist.id }) {
+                playlists.insert(playlist, at: 0)
+                persistPlaylistOrder()
+            }
+            openedPlaylist = playlist
         } catch {
             self.error = error.localizedDescription
         }

@@ -131,6 +131,9 @@ struct MainTabView: View {
         .onReceive(NotificationCenter.default.publisher(for: .dromeFocusCarPlaySearch)) { _ in
             selectedTab = 1
         }
+        .onReceive(NotificationCenter.default.publisher(for: .dromeOpenPlaylist)) { _ in
+            selectedTab = 2
+        }
         // Do not auto-present Now Playing on foreground — `isPlaying` races with
         // AVPlayer restore, so the sheet either never appeared or slid in after
         // the tabs were already visible. Leave the mini player; tap to open.

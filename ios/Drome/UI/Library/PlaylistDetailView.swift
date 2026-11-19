@@ -109,6 +109,10 @@ struct PlaylistDetailView: View {
                         visibleSongCount = max(visibleSongCount, playlist.songs.count)
                     }
                 },
+                onShare: {
+                    guard let playlist else { return }
+                    PlaylistShare.present(playlist: playlist.asPlaylist, songs: playlist.songs)
+                },
                 onTogglePublic: { Task { await togglePublic() } },
                 onDownload: {
                     guard let playlist else { return }
@@ -766,6 +770,7 @@ struct PlaylistMoreSheet: View {
     var onAddSongs: () -> Void
     var onRename: () -> Void
     var onToggleEdit: () -> Void
+    var onShare: () -> Void
     var onTogglePublic: () -> Void
     var onDownload: () -> Void
     var onBulkOutOfRotation: () -> Void
@@ -799,12 +804,21 @@ struct PlaylistMoreSheet: View {
                         .listRowBackground(DromeTheme.elevated)
 
                         Button {
+                            dismissThen(onShare)
+                        } label: {
+                            Label("Share Playlist", systemImage: "square.and.arrow.up")
+                        }
+                        .listRowBackground(DromeTheme.elevated)
+
+                        Button {
                             dismissThen(onTogglePublic)
                         } label: {
-                            Label(isPublic ? "Make Private" : "Make Public / Share",
+                            Label(isPublic ? "Make Private" : "Make Public on Server",
                                   systemImage: "person.2")
                         }
                         .listRowBackground(DromeTheme.elevated)
+                    } footer: {
+                        Text("Share sends a Drome link. Make Public lets other accounts on your Navidrome server open and edit the playlist.")
                     }
 
                     Section {

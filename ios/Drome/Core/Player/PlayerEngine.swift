@@ -2600,9 +2600,14 @@ final class PlayerEngine: ObservableObject {
 
     private func orderedForShuffle(_ songs: [Song]) -> [Song] {
         let excluded = (context?.allowsOutOfRotation ?? false) ? [] : rotation.excludedIDs
+        let taste = TasteAffinity.build(
+            ratings: ratings.ratings,
+            seeds: Array(songs.prefix(40)),
+            knownSongs: songs)
         return ShuffleEngine.order(songs, mode: shuffleMode,
                                    rating: { [weak self] in self?.ratings.rating(for: $0) ?? 0 },
-                                   excluded: excluded)
+                                   excluded: excluded,
+                                   taste: taste)
     }
 
     private func reorderContextForShuffleChange() {
@@ -2617,9 +2622,14 @@ final class PlayerEngine: ObservableObject {
         case .smart, .random:
             let excluded = (context?.allowsOutOfRotation ?? false) ? Set<String>() : rotation.excludedIDs
             let kept = contextQueue.filter { !excluded.contains($0.song.id) }
+            let taste = TasteAffinity.build(
+                ratings: ratings.ratings,
+                seeds: kept.prefix(40).map(\.song),
+                knownSongs: kept.map(\.song))
             let songs = ShuffleEngine.order(kept.map(\.song), mode: shuffleMode,
                                             rating: { [weak self] in self?.ratings.rating(for: $0) ?? 0 },
-                                            excluded: excluded)
+                                            excluded: excluded,
+                                            taste: taste)
             var byID: [String: [QueueItem]] = Dictionary(grouping: kept, by: { $0.song.id })
             contextQueue = songs.compactMap { byID[$0.id]?.popLast() }
         }

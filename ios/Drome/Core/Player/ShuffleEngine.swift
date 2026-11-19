@@ -2,15 +2,19 @@ import Foundation
 
 enum ShuffleEngine {
     /// Weighted shuffle (sampling without replacement) favoring higher-rated
-    /// tracks: weight ∝ (rating + 1)². Unrated tracks are treated as a
-    /// neutral 3 stars so fresh libraries aren't starved. Uses the
-    /// Efraimidis–Spirakis exponential-key method.
-    static func weightedShuffle(_ songs: [Song], rating: (Song) -> Int) -> [Song] {
+    /// tracks: weight ∝ (effectiveRating + 1)². Unrated tracks are neutral 3★
+    /// until `TasteAffinity` is established, then off-taste unrated songs drop
+    /// so multi-user libraries don't dominate. Efraimidis–Spirakis keys.
+    static func weightedShuffle(
+        _ songs: [Song],
+        rating: (Song) -> Int,
+        taste: TasteAffinity = .empty
+    ) -> [Song] {
         songs
             .map { song -> (Song, Double) in
                 let raw = rating(song)
-                let effective = raw == 0 ? 3 : raw
-                let weight = pow(Double(effective + 1), 2)
+                let effective = taste.effectiveRating(for: song, raw: raw)
+                let weight = pow(effective + 1, 2)
                 let key = pow(Double.random(in: Double.ulpOfOne..<1), 1.0 / weight)
                 return (song, key)
             }
@@ -22,14 +26,18 @@ enum ShuffleEngine {
     /// anything that is out of rotation (unless allowed by context).
     static func order(_ songs: [Song], mode: ShuffleMode,
                       rating: (Song) -> Int,
-                      excluded: Set<String>) -> [Song] {
+                      excluded: Set<String>,
+                      taste: TasteAffinity = .empty) -> [Song] {
         switch mode {
         case .off:
             return songs
         case .random:
             return songs.filter { !excluded.contains($0.id) }.shuffled()
         case .smart:
-            return weightedShuffle(songs.filter { !excluded.contains($0.id) }, rating: rating)
+            return weightedShuffle(
+                songs.filter { !excluded.contains($0.id) },
+                rating: rating,
+                taste: taste)
         }
     }
 }

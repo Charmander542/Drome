@@ -60,24 +60,39 @@ final class AutoplayProvider {
         var broad = (try? await client.randomSongs(size: 120)) ?? []
         broad = broad.filter(isAllowed).uniquedByID()
 
+        let taste = TasteAffinity.build(
+            ratings: ratings.ratings,
+            seeds: seeds,
+            knownSongs: similar + broad)
+
+        // Prefer this user's genres when taste is established — shared libraries
+        // otherwise flood Infinite Shuffle with other people's music.
+        if taste.isEstablished, !taste.preferredGenres.isEmpty, similar.count < count {
+            for genre in taste.preferredGenres.prefix(3) {
+                similar += (try? await client.songsByGenre(genre, count: 30)) ?? []
+            }
+            similar = similar.filter(isAllowed).uniquedByID()
+        }
+
         let ratingOf: (Song) -> Int = { [weak self] song in
             self?.ratings.rating(for: song) ?? (song.userRating ?? 0)
         }
 
-        // Weight broad picks by rating and (lightly) play count.
+        // Weight broad picks by *this listener's* ratings. Unrated off-taste
+        // tracks and global play counts are damped once taste is established.
         let broadRanked = broad
             .map { song -> (Song, Double) in
                 let raw = ratingOf(song)
-                let effective = raw == 0 ? 3 : raw
-                let ratingWeight = pow(Double(effective + 1), 2)
-                let playWeight = log2(2.0 + Double(song.playCount ?? 0))
+                let effective = taste.effectiveRating(for: song, raw: raw)
+                let ratingWeight = pow(effective + 1, 2)
+                let playWeight = taste.playCountFactor(for: song, rawRating: raw)
                 let key = pow(Double.random(in: Double.ulpOfOne..<1), 1.0 / (ratingWeight * playWeight))
                 return (song, key)
             }
             .sorted { $0.1 > $1.1 }
             .map(\.0)
 
-        let similarRanked = ShuffleEngine.weightedShuffle(similar, rating: ratingOf)
+        let similarRanked = ShuffleEngine.weightedShuffle(similar, rating: ratingOf, taste: taste)
 
         // Blend roughly 60/40 similar/broad, interleaved, deduped.
         var result: [Song] = []

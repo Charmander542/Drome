@@ -151,6 +151,21 @@ final class AppEnvironment: ObservableObject {
 
         if let url, let context = DeepLink.contextPlay(from: url) {
             await playContextDeepLink(context, session: session)
+            if context.entryId.hasPrefix("playlist:") {
+                let id = String(context.entryId.dropFirst("playlist:".count))
+                PlaylistPresenter.open(playlistId: id)
+            }
+            return
+        }
+
+        if let url, let playlistId = DeepLink.playlistID(from: url) {
+            await playContextDeepLink(
+                DeepLink.ContextPlay(
+                    resumeKey: "playlist:\(playlistId)",
+                    entryId: "playlist:\(playlistId)",
+                    songId: nil),
+                session: session)
+            PlaylistPresenter.open(playlistId: playlistId)
             return
         }
 
