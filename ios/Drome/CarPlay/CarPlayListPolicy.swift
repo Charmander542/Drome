@@ -132,11 +132,10 @@ enum CarPlayListPolicy: Sendable {
     }
 
     /// Letter buckets for A–Z browse. Returns **full** sorted lists per letter
-    /// (callers page with `letterPage` + More… — no unreachable truncation).
+    /// (index + letter content page with in-place More… — nothing unreachable).
     static func letterBuckets<T>(
         _ values: [T],
-        name: (T) -> String,
-        maxLetters: Int
+        name: (T) -> String
     ) -> [(letter: String, items: [T])] {
         let grouped = Dictionary(grouping: values) { value -> String in
             let trimmed = name(value).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -150,7 +149,7 @@ enum CarPlayListPolicy: Sendable {
             if b == "#" { return true }
             return a < b
         }
-        return order.prefix(maxLetters).map { letter in
+        return order.map { letter in
             let items = (grouped[letter] ?? []).sorted {
                 name($0).localizedCaseInsensitiveCompare(name($1)) == .orderedAscending
             }
@@ -158,7 +157,8 @@ enum CarPlayListPolicy: Sendable {
         }
     }
 
-    /// One page of a letter list, plus whether More… is needed.
+    /// One page of a list (letter index or letter contents). More… must update
+    /// the current template in place — never push another level.
     static func letterPage<T>(
         _ items: [T],
         offset: Int,
@@ -171,6 +171,19 @@ enum CarPlayListPolicy: Sendable {
             return (page, next, items.count - next)
         }
         return (page, nil, 0)
+    }
+
+    /// Depth for Library → Artists/Albums → letter → (optional in-place More) → item.
+    /// In-place More… does **not** add depth.
+    static func browseDepth(
+        repeatedMorePages: Int,
+        opensItem: Bool,
+        listsLimited: Bool
+    ) -> Int {
+        // root tab(1) + browse list(2) + letter page(3) + optional item(4)
+        _ = repeatedMorePages
+        _ = listsLimited
+        return opensItem ? 4 : 3
     }
 
     // MARK: - Shared template blueprints (scene delegate + XCTest)

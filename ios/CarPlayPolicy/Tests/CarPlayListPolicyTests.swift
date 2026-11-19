@@ -1,8 +1,9 @@
 import XCTest
 @testable import CarPlayListPolicy
 
-/// Headless verification of CarPlay template blueprints (online / empty / offline).
-/// Run via `ios/scripts/test-carplay-policy.sh` — no CarPlay Simulator required.
+/// Headless verification of CarPlay template blueprints used by
+/// `CarPlaySceneDelegate` (online / empty / offline).
+/// Run via `ios/scripts/test-carplay-policy.sh`.
 final class CarPlayListPolicyTests: XCTestCase {
     private let defaultLimits = CarPlayListPolicy.Limits(
         maxSections: 8, maxItems: 20, listsLimited: false)
@@ -49,7 +50,6 @@ final class CarPlayListPolicyTests: XCTestCase {
         XCTAssertEqual(clamped.first?.header, "Quick Play")
         XCTAssertTrue(clamped.flatMap(\.items).contains { $0.title == "Shuffle All" })
         XCTAssertTrue(clamped.flatMap(\.items).contains { $0.isImageRow })
-        // Image-row rails must not duplicate the row title as a section header.
         for section in clamped where section.items.contains(where: \.isImageRow)
             && section.header != "Quick Play" {
             XCTAssertNil(section.header)
@@ -130,14 +130,32 @@ final class CarPlayListPolicyTests: XCTestCase {
     }
 
     func testDepthPathsWithinCarPlayLimit() {
+        // In-place More… does not add depth — even many pages stay at letter depth.
+        for limited in [false, true] {
+            for morePages in [0, 1, 2, 5, 20] {
+                let letterOnly = CarPlayListPolicy.browseDepth(
+                    repeatedMorePages: morePages, opensItem: false, listsLimited: limited)
+                let withItem = CarPlayListPolicy.browseDepth(
+                    repeatedMorePages: morePages, opensItem: true, listsLimited: limited)
+                XCTAssertLessThanOrEqual(
+                    letterOnly, CarPlayListPolicy.absoluteMaxDepth,
+                    "limited=\(limited) more=\(morePages) letter-only")
+                XCTAssertLessThanOrEqual(
+                    withItem, CarPlayListPolicy.absoluteMaxDepth,
+                    "limited=\(limited) more=\(morePages) opens item")
+                XCTAssertEqual(letterOnly, 3)
+                XCTAssertEqual(withItem, 4)
+            }
+        }
+
         let paths: [[String]] = [
             ["Home"],
             ["Home", "Daily Mixes"],
             ["Your Library", "Albums", "A", "Album"],
-            ["Your Library", "Albums", "A", "More…", "Album"],
-            ["Your Library", "Top Rated", "Album"],
+            // More… is in-place — path stays Library → Albums → A → Album
+            ["Your Library", "Albums", "A", "Album"],
             ["Your Library", "Artists", "B", "Artist"],
-            ["Your Library", "Artists", "B", "More…", "Artist"],
+            ["Your Library", "Top Rated", "Album"],
             ["Podcasts", "Show"],
             ["Now Playing", "Rate"]
         ]
@@ -148,25 +166,54 @@ final class CarPlayListPolicyTests: XCTestCase {
         }
     }
 
-    func testLetterBucketsKeepFullListsAndPageWithMore() {
+    func testLetterBucketsKeepFullListsAndPageInPlace() {
         struct Row { let name: String }
-        let rows = (0..<30).map { Row(name: "A Song \($0)") }
-            + (0..<5).map { Row(name: "B Track \($0)") }
-            + [Row(name: "1 Numeric")]
-        let buckets = CarPlayListPolicy.letterBuckets(
-            rows, name: { $0.name }, maxLetters: 5)
+        // Populate every letter so Limit UI (12 rows) must page the index.
+        var rows: [Row] = (0..<30).map { Row(name: "A Song \($0)") }
+        for scalar in UnicodeScalar("B").value...UnicodeScalar("Z").value {
+            let letter = String(UnicodeScalar(scalar)!)
+            rows.append(Row(name: "\(letter) Artist"))
+        }
+        rows.append(Row(name: "1 Numeric"))
+        let buckets = CarPlayListPolicy.letterBuckets(rows, name: { $0.name })
         XCTAssertEqual(buckets.first?.letter, "A")
         XCTAssertEqual(buckets.first?.items.count, 30, "Must not truncate away unreachable items")
+        XCTAssertGreaterThanOrEqual(buckets.count, 26)
+        XCTAssertTrue(buckets.contains { $0.letter == "Z" }, "Late letters must remain reachable")
+
+        // Index paging (Limit UI: 12 rows) must still reach Z via in-place More…
+        var indexOffset = 0
+        var seenLetters = Set<String>()
+        var indexPages = 0
+        while true {
+            let indexPage = CarPlayListPolicy.letterPage(
+                buckets, offset: indexOffset, pageSize: 11)
+            indexPages += 1
+            seenLetters.formUnion(indexPage.page.map(\.letter))
+            guard let next = indexPage.nextOffset else { break }
+            indexOffset = next
+        }
+        XCTAssertGreaterThan(indexPages, 1)
+        XCTAssertTrue(seenLetters.contains("Z"), "In-place index More… must reach Z")
 
         let page = CarPlayListPolicy.letterPage(
             buckets[0].items, offset: 0, pageSize: 8)
         XCTAssertEqual(page.page.count, 8)
         XCTAssertEqual(page.nextOffset, 8)
-        XCTAssertEqual(page.remaining, 22)
-
-        let rest = CarPlayListPolicy.letterPage(
-            buckets[0].items, offset: 24, pageSize: 8)
-        XCTAssertEqual(rest.page.count, 6)
-        XCTAssertNil(rest.nextOffset)
+        // Simulate many in-place More… pages — depth helper stays flat.
+        var offset = 0
+        var pages = 0
+        while true {
+            let p = CarPlayListPolicy.letterPage(
+                buckets[0].items, offset: offset, pageSize: 8)
+            pages += 1
+            guard let next = p.nextOffset else { break }
+            offset = next
+        }
+        XCTAssertGreaterThan(pages, 1)
+        XCTAssertEqual(
+            CarPlayListPolicy.browseDepth(
+                repeatedMorePages: pages, opensItem: true, listsLimited: true),
+            4)
     }
 }

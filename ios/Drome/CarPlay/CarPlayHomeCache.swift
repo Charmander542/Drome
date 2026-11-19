@@ -2,8 +2,12 @@ import Foundation
 
 /// Short-lived Home / Library payloads so CarPlay tabs can paint instantly
 /// on reconnect and avoid re-fetching playlists on every rebuild.
+///
+/// Keyed by `Account.userKey` so an account switch while CarPlay is
+/// disconnected cannot paint the previous user’s rails on next connect.
 @MainActor
 enum CarPlayHomeCache {
+    private static var accountKey: String?
     private static var playlists: [Playlist] = []
     private static var playlistsFetchedAt: Date?
     private static var frequent: [Album] = []
@@ -12,17 +16,26 @@ enum CarPlayHomeCache {
     private static var lastError: String?
 
     private static let playlistTTL: TimeInterval = 120
-    private static let railTTL: TimeInterval = 90
 
     static var cachedPlaylists: [Playlist] { playlists }
     static var cachedFrequent: [Album] { frequent }
     static var cachedNewest: [Album] { newest }
     static var cachedDailyMixes: [DailyMix] { dailyMixes }
     static var cachedError: String? { lastError }
+    static var cachedAccountKey: String? { accountKey }
 
     static var playlistsFresh: Bool {
         guard let at = playlistsFetchedAt else { return false }
         return Date().timeIntervalSince(at) < playlistTTL
+    }
+
+    /// Call on CarPlay connect / session change. Clears stale data when the
+    /// signed-in account differs from whatever filled the cache.
+    static func prepare(for accountKey: String) {
+        if self.accountKey != accountKey {
+            invalidate()
+            self.accountKey = accountKey
+        }
     }
 
     static func storePlaylists(_ value: [Playlist]) {
@@ -56,5 +69,12 @@ enum CarPlayHomeCache {
         newest = []
         dailyMixes = []
         lastError = nil
+        // Keep accountKey so prepare(for:) can detect the next switch;
+        // clear it only when explicitly resetting without a replacement.
+    }
+
+    static func invalidate(clearingAccount: Bool) {
+        invalidate()
+        if clearingAccount { accountKey = nil }
     }
 }
