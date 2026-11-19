@@ -38,11 +38,9 @@ struct SettingsView: View {
             .listRowBackground(DromeTheme.elevated)
 
             Section {
-                TextField(
-                    "",
-                    text: $wishlistURLText,
-                    prompt: Text("https://wishlist.example.com").font(.body)
-                )
+                // LocalizedStringKey placeholder scales with the field font at AX sizes.
+                // Avoid prompt: Text(…).font(…) — that pins the placeholder size.
+                TextField("https://wishlist.example.com", text: $wishlistURLText)
                     .font(.body)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()

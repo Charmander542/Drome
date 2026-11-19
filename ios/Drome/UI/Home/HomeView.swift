@@ -13,7 +13,9 @@ struct HomeView: View {
     @State private var newest: [Album] = []
     @State private var dailyMixes: [DailyMix] = []
     @State private var dailyMixesDate: String?
-    @State private var mixesLoading = false
+    /// Start true so the rail shows placeholders instead of the generic empty
+    /// copy before `.task` assigns a real `mixesError`.
+    @State private var mixesLoading = true
     @State private var mixesError: String?
     @State private var isLoading = false
     @State private var error: String?
@@ -149,9 +151,12 @@ struct HomeView: View {
     }
 
     private func loadAll() async {
+        // Run mixes on this MainActor task (not only via `async let`) so the
+        // first failure always lands in `mixesError` before the rail paints
+        // its generic empty fallback.
         async let home: Void = loadHome()
-        async let mixes: Void = loadMixes()
-        _ = await (home, mixes)
+        await loadMixes()
+        await home
     }
 
     private func loadHome() async {
@@ -217,12 +222,16 @@ struct HomeView: View {
             dailyMixes = cleaned
             dailyMixesDate = response.date
             mixesError = nil
+        } catch is CancellationError {
+            return
         } catch {
-            if dailyMixes.isEmpty {
-                dailyMixes = []
-                dailyMixesDate = nil
-                mixesError = CompanionNetworkError.shortReason(for: error)
-            }
+            // Always record the failure on an empty rail — including the first
+            // `.task` load, not only Retry — so DailyMixRail doesn't fall back
+            // to the generic "Couldn't load" copy.
+            guard dailyMixes.isEmpty else { return }
+            dailyMixes = []
+            dailyMixesDate = nil
+            mixesError = CompanionNetworkError.shortReason(for: error)
         }
     }
 

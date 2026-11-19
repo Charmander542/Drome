@@ -280,7 +280,9 @@ struct LoginView: View {
                 .foregroundStyle(DromeTheme.muted)
                 .accessibilityHidden(true)
 
-            TextField("", text: text, prompt: Text(placeholder ?? title).font(.body))
+            // Same TextField style as Username: field font scales the prompt.
+            // Do not put .font on the prompt Text — that pins AX size.
+            TextField("", text: text, prompt: Text(placeholder ?? title))
                 .font(.body)
                 .keyboardType(keyboard)
                 .textInputAutocapitalization(autocapitalization)
@@ -316,6 +318,7 @@ struct LoginView: View {
                 .accessibilityHidden(true)
 
             SecureField("", text: text, prompt: Text(title))
+                .font(.body)
                 .textContentType(.password)
                 .submitLabel(submitLabel)
                 .padding(14)
