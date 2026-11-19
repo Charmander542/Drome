@@ -33,6 +33,11 @@ struct PlaylistDetailView: View {
     @State private var coverBump: TimeInterval = 0
     /// Rows painted so far — full `playlist.songs` stays available for Play/Shuffle.
     @State private var visibleSongCount = ProgressiveSongReveal.initial
+    @State private var suggestions: [PlaylistSongSuggester.Suggestion] = []
+    @State private var suggestionsLoading = false
+    @State private var suggestionsError: String?
+    @State private var addingSuggestionIDs: Set<String> = []
+    @State private var suggestionRefreshToken = 0
 
     private var isSystem: Bool {
         guard let playlist else {
@@ -324,10 +329,105 @@ struct PlaylistDetailView: View {
                     }
                 }
             }
+
+            if !isSystem, songsReady, allSongs.count >= 2 {
+                suggestionsSection
+            }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environment(\.editMode, .constant(isEditing ? .active : .inactive))
+        .task(id: "\(playlistID)-\(allSongs.count)-\(suggestionRefreshToken)") {
+            await loadSuggestions()
+        }
+    }
+
+    @ViewBuilder
+    private var suggestionsSection: some View {
+        Section {
+            if suggestionsLoading && suggestions.isEmpty {
+                HStack {
+                    Spacer()
+                    ProgressView()
+                    Text("Finding songs that fit…")
+                        .font(.subheadline)
+                        .foregroundStyle(DromeTheme.muted)
+                    Spacer()
+                }
+                .listRowBackground(Color.clear)
+            } else if let suggestionsError, suggestions.isEmpty {
+                Text(suggestionsError)
+                    .font(.subheadline)
+                    .foregroundStyle(DromeTheme.muted)
+                    .listRowBackground(Color.clear)
+            } else if suggestions.isEmpty {
+                Text("Add a few more tracks and we’ll suggest songs that match this playlist’s vibe.")
+                    .font(.subheadline)
+                    .foregroundStyle(DromeTheme.muted)
+                    .listRowBackground(Color.clear)
+            } else {
+                ForEach(suggestions) { item in
+                    suggestionRow(item)
+                        .listRowBackground(DromeTheme.background)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                }
+            }
+        } header: {
+            HStack {
+                Text("Suggested for this playlist")
+                Spacer()
+                if !suggestions.isEmpty || suggestionsError != nil {
+                    Button {
+                        suggestionRefreshToken &+= 1
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                            .labelStyle(.iconOnly)
+                    }
+                    .disabled(suggestionsLoading)
+                    .accessibilityLabel("Refresh suggestions")
+                }
+            }
+        } footer: {
+            Text("Picks similar artists and genres from what’s already in the list.")
+        }
+    }
+
+    private func suggestionRow(_ item: PlaylistSongSuggester.Suggestion) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            SongRow(
+                song: item.song,
+                showAlbum: true,
+                trailing: AnyView(suggestionAddButton(for: item.song)),
+                enablesSwipeActions: false,
+                onPlay: {
+                    player.play(
+                        [item.song], startAt: 0,
+                        context: PlaybackContext(label: item.song.title, kind: .search))
+                }
+            )
+            Text(item.reason)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(DromeTheme.muted)
+                .padding(.leading, 68)
+        }
+    }
+
+    private func suggestionAddButton(for song: Song) -> some View {
+        Button {
+            Task { await addSuggestion(song) }
+        } label: {
+            if addingSuggestionIDs.contains(song.id) {
+                ProgressView()
+                    .frame(width: 28, height: 28)
+            } else {
+                Image(systemName: "plus.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(DromeTheme.accent)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(addingSuggestionIDs.contains(song.id))
+        .accessibilityLabel("Add \(song.title) to playlist")
     }
 
     private func playlistHeader(_ playlist: PlaylistWithSongs) -> some View {
@@ -574,6 +674,48 @@ struct PlaylistDetailView: View {
         guard let songs = playlist?.songs, !songs.isEmpty, !isSystem else { return }
         await rotation.addAll(songs, manual: true)
         flash("Marked \(songs.count) out of rotation")
+    }
+
+    private func loadSuggestions() async {
+        guard !isSystem else {
+            suggestions = []
+            return
+        }
+        let songs = playlist?.songs ?? []
+        guard songs.count >= 2 else {
+            suggestions = []
+            suggestionsError = nil
+            return
+        }
+        suggestionsLoading = true
+        suggestionsError = nil
+        defer { suggestionsLoading = false }
+
+        let excluded = rotation.excludedIDs
+        let result = await PlaylistSongSuggester.suggest(
+            for: songs,
+            client: session.client,
+            excluding: excluded,
+            limit: 12)
+        guard !Task.isCancelled else { return }
+        suggestions = result
+        if result.isEmpty {
+            suggestionsError = "Couldn't find fresh matches right now. Try Refresh after adding more songs."
+        }
+    }
+
+    private func addSuggestion(_ song: Song) async {
+        guard !isSystem, !addingSuggestionIDs.contains(song.id) else { return }
+        addingSuggestionIDs.insert(song.id)
+        defer { addingSuggestionIDs.remove(song.id) }
+        do {
+            try await session.client.updatePlaylist(id: playlistID, addSongIds: [song.id])
+            suggestions.removeAll { $0.song.id == song.id }
+            await load()
+            flash("Added “\(song.title)”")
+        } catch {
+            flash(error.localizedDescription)
+        }
     }
 
     private func flash(_ message: String) {
