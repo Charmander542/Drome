@@ -579,31 +579,29 @@ struct LibraryView: View {
                             } label: {
                                 Label("Hide", systemImage: "eye.slash")
                             }
-                            Button(role: .destructive) {
-                                playlistToDelete = playlist
-                            } label: {
-                                Label(
-                                    PlaylistOrderStore.shouldHideInsteadOfDelete(
-                                        playlist, username: session.account.username)
-                                    ? "Hide" : "Delete",
-                                    systemImage: PlaylistOrderStore.shouldHideInsteadOfDelete(
-                                        playlist, username: session.account.username)
-                                    ? "eye.slash" : "trash")
+                            // Shared / others' playlists can't be deleted for
+                            // everyone — only Hide. Don't offer a second Hide.
+                            if !PlaylistOrderStore.shouldHideInsteadOfDelete(
+                                playlist, username: session.account.username)
+                            {
+                                Button(role: .destructive) {
+                                    playlistToDelete = playlist
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
                             }
                         }
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         if !rotation.isSystemPlaylist(playlist) {
-                            Button(role: .destructive) {
-                                playlistToDelete = playlist
-                            } label: {
-                                Label(
-                                    PlaylistOrderStore.shouldHideInsteadOfDelete(
-                                        playlist, username: session.account.username)
-                                    ? "Hide" : "Delete",
-                                    systemImage: PlaylistOrderStore.shouldHideInsteadOfDelete(
-                                        playlist, username: session.account.username)
-                                    ? "eye.slash" : "trash")
+                            if !PlaylistOrderStore.shouldHideInsteadOfDelete(
+                                playlist, username: session.account.username)
+                            {
+                                Button(role: .destructive) {
+                                    playlistToDelete = playlist
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
                             }
                             Button {
                                 hidePlaylistLocally(playlist)

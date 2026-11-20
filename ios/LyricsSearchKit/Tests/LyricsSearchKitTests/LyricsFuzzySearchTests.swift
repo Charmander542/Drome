@@ -71,4 +71,45 @@ final class LyricsFuzzySearchTests: XCTestCase {
         XCTAssertGreaterThan(LyricsFuzzySearch.tokenSimilarity("believin", "believing"), 0.5)
         XCTAssertEqual(LyricsFuzzySearch.tokenSimilarity("xyz", "give"), 0)
     }
+
+    func testFillerOnlyQueryReturnsNothing() {
+        let docs = (0..<8).map { i in
+            LyricsFuzzySearch.document(
+                songId: "\(i)",
+                title: "Song \(i)",
+                artist: "Artist",
+                album: "Album",
+                plainContent: "and you and me and the night\nlove is all around"
+            )
+        }
+        let hits = LyricsFuzzySearch.search(documents: docs, query: "the you and", limit: 20)
+        XCTAssertTrue(hits.isEmpty)
+    }
+
+    func testSingleContentWordNeedsNearExact() {
+        let docs = [
+            LyricsFuzzySearch.document(
+                songId: "1", title: "Exact", artist: "A", album: "A",
+                plainContent: "I need somebody to love\njust a little love"),
+            LyricsFuzzySearch.document(
+                songId: "2", title: "Loose", artist: "A", album: "A",
+                plainContent: "lovely weather for a walk\nloving every minute"),
+        ]
+        let hits = LyricsFuzzySearch.search(documents: docs, query: "love", limit: 10)
+        XCTAssertFalse(hits.isEmpty)
+        // Prefix-only "lovely" / "loving" should not beat or replace a real "love".
+        XCTAssertTrue(hits.contains(where: { $0.songId == "1" }))
+    }
+
+    func testContentWordsDriveMultiWordFit() {
+        let doc = LyricsFuzzySearch.document(
+            songId: "1",
+            title: "Song",
+            artist: "Artist",
+            album: "Album",
+            plainContent: "never gonna give you up\nnever gonna let you down"
+        )
+        let hits = LyricsFuzzySearch.search(documents: [doc], query: "never give you up", limit: 5)
+        XCTAssertEqual(hits.count, 1)
+    }
 }

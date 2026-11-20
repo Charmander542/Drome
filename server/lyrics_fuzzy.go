@@ -79,6 +79,31 @@ func lyricsTokens(raw string) []string {
 	return strings.Fields(n)
 }
 
+// Common lyric / English fillers — too weak alone to decide a match.
+var lyricsFillerTokens = map[string]struct{}{
+	"a": {}, "an": {}, "the": {}, "and": {}, "or": {}, "but": {}, "to": {}, "of": {},
+	"in": {}, "on": {}, "at": {}, "for": {}, "is": {}, "it": {}, "its": {}, "me": {},
+	"my": {}, "we": {}, "you": {}, "i": {}, "im": {}, "ive": {}, "id": {}, "ill": {},
+	"oh": {}, "ooh": {}, "ah": {}, "uh": {}, "um": {}, "yeah": {}, "ya": {}, "yo": {},
+	"hey": {}, "la": {}, "na": {}, "da": {}, "do": {}, "does": {}, "did": {}, "so": {},
+	"if": {}, "as": {}, "be": {}, "by": {}, "no": {}, "not": {}, "just": {}, "like": {},
+	"all": {}, "was": {}, "were": {}, "are": {}, "am": {}, "been": {}, "that": {},
+	"this": {}, "with": {}, "from": {}, "your": {}, "our": {}, "his": {}, "her": {},
+	"him": {}, "them": {}, "they": {}, "she": {}, "he": {}, "what": {}, "when": {},
+	"who": {}, "how": {}, "can": {}, "cant": {}, "will": {}, "wont": {}, "too": {},
+	"very": {}, "really": {}, "then": {}, "than": {}, "there": {}, "here": {},
+}
+
+func lyricsContentTokens(tokens []string) []string {
+	out := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		if _, ok := lyricsFillerTokens[t]; !ok {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 func maxEditDistance(tokenLen int) int {
 	if tokenLen <= 1 {
 		return 0
@@ -174,6 +199,18 @@ func scoreLyricsLine(line string, lineTokens, queryTokens []string, lineIndex in
 	if len(queryTokens) == 0 || len(lineTokens) == 0 {
 		return nil
 	}
+	required := lyricsContentTokens(queryTokens)
+	if len(required) == 0 {
+		return nil
+	}
+	requiredIdx := map[int]bool{}
+	for qi, qt := range queryTokens {
+		if _, filler := lyricsFillerTokens[qt]; filler {
+			continue
+		}
+		requiredIdx[qi] = true
+	}
+
 	used := map[int]bool{}
 	var matched []lyricsTokenPair
 	for qi, qt := range queryTokens {
@@ -189,23 +226,48 @@ func scoreLyricsLine(line string, lineTokens, queryTokens []string, lineIndex in
 				bestJ = ji
 			}
 		}
-		if bestJ >= 0 && bestQ >= 0.58 {
+		floor := 0.58
+		if requiredIdx[qi] {
+			floor = 0.72
+		}
+		if bestJ >= 0 && bestQ >= floor {
 			used[bestJ] = true
 			matched = append(matched, lyricsTokenPair{qi, bestJ, bestQ})
 		}
 	}
-	if len(matched) == 0 {
+	var matchedRequired []lyricsTokenPair
+	for _, p := range matched {
+		if requiredIdx[p.qi] {
+			matchedRequired = append(matchedRequired, p)
+		}
+	}
+	if len(matchedRequired) == 0 {
 		return nil
 	}
-	coverage := float64(len(matched)) / float64(len(queryTokens))
-	minCoverage := 0.5
+	reqCount := len(requiredIdx)
+	coverage := float64(len(matchedRequired)) / float64(reqCount)
+	minCoverage := 0.65
+	minAvgQuality := 0.65
 	switch {
-	case len(queryTokens) <= 2:
+	case reqCount == 1:
 		minCoverage = 1.0
-	case len(queryTokens) <= 4:
-		minCoverage = 0.6
+		minAvgQuality = 1.0
+		if len([]rune(required[0])) >= 5 {
+			minAvgQuality = 0.9
+		}
+	case reqCount == 2:
+		minCoverage = 1.0
+		minAvgQuality = 0.75
+	case reqCount <= 4:
+		minCoverage = 0.75
+		minAvgQuality = 0.7
 	}
-	if coverage+0.001 < minCoverage {
+	avgRequiredQuality := 0.0
+	for _, p := range matchedRequired {
+		avgRequiredQuality += p.q
+	}
+	avgRequiredQuality /= float64(len(matchedRequired))
+	if coverage+0.001 < minCoverage || avgRequiredQuality+0.001 < minAvgQuality {
 		return nil
 	}
 	qualitySum := 0.0
@@ -235,8 +297,9 @@ func scoreLyricsLine(line string, lineTokens, queryTokens []string, lineIndex in
 		extra = 0
 	}
 	extraPenalty := math.Min(float64(extra)*1.5, 10)
+	contentBonus := float64(len(matchedRequired)) * 4
 
-	score := coverage*100 + avgQuality*40 + orderBonus + adjacentBonus - extraPenalty
+	score := coverage*100 + avgQuality*40 + orderBonus + adjacentBonus + contentBonus - extraPenalty
 	matchedIdx := map[int]bool{}
 	for _, p := range matched {
 		matchedIdx[p.li] = true
@@ -308,8 +371,12 @@ func isLyricWordRune(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsNumber(r) || r == '\'' || r == '’' || r == '`'
 }
 
-// Cheap bag check before per-line scoring.
+// Cheap exact/prefix bag check before per-line scoring (no Damerau).
 func docHasQueryCoverage(doc lyricsDocument, queryTokens []string) bool {
+	required := lyricsContentTokens(queryTokens)
+	if len(required) == 0 {
+		return false
+	}
 	unique := map[string]struct{}{}
 	for _, lineToks := range doc.LineTokens {
 		for _, t := range lineToks {
@@ -317,22 +384,28 @@ func docHasQueryCoverage(doc lyricsDocument, queryTokens []string) bool {
 		}
 	}
 	matched := 0
-	for _, qt := range queryTokens {
-		for cand := range unique {
-			if tokenSimilarity(qt, cand) >= 0.58 {
-				matched++
-				break
+	for _, qt := range required {
+		if _, ok := unique[qt]; ok {
+			matched++
+			continue
+		}
+		if len([]rune(qt)) >= 3 {
+			for cand := range unique {
+				if strings.HasPrefix(cand, qt) || strings.HasPrefix(qt, cand) {
+					matched++
+					break
+				}
 			}
 		}
 	}
-	minCoverage := 0.5
+	minCoverage := 0.65
 	switch {
-	case len(queryTokens) <= 2:
+	case len(required) <= 2:
 		minCoverage = 1.0
-	case len(queryTokens) <= 4:
-		minCoverage = 0.6
+	case len(required) <= 4:
+		minCoverage = 0.75
 	}
-	return float64(matched)/float64(len(queryTokens))+0.001 >= minCoverage
+	return float64(matched)/float64(len(required))+0.001 >= minCoverage
 }
 
 func bestLyricsLine(doc lyricsDocument, queryTokens []string) *lyricsScoredLine {
@@ -461,21 +534,18 @@ func searchLyricsDocuments(docs []lyricsDocument, buckets map[string][]int, quer
 	if len(queryTokens) == 0 || len(docs) == 0 {
 		return nil
 	}
-	// Prefer exact prefix buckets first (fast path). Only expand typo-neighbor
-	// buckets for tokens that contributed nothing — keeps large libraries snappy.
-	candidateSet := map[int]struct{}{}
-	addKey := func(key string) {
-		for _, di := range buckets[key] {
-			candidateSet[di] = struct{}{}
-			if len(candidateSet) >= candidateCap {
-				return
-			}
-		}
+	if candidateCap <= 0 {
+		candidateCap = 280
 	}
-	// Count how many query tokens "vote" for each document via exact buckets.
+	voteTokens := lyricsContentTokens(queryTokens)
+	if len(voteTokens) == 0 {
+		return nil
+	}
+
+	candidateSet := map[int]struct{}{}
 	votes := map[int]int{}
-	emptyExact := make([]string, 0, len(queryTokens))
-	for _, qt := range queryTokens {
+	emptyExact := make([]string, 0, len(voteTokens))
+	for _, qt := range voteTokens {
 		key := lyricsBucketKey(qt)
 		seen := map[int]struct{}{}
 		matchedAny := false
@@ -492,8 +562,11 @@ func searchLyricsDocuments(docs []lyricsDocument, buckets map[string][]int, quer
 		}
 	}
 	minVotes := 1
-	if len(queryTokens) >= 3 {
+	if len(voteTokens) >= 2 {
 		minVotes = 2
+		if len(voteTokens) < minVotes {
+			minVotes = len(voteTokens)
+		}
 	}
 	for di, n := range votes {
 		if n >= minVotes {
@@ -503,12 +576,15 @@ func searchLyricsDocuments(docs []lyricsDocument, buckets map[string][]int, quer
 			}
 		}
 	}
-	if len(candidateSet) < 80 {
+	allowFuzzy := len(voteTokens) >= 2 || (len(voteTokens) == 1 && len([]rune(voteTokens[0])) >= 5)
+	if allowFuzzy && len(candidateSet) < 60 {
 		for _, qt := range emptyExact {
+			if len([]rune(qt)) < 4 {
+				continue
+			}
 			for key := range candidateBucketKeys(qt) {
 				for _, di := range buckets[key] {
-					// Fuzzy vote: accept if the doc already has ≥1 exact vote, or query is short.
-					if votes[di] >= 1 || len(queryTokens) <= 2 {
+					if votes[di] >= 1 || len(voteTokens) <= 2 {
 						candidateSet[di] = struct{}{}
 					}
 					if len(candidateSet) >= candidateCap {
@@ -526,30 +602,45 @@ func searchLyricsDocuments(docs []lyricsDocument, buckets map[string][]int, quer
 	}
 	candidates := make([]int, 0, len(candidateSet))
 	if len(candidateSet) == 0 {
-		// Last resort: fuzzy-expand the longest query token alone.
-		longest := queryTokens[0]
-		for _, qt := range queryTokens[1:] {
-			if len(qt) > len(longest) {
-				longest = qt
+		if allowFuzzy {
+			longest := voteTokens[0]
+			for _, qt := range voteTokens[1:] {
+				if len(qt) > len(longest) {
+					longest = qt
+				}
+			}
+			for key := range candidateBucketKeys(longest) {
+				for _, di := range buckets[key] {
+					candidateSet[di] = struct{}{}
+					if len(candidateSet) >= candidateCap {
+						break
+					}
+				}
+				if len(candidateSet) >= candidateCap {
+					break
+				}
 			}
 		}
-		for key := range candidateBucketKeys(longest) {
-			addKey(key)
-			if len(candidateSet) >= candidateCap {
-				break
-			}
-		}
-		for di := range candidateSet {
-			candidates = append(candidates, di)
-		}
-	} else {
-		for di := range candidateSet {
-			candidates = append(candidates, di)
+		if len(candidateSet) == 0 {
+			return nil
 		}
 	}
+	for di := range candidateSet {
+		candidates = append(candidates, di)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return votes[candidates[i]] > votes[candidates[j]]
+	})
+	gatherCap := limit * 3
+	if gatherCap < limit {
+		gatherCap = limit
+	}
+	if gatherCap > len(candidates) {
+		gatherCap = len(candidates)
+	}
 
-	hits := make([]lyricsHit, 0, minInt(limit, len(candidates)))
-	for _, di := range candidates {
+	hits := make([]lyricsHit, 0, minInt(limit, gatherCap))
+	for _, di := range candidates[:gatherCap] {
 		doc := docs[di]
 		if !docHasQueryCoverage(doc, queryTokens) {
 			continue
@@ -575,6 +666,9 @@ func searchLyricsDocuments(docs []lyricsDocument, buckets map[string][]int, quer
 			MatchRanges:   matchRanges,
 			Accessibility: "Lyric match: " + scored.Line,
 		})
+		if len(hits) >= limit && scored.Score >= 150 {
+			break
+		}
 	}
 	sort.Slice(hits, func(i, j int) bool {
 		if math.Abs(hits[i].Score-hits[j].Score) > 0.25 {

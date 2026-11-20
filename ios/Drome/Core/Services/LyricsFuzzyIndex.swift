@@ -64,7 +64,7 @@ actor LyricsFuzzyIndex {
         serverKey = nil
     }
 
-    func search(query: String, limit: Int = 40, candidateCap: Int = 600) -> [LyricsFuzzySearch.Hit] {
+    func search(query: String, limit: Int = 40, candidateCap: Int = 280) -> [LyricsFuzzySearch.Hit] {
         // Reuse the pure search helper with the warm corpus + buckets by
         // temporarily rebuilding the public search path over `documents`.
         // Keeping one implementation avoids drift with LyricsSearchKit tests.

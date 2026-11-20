@@ -138,8 +138,7 @@ struct PlaylistDetailView: View {
                     hidePlaylistLocally()
                 },
                 onDelete: { showDeleteConfirm = true },
-                deleteLabel: removeConfirmButtonTitle,
-                deleteSystemImage: removesViaHide ? "eye.slash" : "trash"
+                canServerDelete: !removesViaHide
             )
             .dromeSession(session)
             .presentationDetents([.medium, .large])
@@ -983,8 +982,8 @@ struct PlaylistMoreSheet: View {
     var onBulkOutOfRotation: () -> Void
     var onHide: () -> Void
     var onDelete: () -> Void
-    var deleteLabel: String = "Delete Playlist"
-    var deleteSystemImage: String = "trash"
+    /// False for shared / others' playlists — only Hide is offered.
+    var canServerDelete: Bool = true
 
     var body: some View {
         NavigationStack {
@@ -1063,14 +1062,22 @@ struct PlaylistMoreSheet: View {
                         }
                         .listRowBackground(DromeTheme.elevated)
 
-                        Button(role: .destructive) {
-                            dismissThen(onDelete)
-                        } label: {
-                            Label(deleteLabel, systemImage: deleteSystemImage)
+                        // Shared / others' lists can't be deleted server-side —
+                        // Hide above already covers removal from your library.
+                        if canServerDelete {
+                            Button(role: .destructive) {
+                                dismissThen(onDelete)
+                            } label: {
+                                Label("Delete Playlist", systemImage: "trash")
+                            }
+                            .listRowBackground(DromeTheme.elevated)
                         }
-                        .listRowBackground(DromeTheme.elevated)
                     } footer: {
-                        Text("Hide is local to your account. Shared playlists can’t be deleted for everyone — that action hides them for you instead.")
+                        Text(
+                            canServerDelete
+                                ? "Hide is local to your account. Delete removes the playlist from the server for everyone."
+                                : "Hide is local to your account. Shared playlists can’t be deleted for everyone."
+                        )
                     }
                 }
             }

@@ -75,10 +75,6 @@ struct SearchView: View {
         }
     }
 
-    private var filteredLibraryPodcastHits: [PodcastDiscoverResult] {
-        resultFilter == .all ? podcastHits : []
-    }
-
     private var filteredRecentItems: [RecentSearchItem] {
         switch resultFilter {
         case .all:
@@ -280,7 +276,7 @@ struct SearchView: View {
     private var libraryEmptyMessage: String {
         switch resultFilter {
         case .all:
-            return "Try an artist, album, song, or podcast."
+            return "Try an artist, album, or song."
         case .songs:
             return "Try a song title or artist."
         case .albums:
@@ -308,9 +304,8 @@ struct SearchView: View {
     private var libraryResults: some View {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let visibleHits = filteredHits
-        let visiblePodcastHits = filteredLibraryPodcastHits
         let visibleRecents = filteredRecentItems
-        let libraryEmpty = visibleHits.isEmpty && visiblePodcastHits.isEmpty
+        let libraryEmpty = visibleHits.isEmpty
         let showCenteredEmpty = trimmed.isEmpty && visibleRecents.isEmpty
             && !dynamicTypeSize.isAccessibilitySize
         List {
@@ -342,25 +337,12 @@ struct SearchView: View {
                         .foregroundStyle(DromeTheme.muted)
                         .listRowBackground(DromeTheme.background)
                 }
-            } else {
-                if !visibleHits.isEmpty {
-                    Section {
-                        ForEach(visibleHits) { hit in
-                            hitRow(hit)
-                                .listRowBackground(DromeTheme.background)
-                                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-                        }
-                    }
-                }
-                if !visiblePodcastHits.isEmpty {
-                    Section {
-                        ForEach(visiblePodcastHits.prefix(6)) { hit in
-                            podcastNavigatingRow(hit)
-                                .listRowBackground(DromeTheme.background)
-                                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-                        }
-                    } header: {
-                        Text("Podcasts")
+            } else if !visibleHits.isEmpty {
+                Section {
+                    ForEach(visibleHits) { hit in
+                        hitRow(hit)
+                            .listRowBackground(DromeTheme.background)
+                            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     }
                 }
             }
@@ -376,8 +358,13 @@ struct SearchView: View {
                     message: libraryEmptyMessage)
                 .allowsHitTesting(false)
             } else if !trimmed.isEmpty && libraryEmpty && isSearching {
-                ProgressView()
-                    .tint(DromeTheme.muted)
+                VStack(spacing: 10) {
+                    ProgressView()
+                        .tint(DromeTheme.muted)
+                    Text(includeLyrics ? "Searching lyrics…" : "Searching…")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(DromeTheme.muted)
+                }
             }
         }
         .overlay(alignment: .top) {
@@ -385,7 +372,7 @@ struct SearchView: View {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Searching…")
+                    Text(includeLyrics ? "Updating lyrics…" : "Searching…")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(DromeTheme.muted)
                 }
@@ -1119,6 +1106,9 @@ struct SearchView: View {
             return
         }
         error = nil
+        // Show loading immediately — lyrics fuzzy can take a beat before first paint.
+        isSearching = true
+        hasCompletedSearch = false
         debounceTask = Task {
             // Local index first so the first character isn't waiting on the network.
             try? await Task.sleep(nanoseconds: 40_000_000)
@@ -1132,13 +1122,16 @@ struct SearchView: View {
                 podcastHits = []
                 await runLocalSearch(trimmed)
                 guard !Task.isCancelled else { return }
-                guard trimmed.count >= 2 else { return }
-                if hits.isEmpty {
-                    isSearching = true
+                guard trimmed.count >= 2 else {
+                    isSearching = false
+                    hasCompletedSearch = true
+                    return
                 }
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                guard !Task.isCancelled else { return }
-                // Music + podcasts in one pass so Library search surfaces shows too.
+                // Lyrics mode: skip the extra debounce — stream network as soon as local lands.
+                if !includeLyrics {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    guard !Task.isCancelled else { return }
+                }
                 async let music: Void = runNetworkSearch(trimmed)
                 async let podcasts: Void = runLibraryPodcastSearch(trimmed)
                 _ = await (music, podcasts)
@@ -1151,6 +1144,21 @@ struct SearchView: View {
                 guard !Task.isCancelled else { return }
                 await runPodcastSearch(trimmed)
             }
+        }
+    }
+
+    /// Side-channel podcast hits while searching Library — failures stay quiet
+    /// so a flaky iTunes lookup never blanks music results.
+    private func runLibraryPodcastSearch(_ q: String) async {
+        guard PodcastManager.httpURL(from: q) == nil else { return }
+        do {
+            let results = try await PodcastManager.searchPodcasts(query: q, limit: 8)
+            guard !Task.isCancelled else { return }
+            podcastHits = results
+            ImageLoader.shared.prefetch(results.compactMap(\.show.imageURL), limit: 8)
+        } catch {
+            guard !Task.isCancelled else { return }
+            podcastHits = []
         }
     }
 
@@ -1187,21 +1195,6 @@ struct SearchView: View {
             ImageLoader.shared.prefetch(results.compactMap(\.show.imageURL), limit: 24)
         } catch {
             self.error = error.localizedDescription
-            podcastHits = []
-        }
-    }
-
-    /// Side-channel podcast hits while searching Library — failures stay quiet
-    /// so a flaky iTunes lookup never blanks music results.
-    private func runLibraryPodcastSearch(_ q: String) async {
-        guard PodcastManager.httpURL(from: q) == nil else { return }
-        do {
-            let results = try await PodcastManager.searchPodcasts(query: q, limit: 8)
-            guard !Task.isCancelled else { return }
-            podcastHits = results
-            ImageLoader.shared.prefetch(results.compactMap(\.show.imageURL), limit: 8)
-        } catch {
-            guard !Task.isCancelled else { return }
             podcastHits = []
         }
     }
@@ -1254,6 +1247,9 @@ struct SearchView: View {
             let ownership = await session.artistOwnershipStats()
             let songsIndexed = await session.songsIndexComplete()
             let hideCredits = LibraryArtistFilter.hideCreditOnlyArtists
+            let artistFilter: ((Artist) -> Bool)? = hideCredits
+                ? { LibraryArtistFilter.isVisible($0, ownership: ownership[$0.id], songsIndexed: songsIndexed) }
+                : nil
 
             async let metadataTask = client.search(q, artistCount: 20, albumCount: 20, songCount: 40)
             async let localLyricsTask = loadLocalLyricsHits(
@@ -1261,21 +1257,24 @@ struct SearchView: View {
             async let serverLyricsTask = loadServerLyricsHits(
                 wantLyrics: wantLyrics, wishlist: wishlist, query: q)
 
+            // Paint metadata + on-device lyrics first; companion lyrics stream in after.
             let metadata = try await metadataTask
-            let lyrics = mergeLyricsHits(
-                local: await localLyricsTask,
-                server: await serverLyricsTask)
-            let artistFilter: ((Artist) -> Bool)? = hideCredits
-                ? { LibraryArtistFilter.isVisible($0, ownership: ownership[$0.id], songsIndexed: songsIndexed) }
-                : nil
-            let ranked = SearchRanker.rank(
-                query: q, result: metadata, lyrics: lyrics, artistFilter: artistFilter)
+            let localLyrics = await localLyricsTask
             guard !Task.isCancelled else { return }
-            hits = ranked
+            hits = SearchRanker.rank(
+                query: q, result: metadata, lyrics: localLyrics, artistFilter: artistFilter)
             let songs = metadata.songs
             Task { @MainActor in
                 await Task.yield()
                 session.ratings.ingest(songs)
+            }
+
+            let serverLyrics = await serverLyricsTask
+            guard !Task.isCancelled else { return }
+            if wantLyrics, !serverLyrics.isEmpty {
+                let lyrics = mergeLyricsHits(local: localLyrics, server: serverLyrics)
+                hits = SearchRanker.rank(
+                    query: q, result: metadata, lyrics: lyrics, artistFilter: artistFilter)
             }
         } catch {
             if hits.isEmpty {

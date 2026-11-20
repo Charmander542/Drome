@@ -81,6 +81,25 @@ enum LyricsFuzzySearch: Sendable {
             .filter { !$0.isEmpty }
     }
 
+    /// Common lyric / English fillers — useful for phrasing, too weak alone to
+    /// decide a match (typing "the" or "you" shouldn't flood results).
+    static let fillerTokens: Set<String> = [
+        "a", "an", "the", "and", "or", "but", "to", "of", "in", "on", "at", "for",
+        "is", "it", "its", "me", "my", "we", "you", "i", "im", "ive", "id", "ill",
+        "oh", "ooh", "ah", "uh", "um", "yeah", "ya", "yo", "hey", "la", "na", "da",
+        "do", "does", "did", "so", "if", "as", "be", "by", "no", "not",
+        "just", "like", "all", "was", "were", "are", "am", "been", "that", "this",
+        "with", "from", "your", "our", "his", "her", "him", "them", "they", "she", "he",
+        "what", "when", "who", "how", "can", "cant", "will", "wont", "too", "very",
+        "really", "then", "than", "there", "here",
+    ]
+
+    /// Non-filler tokens. Empty when the query is only fillers (those alone
+    /// are too weak to search — "the" / "you" would match half the catalog).
+    static func contentTokens(from tokens: [String]) -> [String] {
+        tokens.filter { !fillerTokens.contains($0) }
+    }
+
     static func maxEditDistance(forTokenLength length: Int) -> Int {
         if length <= 1 { return 0 }
         if length <= 4 { return 1 }
@@ -169,6 +188,14 @@ enum LyricsFuzzySearch: Sendable {
     ) -> ScoredLine? {
         guard !queryTokens.isEmpty, !lineTokens.isEmpty else { return nil }
 
+        let required = contentTokens(from: queryTokens)
+        guard !required.isEmpty else { return nil }
+        let requiredIndexSet = Set(
+            queryTokens.enumerated().compactMap { idx, tok -> Int? in
+                fillerTokens.contains(tok) ? nil : idx
+            }
+        )
+
         // Greedy one-to-one assignment of query tokens → best unused line tokens.
         var used = Set<Int>()
         var matchedPairs: [(queryIdx: Int, lineIdx: Int, quality: Double)] = []
@@ -184,16 +211,41 @@ enum LyricsFuzzySearch: Sendable {
                     bestJ = ji
                 }
             }
-            if let bestJ, bestQ >= 0.58 {
+            // Content words need a firmer hit than fillers.
+            let floor = requiredIndexSet.contains(qi) ? 0.72 : 0.58
+            if let bestJ, bestQ >= floor {
                 used.insert(bestJ)
                 matchedPairs.append((qi, bestJ, bestQ))
             }
         }
 
-        let coverage = Double(matchedPairs.count) / Double(queryTokens.count)
-        // Short queries need a solid hit; longer phrases tolerate missing words.
-        let minCoverage = queryTokens.count <= 2 ? 1.0 : (queryTokens.count <= 4 ? 0.6 : 0.5)
-        guard coverage + 0.001 >= minCoverage, !matchedPairs.isEmpty else { return nil }
+        let matchedRequired = matchedPairs.filter { requiredIndexSet.contains($0.queryIdx) }
+        guard !matchedRequired.isEmpty else { return nil }
+
+        let coverage = Double(matchedRequired.count) / Double(required.count)
+        // One content word must be near-exact; short phrases stay strict; longer
+        // lines still need most of the content words (don't "spread" to 50%).
+        let minCoverage: Double
+        let minAvgQuality: Double
+        switch required.count {
+        case 1:
+            minCoverage = 1.0
+            // Short singles must be exact ("love" ≠ "lovely"); longer allow typo/prefix.
+            minAvgQuality = required[0].count >= 5 ? 0.9 : 1.0
+        case 2:
+            minCoverage = 1.0
+            minAvgQuality = 0.75
+        case 3...4:
+            minCoverage = 0.75
+            minAvgQuality = 0.7
+        default:
+            minCoverage = 0.65
+            minAvgQuality = 0.65
+        }
+        let avgRequiredQuality = matchedRequired.reduce(0.0) { $0 + $1.quality }
+            / Double(matchedRequired.count)
+        guard coverage + 0.001 >= minCoverage,
+              avgRequiredQuality + 0.001 >= minAvgQuality else { return nil }
 
         let qualitySum = matchedPairs.reduce(0.0) { $0 + $1.quality }
         let avgQuality = qualitySum / Double(matchedPairs.count)
@@ -216,11 +268,14 @@ enum LyricsFuzzySearch: Sendable {
         // Mild penalty when the line has many extra unmatched words.
         let extra = max(0, lineTokens.count - matchedPairs.count)
         let extraPenalty = min(Double(extra) * 1.5, 10.0)
+        // Prefer denser content matches over filler-padded queries.
+        let contentBonus = Double(matchedRequired.count) * 4.0
 
         let score = coverage * 100.0
             + avgQuality * 40.0
             + orderBonus
             + adjacentBonus
+            + contentBonus
             - extraPenalty
 
         let ranges = highlightRanges(in: line, matchedLineTokenIndices: Set(matchedPairs.map(\.lineIdx)))
@@ -272,24 +327,33 @@ enum LyricsFuzzySearch: Sendable {
         return ranges
     }
 
+    /// Cheap exact/prefix bag check — no Damerau. Typo-tolerant scoring still
+    /// happens in `bestLine`; this only skips obvious non-candidates fast.
     static func documentHasQueryCoverage(_ document: Document, queryTokens: [String]) -> Bool {
+        let required = contentTokens(from: queryTokens)
+        guard !required.isEmpty else { return false }
         var unique = Set<String>()
         for lineToks in document.lineTokens {
             unique.formUnion(lineToks)
         }
         var matched = 0
-        for qt in queryTokens {
-            if unique.contains(where: { tokenSimilarity(qt, $0) >= 0.58 }) {
+        for qt in required {
+            if unique.contains(qt) {
+                matched += 1
+                continue
+            }
+            // Prefix only (no edit distance) — keeps this O(unique tokens).
+            if qt.count >= 3, unique.contains(where: { $0.hasPrefix(qt) || qt.hasPrefix($0) }) {
                 matched += 1
             }
         }
         let minCoverage: Double
-        switch queryTokens.count {
-        case 0...2: minCoverage = 1.0
-        case 3...4: minCoverage = 0.6
-        default: minCoverage = 0.5
+        switch required.count {
+        case 1...2: minCoverage = 1.0
+        case 3...4: minCoverage = 0.75
+        default: minCoverage = 0.65
         }
-        return Double(matched) / Double(queryTokens.count) + 0.001 >= minCoverage
+        return Double(matched) / Double(required.count) + 0.001 >= minCoverage
     }
 
     /// Best-scoring line in a document, if any.
@@ -337,11 +401,15 @@ enum LyricsFuzzySearch: Sendable {
         documents: [Document],
         query: String,
         limit: Int = 40,
-        candidateCap: Int = 600,
+        candidateCap: Int = 280,
         prebuiltBuckets: [String: [Int]]? = nil
     ) -> [Hit] {
         let queryTokens = tokens(from: query)
         guard !queryTokens.isEmpty else { return [] }
+        let content = contentTokens(from: queryTokens)
+        // Fillers alone flood every line — need at least one real word.
+        guard !content.isEmpty else { return [] }
+        let voteTokens = content
 
         let buckets: [String: [Int]]
         if let prebuiltBuckets {
@@ -365,7 +433,7 @@ enum LyricsFuzzySearch: Sendable {
         var candidateSet = Set<Int>()
         var votes: [Int: Int] = [:]
         var emptyExact: [String] = []
-        for qt in queryTokens {
+        for qt in voteTokens {
             let key = bucketKey(qt)
             let bucket = buckets[key] ?? []
             if bucket.isEmpty {
@@ -377,16 +445,23 @@ enum LyricsFuzzySearch: Sendable {
                 votes[di, default: 0] += 1
             }
         }
-        let minVotes = queryTokens.count >= 3 ? 2 : 1
+        // Two+ content words: require ≥2 bucket votes so one shared filler-ish
+        // prefix doesn't pull half the library in.
+        let minVotes = voteTokens.count >= 2 ? min(2, voteTokens.count) : 1
         for (di, n) in votes where n >= minVotes {
             candidateSet.insert(di)
             if candidateSet.count >= candidateCap { break }
         }
-        if candidateSet.count < 80 {
-            for qt in emptyExact {
+        // Typo expansion only when a content token missed its exact bucket —
+        // and only for longer tokens / multi-word queries (single short words
+        // stay exact so "love" doesn't fan out across the catalog).
+        let allowFuzzyExpand = voteTokens.count >= 2
+            || (voteTokens.count == 1 && (voteTokens.first?.count ?? 0) >= 5)
+        if allowFuzzyExpand, candidateSet.count < 60 {
+            for qt in emptyExact where qt.count >= 4 {
                 for key in candidateBucketKeys(for: qt) {
                     for di in buckets[key] ?? [] {
-                        if (votes[di] ?? 0) >= 1 || queryTokens.count <= 2 {
+                        if (votes[di] ?? 0) >= 1 || voteTokens.count <= 2 {
                             candidateSet.insert(di)
                         }
                         if candidateSet.count >= candidateCap { break }
@@ -399,36 +474,38 @@ enum LyricsFuzzySearch: Sendable {
 
         let candidates: [Int]
         if candidateSet.isEmpty {
-            let longest = queryTokens.max(by: { $0.count < $1.count }) ?? queryTokens[0]
-            for key in candidateBucketKeys(for: longest) {
-                for di in buckets[key] ?? [] {
-                    candidateSet.insert(di)
+            if allowFuzzyExpand {
+                let longest = voteTokens.max(by: { $0.count < $1.count }) ?? voteTokens[0]
+                for key in candidateBucketKeys(for: longest) {
+                    for di in buckets[key] ?? [] {
+                        candidateSet.insert(di)
+                        if candidateSet.count >= candidateCap { break }
+                    }
                     if candidateSet.count >= candidateCap { break }
                 }
-                if candidateSet.count >= candidateCap { break }
             }
             if candidateSet.isEmpty {
-                candidates = Array(documents.indices.prefix(candidateCap))
-            } else {
-                candidates = Array(candidateSet.prefix(candidateCap))
+                // Exact-bucket miss with no fuzzy path — don't scan the whole corpus.
+                return []
             }
+            candidates = Array(candidateSet)
         } else {
-            candidates = Array(candidateSet.prefix(candidateCap))
+            candidates = Array(candidateSet)
         }
 
+        // Score stronger bucket votes first; stop once we have a solid pool.
+        let ordered = candidates.sorted { (votes[$0] ?? 0) > (votes[$1] ?? 0) }
         var hits: [Hit] = []
-        hits.reserveCapacity(min(limit, candidates.count))
-        for di in candidates {
+        hits.reserveCapacity(min(limit, ordered.count))
+        let gatherCap = min(ordered.count, max(limit * 3, limit))
+        for di in ordered.prefix(gatherCap) {
             let doc = documents[di]
             guard documentHasQueryCoverage(doc, queryTokens: queryTokens) else { continue }
             guard let scored = bestLine(in: doc, queryTokens: queryTokens) else { continue }
             let snippet = makeSnippet(from: scored)
-            // Remap highlight ranges onto snippet when we prepended context.
             let ranges: [Range<String.Index>]
             if snippet == scored.line {
                 ranges = scored.matchRanges
-            } else if let before = scored.contextBefore, snippet.hasPrefix(before) {
-                ranges = remapRanges(scored.matchRanges, from: scored.line, into: snippet)
             } else {
                 ranges = remapRanges(scored.matchRanges, from: scored.line, into: snippet)
             }
@@ -443,6 +520,8 @@ enum LyricsFuzzySearch: Sendable {
                 matchRanges: ranges,
                 accessibilityLabel: "Lyric match: \(scored.line)"
             ))
+            // Enough excellent hits — skip the long tail.
+            if hits.count >= limit, scored.score >= 150 { break }
         }
 
         hits.sort { lhs, rhs in

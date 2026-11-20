@@ -92,3 +92,26 @@ func TestTokenSimilarityTypoTolerance(t *testing.T) {
 		t.Fatal("unrelated should be 0")
 	}
 }
+
+func TestFillerOnlyQueryReturnsNothing(t *testing.T) {
+	docs := make([]lyricsDocument, 0, 8)
+	for i := 0; i < 8; i++ {
+		docs = append(docs, newLyricsDocument(
+			string(rune('a'+i)), "Song", "Artist", "Album",
+			"and you and me and the night\nlove is all around"))
+	}
+	hits := searchLyricsDocuments(docs, buildLyricsBuckets(docs), "the you and", 20, 100)
+	if len(hits) != 0 {
+		t.Fatalf("expected no hits for filler-only query, got %d", len(hits))
+	}
+}
+
+func TestContentWordsDriveFit(t *testing.T) {
+	doc := newLyricsDocument("1", "Song", "Artist", "Album",
+		"never gonna give you up\nnever gonna let you down")
+	hits := searchLyricsDocuments([]lyricsDocument{doc}, buildLyricsBuckets([]lyricsDocument{doc}),
+		"never give you up", 5, 100)
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 hit, got %d", len(hits))
+	}
+}
