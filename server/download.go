@@ -13,6 +13,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -192,6 +194,18 @@ func (w *downloadWorker) Run(ctx context.Context) {
 
 func (w *downloadWorker) process(parent context.Context, e *entry) {
 	attempt := e.Attempts + 1
+
+	// Respect SpotiFLAC verification cooldowns before burning an attempt.
+	if wait := w.providerCooldownRemaining(); wait > 0 {
+		msg := fmt.Sprintf("waiting for SpotiFLAC verification slot (%s)", wait.Round(time.Second))
+		logf("download defer id=%d attempt=%d/%d %s — cooldown %s",
+			e.ID, e.Attempts, w.cfg.MaxAttempts, e.Title, wait.Round(time.Second))
+		if err := w.store.scheduleRetry(e.ID, msg, e.Attempts, wait); err != nil {
+			logf("schedule cooldown retry id=%d: %v", e.ID, err)
+		}
+		return
+	}
+
 	logf("download start id=%d attempt=%d/%d %s %q — %q",
 		e.ID, attempt, w.cfg.MaxAttempts, e.Kind, e.Artist, e.Title)
 	_ = w.store.setStatus(e.ID, statusDownloading, "")
@@ -253,11 +267,8 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 
 func (w *downloadWorker) fail(e *entry, attempt int, err error) {
 	msg := truncate(err.Error(), 500)
-	backoff := w.cfg.RetryBase * time.Duration(1<<min(attempt-1, 4))
-	if backoff > 30*time.Minute {
-		backoff = 30 * time.Minute
-	}
-	logf("download failed id=%d attempt=%d: %v (retry in %s)", e.ID, attempt, err, backoff)
+	backoff := w.retryBackoff(attempt, err.Error())
+	logf("download failed id=%d attempt=%d: %v (retry in %s)", e.ID, attempt, err, backoff.Round(time.Second))
 	if markErr := w.store.markFailed(e.ID, msg, attempt, w.cfg.MaxAttempts, backoff); markErr != nil {
 		logf("mark failed id=%d: %v", e.ID, markErr)
 	}
@@ -268,6 +279,114 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// retryBackoff picks the later of exponential backoff and any SpotiFLAC
+// provider verification cooldown parsed from the error / local backoff files.
+func (w *downloadWorker) retryBackoff(attempt int, errMsg string) time.Duration {
+	exp := w.cfg.RetryBase * time.Duration(1<<min(attempt-1, 4))
+	if exp > 30*time.Minute {
+		exp = 30 * time.Minute
+	}
+	provider := maxDuration(parseProviderRetryAfter(errMsg), w.providerCooldownRemaining())
+	if provider > 0 {
+		provider += 30 * time.Second // wake slightly after not_before
+	}
+	if provider > exp {
+		if provider > 2*time.Hour {
+			provider = 2 * time.Hour
+		}
+		return provider
+	}
+	return exp
+}
+
+func (w *downloadWorker) spotiflacHome() string {
+	if h := strings.TrimSpace(os.Getenv("HOME")); h != "" {
+		return filepath.Join(h, ".spotiflac")
+	}
+	return "/home/drome/.spotiflac"
+}
+
+func (w *downloadWorker) providerCooldownRemaining() time.Duration {
+	return spotiflacAuthBackoffRemaining(w.spotiflacHome(), time.Now())
+}
+
+var providerRetryAfterRe = regexp.MustCompile(`(?i)(?:next try in|verification paused)\s*(?:after a failed attempt[^0-9]{0,60})?(\d+)\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b`)
+
+// parseProviderRetryAfter extracts the longest "next try in N min" style delay
+// from SpotiFLAC / extension error text.
+func parseProviderRetryAfter(msg string) time.Duration {
+	clean := stripANSI(msg)
+	var best time.Duration
+	for _, m := range providerRetryAfterRe.FindAllStringSubmatch(clean, -1) {
+		if len(m) < 3 {
+			continue
+		}
+		n, err := strconv.Atoi(m[1])
+		if err != nil || n <= 0 {
+			continue
+		}
+		unit := strings.ToLower(m[2])
+		var d time.Duration
+		switch {
+		case strings.HasPrefix(unit, "h"):
+			d = time.Duration(n) * time.Hour
+		case strings.HasPrefix(unit, "m"):
+			d = time.Duration(n) * time.Minute
+		default:
+			d = time.Duration(n) * time.Second
+		}
+		if d > best {
+			best = d
+		}
+	}
+	return best
+}
+
+type authBackoffFile struct {
+	Failures  int     `json:"failures"`
+	NotBefore float64 `json:"not_before"`
+}
+
+// spotiflacAuthBackoffRemaining returns how long until local SpotiFLAC
+// signed-session auth backoff files allow another verification attempt.
+func spotiflacAuthBackoffRemaining(spotiflacHome string, now time.Time) time.Duration {
+	dir := filepath.Join(spotiflacHome, "signed_sessions")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	var best time.Duration
+	for _, ent := range entries {
+		name := ent.Name()
+		if ent.IsDir() || !strings.Contains(name, "auth-backoff") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		var ab authBackoffFile
+		if err := json.Unmarshal(raw, &ab); err != nil || ab.NotBefore <= 0 {
+			continue
+		}
+		until := time.Unix(int64(ab.NotBefore), int64((ab.NotBefore-float64(int64(ab.NotBefore)))*1e9))
+		if rem := until.Sub(now); rem > best {
+			best = rem
+		}
+	}
+	if best < 0 {
+		return 0
+	}
+	return best
 }
 
 func (w *downloadWorker) runSpotiflac(ctx context.Context, spotifyURL string) error {
