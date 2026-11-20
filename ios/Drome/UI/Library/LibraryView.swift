@@ -458,16 +458,6 @@ struct LibraryView: View {
     private var playlistsList: some View {
         List {
             Section {
-                Button {
-                    newPlaylistName = ""
-                    showCreatePlaylist = true
-                } label: {
-                    Label("Create playlist", systemImage: "plus.circle.fill")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(DromeTheme.accent)
-                }
-                .listRowBackground(DromeTheme.elevated)
-
                 NavigationLink {
                     DownloadsView()
                 } label: {
@@ -530,7 +520,7 @@ struct LibraryView: View {
 
             Section {
                 if isReorderingPlaylists {
-                    Text("Drag the handles to reorder. Hidden and system playlists stay put.")
+                    Text("Drag the handles to reorder. Hidden playlists stay put.")
                         .font(.caption)
                         .foregroundStyle(DromeTheme.muted)
                         .listRowBackground(Color.clear)
@@ -1008,11 +998,14 @@ struct LibraryView: View {
         let userKey = session.account.userKey
         let serverKey = session.account.serverKey
         let hiddenIDs = PlaylistOrderStore.hiddenIDs(userKey: userKey)
-        hiddenPlaylists = list
+        // Out of Rotation is pinned above as a Library shortcut — keep it out
+        // of the regular playlist rows so it doesn't appear twice.
+        let withoutSystem = list.filter { !rotation.isSystemPlaylist($0) }
+        hiddenPlaylists = withoutSystem
             .filter { hiddenIDs.contains($0.id) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         playlists = PlaylistOrderStore.visibleOrdered(
-            list, userKey: userKey, serverKey: serverKey)
+            withoutSystem, userKey: userKey, serverKey: serverKey)
     }
 
     private func persistPlaylistOrder() {

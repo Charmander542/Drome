@@ -131,9 +131,9 @@
 				Shared/BootChime.swift,
 				Shared/DeepLink.swift,
 				Shared/MessagesShareBridge.swift,
-				Shared/SongIMessage.swift,
 				Shared/OnboardingPreference.swift,
 				Shared/PlaylistShare.swift,
+				Shared/SongIMessage.swift,
 				Shared/SongShare.swift,
 				Shared/WidgetArtWash.swift,
 				Shared/WidgetCommandBridge.swift,
@@ -801,11 +801,11 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Drome/Drome.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LURJ69YS93;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Drome/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Drome;
+				INFOPLIST_KEY_CFBundleDisplayName = DromeMusic;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Drome connects to your Navidrome server and companion wishlist server on your local network.";
 				INFOPLIST_KEY_NSSiriUsageDescription = "Drome uses Siri so you can play songs from your library, or add missing tracks to your wishlist.";
@@ -833,11 +833,11 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Drome/Drome.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LURJ69YS93;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Drome/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Drome;
+				INFOPLIST_KEY_CFBundleDisplayName = DromeMusic;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Drome connects to your Navidrome server and companion wishlist server on your local network.";
 				INFOPLIST_KEY_NSSiriUsageDescription = "Drome uses Siri so you can play songs from your library, or add missing tracks to your wishlist.";
@@ -861,14 +861,16 @@
 		D00DE0000000000000000031 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "iMessage App Icon";
 				CODE_SIGN_ENTITLEMENTS = DromeMessages/DromeMessages.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LURJ69YS93;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DromeMessages/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Drome;
+				INFOPLIST_KEY_CFBundleDisplayName = DromeMusic;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_MSMessagesExtensionStoreIconName = "iMessage App Icon";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Drome Messages uses the local network to search and preview tracks from your Navidrome server.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -890,14 +892,16 @@
 		D00DE0000000000000000032 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "iMessage App Icon";
 				CODE_SIGN_ENTITLEMENTS = DromeMessages/DromeMessages.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LURJ69YS93;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DromeMessages/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Drome;
+				INFOPLIST_KEY_CFBundleDisplayName = DromeMusic;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_MSMessagesExtensionStoreIconName = "iMessage App Icon";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Drome Messages uses the local network to search and preview tracks from your Navidrome server.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -923,11 +927,11 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = DromeTV/DromeTV.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LURJ69YS93;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DromeTV/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Drome;
+				INFOPLIST_KEY_CFBundleDisplayName = DromeMusic;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Drome connects to your Navidrome server and companion wishlist server on your local network.";
 				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
@@ -955,11 +959,11 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = DromeTV/DromeTV.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LURJ69YS93;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DromeTV/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Drome;
+				INFOPLIST_KEY_CFBundleDisplayName = DromeMusic;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Drome connects to your Navidrome server and companion wishlist server on your local network.";
 				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
@@ -986,11 +990,11 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = DromeWidget/DromeWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LURJ69YS93;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DromeWidget/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Drome;
+				INFOPLIST_KEY_CFBundleDisplayName = DromeMusic;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1014,11 +1018,11 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = DromeWidget/DromeWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LURJ69YS93;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DromeWidget/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Drome;
+				INFOPLIST_KEY_CFBundleDisplayName = DromeMusic;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1042,11 +1046,11 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = DromeWatch/DromeWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LURJ69YS93;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Drome;
+				INFOPLIST_KEY_CFBundleDisplayName = DromeMusic;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = drome.app;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1072,11 +1076,11 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = DromeWatch/DromeWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LURJ69YS93;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Drome;
+				INFOPLIST_KEY_CFBundleDisplayName = DromeMusic;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = drome.app;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1102,11 +1106,11 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = DromeWatchWidget/DromeWatchWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LURJ69YS93;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DromeWatchWidget/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Drome;
+				INFOPLIST_KEY_CFBundleDisplayName = DromeMusic;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1133,11 +1137,11 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = DromeWatchWidget/DromeWatchWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LURJ69YS93;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DromeWatchWidget/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Drome;
+				INFOPLIST_KEY_CFBundleDisplayName = DromeMusic;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
