@@ -46,6 +46,8 @@ pairing). Same Navidrome login on each device.
 | `DROME_MUSIC_DIR` | Shared library mount (default `/music`) |
 | `DROME_AUTO_DOWNLOAD` | Queue SpotiFLAC on every wishlist add (`true`/`false`) |
 | `DROME_SPOTIFLAC_SERVICES` | Provider priority, comma-separated |
+| `SPOTIFLAC_REGISTRIES` | Extension registry JSON URLs (required for SpotiFLAC 5+) |
+| `DROME_SPOTIFLAC_EXTENSIONS` | Extensions to install on boot (`utilities,tidal-web,…`) |
 | `DROME_NAVIDROME_SCAN_USER` / `PASSWORD` | Optional; triggers immediate library scan |
 
 Auth reuses Subsonic `u` / `t` / `s` query params — same credentials as Navidrome login.

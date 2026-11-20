@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -287,15 +288,144 @@ func (w *downloadWorker) runSpotiflac(ctx context.Context, spotifyURL string) er
 	cmd.Stderr = &stderr
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
 
+	started := time.Now().Add(-2 * time.Second)
 	err := cmd.Run()
-	if err == nil {
-		return nil
-	}
 	out := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
-	if out == "" {
-		return fmt.Errorf("spotiflac: %w", err)
+	if soft := spotiflacSoftFailure(out); soft != "" {
+		// SpotiFLAC (and older wrappers) often exit 0 after "Successful: 0".
+		// Prefer the soft reason; append only the useful tail (not the banner).
+		tail := truncate(spotiflacFailureTail(out), 800)
+		if tail != "" {
+			return fmt.Errorf("spotiflac: %s\n%s", soft, tail)
+		}
+		return fmt.Errorf("spotiflac: %s", soft)
 	}
-	return fmt.Errorf("spotiflac: %w\n%s", err, truncate(out, 2000))
+	if err != nil {
+		if out == "" {
+			return fmt.Errorf("spotiflac: %w", err)
+		}
+		return fmt.Errorf("spotiflac: %w\n%s", err, truncate(out, 2000))
+	}
+	// Silent no-op (no extensions / no summary): treat as failure so retag
+	// is not blamed for empty output.
+	if !recentAudioExists(w.cfg.MusicDir, started) {
+		detail := "no audio files written"
+		if soft := strings.TrimSpace(out); soft != "" {
+			detail = truncate(soft, 500)
+		}
+		return fmt.Errorf("spotiflac: %s", detail)
+	}
+	return nil
+}
+
+func recentAudioExists(root string, since time.Time) bool {
+	cutoff := since.Unix()
+	found := false
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		switch ext {
+		case ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".aiff":
+		default:
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		if info.ModTime().Unix() >= cutoff {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+// spotiflacSoftFailure detects session summaries where every track failed but
+// the process still exited 0. Returns a short reason, or "" if OK / inconclusive.
+func spotiflacSoftFailure(out string) string {
+	clean := stripANSI(out)
+	if !strings.Contains(clean, "Successful") {
+		return ""
+	}
+	for _, line := range strings.Split(clean, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(line, "║"))
+		line = strings.TrimSpace(strings.TrimSuffix(line, "║"))
+		if !strings.HasPrefix(line, "Successful") {
+			continue
+		}
+		// "Successful    : 0"
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		n := strings.TrimSpace(parts[1])
+		if n == "0" {
+			for _, l := range strings.Split(clean, "\n") {
+				l = strings.TrimSpace(l)
+				if strings.Contains(l, "All providers failed") || strings.Contains(l, "Failed:") {
+					return truncate(l, 400)
+				}
+			}
+			return "0 successful downloads (providers failed)"
+		}
+	}
+	return ""
+}
+
+// spotiflacFailureTail keeps the last provider-failure lines from a noisy log.
+func spotiflacFailureTail(out string) string {
+	clean := stripANSI(out)
+	var keep []string
+	for _, line := range strings.Split(clean, "\n") {
+		l := strings.TrimSpace(line)
+		if l == "" {
+			continue
+		}
+		if strings.Contains(l, "All providers failed") ||
+			strings.Contains(l, "Failed:") ||
+			strings.Contains(l, "UNAVAILABLE") ||
+			strings.Contains(l, "AUTH_FAILED") ||
+			strings.Contains(l, "Turnstile") ||
+			strings.Contains(l, "verification paused") ||
+			strings.Contains(l, "not installed") ||
+			strings.Contains(l, "No registry") {
+			keep = append(keep, l)
+		}
+	}
+	if len(keep) == 0 {
+		return ""
+	}
+	if len(keep) > 8 {
+		keep = keep[len(keep)-8:]
+	}
+	return strings.Join(keep, "\n")
+}
+
+func stripANSI(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			i += 2
+			for i < len(s) {
+				c := s[i]
+				if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+					break
+				}
+				i++
+			}
+			continue
+		}
+		if s[i] == '\r' {
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // retagRecent applies wishlist Spotify metadata onto files touched by the job
