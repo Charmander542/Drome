@@ -37,7 +37,10 @@ struct TasteAffinity: Sendable {
         }
 
         // Pull genres/artists from rated songs when we have metadata on hand.
-        let byID = Dictionary(uniqueKeysWithValues: (seeds + knownSongs).map { ($0.id, $0) })
+        // Seeds often reappear in similar/random batches — never trap on dup IDs.
+        let byID = Dictionary(
+            (seeds + knownSongs).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first })
         for (id, rating) in ratings where rating >= 4 {
             guard let song = byID[id] else { continue }
             if let g = normalizeGenre(song.genre) { genres.insert(g) }
