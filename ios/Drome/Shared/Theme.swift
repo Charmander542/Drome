@@ -1,17 +1,77 @@
 import SwiftUI
 
+#if os(iOS)
+import UIKit
+#endif
+
+/// Listening Club design tokens. Existing `background` / `elevated` / `accent`
+/// aliases stay so call sites keep compiling while components migrate.
 enum DromeTheme {
-    static let background = Color(red: 0.07, green: 0.07, blue: 0.08)
-    static let elevated = Color(red: 0.12, green: 0.12, blue: 0.13)
+    // MARK: - Surfaces
+
+    static let background = Color(red: 0.05, green: 0.05, blue: 0.055)
+    static let elevated = Color(red: 0.11, green: 0.11, blue: 0.12)
     static let elevated2 = Color(red: 0.16, green: 0.16, blue: 0.17)
-    /// Soft system blue — used for accents across the app.
-    static let accent = Color(red: 0.25, green: 0.55, blue: 0.98)
+    static var surface: Color { elevated }
+    static var surfaceRaised: Color { elevated2 }
+
+    /// App accent — defaults to warm amber; user can change it in Settings.
+    static var accent: Color { AccentStore.cachedColor }
+    static var accentWash: Color { AccentStore.cachedColor.opacity(0.18) }
+    static let ink = Color.white
     static let muted = Color(white: 0.62)
     static let divider = Color(white: 0.22)
 
-    static let titleFont = Font.system(.largeTitle, design: .rounded).weight(.bold)
-    static let headlineFont = Font.system(.title2, design: .rounded).weight(.bold)
+    // MARK: - Type
+
+    /// Display — slightly condensed geometric feel without a custom font file.
+    static let titleFont = Font.system(.largeTitle, design: .default).weight(.bold)
+    static let brandFont = Font.system(size: 28, weight: .heavy, design: .default)
+    static let headlineFont = Font.system(.title2, design: .default).weight(.bold)
+    static let sectionFont = Font.system(.title3, design: .default).weight(.semibold)
     static let rowTitle = Font.system(.body, design: .default).weight(.semibold)
+    static let captionFont = Font.system(.caption, design: .default).weight(.medium)
+    static let overlineFont = Font.system(.caption2, design: .default).weight(.bold)
+
+    // MARK: - Space / radius
+
+    enum Space {
+        static let xs: CGFloat = 4
+        static let sm: CGFloat = 8
+        static let md: CGFloat = 12
+        static let lg: CGFloat = 16
+        static let xl: CGFloat = 24
+        static let xxl: CGFloat = 32
+    }
+
+    enum Radius {
+        static let sm: CGFloat = 6
+        static let md: CGFloat = 12
+        static let lg: CGFloat = 18
+        static let xl: CGFloat = 22
+        static let pill: CGFloat = 999
+    }
+
+    // MARK: - Motion
+
+    enum Motion {
+        static let vibeBreathe = Animation.easeInOut(duration: 2.4).repeatForever(autoreverses: true)
+        static let colorCrossfade = Animation.easeInOut(duration: 0.45)
+        static let expand = Animation.spring(response: 0.38, dampingFraction: 0.84)
+    }
+
+    /// Contrast-safe text/icon color on a wash derived from artwork.
+    static func contrastingInk(on wash: Color) -> Color {
+        #if os(iOS)
+        let ui = UIColor(wash)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        ui.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        return luminance > 0.55 ? Color.black.opacity(0.88) : Color.white
+        #else
+        return .white
+        #endif
+    }
 }
 
 extension Color {
@@ -34,8 +94,6 @@ extension Color {
 
 /// Kept for call sites / future overlays. Bottom chrome is laid out as a sibling
 /// of tab content in `MainTabView`, so Lists cannot paint under the mini player.
-/// At accessibility sizes, empty/error chrome still needs to scroll within that
-/// sibling frame (see `ScrollableEmptyState` / `ErrorStateView.expandsToFill`).
 private struct MiniPlayerClearanceKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
 }
@@ -48,7 +106,6 @@ extension EnvironmentValues {
 }
 
 enum MiniPlayerMetrics {
-    /// Approximate mini-player block height (art + padding + gap).
     static let clearanceHeight: CGFloat = 76
 }
 
@@ -60,15 +117,12 @@ extension View {
             .preferredColorScheme(.dark)
     }
 
-    /// No-op: mini player + tab bar are siblings of tab content in MainTabView,
-    /// so pages cannot draw underneath them.
     func dromeMiniPlayerClearance(_ height: CGFloat? = nil) -> some View {
         self
     }
 }
 
 extension View {
-    /// Confirms before a play action that would replace an existing user queue.
     func confirmReplaceUserQueue(
         isPresented: Binding<Bool>,
         queueCount: Int,

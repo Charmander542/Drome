@@ -9,7 +9,6 @@ struct HomeView: View {
 
     @State private var recentEntries: [RecentPlayEntry] = []
     @State private var homePlaylists: [Playlist] = []
-    @State private var frequent: [Album] = []
     @State private var newest: [Album] = []
     @State private var dailyMixes: [DailyMix] = []
     @State private var dailyMixesDate: String?
@@ -19,9 +18,7 @@ struct HomeView: View {
     @State private var mixesError: String?
     @State private var isLoading = false
     @State private var error: String?
-    @State private var showAccounts = false
     @State private var showSettings = false
-    @State private var showTVPairing = false
     @State private var scrollToTopToken = 0
 
     private var hasCompanion: Bool { session.wishlist != nil }
@@ -29,11 +26,13 @@ struct HomeView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 28) {
+                VStack(alignment: .leading, spacing: 22) {
                     Color.clear.frame(height: 0).id("home-top")
 
+                    // Compact brand — Vibe Tuner is the hero immediately under it.
+                    homeBrandRow
+
                     VibeTuner()
-                        .padding(.top, 4)
 
                     if hasCompanion {
                         DailyMixRail(
@@ -46,31 +45,26 @@ struct HomeView: View {
 
                     if !recentEntries.isEmpty {
                         HorizontalRecentRail(
-                            title: "Recently played",
+                            title: "Continue",
                             entries: recentEntries,
                             dailyMixes: dailyMixes)
                     }
                     if !homePlaylists.isEmpty {
                         HorizontalPlaylistRail(title: "Playlists", playlists: homePlaylists)
                     }
-                    if !frequent.isEmpty {
-                        HorizontalAlbumRail(title: "Jump back in", albums: frequent)
-                    }
                     if !newest.isEmpty {
                         HorizontalAlbumRail(title: "New in your library", albums: newest)
                     }
 
-                    if let error, recentEntries.isEmpty && frequent.isEmpty && newest.isEmpty {
+                    if let error, recentEntries.isEmpty && newest.isEmpty {
                         if dynamicTypeSize.isAccessibilitySize {
-                            // Intrinsic height so Try Again stays reachable above the mini player.
                             ErrorStateView(message: error, expandsToFill: false) {
                                 Task { await loadAll() }
                             }
                         } else {
-                            // Exact main call — keeps the block’s vertical position identical.
                             ErrorStateView(message: error) { Task { await loadAll() } }
                         }
-                    } else if !isLoading && recentEntries.isEmpty && frequent.isEmpty
+                    } else if !isLoading && recentEntries.isEmpty
                                 && newest.isEmpty && dailyMixes.isEmpty {
                         if dynamicTypeSize.isAccessibilitySize {
                             EmptyStateView(title: "Your library is empty",
@@ -83,13 +77,17 @@ struct HomeView: View {
                         }
                     }
                 }
-                .padding(.vertical, 12)
+                .padding(.top, 0)
+                .padding(.bottom, 12)
             }
             .onChange(of: scrollToTopToken) { _, _ in
                 withAnimation(.easeOut(duration: 0.25)) {
                     proxy.scrollTo("home-top", anchor: .top)
                 }
             }
+        }
+        .overlay(alignment: .topTrailing) {
+            stickySettingsButton
         }
         .task(id: session.id) { await loadAll() }
         .refreshable { await loadAll() }
@@ -104,50 +102,60 @@ struct HomeView: View {
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button { showAccounts = true } label: {
-                        Label("Switch Account", systemImage: "person.2")
-                    }
-                    Button { showTVPairing = true } label: {
-                        Label("Send to Apple TV", systemImage: "appletv")
-                    }
-                    Button { showSettings = true } label: {
-                        Label("Settings", systemImage: "gearshape")
-                    }
-                    Button(role: .destructive) { env.signOut() } label: {
-                        Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
-                    }
-                } label: {
-                    Image(systemName: "person.crop.circle")
-                }
-            }
-        }
-        .modifier(HomeAXNavChrome(enabled: dynamicTypeSize.isAccessibilitySize))
-        .sheet(isPresented: $showAccounts) {
-            AccountSwitcherSheet().environmentObject(env)
-        }
-        .sheet(isPresented: $showTVPairing) {
-            SongNavigationStack {
-                TVPairingView()
-                    .dromeSession(session)
-                    .environmentObject(env)
-            }
-        }
+        .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showSettings) {
-            SongNavigationStack {
-                SettingsView()
-                    .dromeSession(session)
-                    .environmentObject(env)
-            }
+            SettingsView()
+                .dromeSession(session)
+                .environmentObject(env)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(28)
+                // Avoid the post-present content inset settle that nudges the page down.
+                .presentationContentInteraction(.scrolls)
+                .presentationBackground(DromeTheme.background)
         }
     }
 
+    /// Fixed top-trailing Settings — does not scroll with Home content.
+    private var stickySettingsButton: some View {
+        Button {
+            showSettings = true
+        } label: {
+            Image(systemName: "gearshape.circle.fill")
+                .font(.system(size: 40, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(DromeTheme.accent)
+                .padding(4)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .padding(.trailing, 12)
+        .padding(.top, 0)
+        .accessibilityIdentifier("drome.home.settings")
+        .accessibilityLabel("Settings")
+    }
+
+    private var homeBrandRow: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text("DROME")
+                .font(.system(size: 30, weight: .heavy, design: .default))
+                .foregroundStyle(DromeTheme.accent)
+                .tracking(1.6)
+                .accessibilityAddTraits(.isHeader)
+
+            Spacer(minLength: 8)
+
+            // Reserve the gear’s footprint so DROME lines up beside it at rest.
+            Color.clear
+                .frame(width: 48, height: 48)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 0)
+        .padding(.bottom, 2)
+    }
+
     private func dismissHomeSheets() {
-        showAccounts = false
         showSettings = false
-        showTVPairing = false
     }
 
     private func loadAll() async {
@@ -169,12 +177,10 @@ struct HomeView: View {
             async let recentTask = Task.detached(priority: .utility) {
                 (try? db.recentPlayEntries(userKey: userKey, limit: 40)) ?? []
             }.value
-            async let f = session.client.albumList(type: .frequent, size: 20)
             async let n = session.client.albumList(type: .newest, size: 20)
             async let p = session.client.playlists()
-            let (recent, freq, neu, lists) = try await (recentTask, f, n, p)
+            let (recent, neu, lists) = try await (recentTask, n, p)
             recentEntries = recent
-            frequent = freq
             newest = neu
             let visible = lists.filter {
                 !PlaylistOrderStore.isHidden($0.id, userKey: userKey)
@@ -269,23 +275,6 @@ struct HomeView: View {
             var cleaned = mix
             cleaned.songs = songs
             return cleaned
-        }
-    }
-}
-
-/// Opaque nav bar only at accessibility sizes so scrolled Vibe chips don't
-/// show through / sit under a clear toolbar. No-op at default / XXXL.
-private struct HomeAXNavChrome: ViewModifier {
-    let enabled: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if enabled {
-            content
-                .toolbarBackground(DromeTheme.background, for: .navigationBar)
-                .toolbarBackground(.visible, for: .navigationBar)
-        } else {
-            content
         }
     }
 }

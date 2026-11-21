@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// Aura-inspired Connect screen: aurora wash, frosted icon fields, white Connect CTA.
 struct LoginView: View {
     @EnvironmentObject private var env: AppEnvironment
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -9,13 +10,13 @@ struct LoginView: View {
     @State private var password = ""
     @State private var wishlistURL = ""
     @State private var allowSelfSigned = false
+    @State private var showAdvanced = false
     @State private var isWorking = false
     @State private var errorMessage: String?
     @State private var showSavedAccounts = false
     @State private var signInTask: Task<Void, Never>?
+    @State private var appeared = false
     @FocusState private var focusedField: Field?
-    /// Used only at accessibility sizes; default/XXXL keep the fixed 48pt brand.
-    @ScaledMetric(relativeTo: .largeTitle) private var brandSizeScaled: CGFloat = 48
 
     private enum Field: Hashable {
         case server, user, password, wishlist
@@ -23,150 +24,93 @@ struct LoginView: View {
 
     private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
 
-    private var brandSize: CGFloat {
-        dynamicTypeSize.isAccessibilitySize ? min(brandSizeScaled, 72) : 48
-    }
-
-    /// Gap between scroll content / focused field and the pinned Sign In chrome.
-    /// Slightly roomier at AX so Wishlist doesn't sit flush against the button.
-    private var footerGap: CGFloat { accessibilityLayout ? 16 : 0 }
-
-    /// Long URL prompts shrink to fit at AX5; use a short label and keep
-    /// the full examples in the helper text instead.
-    private var companionPlaceholder: String {
-        accessibilityLayout ? "Companion URL" : "https://wishlist.example.com"
-    }
-
-    private var companionHelper: String {
-        accessibilityLayout
-            ? "Example: https://wishlist.example.com\nLAN: http://host:4534"
-            : "LAN example: http://host:4534"
+    private var canSubmit: Bool {
+        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !password.isEmpty
+            && normalizedURL(serverURL) != nil
     }
 
     var body: some View {
         NavigationStack {
-            // Pin Sign In in the layout (not an overlay) so its height becomes a
-            // real bottom inset — fields can never sit under the button.
-            VStack(spacing: footerGap) {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 28) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Drome")
-                                    .font(.system(size: brandSize, weight: .bold, design: .rounded))
-                                    .foregroundStyle(.white)
-                                Text("Stream your Navidrome library.")
-                                    .font(.title3)
-                                    .foregroundStyle(DromeTheme.muted)
-                            }
-                            .padding(.top, 48)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                            .onTapGesture { focusedField = nil }
-
-                            if !env.accounts.accounts.isEmpty {
-                                Button {
-                                    showSavedAccounts = true
-                                } label: {
-                                    Label("Switch to a saved account", systemImage: "person.2")
-                                        .frame(maxWidth: .infinity)
-                                }
-                                .buttonStyle(.bordered)
-                                .tint(.white)
-                            }
-
-                            VStack(spacing: 14) {
-                                labeledField(
-                                    title: "Server URL",
-                                    text: $serverURL,
-                                    field: .server,
-                                    keyboard: .URL,
-                                    autocapitalization: .never,
-                                    contentType: .URL,
-                                    submitLabel: .next,
-                                    placeholder: "https://host:4533"
-                                )
-                                labeledField(
-                                    title: "Username",
-                                    text: $username,
-                                    field: .user,
-                                    keyboard: .default,
-                                    autocapitalization: .never,
-                                    contentType: .username,
-                                    submitLabel: .next
-                                )
-                                labeledSecureField(
-                                    title: "Password",
-                                    text: $password,
-                                    submitLabel: .next
-                                )
-                                labeledField(
-                                    title: "Wishlist server (optional)",
-                                    text: $wishlistURL,
-                                    field: .wishlist,
-                                    keyboard: .URL,
-                                    autocapitalization: .never,
-                                    contentType: .URL,
-                                    submitLabel: .go,
-                                    placeholder: companionPlaceholder,
-                                    helper: companionHelper
-                                )
-
-                                Toggle(isOn: $allowSelfSigned) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Allow self-signed certificate")
-                                        Text("Only for your own Navidrome host.")
-                                            .font(.caption)
-                                            .foregroundStyle(DromeTheme.muted)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
-                                }
-                                .tint(DromeTheme.accent)
-                                .padding(.top, 4)
-                            }
-
-                            if let errorMessage {
-                                Text(errorMessage)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.red)
-                                    .id("loginError")
-                            }
-
-                            // Extra scroll room so companion helper + toggle can
-                            // move fully above the pinned Sign In chrome at AX.
-                            Color.clear
-                                .frame(minHeight: accessibilityLayout ? 320 : 120)
-                                .frame(maxWidth: .infinity)
-                                .contentShape(Rectangle())
-                                .onTapGesture { focusedField = nil }
-                                .accessibilityHidden(true)
-                        }
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, accessibilityLayout ? 48 : 24)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .scrollDismissesKeyboard(.interactively)
-                    .scrollIndicators(.hidden)
-                    .onChange(of: focusedField) { _, newValue in
-                        guard let newValue else { return }
-                        scrollFieldIntoView(newValue, proxy: proxy)
-                    }
-                    .onChange(of: errorMessage) { _, newValue in
-                        guard newValue != nil else { return }
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            proxy.scrollTo("loginError", anchor: .center)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                signInChrome
-            }
-            .background {
-                DromeTheme.background
+            ZStack {
+                auroraBackground
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
                     .onTapGesture { focusedField = nil }
+
+                VStack(spacing: 0) {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            VStack(spacing: 0) {
+                                header
+                                    .padding(.top, accessibilityLayout ? 28 : 48)
+                                    .padding(.bottom, 28)
+
+                                formFields
+                                    .padding(.horizontal, 28)
+
+                                if isWorking {
+                                    HStack(spacing: 10) {
+                                        ProgressView().tint(.white)
+                                        Text("Connecting…")
+                                            .font(.callout)
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+                                    .padding(.top, 20)
+                                }
+
+                                if let errorMessage {
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Image(systemName: "exclamationmark.triangle.fill")
+                                            .foregroundStyle(.red)
+                                        Text(errorMessage)
+                                            .font(.caption)
+                                            .foregroundStyle(.white.opacity(0.85))
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    .padding(.horizontal, 28)
+                                    .padding(.top, 16)
+                                    .id("loginError")
+                                }
+
+                                advancedSection
+                                    .padding(.horizontal, 28)
+                                    .padding(.top, 18)
+
+                                if !env.accounts.accounts.isEmpty {
+                                    Button {
+                                        showSavedAccounts = true
+                                    } label: {
+                                        Label("Saved accounts", systemImage: "person.2")
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(.white.opacity(0.65))
+                                    }
+                                    .padding(.top, 20)
+                                    .accessibilityIdentifier("drome.login.saved-accounts")
+                                }
+
+                                Color.clear
+                                    .frame(height: accessibilityLayout ? 160 : 96)
+                                    .accessibilityHidden(true)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .scrollDismissesKeyboard(.interactively)
+                        .scrollIndicators(.hidden)
+                        .onChange(of: focusedField) { _, newValue in
+                            guard let newValue else { return }
+                            scrollFieldIntoView(newValue, proxy: proxy)
+                        }
+                        .onChange(of: errorMessage) { _, newValue in
+                            guard newValue != nil else { return }
+                            withAnimation(.easeOut(duration: 0.25)) {
+                                proxy.scrollTo("loginError", anchor: .center)
+                            }
+                        }
+                    }
+
+                    connectChrome
+                }
             }
             .toolbar {
                 ToolbarItemGroup(placement: .keyboard) {
@@ -175,98 +119,299 @@ struct LoginView: View {
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
+            .accessibilityIdentifier("drome.login.screen")
+            .preferredColorScheme(.dark)
         }
         .sheet(isPresented: $showSavedAccounts) {
             AccountSwitcherSheet()
                 .environmentObject(env)
                 .presentationDetents([.medium, .large])
+                .accessibilityIdentifier("drome.accounts.sheet")
+        }
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.1)) { appeared = true }
         }
         .onDisappear { cancelSignIn() }
     }
 
-    private var signInChrome: some View {
-        signInActions
-            .padding(.horizontal, 24)
-            .padding(.top, accessibilityLayout ? 16 : 12)
-            .padding(.bottom, 8)
-            .frame(maxWidth: .infinity)
-            // Fully opaque so a disabled Sign In never lets field labels show through.
-            .background(DromeTheme.background.ignoresSafeArea(edges: .bottom))
+    // MARK: - Aurora
+
+    private var auroraBackground: some View {
+        ZStack {
+            Color.black
+
+            TimelineView(.animation) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                // Warm amber club wash — matches brand accent, not violet.
+                let a = Color(red: 0.95, green: 0.55, blue: 0.18)
+                let b = Color(red: 0.85, green: 0.35, blue: 0.12)
+                let c = Color(red: 1.0, green: 0.72, blue: 0.35)
+
+                ZStack {
+                    Ellipse()
+                        .fill(
+                            RadialGradient(
+                                colors: [a.opacity(0.65), a.opacity(0.18), .clear],
+                                center: .center, startRadius: 20, endRadius: 220
+                            )
+                        )
+                        .frame(width: 440, height: 440)
+                        .offset(
+                            x: -80 + CGFloat(sin(t * 0.4)) * 30,
+                            y: -200 + CGFloat(cos(t * 0.3)) * 25
+                        )
+                        .scaleEffect(appeared ? 1.12 + CGFloat(sin(t * 0.5)) * 0.05 : 0.6)
+
+                    Ellipse()
+                        .fill(
+                            RadialGradient(
+                                colors: [b.opacity(0.45), b.opacity(0.12), .clear],
+                                center: .center, startRadius: 30, endRadius: 200
+                            )
+                        )
+                        .frame(width: 380, height: 380)
+                        .offset(
+                            x: 100 + CGFloat(cos(t * 0.35)) * 25,
+                            y: 50 + CGFloat(sin(t * 0.45)) * 30
+                        )
+                        .scaleEffect(appeared ? 1.08 + CGFloat(cos(t * 0.4)) * 0.05 : 0.6)
+
+                    Ellipse()
+                        .fill(
+                            RadialGradient(
+                                colors: [c.opacity(0.35), c.opacity(0.08), .clear],
+                                center: .center, startRadius: 10, endRadius: 180
+                            )
+                        )
+                        .frame(width: 360, height: 360)
+                        .offset(
+                            x: -40 + CGFloat(sin(t * 0.5)) * 20,
+                            y: 250 + CGFloat(cos(t * 0.35)) * 20
+                        )
+                        .scaleEffect(appeared ? 1.15 + CGFloat(sin(t * 0.3)) * 0.06 : 0.6)
+
+                    Ellipse()
+                        .fill(
+                            RadialGradient(
+                                colors: [Color.white.opacity(0.12), .clear],
+                                center: .center, startRadius: 10, endRadius: 150
+                            )
+                        )
+                        .frame(width: 300, height: 300)
+                        .offset(
+                            x: CGFloat(cos(t * 0.6)) * 60,
+                            y: -50 + CGFloat(sin(t * 0.4)) * 50
+                        )
+                        .scaleEffect(appeared ? 1.0 : 0.4)
+                }
+                .blur(radius: 65)
+            }
+        }
+    }
+
+    // MARK: - Chrome
+
+    private var header: some View {
+        VStack(spacing: 8) {
+            if let icon = UIImage(named: "LaunchLogo") ?? Bundle.main.icon {
+                Image(uiImage: icon)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 72, height: 72)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
+            }
+
+            Text("DROME")
+                .font(.system(size: accessibilityLayout ? 36 : 32, weight: .heavy, design: .default))
+                .tracking(2)
+                .foregroundStyle(.white)
+
+            Text("Add your Navidrome server to get started.")
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.55))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var formFields: some View {
+        VStack(spacing: 14) {
+            iconField(
+                icon: "link",
+                placeholder: "Server URL",
+                text: $serverURL,
+                field: .server,
+                keyboard: .URL,
+                contentType: .URL,
+                submitLabel: .next
+            )
+            iconField(
+                icon: "person",
+                placeholder: "Username",
+                text: $username,
+                field: .user,
+                keyboard: .default,
+                contentType: .username,
+                submitLabel: .next
+            )
+            iconSecureField(placeholder: "Password", text: $password)
+        }
     }
 
     @ViewBuilder
-    private var signInActions: some View {
-        let cancel = Button(role: .cancel, action: cancelSignIn) {
-            Text("Cancel")
-                .font(.headline)
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
-                .frame(maxWidth: accessibilityLayout ? .infinity : nil)
-                .padding(.vertical, accessibilityLayout ? 14 : 0)
+    private var advancedSection: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.22)) { showAdvanced.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                Text(showAdvanced ? "Hide options" : "More options")
+                Image(systemName: "chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .rotationEffect(.degrees(showAdvanced ? 180 : 0))
+            }
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(.white.opacity(0.45))
         }
-        .buttonStyle(.bordered)
-        .tint(.white)
-        .controlSize(.large)
-        .accessibilityLabel("Cancel sign in")
+        .buttonStyle(.plain)
 
-        let submit = Button(action: signIn) {
-            submitLabel
+        if showAdvanced {
+            VStack(spacing: 14) {
+                iconField(
+                    icon: "heart",
+                    placeholder: "Wishlist server (optional)",
+                    text: $wishlistURL,
+                    field: .wishlist,
+                    keyboard: .URL,
+                    contentType: .URL,
+                    submitLabel: .go
+                )
+                Toggle(isOn: $allowSelfSigned) {
+                    Text("Allow self-signed certificate")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.75))
+                }
+                .tint(DromeTheme.accent)
+                .padding(.horizontal, 4)
+            }
+            .padding(.top, 8)
+            .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+    }
+
+    private var connectChrome: some View {
+        VStack(spacing: 10) {
+            if isWorking {
+                Button(role: .cancel, action: cancelSignIn) {
+                    Text("Cancel")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color.white.opacity(0.12))
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+                .accessibilityLabel("Cancel sign in")
+            }
+
+            Button(action: signIn) {
+                Group {
+                    if isWorking {
+                        HStack(spacing: 8) {
+                            ProgressView().tint(.black)
+                            Text("Connecting…")
+                                .font(.headline)
+                        }
+                    } else {
+                        Text("Connect")
+                            .font(.headline)
+                    }
+                }
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-        }
-        .buttonStyle(.borderedProminent)
-        .tint(DromeTheme.accent)
-        .foregroundStyle(.black)
-        .disabled(isWorking || !canSubmit)
-        // Opaque plate under the (often translucent) disabled prominent style
-        // so field labels never read through the control itself.
-        .background(DromeTheme.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .accessibilityLabel(isWorking ? "Connecting" : "Sign In")
-
-        // Side-by-side at default sizes; stack at AX so labels don't mid-word wrap.
-        if isWorking && accessibilityLayout {
-            VStack(spacing: 10) {
-                cancel
-                    .frame(maxWidth: .infinity)
-                submit
+                .padding(.vertical, 16)
+                .background(canSubmit && !isWorking ? Color.white : Color.white.opacity(0.2))
+                .foregroundStyle(canSubmit && !isWorking ? Color.black : Color.white.opacity(0.4))
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
-        } else {
-            HStack(spacing: 12) {
-                if isWorking { cancel }
-                submit
-            }
+            .disabled(isWorking || !canSubmit)
+            .accessibilityLabel(isWorking ? "Connecting" : "Sign In")
+            .accessibilityIdentifier("drome.login.sign-in")
         }
+        .padding(.horizontal, 28)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+        .background(
+            LinearGradient(
+                colors: [.clear, Color.black.opacity(0.55), Color.black.opacity(0.85)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea(edges: .bottom)
+        )
     }
 
-    @ViewBuilder
-    private var submitLabel: some View {
-        // At AX sizes, stack spinner + short title so "Connecting…" isn't
-        // truncated mid-word to "Connectin…".
-        if isWorking && accessibilityLayout {
-            VStack(spacing: 6) {
-                ProgressView().tint(.black)
-                Text("Connecting")
-                    .font(.headline)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        } else {
-            HStack(spacing: 8) {
-                if isWorking { ProgressView().tint(.black) }
-                Text(isWorking ? "Connecting…" : "Sign In")
-                    .font(.headline)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
+    // MARK: - Fields
+
+    private func iconField(
+        icon: String,
+        placeholder: String,
+        text: Binding<String>,
+        field: Field,
+        keyboard: UIKeyboardType,
+        contentType: UITextContentType?,
+        submitLabel: SubmitLabel
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.white.opacity(0.5))
+                .frame(width: 20)
+            TextField("", text: text, prompt: Text(placeholder).foregroundStyle(.white.opacity(0.35)))
+                .font(.body)
+                .keyboardType(keyboard)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textContentType(contentType)
+                .submitLabel(submitLabel)
+                .foregroundStyle(.white)
+                .tint(.white)
+                .focused($focusedField, equals: field)
+                .accessibilityLabel(placeholder)
+                .onSubmit { advanceFocus(from: field) }
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(.white.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .id(field)
     }
 
-    /// Pin the focused field near the top of the remaining viewport (below the
-    /// status bar, above the sticky Sign In chrome) after the keyboard settles.
-    /// Wishlist uses a higher anchor at AX so its multi-line helper stays on-screen.
+    private func iconSecureField(placeholder: String, text: Binding<String>) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "lock")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.white.opacity(0.5))
+                .frame(width: 20)
+            SecureField("", text: text, prompt: Text(placeholder).foregroundStyle(.white.opacity(0.35)))
+                .font(.body)
+                .textContentType(.password)
+                .submitLabel(.go)
+                .foregroundStyle(.white)
+                .tint(.white)
+                .focused($focusedField, equals: .password)
+                .accessibilityLabel(placeholder)
+                .onSubmit { advanceFocus(from: .password) }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(.white.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .id(Field.password)
+    }
+
     private func scrollFieldIntoView(_ field: Field, proxy: ScrollViewProxy) {
-        let anchorY: CGFloat =
-            (field == .wishlist && accessibilityLayout) ? 0.08 : 0.18
+        let anchorY: CGFloat = (field == .wishlist && accessibilityLayout) ? 0.08 : 0.2
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
             withAnimation(.easeOut(duration: 0.25)) {
                 proxy.scrollTo(field, anchor: UnitPoint(x: 0.5, y: anchorY))
@@ -274,89 +419,17 @@ struct LoginView: View {
         }
     }
 
-    private var canSubmit: Bool {
-        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !password.isEmpty
-            && normalizedURL(serverURL) != nil
-    }
-
-    private func labeledField(
-        title: String,
-        text: Binding<String>,
-        field: Field,
-        keyboard: UIKeyboardType,
-        autocapitalization: TextInputAutocapitalization,
-        contentType: UITextContentType?,
-        submitLabel: SubmitLabel,
-        placeholder: String? = nil,
-        helper: String? = nil
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(DromeTheme.muted)
-                .accessibilityHidden(true)
-
-            // Same TextField style as Username: field font scales the prompt.
-            // Do not put .font on the prompt Text — that pins AX size.
-            TextField("", text: text, prompt: Text(placeholder ?? title))
-                .font(.body)
-                .keyboardType(keyboard)
-                .textInputAutocapitalization(autocapitalization)
-                .autocorrectionDisabled()
-                .textContentType(contentType)
-                .submitLabel(submitLabel)
-                .padding(14)
-                .background(DromeTheme.elevated)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .focused($focusedField, equals: field)
-                .accessibilityLabel(title)
-                .onSubmit { advanceFocus(from: field) }
-
-            if let helper {
-                Text(helper)
-                    .font(.caption)
-                    .foregroundStyle(DromeTheme.muted)
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(nil)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityLabel(helper.replacingOccurrences(of: "\n", with: ", "))
-            }
-        }
-        .id(field)
-    }
-
-    private func labeledSecureField(
-        title: String,
-        text: Binding<String>,
-        submitLabel: SubmitLabel
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(DromeTheme.muted)
-                .accessibilityHidden(true)
-
-            SecureField("", text: text, prompt: Text(title))
-                .font(.body)
-                .textContentType(.password)
-                .submitLabel(submitLabel)
-                .padding(14)
-                .background(DromeTheme.elevated)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .focused($focusedField, equals: .password)
-                .accessibilityLabel(title)
-                .onSubmit { advanceFocus(from: .password) }
-        }
-        .id(Field.password)
-    }
-
     private func advanceFocus(from field: Field) {
         switch field {
         case .server: focusedField = .user
         case .user: focusedField = .password
-        case .password: focusedField = .wishlist
+        case .password:
+            if showAdvanced {
+                focusedField = .wishlist
+            } else {
+                focusedField = nil
+                if canSubmit && !isWorking { signIn() }
+            }
         case .wishlist:
             focusedField = nil
             if canSubmit && !isWorking { signIn() }
@@ -391,9 +464,7 @@ struct LoginView: View {
                 guard !Task.isCancelled else { return }
                 env.signIn(account: account, password: password)
             } catch is CancellationError {
-                // User cancelled; leave the form as-is.
             } catch let urlError as URLError where urlError.code == .cancelled {
-                // URLSession surfaces task cancellation as URLError.cancelled.
             } catch {
                 if !Task.isCancelled {
                     errorMessage = error.localizedDescription
@@ -414,6 +485,20 @@ struct LoginView: View {
 
     private func normalizedURL(_ raw: String) -> URL? {
         ServerURLNormalization.normalize(raw)
+    }
+}
+
+// MARK: - Bundle icon helper
+
+private extension Bundle {
+    var icon: UIImage? {
+        if let icons = infoDictionary?["CFBundleIcons"] as? [String: Any],
+           let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
+           let files = primary["CFBundleIconFiles"] as? [String],
+           let last = files.last {
+            return UIImage(named: last)
+        }
+        return nil
     }
 }
 

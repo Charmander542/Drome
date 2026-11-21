@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var env: AppEnvironment
+    @ObservedObject private var accentStore = AccentStore.shared
     @State private var showOnboarding = false
 
     var body: some View {
@@ -27,6 +28,10 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: env.session?.id)
+        .tint(accentStore.color)
+        .environment(\.dromeAccent, accentStore.color)
+        // Remount on preset changes so `DromeTheme.accent` call sites pick up the colour.
+        .id("accent-\(accentStore.revision)")
         .dromeScreen()
         .task { SharePlayRuntime.shared.startListening() }
         .onReceive(NotificationCenter.default.publisher(for: .dromeReplayOnboarding)) { _ in

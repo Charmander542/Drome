@@ -9,15 +9,40 @@ struct Account: Codable, Identifiable, Hashable {
     var username: String
     var allowSelfSigned: Bool
     var wishlistURL: URL?
+    /// Optional LAN / home URL. When reachable, preferred over `serverURL`.
+    var homeURL: URL?
+    /// Custom HTTP headers (Cloudflare Access, reverse proxies).
+    var customHeaders: [String: String]
 
     init(id: UUID = UUID(), serverURL: URL, username: String,
-         allowSelfSigned: Bool = false, wishlistURL: URL? = nil) {
+         allowSelfSigned: Bool = false, wishlistURL: URL? = nil,
+         homeURL: URL? = nil, customHeaders: [String: String] = [:]) {
         self.id = id
         self.serverURL = serverURL
         self.username = username
         self.allowSelfSigned = allowSelfSigned
         self.wishlistURL = wishlistURL
+        self.homeURL = homeURL
+        self.customHeaders = customHeaders
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id, serverURL, username, allowSelfSigned, wishlistURL, homeURL, customHeaders
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        serverURL = try c.decode(URL.self, forKey: .serverURL)
+        username = try c.decode(String.self, forKey: .username)
+        allowSelfSigned = try c.decodeIfPresent(Bool.self, forKey: .allowSelfSigned) ?? false
+        wishlistURL = try c.decodeIfPresent(URL.self, forKey: .wishlistURL)
+        homeURL = try c.decodeIfPresent(URL.self, forKey: .homeURL)
+        customHeaders = try c.decodeIfPresent([String: String].self, forKey: .customHeaders) ?? [:]
+    }
+
+    /// Prefer home URL when set; callers that probe reachability may swap.
+    var effectiveServerURL: URL { homeURL ?? serverURL }
 
     /// Scopes content caches (lyrics, downloads) that are shared by every
     /// account on the same server, since Subsonic ids are server-wide.

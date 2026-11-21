@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct SearchView: View {
     private enum Source: String, CaseIterable {
@@ -13,6 +14,14 @@ struct SearchView: View {
             case .podcasts: self = .podcasts
             }
         }
+
+        var asMode: AppNavigationRouter.SearchMode {
+            switch self {
+            case .library: return .library
+            case .spotify: return .spotify
+            case .podcasts: return .podcasts
+            }
+        }
     }
 
     @Environment(AppNavigationRouter.self) private var router
@@ -21,6 +30,7 @@ struct SearchView: View {
     @EnvironmentObject private var podcastPlayer: PodcastPlayer
     @Environment(\.songNavigator) private var songNavigator
     @Environment(\.tabPopToRootTrigger) private var tabPopToRootTrigger
+    @Environment(\.tabScrollToTopTrigger) private var tabScrollToTopTrigger
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var source: Source = .library
@@ -38,27 +48,24 @@ struct SearchView: View {
     @State private var error: String?
     @State private var debounceTask: Task<Void, Never>?
     @State private var isSearchPresented = false
+    /// Browse landing (Aura/Apple Music) vs focused text-search mode.
+    @State private var isBrowseMode = true
+    /// Scroll dismisses the searchable field without returning to the genre landing.
+    @State private var suppressBrowseReturnOnSearchDismiss = false
+    /// Block scroll-to-dismiss while browse→results layout settles (that offset
+    /// jump was killing the keyboard the instant it appeared).
+    @State private var ignoreScrollKeyboardDismissUntil: Date = .distantPast
     @State private var recentItems: [RecentSearchItem] = []
     @State private var matchedSongs: [String: Song] = [:]
     @State private var matchedAlbums: [String: Album] = [:]
+    @State private var expandedSections: Set<String> = []
 
     /// Lyrics chip enables the same lyric-index path the old quote toggle used.
     private var includeLyrics: Bool { resultFilter == .lyrics }
 
-    private var searchPrompt: String {
-        switch source {
-        case .library:
-            switch resultFilter {
-            case .all: return "Artists, songs, albums…"
-            case .songs: return "Search songs…"
-            case .albums: return "Search albums…"
-            case .artists: return "Search artists…"
-            case .lyrics: return "Search lyrics…"
-            }
-        case .spotify: return "Search Spotify tracks, albums…"
-        case .podcasts: return "Search podcasts or paste feed URL…"
-        }
-    }
+    /// Keep the prompt stable — swapping it on mode change rebuilds the
+    /// system search field and makes typed text blink out.
+    private var searchPrompt: String { "Artists, songs, albums…" }
 
     private var filteredHits: [SearchHit] {
         switch resultFilter {
@@ -92,108 +99,254 @@ struct SearchView: View {
     }
 
     var body: some View {
-        results
-            .navigationTitle("Search")
-            .navigationBarTitleDisplayMode(.inline)
-            .searchable(
-                text: $query,
-                isPresented: $isSearchPresented,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: searchPrompt)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .safeAreaInset(edge: .top, spacing: 0) {
+        ZStack {
+            // Always fully opaque — opacity 0 let LazyVGrid drop cells, so
+            // Cancel/keyboard-dismiss flashed black before tiles rebuilt.
+            SearchBrowseLanding()
+                .allowsHitTesting(isBrowseMode)
+                .accessibilityHidden(!isBrowseMode)
+                .zIndex(0)
+
+            results
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(DromeTheme.background)
+                .opacity(isBrowseMode ? 0 : 1)
+                .allowsHitTesting(!isBrowseMode)
+                .accessibilityHidden(isBrowseMode)
+                .zIndex(1)
+        }
+        .background(DromeTheme.background.ignoresSafeArea())
+        .transaction { $0.animation = nil }
+        // Keep “Search” pinned — system `.searchable` hides the nav title on
+        // focus; a principal toolbar label stays visible either way.
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text("Search")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .accessibilityAddTraits(.isHeader)
+            }
+        }
+        .toolbarBackground(DromeTheme.background, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .searchable(
+            text: $query,
+            isPresented: $isSearchPresented,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: searchPrompt)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .background(SearchChromeOpaqueFix())
+        .safeAreaInset(edge: .top, spacing: 0) {
+            // Intrinsic height only — a fixed 160pt max left a dead gap above
+            // “Recently Searched”.
+            if !isBrowseMode {
                 searchControls
+                    .background(DromeTheme.background)
             }
-            .onChange(of: query) { _, newValue in
-                scheduleSearch(newValue)
+        }
+        .onChange(of: query) { oldValue, newValue in
+            expandedSections = []
+            scheduleSearch(newValue)
+            // Clear (X) with prior text → back to the colorful browse landing.
+            let oldTrim = oldValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let newTrim = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !isBrowseMode, !oldTrim.isEmpty, newTrim.isEmpty {
+                returnToBrowse()
             }
-            .onChange(of: source) { _, newValue in
-                hits = []
-                spotifyHits = []
-                podcastHits = []
-                podcastFeedCandidate = nil
+        }
+        .onChange(of: isSearchPresented) { _, presented in
+            if presented {
+                suppressBrowseReturnOnSearchDismiss = false
+                // Results List mounting shifts contentOffset — ignore that.
+                ignoreScrollKeyboardDismissUntil = Date().addingTimeInterval(0.75)
+                if isBrowseMode {
+                    // Yield so the search field can finish focusing before we
+                    // swap browse → results (avoids a second chrome animation).
+                    Task { @MainActor in
+                        await Task.yield()
+                        guard isSearchPresented, isBrowseMode else { return }
+                        ignoreScrollKeyboardDismissUntil = Date().addingTimeInterval(0.75)
+                        enterTextSearch(
+                            mode: source.asMode,
+                            filter: resultFilter,
+                            focus: false)
+                    }
+                }
+                return
+            }
+            // Scroll-dismiss keeps results / Recently Searched; Cancel with an
+            // empty query still returns to the browse landing.
+            if suppressBrowseReturnOnSearchDismiss {
+                suppressBrowseReturnOnSearchDismiss = false
+                return
+            }
+            if !isBrowseMode,
+               query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                returnToBrowse()
+            }
+        }
+        .onChange(of: source) { _, newValue in
+            // Don’t wipe prior hits — swapping modes used to blank the list
+            // (and blink the search field) before the next response landed.
+            var txn = Transaction()
+            txn.disablesAnimations = true
+            withTransaction(txn) {
                 error = nil
-                hasCompletedSearch = false
+                if newValue != .podcasts {
+                    podcastFeedCandidate = nil
+                }
                 if newValue != .library {
                     resultFilter = .all
                 }
-                scheduleSearch(query)
             }
-            .onChange(of: resultFilter) { oldValue, newValue in
-                // Lyrics mode changes what the index query returns — re-run.
-                if (oldValue == .lyrics) != (newValue == .lyrics) {
-                    scheduleSearch(query)
+            if !isBrowseMode {
+                scheduleSearch(query)
+                // Segmented control steals focus from `.searchable`; put it back
+                // so the keyboard (and chrome) don’t bounce on every mode tap.
+                if isSearchPresented {
+                    ignoreScrollKeyboardDismissUntil = Date().addingTimeInterval(0.75)
+                    DispatchQueue.main.async {
+                        guard !isBrowseMode else { return }
+                        isSearchPresented = true
+                    }
                 }
             }
-            .onChange(of: tabPopToRootTrigger) { _, trigger in
-                guard trigger > 0 else { return }
-                resetToDefault()
+        }
+        .onChange(of: resultFilter) { oldValue, newValue in
+            if (oldValue == .lyrics) != (newValue == .lyrics) {
+                scheduleSearch(query)
             }
-            .onChange(of: router.pendingSearchIntent) { _, intent in
-                consumePendingSearchIntent(intent)
-            }
-            .onAppear {
-                consumePendingSearchIntent(router.pendingSearchIntent)
-            }
-            .task {
-                let loaded = await Task.detached(priority: .utility) {
-                    RecentSearchesStore.load()
-                }.value
-                recentItems = loaded
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .dromeFocusCarPlaySearch)) { _ in
-                source = .library
-                resultFilter = .all
+        }
+        .onChange(of: tabPopToRootTrigger) { _, trigger in
+            guard trigger > 0 else { return }
+            returnToBrowse()
+        }
+        .onChange(of: tabScrollToTopTrigger) { _, trigger in
+            guard trigger > 0 else { return }
+            enterTextSearch(mode: source.asMode, filter: resultFilter, focus: true)
+        }
+        .onChange(of: router.pendingSearchIntent) { _, intent in
+            consumePendingSearchIntent(intent)
+        }
+        .onAppear {
+            consumePendingSearchIntent(router.pendingSearchIntent)
+        }
+        .task {
+            let loaded = await Task.detached(priority: .utility) {
+                RecentSearchesStore.load()
+            }.value
+            recentItems = loaded
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dromeFocusCarPlaySearch)) { _ in
+            enterTextSearch(mode: .library, filter: .all, focus: true)
+        }
+        // Custom scroll-dismiss only — system `.immediately` fires on List layout
+        // and was collapsing the keyboard the moment search focused.
+        .scrollDismissesKeyboard(.never)
+    }
+
+    /// Hide the keyboard as soon as the user scrolls; tap the search field to bring it back.
+    private func dismissSearchKeyboardOnScroll() {
+        guard isSearchPresented else { return }
+        guard Date() >= ignoreScrollKeyboardDismissUntil else { return }
+        suppressBrowseReturnOnSearchDismiss = true
+        isSearchPresented = false
+    }
+
+    private func enterTextSearch(
+        mode: AppNavigationRouter.SearchMode,
+        filter: AppNavigationRouter.SearchResultFilter,
+        focus: Bool
+    ) {
+        source = Source(mode)
+        resultFilter = mode == .library ? filter : .all
+        ignoreScrollKeyboardDismissUntil = Date().addingTimeInterval(0.75)
+        // Instant content swap — let the system search field / keyboard animate alone.
+        setBrowseMode(false)
+        if focus, !isSearchPresented {
+            DispatchQueue.main.async {
+                ignoreScrollKeyboardDismissUntil = Date().addingTimeInterval(0.75)
                 isSearchPresented = true
             }
-            .scrollDismissesKeyboard(.interactively)
+        }
+    }
+
+    private func returnToBrowse() {
+        guard !isBrowseMode || isSearchPresented || !query.isEmpty else { return }
+        debounceTask?.cancel()
+        // Reveal genres first (already painted underneath), then drop the
+        // keyboard — avoids a black void while the field/keyboard animate out.
+        var txn = Transaction()
+        txn.disablesAnimations = true
+        withTransaction(txn) {
+            isBrowseMode = true
+            query = ""
+            isSearching = false
+            hasCompletedSearch = false
+            hits = []
+            spotifyHits = []
+            podcastHits = []
+            podcastFeedCandidate = nil
+            error = nil
+            matchedSongs = [:]
+            matchedAlbums = [:]
+            expandedSections = []
+            source = .library
+            resultFilter = .all
+        }
+        isSearchPresented = false
+    }
+
+    private func setBrowseMode(_ browse: Bool) {
+        var txn = Transaction()
+        txn.disablesAnimations = true
+        withTransaction(txn) {
+            isBrowseMode = browse
+        }
     }
 
     private func resetToDefault() {
-        debounceTask?.cancel()
-        source = .library
-        resultFilter = .all
-        query = ""
-        isSearching = false
-        hasCompletedSearch = false
-        hits = []
-        spotifyHits = []
-        podcastHits = []
-        podcastFeedCandidate = nil
-        error = nil
-        isSearchPresented = false
-        matchedSongs = [:]
-        matchedAlbums = [:]
+        returnToBrowse()
     }
 
     /// Apply a cross-tab handoff once. Focus is one-shot so returning to Search
     /// later does not re-open the keyboard.
     private func consumePendingSearchIntent(_ intent: AppNavigationRouter.SearchIntent?) {
         guard let intent else { return }
-        source = Source(intent.mode)
-        resultFilter = intent.mode == .library ? intent.filter : .all
-        if intent.shouldFocus {
-            isSearchPresented = true
-        }
+        enterTextSearch(
+            mode: intent.mode,
+            filter: intent.mode == .library ? intent.filter : .all,
+            focus: intent.shouldFocus
+        )
         // Clear after apply so a later appear / tab return does not re-focus.
         router.pendingSearchIntent = nil
     }
 
-    /// Stays visible while the search field is focused (unlike nav toolbar items).
+    /// Source + type chips while in text-search mode.
+    /// Chip row stays in the layout for every source so switching Library ↔
+    /// Spotify/Podcasts doesn’t resize the top inset and bounce Recently Searched.
     private var searchControls: some View {
-        let ax = dynamicTypeSize.isAccessibilitySize
-        return VStack(alignment: .leading, spacing: 10) {
+        let showChips = source == .library
+        return VStack(alignment: .leading, spacing: 8) {
             sourcePicker
-            if source == .library {
-                resultFilterChips
-            }
+            resultFilterChips
+                .opacity(showChips ? 1 : 0)
+                .allowsHitTesting(showChips)
+                .accessibilityHidden(!showChips)
+                // Reserve chip-row height even when hidden (Spotify / Podcasts).
+                .frame(height: 40)
+                .clipped()
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.top, 6)
+        .padding(.bottom, 4)
         .frame(maxWidth: .infinity)
-        // AX: solid fill so scrolled list text doesn't bleed through the inset header.
-        .background(ax ? DromeTheme.background : DromeTheme.background.opacity(0.94))
+        .background(DromeTheme.background)
+        .transaction { $0.animation = nil }
     }
 
     private var sourcePicker: some View {
@@ -265,18 +418,18 @@ struct SearchView: View {
 
     private var libraryEmptyTitle: String {
         switch resultFilter {
-        case .all: return "Find your music"
-        case .songs: return "Find songs"
-        case .albums: return "Find albums"
-        case .artists: return "Find artists"
-        case .lyrics: return "Find lyrics"
+        case .all: return "Search your library"
+        case .songs: return "Search songs"
+        case .albums: return "Search albums"
+        case .artists: return "Search artists"
+        case .lyrics: return "Search lyrics"
         }
     }
 
     private var libraryEmptyMessage: String {
         switch resultFilter {
         case .all:
-            return "Try an artist, album, or song."
+            return "Find artists, albums, and songs. Recent picks show up here."
         case .songs:
             return "Try a song title or artist."
         case .albums:
@@ -288,16 +441,40 @@ struct SearchView: View {
         }
     }
 
-    @ViewBuilder
+    private var collapsedSectionLimit: Int { 5 }
+
+    private var artistsHits: [SearchHit] { filteredHits.filter { $0.kind == .artist } }
+    private var albumsHits: [SearchHit] { filteredHits.filter { $0.kind == .album } }
+    private var songsHits: [SearchHit] { filteredHits.filter { $0.kind == .song } }
+    private var lyricsHits: [SearchHit] { filteredHits.filter { $0.kind == .lyrics } }
+    private var topHit: SearchHit? {
+        guard resultFilter == .all else { return nil }
+        return filteredHits.first
+    }
+
+    /// Keep all three result trees mounted — switching source only flips
+    /// opacity so “Recently Searched” / lists don’t remount and flicker.
+    /// Top-aligned equal frames stop panes of different heights from recentering.
     private var results: some View {
-        switch source {
-        case .library:
+        ZStack(alignment: .top) {
             libraryResults
-        case .spotify:
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .opacity(source == .library ? 1 : 0)
+                .allowsHitTesting(source == .library)
+                .accessibilityHidden(source != .library)
             spotifyResults
-        case .podcasts:
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .opacity(source == .spotify ? 1 : 0)
+                .allowsHitTesting(source == .spotify)
+                .accessibilityHidden(source != .spotify)
             podcastResults
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .opacity(source == .podcasts ? 1 : 0)
+                .allowsHitTesting(source == .podcasts)
+                .accessibilityHidden(source != .podcasts)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .transaction { $0.animation = nil }
     }
 
     @ViewBuilder
@@ -306,19 +483,18 @@ struct SearchView: View {
         let visibleHits = filteredHits
         let visibleRecents = filteredRecentItems
         let libraryEmpty = visibleHits.isEmpty
-        let showCenteredEmpty = trimmed.isEmpty && visibleRecents.isEmpty
-            && !dynamicTypeSize.isAccessibilitySize
         List {
             if trimmed.isEmpty {
-                if visibleRecents.isEmpty, dynamicTypeSize.isAccessibilitySize {
-                    // In-list so AX empty copy scrolls with the List above the mini player.
+                if visibleRecents.isEmpty {
                     Section {
-                        EmptyStateView(
-                            title: libraryEmptyTitle,
+                        ContentUnavailableView(
+                            libraryEmptyTitle,
                             systemImage: "magnifyingglass",
-                            message: libraryEmptyMessage)
+                            description: Text(libraryEmptyMessage)
+                        )
                         .listRowBackground(Color.clear)
-                        .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 48, trailing: 16))
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 48, leading: 16, bottom: 48, trailing: 16))
                     }
                 } else {
                     recentSearchesSection(items: visibleRecents)
@@ -332,32 +508,36 @@ struct SearchView: View {
                 }
             } else if libraryEmpty && hasCompletedSearch && !isSearching {
                 Section {
-                    Text("No results")
-                        .font(.subheadline)
-                        .foregroundStyle(DromeTheme.muted)
-                        .listRowBackground(DromeTheme.background)
+                    ContentUnavailableView.search(text: trimmed)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 }
             } else if !visibleHits.isEmpty {
-                Section {
-                    ForEach(visibleHits) { hit in
-                        hitRow(hit)
-                            .listRowBackground(DromeTheme.background)
-                            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                if resultFilter == .all {
+                    groupedLibraryResults
+                } else {
+                    Section {
+                        ForEach(visibleHits) { hit in
+                            hitRow(hit)
+                                .listRowBackground(DromeTheme.background)
+                                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                        }
                     }
                 }
             }
         }
         .listStyle(.plain)
+        .listSectionSpacing(8)
+        .contentMargins(.top, 0, for: .scrollContent)
         .scrollContentBackground(.hidden)
-        .scrollDismissesKeyboard(.interactively)
+        .scrollDismissesKeyboard(.never)
+        .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { oldY, newY in
+            // Ignore tiny layout settles; only real user scrolls dismiss the keyboard.
+            guard abs(newY - oldY) > 8 else { return }
+            dismissSearchKeyboardOnScroll()
+        }
         .overlay {
-            if showCenteredEmpty {
-                EmptyStateView(
-                    title: libraryEmptyTitle,
-                    systemImage: "magnifyingglass",
-                    message: libraryEmptyMessage)
-                .allowsHitTesting(false)
-            } else if !trimmed.isEmpty && libraryEmpty && isSearching {
+            if !trimmed.isEmpty && libraryEmpty && isSearching {
                 VStack(spacing: 10) {
                     ProgressView()
                         .tint(DromeTheme.muted)
@@ -385,24 +565,29 @@ struct SearchView: View {
         }
         .animation(nil, value: query)
         .animation(nil, value: resultFilter)
+        .animation(nil, value: source)
+        .animation(nil, value: recentItems.count)
     }
 
     @ViewBuilder
     private var spotifyResults: some View {
         if session.wishlist == nil {
-            if dynamicTypeSize.isAccessibilitySize {
-                ScrollableEmptyState {
+            Group {
+                if dynamicTypeSize.isAccessibilitySize {
+                    ScrollableEmptyState {
+                        EmptyStateView(
+                            title: "Wishlist not configured",
+                            systemImage: "heart",
+                            message: "Set your companion server URL in Settings to search Spotify and add tracks to your wishlist.")
+                    }
+                } else {
                     EmptyStateView(
                         title: "Wishlist not configured",
                         systemImage: "heart",
                         message: "Set your companion server URL in Settings to search Spotify and add tracks to your wishlist.")
                 }
-            } else {
-                EmptyStateView(
-                    title: "Wishlist not configured",
-                    systemImage: "heart",
-                    message: "Set your companion server URL in Settings to search Spotify and add tracks to your wishlist.")
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
             let ax = dynamicTypeSize.isAccessibilitySize
@@ -453,7 +638,11 @@ struct SearchView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .scrollDismissesKeyboard(.interactively)
+            .scrollDismissesKeyboard(.never)
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { oldY, newY in
+                guard abs(newY - oldY) > 8 else { return }
+                dismissSearchKeyboardOnScroll()
+            }
             .overlay {
                 if trimmed.isEmpty && !ax {
                     EmptyStateView(
@@ -467,6 +656,7 @@ struct SearchView: View {
                 }
             }
             .animation(nil, value: query)
+            .animation(nil, value: source)
         }
     }
 
@@ -522,7 +712,11 @@ struct SearchView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .scrollDismissesKeyboard(.interactively)
+        .scrollDismissesKeyboard(.never)
+        .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { oldY, newY in
+            guard abs(newY - oldY) > 8 else { return }
+            dismissSearchKeyboardOnScroll()
+        }
         .overlay {
             if trimmed.isEmpty && !ax {
                 EmptyStateView(
@@ -536,6 +730,7 @@ struct SearchView: View {
             }
         }
         .animation(nil, value: query)
+        .animation(nil, value: source)
     }
 
     private func podcastNavigatingRow(_ hit: PodcastDiscoverResult) -> some View {
@@ -662,7 +857,7 @@ struct SearchView: View {
                 }
             } header: {
                 HStack {
-                    Text("Recent")
+                    Text("Recently Searched")
                     Spacer()
                     Button("Clear") {
                         RecentSearchesStore.clear()
@@ -672,6 +867,66 @@ struct SearchView: View {
                     .foregroundStyle(DromeTheme.accent)
                     .textCase(nil)
                 }
+                .padding(.top, 2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var groupedLibraryResults: some View {
+        if let top = topHit {
+            Section {
+                hitRow(top)
+                    .listRowBackground(DromeTheme.background)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            } header: {
+                Text("Top result")
+            }
+        }
+
+        resultSection(title: "Artists", key: "artists", hits: artistsHits, excludingTop: true)
+        resultSection(title: "Albums", key: "albums", hits: albumsHits, excludingTop: true)
+        resultSection(title: "Songs", key: "songs", hits: songsHits, excludingTop: true)
+        if !lyricsHits.isEmpty {
+            resultSection(title: "Lyrics", key: "lyrics", hits: lyricsHits, excludingTop: true)
+        }
+    }
+
+    @ViewBuilder
+    private func resultSection(
+        title: String,
+        key: String,
+        hits: [SearchHit],
+        excludingTop: Bool
+    ) -> some View {
+        let topID = excludingTop ? topHit?.id : nil
+        let rows = hits.filter { $0.id != topID }
+        if !rows.isEmpty {
+            let expanded = expandedSections.contains(key)
+            let visible = expanded ? rows : Array(rows.prefix(collapsedSectionLimit))
+            Section {
+                ForEach(visible) { hit in
+                    hitRow(hit)
+                        .listRowBackground(DromeTheme.background)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                }
+                if rows.count > collapsedSectionLimit {
+                    Button {
+                        if expanded {
+                            expandedSections.remove(key)
+                        } else {
+                            expandedSections.insert(key)
+                        }
+                    } label: {
+                        Text(expanded ? "Show less" : "See all \(rows.count)")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(DromeTheme.accent)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .listRowBackground(DromeTheme.background)
+                }
+            } header: {
+                Text(title)
             }
         }
     }
@@ -1421,4 +1676,93 @@ private struct AnyShape: Shape {
         builder = { shape.path(in: $0) }
     }
     func path(in rect: CGRect) -> Path { builder(rect) }
+}
+
+/// Forces the system `.searchable` field opaque so genre tiles can’t show through.
+/// Applies once — re-hardening on every mode change rebuilt the field and
+/// made typed text appear/disappear.
+private struct SearchChromeOpaqueFix: UIViewRepresentable {
+    final class Coordinator {
+        var didApply = false
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        guard !context.coordinator.didApply else { return }
+        DispatchQueue.main.async {
+            guard !context.coordinator.didApply else { return }
+            if Self.apply(from: uiView) {
+                context.coordinator.didApply = true
+            }
+        }
+    }
+
+    @discardableResult
+    private static func apply(from seed: UIView) -> Bool {
+        var responder: UIView? = seed
+        var nav: UINavigationController?
+        while let current = responder {
+            if let found = current.next as? UINavigationController {
+                nav = found
+                break
+            }
+            if let vc = current.next as? UIViewController {
+                nav = vc.navigationController
+                if nav != nil { break }
+            }
+            responder = current.superview
+        }
+        guard let nav else { return false }
+
+        let bg = UIColor(DromeTheme.background)
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor = bg
+        appearance.shadowColor = .clear
+        appearance.titleTextAttributes = [.foregroundColor: UIColor.white]
+        nav.navigationBar.standardAppearance = appearance
+        nav.navigationBar.scrollEdgeAppearance = appearance
+        nav.navigationBar.compactAppearance = appearance
+        nav.navigationBar.isTranslucent = false
+        nav.navigationBar.barTintColor = bg
+
+        hardenSearchBars(in: nav.view, background: bg)
+        if let search = nav.topViewController?.navigationItem.searchController?.searchBar {
+            harden(searchBar: search, background: bg)
+        }
+        return true
+    }
+
+    private static func hardenSearchBars(in root: UIView, background: UIColor) {
+        var stack: [UIView] = [root]
+        while let view = stack.popLast() {
+            if let bar = view as? UISearchBar {
+                harden(searchBar: bar, background: background)
+            }
+            stack.append(contentsOf: view.subviews)
+        }
+    }
+
+    private static func harden(searchBar: UISearchBar, background: UIColor) {
+        searchBar.isTranslucent = false
+        searchBar.backgroundImage = UIImage()
+        searchBar.barTintColor = background
+        searchBar.backgroundColor = background
+        let field = searchBar.searchTextField
+        field.backgroundColor = UIColor.white.withAlphaComponent(0.12)
+        var parent: UIView? = searchBar
+        while let view = parent {
+            if view is UINavigationBar { break }
+            view.backgroundColor = background
+            parent = view.superview
+        }
+    }
 }

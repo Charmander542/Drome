@@ -40,7 +40,8 @@ final class AppEnvironment: ObservableObject {
         // Simulator screenshot hook: land on MainTabView with podcast mini chrome
         // even when no real Navidrome account is saved on the device.
         if session == nil,
-           ProcessInfo.processInfo.arguments.contains("-UITestPodcastMini") {
+           ProcessInfo.processInfo.arguments.contains("-UITestPodcastMini")
+            || ProcessInfo.processInfo.arguments.contains("-UITestWalk") {
             let account = Account(
                 serverURL: URL(string: "http://127.0.0.1:9")!,
                 username: "uitest",
@@ -506,8 +507,19 @@ final class AppSession: ObservableObject, Identifiable {
         connectivity = ConnectivityMonitor()
 
         ImageLoader.shared.session = client.session
-        Task { await rotation.refresh() }
+        Task {
+            await ServerReachability.probeAndSelect(client: client, account: account)
+            await rotation.refresh()
+            await AutoDownloadRules.syncStarredIfNeeded(client: client, downloads: downloads)
+        }
         lyricsIndexer.start()
+
+        // Offline-first: quietly refresh local SQLite mirror after first paint.
+        let mirrorSession = self
+        Task { @MainActor in
+            await Task.yield()
+            LibraryMirrorSync.refreshIfNeeded(session: mirrorSession)
+        }
 
         // Pause library lyrics crawling while audio is playing so indexing
         // network I/O cannot starve the stream.

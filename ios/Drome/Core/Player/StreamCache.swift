@@ -79,14 +79,15 @@ final class StreamCache {
         let ids = unique.map(\.id)
         guard ids != lastPrefetchIDs.prefix(ids.count).map({ $0 }) else { return }
         lastPrefetchIDs = ids
-        for song in unique.prefix(3) {
+        let limit = AudioFXPreferences.prefetchCount
+        for song in unique.prefix(limit) {
             Task { [weak self] in
                 _ = try? await self?.fileURL(for: song, maxBitRate: maxBitRate)
             }
         }
         if !unique.isEmpty {
             DromeDiagnostics.logNetwork(
-                "streamCache prefetch \(unique.prefix(3).map(\.id).joined(separator: ","))")
+                "streamCache prefetch \(unique.prefix(limit).map(\.id).joined(separator: ","))")
         }
     }
 

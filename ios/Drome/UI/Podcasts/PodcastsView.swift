@@ -38,6 +38,7 @@ struct PodcastsView: View {
             }
         }
         .navigationTitle("Podcasts")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {

@@ -94,20 +94,21 @@ final class AutoplayProvider {
 
         let similarRanked = ShuffleEngine.weightedShuffle(similar, rating: ratingOf, taste: taste)
 
-        // Blend roughly 60/40 similar/broad, interleaved, deduped.
+        // Blend similar/broad by station steering (Sonora-style).
+        let (similarSlots, broadSlots) = Self.blendSlots(for: StationSteeringStore.current)
         var result: [Song] = []
         var similarIterator = similarRanked.makeIterator()
         var broadIterator = broadRanked.makeIterator()
         var pickedIDs = Set<String>()
         while result.count < count {
             var advanced = false
-            for _ in 0..<3 {
+            for _ in 0..<similarSlots {
                 if let s = similarIterator.next() {
                     advanced = true
                     if pickedIDs.insert(s.id).inserted { result.append(s) }
                 }
             }
-            for _ in 0..<2 {
+            for _ in 0..<broadSlots {
                 if let b = broadIterator.next() {
                     advanced = true
                     if pickedIDs.insert(b.id).inserted { result.append(b) }
@@ -115,7 +116,58 @@ final class AutoplayProvider {
             }
             if !advanced { break }
         }
+
+        // Keep This Vibe: prefer seed genre / artist affinity after the blend.
+        if StationSteeringStore.current == .keepVibe {
+            let seedGenres = Set(seeds.compactMap { song -> String? in
+                guard let g = song.genre else { return nil }
+                return GenreNormalizer.shared.normalize(g) ?? g
+            })
+            let seedArtists = Set(seeds.compactMap(\.artistId))
+            result.sort { a, b in
+                let ascore = Self.vibeAffinity(a, genres: seedGenres, artists: seedArtists)
+                let bscore = Self.vibeAffinity(b, genres: seedGenres, artists: seedArtists)
+                return ascore > bscore
+            }
+        }
+
+        // More Familiar: prefer higher ratings / play counts.
+        if StationSteeringStore.current == .familiar {
+            result.sort { a, b in
+                ratingOf(a) > ratingOf(b)
+            }
+        }
+
+        // More Discovery: prefer low play count / unrated.
+        if StationSteeringStore.current == .discovery {
+            result.sort { a, b in
+                let ap = a.playCount ?? 0
+                let bp = b.playCount ?? 0
+                if ap != bp { return ap < bp }
+                return ratingOf(a) < ratingOf(b)
+            }
+        }
+
         return Array(result.prefix(count))
+    }
+
+    private static func blendSlots(for steering: StationSteering) -> (similar: Int, broad: Int) {
+        switch steering {
+        case .balanced: return (3, 2)
+        case .familiar: return (4, 1)
+        case .discovery: return (1, 4)
+        case .keepVibe: return (5, 1)
+        }
+    }
+
+    private static func vibeAffinity(_ song: Song, genres: Set<String>, artists: Set<String>) -> Int {
+        var score = 0
+        if let g = song.genre {
+            let normalized = GenreNormalizer.shared.normalize(g) ?? g
+            if genres.contains(normalized) { score += 3 }
+        }
+        if let a = song.artistId, artists.contains(a) { score += 2 }
+        return score
     }
 
     /// When metadata filters empty the pool, still keep Infinite Shuffle going.

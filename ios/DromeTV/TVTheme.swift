@@ -1,10 +1,12 @@
 import SwiftUI
 
 enum TVTheme {
-    static let canvas = Color(red: 0.04, green: 0.04, blue: 0.045)
-    static let ink = Color.white
-    static let dim = Color.white.opacity(0.52)
+    /// Listening Club canvas — matches iPhone neutral dark.
+    static let canvas = DromeTheme.background
+    static let ink = DromeTheme.ink
+    static let dim = DromeTheme.muted
     static let accent = DromeTheme.accent
+    static let surface = DromeTheme.elevated
     static let gutter: CGFloat = 80
     /// Square art matches the tvOS focus highlight.
     static let poster: CGFloat = 280

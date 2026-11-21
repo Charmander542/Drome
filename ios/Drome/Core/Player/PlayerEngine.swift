@@ -27,7 +27,12 @@ final class PlayerEngine: ObservableObject {
     @Published private(set) var contextQueue: [QueueItem] = []
     @Published private(set) var history: [QueueItem] = []
     @Published private(set) var context: PlaybackContext?
-    @Published private(set) var isPlaying = false
+    @Published private(set) var isPlaying = false {
+        didSet {
+            guard oldValue != isPlaying else { return }
+            clock.setPlaying(isPlaying)
+        }
+    }
     /// Sticky transport intent. AVPlayer briefly reports paused / waiting while
     /// skipping tracks — UI follows this so the play/pause button does not flash.
     private var wantsToPlay = false
@@ -425,9 +430,16 @@ final class PlayerEngine: ObservableObject {
     private func handlePossibleCellularStreamChange(regained: Bool = false) {
         let compressed = shouldUseResilientStream
         if compressed != lastCellularCompressed {
+            let wasCompressed = lastCellularCompressed
             lastCellularCompressed = compressed
-            DromeDiagnostics.logPlayer("resilient stream → \(compressed) (next track)")
-            // Do NOT rebuild mid-track for a format flip. Applies on next setCurrent.
+            if wasCompressed, !compressed {
+                // Upgraded to LAN / Wi‑Fi — rebuild onto FLAC now.
+                DromeDiagnostics.logPlayer("resilient stream → off (LAN/Wi‑Fi) → rebuild FLAC")
+                scheduleStreamFormatRebuild(pending: \.pendingNetworkRebuild)
+            } else {
+                // Downgrade to MP3 waits for the next track to avoid mid-song stutter.
+                DromeDiagnostics.logPlayer("resilient stream → \(compressed) (next track)")
+            }
         }
         #if !os(tvOS)
         if regained, wantsToPlay {
@@ -624,6 +636,13 @@ final class PlayerEngine: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.rebuildForStreamPreferenceChange()
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: AudioFXPreferences.audioFXDidChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.applyAudioFXVolume()
             }
             .store(in: &cancellables)
 
@@ -919,6 +938,28 @@ final class PlayerEngine: ObservableObject {
         #endif
         player.pause()
         persistSessionNow()
+    }
+
+    /// Seeds mini-player / now-playing chrome without starting AVPlayer.
+    /// Used by `-UITestWalk` so XCUITest can open music Now Playing offline.
+    func adoptSongForChrome(
+        _ song: Song,
+        elapsed: TimeInterval = 0,
+        playing: Bool = false
+    ) {
+        let item = QueueItem(song: song)
+        current = item
+        context = PlaybackContext(label: "UITest", kind: .mix)
+        contextQueue = []
+        userQueue = [QueueItem(song: Song(
+            id: "uitest-song-next",
+            title: "UITest Up Next",
+            album: song.album,
+            artist: song.artist,
+            duration: 180))]
+        setPlayhead(elapsed: elapsed, duration: TimeInterval(song.duration ?? 0))
+        setPlaybackIntent(playing)
+        activeStreamBadge = "UITest · 320 kbps"
     }
 
     private func setPlaybackIntent(_ playing: Bool) {
@@ -1663,7 +1704,7 @@ final class PlayerEngine: ObservableObject {
             reported: reported,
             elapsed: safeElapsed,
             current: duration)
-        clock.set(elapsed: safeElapsed, duration: duration)
+        clock.set(elapsed: safeElapsed, duration: duration, playing: isPlaying)
     }
 
     /// Resolved length for seek clamps and UI — never shorter than the live playhead.
@@ -1892,6 +1933,7 @@ final class PlayerEngine: ObservableObject {
         // Play first — session pin / artwork / scrobble used to run before
         // rebuild and added noticeable delay on downloaded taps.
         rebuildWindow(startPlaying: startPlaying)
+        applyAudioFXVolume(animated: false)
         // Pin playhead at 0 after insert so a crash mid-rebuild doesn't restore
         // the next song at the previous playhead (~⅓).
         persistSessionNow(force: true)
@@ -1948,17 +1990,25 @@ final class PlayerEngine: ObservableObject {
         // Stall recovery forces MP3/cache for the rest of this track so a
         // rebuild doesn't just reattach the same dying HTTP pipe.
         if stallForcedResilient { return true }
-        if PlaybackPreferences.compressOnCellular, ConnectivityMonitor.lastIsCellular {
+        // Dual-stack phones often report cellular even on Wi‑Fi — only
+        // compress when there's no Wi‑Fi/Ethernet path.
+        if PlaybackPreferences.compressOnCellular, ConnectivityMonitor.lastIsCellularOnly {
             return true
         }
         if PlaybackPreferences.resilientRemoteStreaming {
-            let host = client.account.serverURL.host
-            if !PlaybackPreferences.isLocalNetworkHost(host) {
+            // Use the *active* base URL (home LAN after reachability), not
+            // the away serverURL — otherwise LAN home streaming still got MP3.
+            if !PlaybackPreferences.isLocalNetworkHost(activeStreamHost) {
                 return true
             }
         }
         return false
         #endif
+    }
+
+    /// Host we're actually talking to right now (home LAN when preferred).
+    private var activeStreamHost: String? {
+        client.baseURL.host ?? client.account.homeURL?.host ?? client.account.serverURL.host
     }
 
     private func makePlayerItem(for song: Song) -> AVPlayerItem? {
@@ -1978,10 +2028,11 @@ final class PlayerEngine: ObservableObject {
         if !airPlay, !sharePlayActive, let local = downloads.localURL(songId: song.id) {
             return local
         }
-        // Prefer a warm stream-cache file whenever we have one — including over
-        // Bluetooth. Reject tiny/partial caches (they play ~1s then die, and
-        // rebuild used to reattach the same corpse forever).
-        if !airPlay, !sharePlayActive,
+        // Prefer a warm stream-cache MP3 only when we'd stream compressed
+        // anyway (remote / cellular / BT). On LAN Wi‑Fi, skip the cache so
+        // we don't keep playing leftover MP3 instead of FLAC.
+        let wantCompressed = shouldUseResilientStream || bluetooth
+        if !airPlay, !sharePlayActive, wantCompressed,
            let cached = streamCache.cachedURL(
             for: song.id,
             minimumBytes: Self.minimumStreamCacheBytes(for: song)) {
@@ -2005,11 +2056,11 @@ final class PlayerEngine: ObservableObject {
 
     /// 192 kbps on Funnel/remote hosts; 256 on cellular against LAN.
     private var resilientMaxBitRate: Int {
-        PlaybackPreferences.preferredMaxBitRate(serverHost: client.account.serverURL.host)
+        PlaybackPreferences.preferredMaxBitRate(serverHost: activeStreamHost)
     }
 
     private var remoteAwareCoverSize: Int {
-        PlaybackPreferences.clampedCoverSize(1200, serverHost: client.account.serverURL.host)
+        PlaybackPreferences.clampedCoverSize(1200, serverHost: activeStreamHost)
     }
 
     #if os(tvOS)
@@ -2670,6 +2721,7 @@ final class PlayerEngine: ObservableObject {
             pinPlayheadToStart()
         }
         updateActionAtItemEnd()
+        applyAudioFXVolume(animated: AudioFXPreferences.crossfadeSeconds > 0)
         // Prefetch disabled — avoid second-stream races at song boundaries.
         pushNowPlayingInfo()
         scrobbleNowPlaying(newCurrent.song)
@@ -2677,6 +2729,26 @@ final class PlayerEngine: ObservableObject {
         onTrackStarted?(newCurrent.song)
         ensureAutoplayBuffer()
         broadcastSharePlayIfNeeded()
+    }
+
+    /// ReplayGain + EQ tilt → AVQueuePlayer.volume. Optional fade for crossfade UX.
+    private func applyAudioFXVolume(animated: Bool = false) {
+        let target = AudioFXController.shared.volume(for: current?.song)
+        let seconds = AudioFXPreferences.crossfadeSeconds
+        if animated, seconds > 0 {
+            player.volume = 0.05
+            let steps = max(6, seconds * 10)
+            let stepDuration = Double(seconds) / Double(steps)
+            for i in 1...steps {
+                DispatchQueue.main.asyncAfter(deadline: .now() + stepDuration * Double(i)) { [weak self] in
+                    guard let self else { return }
+                    let t = Float(i) / Float(steps)
+                    self.player.volume = 0.05 + (target - 0.05) * t
+                }
+            }
+        } else {
+            player.volume = min(1.0, target)
+        }
     }
 
     private func handleItemDidEnd(_ item: AVPlayerItem?) {
@@ -3531,14 +3603,15 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func prefetchUpcomingIntoCache() {
-        // Warm cache on cellular / resilient / Bluetooth — A2DP is where
+        // Warm cache on cellular-only / resilient / Bluetooth — A2DP is where
         // HTTP underruns hurt most, and local MP3 survives path flaps.
+        // Skip on LAN Wi‑Fi so we don't seed MP3 that would override FLAC.
         guard shouldUseResilientStream
-                || ConnectivityMonitor.lastIsCellular
+                || ConnectivityMonitor.lastIsCellularOnly
                 || isBluetoothRouteActive else { return }
         var songs: [Song] = []
         if let current { songs.append(current.song) }
-        songs.append(contentsOf: peekUpcoming(limit: 3).map(\.song))
+        songs.append(contentsOf: peekUpcoming(limit: AudioFXPreferences.prefetchCount).map(\.song))
         streamCache.prefetch(songs, maxBitRate: resilientMaxBitRate)
     }
     #endif

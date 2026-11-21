@@ -7,10 +7,19 @@ import Network
 final class ConnectivityMonitor: ObservableObject {
     /// Last known path flags — readable from PlayerEngine without holding a ref.
     private(set) static var lastIsCellular = false
+    /// True when Wi‑Fi (or Ethernet) is among the satisfied interfaces.
+    private(set) static var lastHasWiFi = false
     private(set) static var lastIsExpensive = false
     private(set) static var lastIsOnline = true
     /// Interfaces currently satisfied (e.g. wifi, cellular, other).
     private(set) static var lastInterfaceSummary = "unknown"
+
+    /// Cellular without a usable Wi‑Fi/Ethernet path — the case where
+    /// "Compress on cellular" should kick in. Dual-stack `wifi+cell` phones
+    /// often report `usesInterfaceType(.cellular) == true` even on LAN Wi‑Fi.
+    static var lastIsCellularOnly: Bool {
+        lastIsCellular && !lastHasWiFi
+    }
 
     @Published private(set) var isOnline = true
     /// True when the satisfied path is cellular / expensive (hotspot, WWAN).
@@ -33,12 +42,15 @@ final class ConnectivityMonitor: ObservableObject {
             let online = path.status == .satisfied
             let expensive = path.isExpensive || path.isConstrained
             let cellular = path.usesInterfaceType(.cellular)
+            let hasWiFi = path.usesInterfaceType(.wifi)
+                || path.usesInterfaceType(.wiredEthernet)
             let summary = ConnectivityMonitor.summarizePath(path)
             Task { @MainActor [weak self] in
                 self?.handlePath(
                     online: online,
                     expensive: expensive,
                     cellular: cellular,
+                    hasWiFi: hasWiFi,
                     summary: summary,
                     status: path.status)
             }
@@ -50,6 +62,7 @@ final class ConnectivityMonitor: ObservableObject {
         online: Bool,
         expensive: Bool,
         cellular: Bool,
+        hasWiFi: Bool,
         summary: String,
         status: NWPath.Status
     ) {
@@ -59,6 +72,7 @@ final class ConnectivityMonitor: ObservableObject {
         interfaceSummary = summary
         Self.lastIsExpensive = expensive
         Self.lastIsCellular = cellular
+        Self.lastHasWiFi = hasWiFi
         Self.lastInterfaceSummary = summary
 
         offlineTask?.cancel()

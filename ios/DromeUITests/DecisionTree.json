@@ -1,0 +1,965 @@
+{
+  "version": 1,
+  "app": "Drome",
+  "notes": "Edit priority/status here or in the canvas. Walker follows priorityCritical paths first, then priorityHigh.",
+  "nodes": [
+    {
+      "id": "splash",
+      "title": "Splash",
+      "kind": "screen",
+      "a11y": "drome.splash.screen",
+      "priority": "critical",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "auto_dismiss",
+          "title": "Auto-dismiss (~2s)",
+          "type": "wait",
+          "to": "auth_gate"
+        }
+      ]
+    },
+    {
+      "id": "auth_gate",
+      "title": "Auth gate",
+      "kind": "decision",
+      "priority": "critical",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "signed_out",
+          "title": "No session",
+          "type": "branch",
+          "to": "login"
+        },
+        {
+          "id": "signed_in",
+          "title": "Has session",
+          "type": "branch",
+          "to": "onboarding_gate"
+        },
+        {
+          "id": "uitest_hook",
+          "title": "-UITestPodcastMini / -UITestWalk",
+          "type": "branch",
+          "to": "shell"
+        }
+      ]
+    },
+    {
+      "id": "login",
+      "title": "Login",
+      "kind": "screen",
+      "a11y": "drome.login.screen",
+      "priority": "critical",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "sign_in",
+          "title": "Sign In",
+          "type": "tap",
+          "a11y": "drome.login.sign-in",
+          "to": "onboarding_gate",
+          "screenshot": true
+        },
+        {
+          "id": "saved_accounts",
+          "title": "Saved accounts",
+          "type": "tap",
+          "a11y": "drome.login.saved-accounts",
+          "to": "accounts_sheet"
+        }
+      ]
+    },
+    {
+      "id": "accounts_sheet",
+      "title": "Account switcher",
+      "kind": "sheet",
+      "a11y": "drome.accounts.sheet",
+      "priority": "high",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "pick_account",
+          "title": "Pick account",
+          "type": "tap",
+          "to": "onboarding_gate"
+        },
+        {
+          "id": "close",
+          "title": "Done",
+          "type": "tap",
+          "to": "login"
+        }
+      ]
+    },
+    {
+      "id": "onboarding_gate",
+      "title": "Onboarding?",
+      "kind": "decision",
+      "priority": "critical",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "needs_tour",
+          "title": "First launch",
+          "type": "branch",
+          "to": "onboarding"
+        },
+        {
+          "id": "done",
+          "title": "Completed",
+          "type": "branch",
+          "to": "shell"
+        }
+      ]
+    },
+    {
+      "id": "onboarding",
+      "title": "Feature tour",
+      "kind": "screen",
+      "a11y": "drome.onboarding.screen",
+      "priority": "high",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "continue",
+          "title": "Continue",
+          "type": "tap",
+          "a11y": "onboarding-continue",
+          "to": "onboarding",
+          "screenshot": true
+        },
+        {
+          "id": "skip",
+          "title": "Skip",
+          "type": "tap",
+          "a11y": "drome.onboarding.skip",
+          "to": "shell"
+        },
+        {
+          "id": "finish",
+          "title": "Start listening",
+          "type": "tap",
+          "a11y": "onboarding-continue",
+          "to": "shell",
+          "screenshot": true
+        }
+      ]
+    },
+    {
+      "id": "shell",
+      "title": "Main shell",
+      "kind": "shell",
+      "priority": "critical",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "online",
+          "title": "Online",
+          "type": "branch",
+          "to": "tab_home"
+        },
+        {
+          "id": "offline",
+          "title": "Offline",
+          "type": "branch",
+          "to": "offline_downloads"
+        }
+      ]
+    },
+    {
+      "id": "offline_downloads",
+      "title": "Offline Downloads",
+      "kind": "screen",
+      "a11y": "drome.downloads.screen",
+      "priority": "high",
+      "status": "needs_ids",
+      "actions": [
+        {
+          "id": "play",
+          "title": "Play downloaded",
+          "type": "tap",
+          "to": "now_playing",
+          "screenshot": true
+        }
+      ]
+    },
+    {
+      "id": "tab_home",
+      "title": "Home",
+      "kind": "tab",
+      "a11y": "drome.tab.home",
+      "priority": "critical",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "vibe_play",
+          "title": "Play vibe",
+          "type": "tap",
+          "a11y": "drome.home.vibe-play",
+          "to": "now_playing",
+          "screenshot": true
+        },
+        {
+          "id": "steer",
+          "title": "Change steering",
+          "type": "tap",
+          "a11y": "drome.home.steering.balanced",
+          "to": "tab_home"
+        },
+        {
+          "id": "daily_mix",
+          "title": "Open Daily Mix",
+          "type": "tap",
+          "to": "daily_mix_detail",
+          "screenshot": true
+        },
+        {
+          "id": "continue_rail",
+          "title": "Continue item",
+          "type": "tap",
+          "to": "album_or_play"
+        },
+        {
+          "id": "radar",
+          "title": "New from artists",
+          "type": "tap",
+          "to": "album_detail"
+        },
+        {
+          "id": "settings",
+          "title": "Settings",
+          "type": "tap",
+          "a11y": "drome.home.settings",
+          "to": "settings",
+          "screenshot": true
+        },
+        {
+          "id": "go_search",
+          "title": "Tab Search",
+          "type": "tap",
+          "a11y": "drome.tab.search",
+          "to": "tab_search"
+        },
+        {
+          "id": "go_library",
+          "title": "Tab Library",
+          "type": "tap",
+          "a11y": "drome.tab.library",
+          "to": "tab_library"
+        },
+        {
+          "id": "go_podcasts",
+          "title": "Tab Podcasts",
+          "type": "tap",
+          "a11y": "drome.tab.podcasts",
+          "to": "tab_podcasts"
+        },
+        {
+          "id": "mini",
+          "title": "Open mini player",
+          "type": "tap",
+          "a11y": "music-mini-player",
+          "to": "now_playing"
+        }
+      ]
+    },
+    {
+      "id": "album_or_play",
+      "title": "Continue destination",
+      "kind": "decision",
+      "priority": "medium",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "album",
+          "title": "Album/playlist",
+          "type": "branch",
+          "to": "album_detail"
+        },
+        {
+          "id": "song",
+          "title": "Song play",
+          "type": "branch",
+          "to": "now_playing"
+        }
+      ]
+    },
+    {
+      "id": "daily_mix_detail",
+      "title": "Daily Mix detail",
+      "kind": "screen",
+      "a11y": "drome.dailymix.screen",
+      "priority": "high",
+      "status": "needs_ids",
+      "actions": [
+        {
+          "id": "play",
+          "title": "Play mix",
+          "type": "tap",
+          "to": "now_playing",
+          "screenshot": true
+        },
+        {
+          "id": "back",
+          "title": "Back",
+          "type": "tap",
+          "to": "tab_home"
+        }
+      ]
+    },
+    {
+      "id": "tab_search",
+      "title": "Search",
+      "kind": "tab",
+      "a11y": "drome.tab.search",
+      "priority": "critical",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "filter_songs",
+          "title": "Filter Songs",
+          "type": "tap",
+          "a11y": "search-filter-songs",
+          "to": "tab_search",
+          "screenshot": true
+        },
+        {
+          "id": "filter_lyrics",
+          "title": "Filter Lyrics",
+          "type": "tap",
+          "a11y": "search-filter-lyrics",
+          "to": "tab_search"
+        },
+        {
+          "id": "play_result",
+          "title": "Play result",
+          "type": "tap",
+          "to": "now_playing",
+          "screenshot": true
+        },
+        {
+          "id": "open_album",
+          "title": "Open album",
+          "type": "tap",
+          "to": "album_detail"
+        },
+        {
+          "id": "go_home",
+          "title": "Tab Home",
+          "type": "tap",
+          "a11y": "drome.tab.home",
+          "to": "tab_home"
+        }
+      ]
+    },
+    {
+      "id": "tab_library",
+      "title": "Library",
+      "kind": "tab",
+      "a11y": "drome.tab.library",
+      "priority": "critical",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "filter_playlists",
+          "title": "Playlists",
+          "type": "tap",
+          "a11y": "drome.library.filter.playlists",
+          "to": "tab_library"
+        },
+        {
+          "id": "filter_artists",
+          "title": "Artists",
+          "type": "tap",
+          "a11y": "drome.library.filter.artists",
+          "to": "tab_library",
+          "screenshot": true
+        },
+        {
+          "id": "filter_albums",
+          "title": "Albums",
+          "type": "tap",
+          "a11y": "drome.library.filter.albums",
+          "to": "tab_library"
+        },
+        {
+          "id": "filter_songs",
+          "title": "Songs",
+          "type": "tap",
+          "a11y": "drome.library.filter.songs",
+          "to": "tab_library"
+        },
+        {
+          "id": "filter_genres",
+          "title": "Genres",
+          "type": "tap",
+          "a11y": "drome.library.filter.genres",
+          "to": "tab_library"
+        },
+        {
+          "id": "top_rated",
+          "title": "4 Stars & Up",
+          "type": "tap",
+          "a11y": "drome.library.top-rated",
+          "to": "rated",
+          "screenshot": true
+        },
+        {
+          "id": "wishlist",
+          "title": "Wishlist",
+          "type": "tap",
+          "to": "wishlist"
+        },
+        {
+          "id": "downloads",
+          "title": "Downloaded",
+          "type": "tap",
+          "to": "downloads"
+        },
+        {
+          "id": "rated",
+          "title": "Top Rated",
+          "type": "tap",
+          "to": "rated"
+        },
+        {
+          "id": "open_playlist",
+          "title": "Open playlist",
+          "type": "tap",
+          "to": "playlist_detail",
+          "screenshot": true
+        },
+        {
+          "id": "open_album",
+          "title": "Open album",
+          "type": "tap",
+          "to": "album_detail"
+        },
+        {
+          "id": "open_artist",
+          "title": "Open artist",
+          "type": "tap",
+          "to": "artist_detail"
+        }
+      ]
+    },
+    {
+      "id": "wishlist",
+      "title": "Wishlist",
+      "kind": "screen",
+      "a11y": "drome.wishlist.screen",
+      "priority": "high",
+      "status": "partial",
+      "actions": [
+        {
+          "id": "back",
+          "title": "Back",
+          "type": "tap",
+          "to": "tab_library"
+        }
+      ]
+    },
+    {
+      "id": "downloads",
+      "title": "Downloads",
+      "kind": "screen",
+      "a11y": "drome.downloads.screen",
+      "priority": "high",
+      "status": "needs_ids",
+      "actions": [
+        {
+          "id": "play",
+          "title": "Play",
+          "type": "tap",
+          "to": "now_playing"
+        },
+        {
+          "id": "back",
+          "title": "Back",
+          "type": "tap",
+          "to": "tab_library"
+        }
+      ]
+    },
+    {
+      "id": "rated",
+      "title": "4 Stars & Up",
+      "kind": "screen",
+      "a11y": "drome.library.top-rated",
+      "priority": "high",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "play",
+          "title": "Play",
+          "type": "tap",
+          "to": "now_playing",
+          "screenshot": true
+        },
+        {
+          "id": "back",
+          "title": "Back",
+          "type": "tap",
+          "to": "tab_library"
+        }
+      ]
+    },
+    {
+      "id": "playlist_detail",
+      "title": "Playlist detail",
+      "kind": "screen",
+      "a11y": "drome.playlist.screen",
+      "priority": "critical",
+      "status": "needs_ids",
+      "actions": [
+        {
+          "id": "play",
+          "title": "Play",
+          "type": "tap",
+          "to": "now_playing",
+          "screenshot": true
+        },
+        {
+          "id": "shuffle",
+          "title": "Shuffle",
+          "type": "tap",
+          "to": "now_playing"
+        },
+        {
+          "id": "more",
+          "title": "More",
+          "type": "tap",
+          "a11y": "drome.playlist.more",
+          "to": "playlist_more"
+        },
+        {
+          "id": "back",
+          "title": "Back",
+          "type": "tap",
+          "to": "tab_library"
+        }
+      ]
+    },
+    {
+      "id": "playlist_more",
+      "title": "Playlist more",
+      "kind": "sheet",
+      "a11y": "drome.playlist.more.sheet",
+      "priority": "medium",
+      "status": "needs_ids",
+      "actions": [
+        {
+          "id": "close",
+          "title": "Close",
+          "type": "tap",
+          "to": "playlist_detail"
+        }
+      ]
+    },
+    {
+      "id": "album_detail",
+      "title": "Album detail",
+      "kind": "screen",
+      "a11y": "drome.album.screen",
+      "priority": "critical",
+      "status": "needs_ids",
+      "actions": [
+        {
+          "id": "play",
+          "title": "Play",
+          "type": "tap",
+          "to": "now_playing",
+          "screenshot": true
+        },
+        {
+          "id": "shuffle",
+          "title": "Shuffle",
+          "type": "tap",
+          "to": "now_playing"
+        },
+        {
+          "id": "artist",
+          "title": "View artist",
+          "type": "tap",
+          "to": "artist_detail"
+        },
+        {
+          "id": "back",
+          "title": "Back",
+          "type": "tap",
+          "to": "tab_library"
+        }
+      ]
+    },
+    {
+      "id": "artist_detail",
+      "title": "Artist detail",
+      "kind": "screen",
+      "a11y": "drome.artist.screen",
+      "priority": "high",
+      "status": "needs_ids",
+      "actions": [
+        {
+          "id": "play",
+          "title": "Play top",
+          "type": "tap",
+          "to": "now_playing",
+          "screenshot": true
+        },
+        {
+          "id": "album",
+          "title": "Open album",
+          "type": "tap",
+          "to": "album_detail"
+        },
+        {
+          "id": "back",
+          "title": "Back",
+          "type": "tap",
+          "to": "tab_library"
+        }
+      ]
+    },
+    {
+      "id": "tab_podcasts",
+      "title": "Podcasts",
+      "kind": "tab",
+      "a11y": "drome.tab.podcasts",
+      "priority": "high",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "search",
+          "title": "Search podcasts",
+          "type": "tap",
+          "a11y": "podcasts-search-button",
+          "to": "tab_search",
+          "screenshot": true
+        },
+        {
+          "id": "open_show",
+          "title": "Open show",
+          "type": "tap",
+          "to": "podcast_show",
+          "screenshot": true
+        },
+        {
+          "id": "play_progress",
+          "title": "Resume in progress",
+          "type": "tap",
+          "to": "podcast_now_playing"
+        }
+      ]
+    },
+    {
+      "id": "podcast_show",
+      "title": "Podcast show",
+      "kind": "screen",
+      "a11y": "drome.podcast.show",
+      "priority": "high",
+      "status": "needs_ids",
+      "actions": [
+        {
+          "id": "play",
+          "title": "Play episode",
+          "type": "tap",
+          "to": "podcast_now_playing",
+          "screenshot": true
+        },
+        {
+          "id": "back",
+          "title": "Back",
+          "type": "tap",
+          "to": "tab_podcasts"
+        }
+      ]
+    },
+    {
+      "id": "now_playing",
+      "title": "Music Now Playing",
+      "kind": "overlay",
+      "a11y": "drome.nowplaying.screen",
+      "priority": "critical",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "play_pause",
+          "title": "Play/Pause",
+          "type": "tap",
+          "a11y": "drome.nowplaying.transport.play",
+          "to": "now_playing",
+          "screenshot": true
+        },
+        {
+          "id": "lyrics",
+          "title": "Lyrics pane",
+          "type": "tap",
+          "a11y": "drome.nowplaying.tab.lyrics",
+          "to": "now_playing",
+          "screenshot": true
+        },
+        {
+          "id": "queue",
+          "title": "Queue",
+          "type": "tap",
+          "a11y": "drome.nowplaying.queue",
+          "to": "queue",
+          "screenshot": true
+        },
+        {
+          "id": "eq",
+          "title": "Equalizer",
+          "type": "tap",
+          "a11y": "drome.nowplaying.eq",
+          "to": "equalizer",
+          "screenshot": true
+        },
+        {
+          "id": "more",
+          "title": "More",
+          "type": "tap",
+          "a11y": "drome.nowplaying.more",
+          "to": "np_more",
+          "screenshot": true
+        },
+        {
+          "id": "connect",
+          "title": "Connect",
+          "type": "tap",
+          "a11y": "drome.nowplaying.connect",
+          "to": "connect"
+        },
+        {
+          "id": "dismiss",
+          "title": "Dismiss",
+          "type": "swipe",
+          "to": "tab_home"
+        }
+      ]
+    },
+    {
+      "id": "queue",
+      "title": "Queue",
+      "kind": "sheet",
+      "a11y": "drome.queue.screen",
+      "priority": "high",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "clear",
+          "title": "Clear",
+          "type": "tap",
+          "a11y": "drome.queue.clear",
+          "to": "queue"
+        },
+        {
+          "id": "close",
+          "title": "Close",
+          "type": "tap",
+          "to": "now_playing"
+        }
+      ]
+    },
+    {
+      "id": "np_more",
+      "title": "Now Playing More",
+      "kind": "sheet",
+      "a11y": "drome.nowplaying.more.sheet",
+      "priority": "critical",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "close",
+          "title": "Close",
+          "type": "tap",
+          "to": "now_playing"
+        }
+      ]
+    },
+    {
+      "id": "equalizer",
+      "title": "Equalizer",
+      "kind": "sheet",
+      "a11y": "drome.equalizer.screen",
+      "priority": "high",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "done",
+          "title": "Done",
+          "type": "tap",
+          "to": "now_playing",
+          "screenshot": true
+        },
+        {
+          "id": "dismiss",
+          "title": "Swipe dismiss",
+          "type": "swipe",
+          "to": "now_playing"
+        }
+      ]
+    },
+    {
+      "id": "connect",
+      "title": "Connect devices",
+      "kind": "sheet",
+      "a11y": "drome.connect.sheet",
+      "priority": "medium",
+      "status": "needs_ids",
+      "actions": [
+        {
+          "id": "close",
+          "title": "Done",
+          "type": "tap",
+          "to": "now_playing"
+        }
+      ]
+    },
+    {
+      "id": "podcast_now_playing",
+      "title": "Podcast Now Playing",
+      "kind": "overlay",
+      "a11y": "drome.podcast.nowplaying.screen",
+      "priority": "high",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "play_pause",
+          "title": "Play/Pause",
+          "type": "tap",
+          "to": "podcast_now_playing",
+          "screenshot": true
+        },
+        {
+          "id": "dismiss",
+          "title": "Dismiss",
+          "type": "swipe",
+          "to": "tab_podcasts"
+        },
+        {
+          "id": "mini",
+          "title": "Via mini",
+          "type": "tap",
+          "a11y": "podcast-mini-player",
+          "to": "podcast_now_playing"
+        }
+      ]
+    },
+    {
+      "id": "settings",
+      "title": "Settings",
+      "kind": "sheet",
+      "a11y": "drome.settings.screen",
+      "priority": "critical",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "downloads",
+          "title": "Downloads tile",
+          "type": "tap",
+          "a11y": "drome.settings.tile.downloads",
+          "to": "settings_downloads",
+          "screenshot": true
+        },
+        {
+          "id": "diagnostics",
+          "title": "Diagnostics",
+          "type": "tap",
+          "a11y": "drome.settings.tile.diagnostics",
+          "to": "diagnostics",
+          "screenshot": true
+        },
+        {
+          "id": "scan",
+          "title": "Scan",
+          "type": "tap",
+          "a11y": "drome.settings.tile.scan",
+          "to": "settings"
+        },
+        {
+          "id": "online",
+          "title": "Online",
+          "type": "tap",
+          "a11y": "drome.settings.tile.online",
+          "to": "settings"
+        },
+        {
+          "id": "accent",
+          "title": "Accent colour",
+          "type": "tap",
+          "a11y": "drome.settings.accent",
+          "to": "settings"
+        },
+        {
+          "id": "dismiss",
+          "title": "Swipe dismiss",
+          "type": "swipe",
+          "to": "tab_home"
+        }
+      ]
+    },
+    {
+      "id": "settings_downloads",
+      "title": "Downloads (from Settings)",
+      "kind": "screen",
+      "a11y": "drome.downloads.screen",
+      "priority": "critical",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "back",
+          "title": "Back",
+          "type": "tap",
+          "to": "settings"
+        }
+      ]
+    },
+    {
+      "id": "diagnostics",
+      "title": "Diagnostics",
+      "kind": "screen",
+      "a11y": "drome.diagnostics.screen",
+      "priority": "high",
+      "status": "ready",
+      "actions": [
+        {
+          "id": "back",
+          "title": "Back",
+          "type": "tap",
+          "to": "settings"
+        }
+      ]
+    }
+  ],
+  "smokePaths": [
+    [
+      "auth_gate",
+      "shell",
+      "tab_home",
+      "tab_search",
+      "tab_library",
+      "tab_podcasts",
+      "tab_home"
+    ],
+    [
+      "tab_home",
+      "settings",
+      "settings_downloads",
+      "settings",
+      "diagnostics",
+      "settings",
+      "tab_home"
+    ],
+    [
+      "now_playing",
+      "equalizer",
+      "now_playing"
+    ],
+    [
+      "tab_podcasts",
+      "podcast_now_playing"
+    ]
+  ]
+}

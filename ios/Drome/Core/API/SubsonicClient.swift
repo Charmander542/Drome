@@ -11,6 +11,8 @@ final class SubsonicClient {
     let account: Account
     let session: URLSession
     private let password: String
+    /// Active base URL (home LAN vs away). Defaults to home when set, else server.
+    private(set) var baseURL: URL
     /// Stable salt/token for media URLs (cover art, stream, download) so SwiftUI
     /// image views and AVPlayer items keep a constant URL across redraws.
     private let mediaSalt: String
@@ -22,6 +24,7 @@ final class SubsonicClient {
     init(account: Account, password: String) {
         self.account = account
         self.password = password
+        self.baseURL = account.homeURL ?? account.serverURL
         let salt = Self.randomSalt()
         self.mediaSalt = salt
         self.mediaToken = Insecure.MD5.hash(data: Data((password + salt).utf8))
@@ -33,10 +36,22 @@ final class SubsonicClient {
         config.timeoutIntervalForResource = 300
         config.urlCache = URLCache(memoryCapacity: 32 * 1024 * 1024,
                                    diskCapacity: 256 * 1024 * 1024)
+        let host = (account.homeURL ?? account.serverURL).host
         let delegate = account.allowSelfSigned
-            ? ServerTrustDelegate(trustedHost: account.serverURL.host)
+            ? ServerTrustDelegate(trustedHost: host)
             : nil
         self.session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+    }
+
+    /// Switch between home and away base URLs (Nautiline-style).
+    func setBaseURL(_ url: URL) {
+        baseURL = url
+    }
+
+    private func applyCustomHeaders(to request: inout URLRequest) {
+        for (key, value) in account.customHeaders where !key.isEmpty {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
     }
 
     // MARK: - Auth
@@ -81,7 +96,7 @@ final class SubsonicClient {
 
     func endpointURL(_ endpoint: String, parameters: [URLQueryItem] = [],
                      stableMediaAuth: Bool = false) -> URL? {
-        guard var components = URLComponents(url: account.serverURL, resolvingAgainstBaseURL: false) else {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             return nil
         }
         var path = components.path
@@ -100,6 +115,7 @@ final class SubsonicClient {
             throw SubsonicError.invalidURL
         }
         var urlRequest = URLRequest(url: url)
+        applyCustomHeaders(to: &urlRequest)
         // Per-request timeout overrides the session's long defaults (used for
         // streaming/downloads) when callers need a snappy failure — e.g. login.
         if let timeout {
@@ -359,7 +375,7 @@ final class SubsonicClient {
     /// coherent than reconstructing the catalog album-by-album.
     func nativeSongs(start: Int, end: Int) async throws -> [Song] {
         let token = try await nativeAuthToken()
-        guard var components = URLComponents(url: account.serverURL, resolvingAgainstBaseURL: false) else {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw SubsonicError.invalidURL
         }
         var path = components.path
@@ -377,6 +393,7 @@ final class SubsonicClient {
         request.httpMethod = "GET"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "x-nd-authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        applyCustomHeaders(to: &request)
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
@@ -391,7 +408,7 @@ final class SubsonicClient {
     /// (`POST /api/playlist/{id}/image`). Requires JWT from `/auth/login`.
     func uploadPlaylistCover(id: String, imageData: Data, filename: String) async throws {
         let token = try await nativeAuthToken()
-        guard var components = URLComponents(url: account.serverURL, resolvingAgainstBaseURL: false) else {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw SubsonicError.invalidURL
         }
         var path = components.path
@@ -404,6 +421,7 @@ final class SubsonicClient {
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "x-nd-authorization")
+        applyCustomHeaders(to: &request)
 
         var body = Data()
         let name = filename.isEmpty ? "cover.jpg" : filename
@@ -424,7 +442,7 @@ final class SubsonicClient {
     /// Remove a custom playlist cover (`DELETE /api/playlist/{id}/image`).
     func deletePlaylistCover(id: String) async throws {
         let token = try await nativeAuthToken()
-        guard var components = URLComponents(url: account.serverURL, resolvingAgainstBaseURL: false) else {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw SubsonicError.invalidURL
         }
         var path = components.path
@@ -435,6 +453,7 @@ final class SubsonicClient {
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "x-nd-authorization")
+        applyCustomHeaders(to: &request)
 
         let (_, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
@@ -453,7 +472,7 @@ final class SubsonicClient {
         }
         nativeTokenLock.unlock()
 
-        guard var components = URLComponents(url: account.serverURL, resolvingAgainstBaseURL: false) else {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw SubsonicError.invalidURL
         }
         var path = components.path
@@ -464,6 +483,7 @@ final class SubsonicClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        applyCustomHeaders(to: &request)
         let payload = ["username": account.username, "password": password]
         request.httpBody = try JSONEncoder().encode(payload)
 

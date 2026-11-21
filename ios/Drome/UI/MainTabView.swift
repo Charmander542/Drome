@@ -65,10 +65,13 @@ struct MainTabView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                if !keyboardVisible {
-                    bottomChrome
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
+                // Always keep mini + tabs mounted. Hiding them while the keyboard
+                // is up made Search mode switches (which resign the field) animate
+                // the chrome back in and jump Recently Searched with it.
+                bottomChrome
+                    .opacity(keyboardVisible ? 0 : 1)
+                    .allowsHitTesting(!keyboardVisible)
+                    .accessibilityHidden(keyboardVisible)
             }
             // Hide Home / tabs from the accessibility tree while NP is up.
             .accessibilityHidden(isNowPlayingPresented)
@@ -77,11 +80,14 @@ struct MainTabView: View {
             if showNowPlaying {
                 // Offset lives on the stack inside NowPlayingView so the whole
                 // sheet (not just content over a black nav chrome) slides away.
+                // compositingGroup = one bitmap so children don’t fan in from the side.
                 NowPlayingView {
                     var txn = Transaction()
                     txn.disablesAnimations = true
                     withTransaction(txn) { showNowPlaying = false }
                 }
+                .compositingGroup()
+                .ignoresSafeArea()
                 .accessibilityAddTraits(.isModal)
                 .transition(.asymmetric(
                     insertion: .move(edge: .bottom),
@@ -92,13 +98,15 @@ struct MainTabView: View {
                     txn.disablesAnimations = true
                     withTransaction(txn) { showPodcastNowPlaying = false }
                 }
+                .compositingGroup()
+                .ignoresSafeArea()
                 .accessibilityAddTraits(.isModal)
                 .transition(.asymmetric(
                     insertion: .move(edge: .bottom),
                     removal: .identity))
             }
         }
-        .animation(.easeOut(duration: 0.2), value: keyboardVisible)
+        // No keyboard-driven layout animation — opacity-only hide above.
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: activeMiniPlayer)
         .alert(
             "Switch playback?",
@@ -148,9 +156,42 @@ struct MainTabView: View {
             if newID == nil { showNowPlaying = false }
         }
         .onAppear {
-            Self.applyUITestHooksIfNeeded(podcastPlayer: podcastPlayer)
+            Self.applyUITestHooksIfNeeded(player: player, podcastPlayer: podcastPlayer)
+        }
+        .overlay(alignment: .topLeading) {
+            uiTestChromeSwitchers
         }
         .environment(router)
+    }
+
+    /// Invisible controls so XCUITest can flip music ↔ podcast mini chrome.
+    @ViewBuilder
+    private var uiTestChromeSwitchers: some View {
+        let args = ProcessInfo.processInfo.arguments
+        let enabled = args.contains("-UITestWalk") || args.contains("-UITestPodcastMini")
+        if enabled {
+            VStack(alignment: .leading, spacing: 2) {
+                Button("Music chrome") {
+                    podcastPlayer.clearChromeEpisode()
+                    showPodcastNowPlaying = false
+                    if player.current == nil {
+                        Self.adoptUITestMusic(player: player)
+                    }
+                }
+                .accessibilityIdentifier("drome.uitest.show-music")
+
+                Button("Podcast chrome") {
+                    Self.adoptUITestPodcast(podcastPlayer: podcastPlayer)
+                    showNowPlaying = false
+                }
+                .accessibilityIdentifier("drome.uitest.show-podcast")
+            }
+            .font(.caption2)
+            // Near-invisible but large enough for XCUITest hit testing.
+            .opacity(0.02)
+            .padding(6)
+            .allowsHitTesting(true)
+        }
     }
 
     /// Keeps each tab's NavigationStack alive so push state survives tab switches.
@@ -222,10 +263,30 @@ struct MainTabView: View {
     }
 
     /// Simulator / XCUITest hooks for verifying mini-player chrome.
-    private static func applyUITestHooksIfNeeded(podcastPlayer: PodcastPlayer) {
+    private static func applyUITestHooksIfNeeded(player: PlayerEngine, podcastPlayer: PodcastPlayer) {
         let args = ProcessInfo.processInfo.arguments
-        guard args.contains("-UITestPodcastMini") else { return }
+        guard args.contains("-UITestPodcastMini") || args.contains("-UITestWalk") else { return }
 
+        adoptUITestMusic(player: player)
+        adoptUITestPodcast(podcastPlayer: podcastPlayer)
+
+        // After splash (~2.05s) + layout settle; pulled via simctl get_app_container.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.2) {
+            Self.writeUITestScreenshot(named: "uitest-mini-player.png")
+        }
+    }
+
+    fileprivate static func adoptUITestMusic(player: PlayerEngine) {
+        var song = Song(id: "uitest-song", title: "UITest Track — Now Playing")
+        song.album = "UITest Album"
+        song.artist = "UITest Artist"
+        song.duration = 240
+        song.bitRate = 320
+        song.suffix = "mp3"
+        player.adoptSongForChrome(song, elapsed: 42, playing: true)
+    }
+
+    fileprivate static func adoptUITestPodcast(podcastPlayer: PodcastPlayer) {
         let feed = "https://example.com/uitest-feed.xml"
         let episode = PodcastEpisode(
             id: "uitest-episode",
@@ -245,11 +306,6 @@ struct MainTabView: View {
             playbackPosition: 900
         )
         podcastPlayer.adoptEpisodeForChrome(episode, elapsed: 900, duration: 3600, playing: true)
-
-        // After splash (~2.05s) + layout settle; pulled via simctl get_app_container.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.2) {
-            Self.writeUITestScreenshot(named: "uitest-mini-player.png")
-        }
     }
 
     private static func writeUITestScreenshot(named name: String) {
@@ -308,6 +364,7 @@ struct MainTabView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
+        .accessibilityIdentifier(tab.accessibilityIdentifier)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 

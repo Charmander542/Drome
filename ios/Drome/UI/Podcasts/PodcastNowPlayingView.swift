@@ -34,7 +34,16 @@ struct PodcastNowPlayingView: View {
             GeometryReader { geo in
                 let width = Self.finiteSize(geo.size.width)
                 let height = Self.finiteSize(geo.size.height)
-                let chromeReserve: CGFloat = 88
+                // `ignoresSafeArea` zeroes GeometryReader insets — read the key window.
+                let topInset: CGFloat = {
+                    let inset = UIApplication.shared.connectedScenes
+                        .compactMap { $0 as? UIWindowScene }
+                        .flatMap(\.windows)
+                        .first(where: \.isKeyWindow)?
+                        .safeAreaInsets.top ?? 0
+                    return inset > 0 ? inset : 59
+                }()
+                let chromeReserve: CGFloat = topInset + 56
                 let paneHeight = max(0, height - chromeReserve)
 
                 ZStack {
@@ -43,7 +52,7 @@ struct PodcastNowPlayingView: View {
                         .clipped()
 
                     VStack(spacing: 0) {
-                        dismissChrome
+                        dismissChrome(topInset: topInset)
                             .modifier(PodcastDismissGesture(
                 enabled: !isDismissClosing && !showSpeedPicker && !showChapters && !showSleepTimer,
                 gesture: dismissGesture))
@@ -70,10 +79,11 @@ struct PodcastNowPlayingView: View {
                     && !showChapters
                     && !showSleepTimer,
                 gesture: dismissGesture))
-            .ignoresSafeArea(edges: .bottom)
+            .ignoresSafeArea()
             .toolbar(.hidden, for: .navigationBar)
             .toolbarBackground(.hidden, for: .navigationBar)
             .containerBackground(.clear, for: .navigation)
+            .accessibilityIdentifier("drome.podcast.nowplaying.screen")
             .overlay(alignment: .top) {
                 if let flashMessage {
                     Text(flashMessage)
@@ -95,24 +105,14 @@ struct PodcastNowPlayingView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
-            .confirmationDialog(
-                sleepTimer.remainingLabel.map { "Sleep timer · \($0)" } ?? "Sleep timer",
-                isPresented: $showSleepTimer,
-                titleVisibility: .visible
-            ) {
-                ForEach(SleepTimerController.presets, id: \.self) { minutes in
-                    Button("\(minutes) minutes") {
-                        sleepTimer.schedule(minutes: minutes)
-                        flash("Sleep · \(minutes)m")
-                    }
-                }
-                if sleepTimer.isActive {
-                    Button("Turn Off", role: .destructive) {
-                        sleepTimer.cancel()
-                        flash("Sleep timer off")
-                    }
-                }
-                Button("Cancel", role: .cancel) {}
+            .sheet(isPresented: $showSleepTimer) {
+                SleepTimerSheet(
+                    onSet: { minutes in flash("Sleep · \(minutes)m") },
+                    onCleared: { flash("Sleep timer off") }
+                )
+                .environmentObject(sleepTimer)
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
             }
             .sheet(isPresented: $showChapters) {
                 chaptersSheet
@@ -131,13 +131,13 @@ struct PodcastNowPlayingView: View {
 
     // MARK: - Chrome
 
-    private var dismissChrome: some View {
+    private func dismissChrome(topInset: CGFloat) -> some View {
         VStack(spacing: 0) {
             Capsule()
-                .fill(Color.white.opacity(0.5))
-                .frame(width: 40, height: 5)
-                .padding(.top, 12)
-                .padding(.bottom, 16)
+                .fill(Color.white.opacity(0.45))
+                .frame(width: 36, height: 5)
+                .padding(.top, max(6, topInset - 4))
+                .padding(.bottom, 8)
                 .frame(maxWidth: .infinity)
                 .contentShape(Rectangle())
 

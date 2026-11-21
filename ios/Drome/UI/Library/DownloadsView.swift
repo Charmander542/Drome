@@ -113,9 +113,12 @@ struct DownloadsView: View {
             }
         }
         .listStyle(.plain)
+        .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
+        .background(DromeTheme.background)
         .navigationTitle(isOfflineMode ? "Offline Library" : "Downloaded")
         .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("drome.downloads.screen")
     }
 
     /// Avoid mid-word wraps at AX sizes: single-line + scale, or stack icon/title.

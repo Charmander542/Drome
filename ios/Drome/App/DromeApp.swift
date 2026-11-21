@@ -5,41 +5,33 @@ struct DromeApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var env = AppEnvironment()
-    @State private var showSplash = !ProcessInfo.processInfo.arguments.contains("-UITestPodcastMini")
 
     var body: some Scene {
         WindowGroup {
-            ZStack {
-                RootView()
-                    .environmentObject(env)
-                    .environmentObject(env.accounts)
-
-                if showSplash {
-                    SplashScreenView {
-                        showSplash = false
+            // System `UILaunchScreen` only — no second in-app splash overlay
+            // (that one never lined up with the launch image).
+            RootView()
+                .environmentObject(env)
+                .environmentObject(env.accounts)
+                .onOpenURL { DeepLink.open($0, env: env) }
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    if let url = activity.webpageURL {
+                        DeepLink.open(url, env: env)
                     }
-                    .zIndex(1)
                 }
-            }
-            .onOpenURL { DeepLink.open($0, env: env) }
-            .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
-                if let url = activity.webpageURL {
-                    DeepLink.open(url, env: env)
+                .onChange(of: scenePhase) { _, phase in
+                    switch phase {
+                    case .active:
+                        DromeDiagnostics.log("scene active")
+                        DeepLink.consumePending(env: env)
+                    case .inactive:
+                        DromeDiagnostics.log("scene inactive")
+                    case .background:
+                        DromeDiagnostics.log("scene background")
+                    @unknown default:
+                        break
+                    }
                 }
-            }
-            .onChange(of: scenePhase) { _, phase in
-                switch phase {
-                case .active:
-                    DromeDiagnostics.log("scene active")
-                    DeepLink.consumePending(env: env)
-                case .inactive:
-                    DromeDiagnostics.log("scene inactive")
-                case .background:
-                    DromeDiagnostics.log("scene background")
-                @unknown default:
-                    break
-                }
-            }
         }
     }
 }

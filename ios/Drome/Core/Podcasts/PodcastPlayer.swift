@@ -359,6 +359,17 @@ final class PodcastPlayer: ObservableObject {
         errorMessage = nil
     }
 
+    /// Clears chrome-only episode state so music mini can surface in UITests.
+    func clearChromeEpisode() {
+        currentEpisode = nil
+        chapters = []
+        isPlaying = false
+        wantsToPlay = false
+        elapsed = 0
+        duration = 0
+        errorMessage = nil
+    }
+
     // MARK: Speed
 
     func cycleSpeed() {

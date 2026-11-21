@@ -68,6 +68,8 @@ struct Song: Codable, Identifiable, Hashable {
     /// Present (usually an ISO date) when the current user has starred the track.
     var starred: String?
     var created: String?
+    /// OpenSubsonic ReplayGain block when the server provides it.
+    var replayGain: ReplayGainInfo?
 
     var durationText: String {
         Formatters.duration(seconds: duration ?? 0)
@@ -76,6 +78,14 @@ struct Song: Codable, Identifiable, Hashable {
     var displayArtist: String {
         ArtistCredits.display(for: self)
     }
+}
+
+/// OpenSubsonic ReplayGain payload on a song.
+struct ReplayGainInfo: Codable, Hashable {
+    var trackGain: Float?
+    var trackPeak: Float?
+    var albumGain: Float?
+    var albumPeak: Float?
 }
 
 struct ArtistRef: Codable, Hashable, Identifiable {

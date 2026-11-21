@@ -50,15 +50,19 @@ struct QueueView: View {
             .scrollDisabled(drag != nil)
             .navigationTitle("Queue")
             .navigationBarTitleDisplayMode(.inline)
+            .accessibilityIdentifier("drome.queue.screen")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
+                        .foregroundStyle(.white)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Clear", role: .destructive) { player.clearQueue() }
                         .disabled(player.userQueue.isEmpty && player.contextQueue.isEmpty)
+                        .accessibilityIdentifier("drome.queue.clear")
                 }
             }
+            .tint(.white)
             .navigationDestination(item: Binding(
                 get: { songNavigator.albumRoute },
                 set: { songNavigator.albumRoute = $0 }

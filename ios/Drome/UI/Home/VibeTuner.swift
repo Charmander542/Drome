@@ -27,11 +27,10 @@ struct VibeTuner: View {
     private var ax: Bool { dynamicTypeSize.isAccessibilitySize }
 
     private var chipCaptionSize: CGFloat {
-        // Cap ~20; AX row scrolls horizontally so labels need not squeeze into 1/7 width.
         ax ? min(chipCaptionSizeScaled, 20) : 9
     }
 
-    /// Minimum AX column width so shortLabels ("Happy", "Night", …) fit without ellipsis.
+    /// Minimum AX dial column width so shortLabels ("Happy", "Night", …) fit.
     private var axMinSlotWidth: CGFloat {
         max(70, chipCaptionSize * 4.0 + 12)
     }
@@ -49,12 +48,14 @@ struct VibeTuner: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 16)
         .background {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(selected.wash.opacity(0.92))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .stroke(selected.ink.opacity(0.22), lineWidth: 1)
-                }
+            ZStack {
+                RoundedRectangle(cornerRadius: DromeTheme.Radius.xl, style: .continuous)
+                    .fill(DromeTheme.elevated)
+                RoundedRectangle(cornerRadius: DromeTheme.Radius.xl, style: .continuous)
+                    .fill(selected.wash.opacity(0.28))
+                RoundedRectangle(cornerRadius: DromeTheme.Radius.xl, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            }
         }
         .overlay {
             if spinning != nil {
@@ -104,17 +105,12 @@ struct VibeTuner: View {
                 Text("VIBE TUNER")
                     .font(.caption2.weight(.bold))
                     .tracking(1.6)
-                    .foregroundStyle(selected.ink.opacity(0.7))
+                    .foregroundStyle(Color.white.opacity(0.45))
                 Text(selected.title)
                     .font(.title2.weight(.bold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
-                Text(selected.blurb)
-                    .font(.caption)
-                    .foregroundStyle(Color.white.opacity(0.62))
-                    .lineLimit(ax ? 4 : 2)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
             VStack(spacing: 8) {
@@ -138,6 +134,7 @@ struct VibeTuner: View {
                 .accessibilityLabel(
                     spinning == nil ? "Play \(selected.title) mix" : "Building \(selected.title) mix")
                 .accessibilityAddTraits(spinning == nil ? [] : .updatesFrequently)
+                .accessibilityIdentifier("drome.home.vibe-play")
             }
         }
     }
@@ -183,12 +180,11 @@ struct VibeTuner: View {
         if ax {
             axScrollableTuner
         } else {
-            // Exact pre-AX layout (keeps Home error block position identical to main).
             standardTuner
         }
     }
 
-    /// Default / XXXL: equal-width dial + captions, scrub gesture. Unchanged vs main.
+    /// Default / XXXL: equal-width dial + captions under icons.
     private var standardTuner: some View {
         VStack(spacing: 8) {
             GeometryReader { geo in
@@ -235,8 +231,7 @@ struct VibeTuner: View {
         }
     }
 
-    /// AX: wide columns + one high-priority drag that both selects (tap) and pans
-    /// (slow drag). Nested ScrollView ate taps; Button+pan fought over the same hits.
+    /// AX: wide columns + captions; tap or pan on one high-priority gesture.
     private var axScrollableTuner: some View {
         let dialHeight = max(56, min(stationDotSelectedSizeScaled, 48) + 16)
         let slot = axMinSlotWidth
@@ -262,9 +257,24 @@ struct VibeTuner: View {
                 .frame(width: contentWidth, height: dialHeight, alignment: .leading)
                 .allowsHitTesting(false)
 
-                HStack(spacing: 0) {
-                    ForEach(vibes) { vibe in
-                        axChipColumn(vibe, slot: slot, dialHeight: dialHeight)
+                VStack(spacing: 8) {
+                    HStack(spacing: 0) {
+                        ForEach(vibes) { vibe in
+                            station(vibe)
+                                .frame(width: slot, height: dialHeight)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    HStack(spacing: 0) {
+                        ForEach(vibes) { vibe in
+                            Text(vibe.shortLabel)
+                                .font(.system(size: chipCaptionSize, weight: vibe == selected ? .bold : .medium))
+                                .foregroundStyle(vibe == selected ? selected.ink : Color.white.opacity(0.38))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                                .frame(width: slot)
+                                .allowsHitTesting(false)
+                        }
                     }
                 }
             }
@@ -281,31 +291,12 @@ struct VibeTuner: View {
         .frame(height: rowHeight)
     }
 
-    private func axChipColumn(_ vibe: MoodVibe, slot: CGFloat, dialHeight: CGFloat) -> some View {
-        VStack(spacing: 8) {
-            station(vibe)
-                .frame(width: slot, height: dialHeight)
-            Text(vibe.shortLabel)
-                .font(.system(size: chipCaptionSize,
-                              weight: vibe == selected ? .bold : .medium))
-                .foregroundStyle(vibe == selected ? selected.ink : Color.white.opacity(0.38))
-                .lineLimit(1)
-                .minimumScaleFactor(1)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .accessibilityHidden(true)
-        }
-        .frame(width: slot)
-        .contentShape(Rectangle())
-        .allowsHitTesting(false) // selection comes from axTapOrPanGesture
-    }
-
     /// Tap → select chip under finger; horizontal pan → scroll (including slow drags).
     private func axTapOrPanGesture(slot: CGFloat, maxOffset: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .local)
             .onChanged { value in
                 let dx = value.translation.width
                 let dy = value.translation.height
-                // Ignore until clearly horizontal so tiny jitter doesn’t nudge the row.
                 guard abs(dx) >= 6, abs(dx) >= abs(dy) else { return }
                 let start = axDragStartOffset ?? axScrollOffset
                 if axDragStartOffset == nil { axDragStartOffset = start }
@@ -320,7 +311,6 @@ struct VibeTuner: View {
                 let distance = hypot(dx, dy)
 
                 if distance < 8 {
-                    // Tap: restore any dead-zone nudge, then select chip under finger.
                     axScrollOffset = min(max(start, 0), maxOffset)
                     let xInContent = value.startLocation.x + start
                     selectAxVibe(atContentX: xInContent, slot: slot)
@@ -328,7 +318,6 @@ struct VibeTuner: View {
                 }
 
                 guard abs(dx) >= abs(dy) else {
-                    // Vertical-ish drag: snap back to touch-down offset.
                     axScrollOffset = min(max(start, 0), maxOffset)
                     return
                 }

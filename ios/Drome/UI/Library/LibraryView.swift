@@ -24,6 +24,10 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
         case .genres: return "Genres"
         }
     }
+
+    var accessibilityIdentifier: String {
+        "drome.library.filter.\(rawValue.lowercased())"
+    }
 }
 
 struct LibraryView: View {
@@ -102,11 +106,12 @@ struct LibraryView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 NavigationLink {
-                    WishlistView()
+                    RatedCollectionDetailView(collection: .fourPlus)
                 } label: {
-                    Image(systemName: "heart")
+                    Image(systemName: "star")
                 }
-                .accessibilityLabel("Wishlist")
+                .accessibilityLabel("4 Stars & Up")
+                .accessibilityIdentifier("drome.library.top-rated")
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if let searchTarget = librarySearchTarget {
@@ -305,6 +310,7 @@ struct LibraryView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel(item.rawValue)
+                            .accessibilityIdentifier(item.accessibilityIdentifier)
                             .accessibilityAddTraits(filter == item ? .isSelected : [])
                         }
                     }
@@ -343,6 +349,9 @@ struct LibraryView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(item.rawValue)
+                        .accessibilityIdentifier(item.accessibilityIdentifier)
+                        .accessibilityAddTraits(filter == item ? .isSelected : [])
                     }
                 }
                 .padding(.horizontal, 4)
@@ -636,7 +645,8 @@ struct LibraryView: View {
                                 : section.items
                             ForEach(rows) { album in
                                 AlbumMediaRow(album: album, showsChevron: true)
-                                    .padding(.horizontal, 16)
+                                    .padding(.leading, 16)
+                                    .padding(.trailing, 36)
                                     .padding(.vertical, 8)
                                     .frame(minHeight: 56)
 
@@ -689,8 +699,8 @@ struct LibraryView: View {
                     onSelect: { jumpAlbums(to: $0, proxy: proxy, dragging: true) },
                     onEnded: { jumpAlbums(to: $0, proxy: proxy, dragging: false) }
                 )
-                .padding(.vertical, 8)
-                .padding(.trailing, 1)
+                .padding(.vertical, 12)
+                .padding(.trailing, 4)
             }
             .onChange(of: albumScrollTarget) { _, letter in
                 guard let letter else { return }
@@ -733,7 +743,8 @@ struct LibraryView: View {
                                             .font(.caption.weight(.semibold))
                                             .foregroundStyle(DromeTheme.muted.opacity(0.6))
                                     }
-                                    .padding(.horizontal, 16)
+                                    .padding(.leading, 16)
+                                    .padding(.trailing, 36)
                                     .padding(.vertical, 10)
                                     .contentShape(Rectangle())
                                 }
@@ -773,8 +784,8 @@ struct LibraryView: View {
                     onSelect: { jumpArtists(to: $0, proxy: proxy, dragging: true) },
                     onEnded: { jumpArtists(to: $0, proxy: proxy, dragging: false) }
                 )
-                .padding(.vertical, 8)
-                .padding(.trailing, 1)
+                .padding(.vertical, 12)
+                .padding(.trailing, 4)
             }
             .onChange(of: artistScrollTarget) { _, letter in
                 guard let letter else { return }
@@ -798,7 +809,8 @@ struct LibraryView: View {
                                 SongRow(song: song, showAlbum: true, lightweight: true) {
                                     playSongFromLibrary(song)
                                 }
-                                .padding(.horizontal, 16)
+                                .padding(.leading, 16)
+                                .padding(.trailing, 36)
                                 .padding(.vertical, 4)
 
                                 Divider()
@@ -850,8 +862,8 @@ struct LibraryView: View {
                     onSelect: { jumpSongs(to: $0, proxy: proxy, dragging: true) },
                     onEnded: { jumpSongs(to: $0, proxy: proxy, dragging: false) }
                 )
-                .padding(.vertical, 8)
-                .padding(.trailing, 1)
+                .padding(.vertical, 12)
+                .padding(.trailing, 4)
             }
             .onChange(of: songScrollTarget) { _, letter in
                 guard let letter else { return }
@@ -2183,7 +2195,8 @@ struct GenreBrowserView: View {
                 .scrollContentBackground(.hidden)
             }
         }
-        .navigationTitle(showsTitle ? "Genres" : "")
+        // Embedded in Library keeps the shared "Your Library" chrome; standalone uses "Genres".
+        .navigationTitle(showsTitle ? "Genres" : "Your Library")
         .navigationBarTitleDisplayMode(.inline)
         .task {
             seedFromCacheIfNeeded()

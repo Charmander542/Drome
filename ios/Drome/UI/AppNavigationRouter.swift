@@ -11,6 +11,15 @@ final class AppNavigationRouter {
         case search = 1
         case library = 2
         case podcasts = 3
+
+        var accessibilityIdentifier: String {
+            switch self {
+            case .home: return "drome.tab.home"
+            case .search: return "drome.tab.search"
+            case .library: return "drome.tab.library"
+            case .podcasts: return "drome.tab.podcasts"
+            }
+        }
     }
 
     /// Matches SearchView’s source segmented control.

@@ -1,6 +1,11 @@
 import CarPlay
 import UIKit
 
+/// Listening Club accent for CarPlay chrome (matches `DromeTheme.accent`).
+enum CarPlayTheme {
+    static let accent = UIColor(red: 0.95, green: 0.65, blue: 0.22, alpha: 1)
+}
+
 /// CarPlay list artwork — must be sized for the *car* screen scale
 /// (`CPInterfaceController.carTraitCollection`), opaque, and exactly
 /// `CPListItem.maximumImageSize`. Phone-scale bitmaps are often dropped silently.

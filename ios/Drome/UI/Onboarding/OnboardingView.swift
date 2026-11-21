@@ -107,6 +107,7 @@ struct OnboardingView: View {
                         .padding(.horizontal, 12)
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())
+                        .accessibilityIdentifier("drome.onboarding.skip")
                 }
                 .padding(.horizontal, 8)
                 .padding(.top, 4)
@@ -120,6 +121,7 @@ struct OnboardingView: View {
                     .coordinateSpace(name: tourSpace)
                     .onPreferenceChange(OnboardingArtCoverFrameKey.self) { artCoverFrame = $0 }
             }
+            .accessibilityIdentifier("drome.onboarding.screen")
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 bottomChrome
             }

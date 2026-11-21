@@ -44,6 +44,13 @@
 			remoteGlobalIDString = D00DE0000000000000000096;
 			remoteInfo = DromeWatchWidgetExtension;
 		};
+		D00DE00000000000000000A6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D00DE0000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D00DE0000000000000000006;
+			remoteInfo = Drome;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -90,6 +97,7 @@
 		D00DE0000000000000000060 /* DromeWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DromeWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		D00DE0000000000000000080 /* DromeWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DromeWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D00DE0000000000000000090 /* DromeWatchWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DromeWatchWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		D00DE00000000000000000A0 /* DromeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DromeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -190,7 +198,6 @@
 				UI/Settings/DiagnosticsView.swift,
 				UI/Settings/SettingsView.swift,
 				UI/Settings/TVPairingView.swift,
-				UI/SplashView.swift,
 			);
 			target = D00DE0000000000000000044 /* DromeTV */;
 		};
@@ -283,6 +290,11 @@
 			path = DromeWatchWidget;
 			sourceTree = "<group>";
 		};
+		D00DE00000000000000000A1 /* DromeUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = DromeUITests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -330,9 +342,24 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D00DE00000000000000000A4 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		2D6B7AE430B0AAA600C8BF5F /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				D00DE00000000000000000A1 /* DromeUITests */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
 		D00DE0000000000000000002 = {
 			isa = PBXGroup;
 			children = (
@@ -343,6 +370,7 @@
 				D00DE0000000000000000081 /* DromeWatch */,
 				D00DE0000000000000000093 /* DromeWatchWidget */,
 				D00DE0000000000000000003 /* Products */,
+				2D6B7AE430B0AAA600C8BF5F /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
@@ -355,6 +383,7 @@
 				D00DE0000000000000000080 /* DromeWatch.app */,
 				D00DE0000000000000000090 /* DromeWatchWidgetExtension.appex */,
 				D00DE0000000000000000040 /* Drome.app */,
+				D00DE00000000000000000A0 /* DromeUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -504,6 +533,29 @@
 			productReference = D00DE0000000000000000090 /* DromeWatchWidgetExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		D00DE00000000000000000A2 /* DromeUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D00DE00000000000000000AA /* Build configuration list for PBXNativeTarget "DromeUITests" */;
+			buildPhases = (
+				D00DE00000000000000000A3 /* Sources */,
+				D00DE00000000000000000A4 /* Frameworks */,
+				D00DE00000000000000000A5 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D00DE00000000000000000A7 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				D00DE00000000000000000A1 /* DromeUITests */,
+			);
+			name = DromeUITests;
+			packageProductDependencies = (
+			);
+			productName = DromeUITests;
+			productReference = D00DE00000000000000000A0 /* DromeUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -532,6 +584,10 @@
 					D00DE0000000000000000096 = {
 						CreatedOnToolsVersion = 26.0;
 					};
+					D00DE00000000000000000A2 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = D00DE0000000000000000006;
+					};
 				};
 			};
 			buildConfigurationList = D00DE000000000000000000A /* Build configuration list for PBXProject "Drome" */;
@@ -557,6 +613,7 @@
 				D00DE0000000000000000066 /* DromeWidgetExtension */,
 				D00DE0000000000000000084 /* DromeWatch */,
 				D00DE0000000000000000096 /* DromeWatchWidgetExtension */,
+				D00DE00000000000000000A2 /* DromeUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -598,6 +655,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		D00DE0000000000000000098 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D00DE00000000000000000A5 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -649,6 +713,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D00DE00000000000000000A3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -671,6 +742,11 @@
 			isa = PBXTargetDependency;
 			target = D00DE0000000000000000096 /* DromeWatchWidgetExtension */;
 			targetProxy = D00DE0000000000000000092 /* PBXContainerItemProxy */;
+		};
+		D00DE00000000000000000A7 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D00DE0000000000000000006 /* Drome */;
+			targetProxy = D00DE00000000000000000A6 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1162,6 +1238,40 @@
 			};
 			name = Release;
 		};
+		D00DE00000000000000000A8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 3;
+				DEVELOPMENT_TEAM = LURJ69YS93;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = drome.app.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = Drome;
+			};
+			name = Debug;
+		};
+		D00DE00000000000000000A9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 3;
+				DEVELOPMENT_TEAM = LURJ69YS93;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = drome.app.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = Drome;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1224,6 +1334,15 @@
 			buildConfigurations = (
 				D00DE000000000000000009D /* Debug */,
 				D00DE000000000000000009E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D00DE00000000000000000AA /* Build configuration list for PBXNativeTarget "DromeUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D00DE00000000000000000A8 /* Debug */,
+				D00DE00000000000000000A9 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

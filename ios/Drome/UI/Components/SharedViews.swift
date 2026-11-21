@@ -26,8 +26,8 @@ struct AlbumCard: View {
             VStack(alignment: .leading, spacing: 8) {
                 RemoteImage(url: session?.artworkURL(id: album.coverArt ?? album.id, size: 300))
                     .aspectRatio(1, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: DromeTheme.Radius.md, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: DromeTheme.Radius.md, style: .continuous))
                 HStack(spacing: 4) {
                     Text(album.name)
                         .font(.subheadline.weight(.semibold))
@@ -193,8 +193,8 @@ struct PlaylistCard: View {
             RemoteImage(url: session?.artworkURL(id: playlist.coverArt ?? playlist.id, size: 300),
                         placeholderSymbol: "music.note.list")
                 .aspectRatio(1, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: DromeTheme.Radius.md, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: DromeTheme.Radius.md, style: .continuous))
             HStack(spacing: 4) {
                 Text(playlist.name)
                     .font(.subheadline.weight(.semibold))

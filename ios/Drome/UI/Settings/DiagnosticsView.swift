@@ -69,10 +69,12 @@ struct DiagnosticsView: View {
             }
             .listRowBackground(DromeTheme.elevated)
         }
+        .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
         .background(DromeTheme.background)
         .navigationTitle("Diagnostics")
         .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("drome.diagnostics.screen")
         .onAppear { reload() }
         .alert("\(copiedKind) copied", isPresented: $showCopied) {
             Button("OK", role: .cancel) { }

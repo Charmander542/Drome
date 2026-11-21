@@ -34,19 +34,12 @@ struct PodcastMiniPlayerBar: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .id(episode.id)
-
-                        // Tiny progress so the bar feels alive without layout churn.
-                        Circle()
-                            .trim(from: 0, to: progress)
-                            .stroke(DromeTheme.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                            .rotationEffect(.degrees(-90))
-                            .frame(width: 18, height: 18)
-                            .opacity(podcastPlayer.duration > 0 ? 1 : 0)
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Open now playing")
+                .accessibilityIdentifier("drome.podcast.mini.open")
 
                 Button {
                     podcastPlayer.playPause()
@@ -76,8 +69,27 @@ struct PodcastMiniPlayerBar: View {
             .padding(.trailing, 6)
             .padding(.vertical, 8)
             .background {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(.ultraThinMaterial)
+                ZStack(alignment: .bottom) {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(.ultraThinMaterial)
+
+                    // Same Spotify-style bottom hairline as the music mini player.
+                    GeometryReader { geo in
+                        let filled = geo.size.width * min(max(progress, 0), 1)
+                        ZStack(alignment: .leading) {
+                            Rectangle()
+                                .fill(Color.white.opacity(0.14))
+                            Rectangle()
+                                .fill(Color.white.opacity(0.92))
+                                .frame(width: filled)
+                        }
+                    }
+                    .frame(height: 2)
+                    .opacity(podcastPlayer.duration > 0 ? 1 : 0)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .padding(.horizontal, 8)
             .padding(.top, 6)

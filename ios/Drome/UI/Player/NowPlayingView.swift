@@ -19,6 +19,7 @@ struct NowPlayingView: View {
     @EnvironmentObject private var ratings: RatingsStore
     @EnvironmentObject private var rotation: RotationManager
     @EnvironmentObject private var downloads: DownloadManager
+    @EnvironmentObject private var sleepTimer: SleepTimerController
     @Environment(\.dismiss) private var dismiss
     var onClose: (() -> Void)? = nil
 
@@ -36,6 +37,8 @@ struct NowPlayingView: View {
     @State private var dismissY: CGFloat = 0
     @State private var isDismissDragging = false
     @State private var isDismissClosing = false
+    /// Locks song-pane height while dismissing so proportional gaps don’t reflow.
+    @State private var frozenPaneHeight: CGFloat?
     @State private var sheetHeight: CGFloat = 800
     @State private var flashMessage: String?
     /// Always [previous, current, next] — center is index 1 when drag is 0.
@@ -46,6 +49,9 @@ struct NowPlayingView: View {
     @State private var artContainerWidth: CGFloat = 390
     @State private var showMoreSheet = false
     @State private var showConnect = false
+    @State private var showSleepTimer = false
+    @State private var showEqualizer = false
+    @State private var equalizerDetent: PresentationDetent = .medium
     /// Dual backdrops so album color + blur can crossfade on track change.
     @State private var backdropFront = NowPlayingBackdrop.Layer()
     @State private var backdropBack = NowPlayingBackdrop.Layer()
@@ -64,8 +70,16 @@ struct NowPlayingView: View {
             GeometryReader { geo in
                 let width = Self.finiteSize(geo.size.width)
                 let height = Self.finiteSize(geo.size.height)
-                let chromeReserve: CGFloat = 148
-                let paneHeight = max(0, height - chromeReserve)
+                // `ignoresSafeArea` zeroes GeometryReader insets — read the key window.
+                let insets = Self.windowSafeAreaInsets
+                let topInset = insets.top > 0 ? insets.top : 59
+                let bottomInset = insets.bottom > 0 ? insets.bottom : 34
+                // Grabber + context + Song/Lyrics picker under the status bar.
+                let chromeReserve: CGFloat = topInset + 96
+                let livePaneHeight = max(0, height - chromeReserve)
+                let paneHeight = (isDismissDragging || isDismissClosing)
+                    ? (frozenPaneHeight ?? livePaneHeight)
+                    : livePaneHeight
 
                 ZStack {
                     background
@@ -73,17 +87,18 @@ struct NowPlayingView: View {
                         .clipped()
 
                     VStack(spacing: 0) {
-                        dismissChrome(width: width)
+                        dismissChrome(width: width, topInset: topInset)
                             .modifier(ConditionalDismissGesture(
                                 enabled: tab == .lyrics && !isDismissClosing
                                     && !showQueue && !showAddToPlaylist
-                                    && !showMoreSheet && !showConnect,
+                                    && !showMoreSheet && !showConnect
+                                    && !showSleepTimer && !showEqualizer,
                                 gesture: dismissGesture))
 
                         Group {
                             switch tab {
                             case .song:
-                                songPane(width: width, height: paneHeight)
+                                songPane(width: width, height: paneHeight, bottomInset: bottomInset)
                             case .lyrics:
                                 lyricsPane
                                     .frame(width: width, height: paneHeight, alignment: .top)
@@ -106,12 +121,14 @@ struct NowPlayingView: View {
             .modifier(ConditionalDismissGesture(
                 enabled: tab == .song && !isDismissClosing
                     && !showQueue && !showAddToPlaylist
-                    && !showMoreSheet && !showConnect,
+                    && !showMoreSheet && !showConnect
+                    && !showSleepTimer && !showEqualizer,
                 gesture: dismissGesture))
-            .ignoresSafeArea(edges: .bottom)
+            .ignoresSafeArea()
             .toolbar(.hidden, for: .navigationBar)
             .toolbarBackground(.hidden, for: .navigationBar)
             .containerBackground(.clear, for: .navigation)
+            .accessibilityIdentifier("drome.nowplaying.screen")
             .sheet(isPresented: $showQueue) {
                 QueueView()
                     .presentationDetents([.medium, .large])
@@ -125,8 +142,10 @@ struct NowPlayingView: View {
                             .toolbar {
                                 ToolbarItem(placement: .cancellationAction) {
                                     Button("Close") { showAddToPlaylist = false }
+                                        .foregroundStyle(.white)
                                 }
                             }
+                            .tint(.white)
                     }
                     .preferredColorScheme(.dark)
                 }
@@ -142,44 +161,25 @@ struct NowPlayingView: View {
                 }
             }
             .sheet(isPresented: $showConnect) {
-                if let connect = session.connect {
-                    ConnectDevicePicker(connect: connect)
-                        .preferredColorScheme(.dark)
-                } else {
-                    NavigationStack {
-                        List {
-                            Section {
-                                ZStack(alignment: .leading) {
-                                    HStack(spacing: 14) {
-                                        Image(systemName: "airplayaudio")
-                                            .font(.title2)
-                                            .frame(width: 36)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text("AirPlay & Bluetooth")
-                                            Text("Speakers, TVs, and headphones")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                        Spacer()
-                                    }
-                                    .allowsHitTesting(false)
-                                    AirPlayRoutePicker(tintColor: .clear, activeTintColor: .clear)
-                                        .frame(maxWidth: .infinity, minHeight: 44)
-                                }
-                            } footer: {
-                                Text("Set a companion server in Settings to also move playback between Drome apps.")
-                            }
-                        }
-                        .navigationTitle("Audio output")
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("Done") { showConnect = false }
-                            }
-                        }
-                    }
-                    .preferredColorScheme(.dark)
-                }
+                AudioOutputSheet()
+                    .environmentObject(session)
+                    .presentationDetents([.medium])
+                    .presentationDragIndicator(.visible)
+            }
+            .sheet(isPresented: $showEqualizer) {
+                EqualizerSheet(detent: $equalizerDetent)
+                    .presentationDetents([.medium, .large], selection: $equalizerDetent)
+                    .presentationDragIndicator(.visible)
+                    .onAppear { equalizerDetent = .medium }
+            }
+            .sheet(isPresented: $showSleepTimer) {
+                SleepTimerSheet(
+                    onSet: { minutes in flash("Sleep · \(minutes)m") },
+                    onCleared: { flash("Sleep timer off") }
+                )
+                .environmentObject(sleepTimer)
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
             }
             .overlay(alignment: .top) {
                 if let flashMessage {
@@ -219,29 +219,36 @@ struct NowPlayingView: View {
         return value
     }
 
+    /// Safe area from the key window — GeometryReader reports zero after `.ignoresSafeArea()`.
+    private static var windowSafeAreaInsets: UIEdgeInsets {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .safeAreaInsets ?? .zero
+    }
+
     // MARK: - Chrome
 
     /// Grabber + pane picker. On Lyrics this is the dismiss handle so the
     /// lyrics list can scroll without fighting the sheet.
-    private func dismissChrome(width: CGFloat) -> some View {
+    private func dismissChrome(width: CGFloat, topInset: CGFloat) -> some View {
         VStack(spacing: 0) {
             Capsule()
-                .fill(Color.white.opacity(0.5))
-                .frame(width: 40, height: 5)
-                .padding(.top, 12)
-                .padding(.bottom, 22)
+                .fill(Color.white.opacity(0.45))
+                .frame(width: 36, height: 5)
+                .padding(.top, max(6, topInset - 4))
+                .padding(.bottom, 8)
                 .frame(maxWidth: .infinity)
                 .contentShape(Rectangle())
             headerSubtitle
-                .padding(.top, 8)
-                .padding(.bottom, 4)
+                .padding(.bottom, 6)
             panePicker
                 .frame(maxWidth: min(280, width - 48))
-                .padding(.bottom, 8)
+                .padding(.bottom, 4)
         }
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
-        .padding(.bottom, 8)
     }
 
     @ViewBuilder
@@ -319,9 +326,14 @@ struct NowPlayingView: View {
 
     private var panePicker: some View {
         Picker("", selection: $tab) {
-            ForEach(Pane.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            ForEach(Pane.allCases, id: \.self) {
+                Text($0.rawValue)
+                    .tag($0)
+                    .accessibilityIdentifier("drome.nowplaying.tab.\($0.rawValue.lowercased())")
+            }
         }
         .pickerStyle(.segmented)
+        .accessibilityIdentifier("drome.nowplaying.pane")
     }
 
     private var background: some View {
@@ -369,14 +381,19 @@ struct NowPlayingView: View {
     }
 
     private var dismissGesture: some Gesture {
-        DragGesture(minimumDistance: 20, coordinateSpace: .global)
+        // Low threshold so the sheet tracks the finger immediately — no
+        // rubber-band / layout settle before dismissY moves.
+        DragGesture(minimumDistance: 8, coordinateSpace: .global)
             .onChanged { value in
                 guard !isDismissClosing else { return }
                 let dy = value.translation.height
                 let dx = value.translation.width
                 if !isDismissDragging {
-                    guard dy > 14, dy >= abs(dx) else { return }
+                    guard dy > 6, dy >= abs(dx) * 1.05 else { return }
                     isDismissDragging = true
+                    if frozenPaneHeight == nil {
+                        frozenPaneHeight = max(0, sheetHeight - (Self.windowSafeAreaInsets.top + 96))
+                    }
                 }
                 var txn = Transaction()
                 txn.disablesAnimations = true
@@ -422,6 +439,7 @@ struct NowPlayingView: View {
             withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
                 dismissY = 0
             }
+            frozenPaneHeight = nil
         }
     }
 
@@ -439,50 +457,61 @@ struct NowPlayingView: View {
 
     // MARK: - Song pane
 
-    private func songPane(width: CGFloat, height: CGFloat) -> some View {
+    private func songPane(width: CGFloat, height: CGFloat, bottomInset: CGFloat) -> some View {
         let horizontalPad: CGFloat = 24
         let contentWidth = max(0, width - horizontalPad * 2)
-        // Same visual size as before (~38% of the song pane), but taken from
-        // the stable screen height so the open animation can't grow/shrink it.
-        let screenH = UIScreen.main.bounds.height
-        let estimatedPane = max(400, (screenH.isFinite ? screenH : 800) - 220)
-        let artSide = min(contentWidth, max(180, estimatedPane * 0.38))
         let paneHeight = max(0, height)
+        let bottomPad = max(20, bottomInset) + 8
+
+        // Art scales with the pane; gaps are fixed lengths derived from slack
+        // (not live Spacers) so dismiss-drag can’t reflow the stack.
+        let artSide = min(contentWidth, max(200, paneHeight * 0.38))
+        let fixedBlock: CGFloat = artSide + 56 + 28 + 44 + 72 + 44 + bottomPad
+        let slack = max(0, paneHeight - fixedBlock)
+        let topGap = max(6, slack * 0.10)
+        let afterArt = max(14, slack * 0.26)
+        let afterMeta = max(10, slack * 0.14)
+        let afterRating = max(12, slack * 0.16)
+        let afterScrub = max(6, slack * 0.10)
+        let afterTransport = max(8, slack * 0.12)
+        let beforeBottom = max(
+            8,
+            slack - topGap - afterArt - afterMeta - afterRating - afterScrub - afterTransport)
 
         return VStack(spacing: 0) {
-            Spacer(minLength: 4)
+            Color.clear.frame(height: topGap)
 
             artwork(side: artSide, containerWidth: max(0, width))
 
-            Spacer(minLength: 16)
+            Color.clear.frame(height: afterArt)
 
             metadataBlock
                 .frame(width: contentWidth, alignment: .leading)
                 .id(player.current?.id)
 
-            Spacer(minLength: 10)
+            Color.clear.frame(height: afterMeta)
 
             ratingBlock
                 .frame(width: contentWidth, alignment: .leading)
                 .id(player.current?.id)
 
-            Spacer(minLength: 12)
+            Color.clear.frame(height: afterRating)
 
             scrubber
                 .frame(width: contentWidth)
 
-            Spacer(minLength: 8)
+            Color.clear.frame(height: afterScrub)
 
             transport
                 .frame(width: contentWidth)
 
-            Spacer(minLength: 10)
+            Color.clear.frame(height: afterTransport + beforeBottom)
 
             bottomBar
                 .frame(width: contentWidth)
-                .padding(.bottom, 24)
+                .padding(.bottom, bottomPad)
         }
-        .frame(width: max(0, width), height: paneHeight)
+        .frame(width: max(0, width), height: paneHeight, alignment: .top)
     }
 
     private func artwork(side: CGFloat, containerWidth: CGFloat) -> some View {
@@ -498,6 +527,8 @@ struct NowPlayingView: View {
             ForEach(Array(artPages.enumerated()), id: \.offset) { index, page in
                 coverCard(url: page.url, side: safeSide)
                     .offset(x: CGFloat(index - 1) * stride + drag)
+                    // No default insert slide — open should be one sheet from the bottom.
+                    .transition(.identity)
             }
         }
         .frame(width: safeWidth, height: safeSide)
@@ -524,7 +555,11 @@ struct NowPlayingView: View {
             guard !artSwipeAnimating else { return }
             reloadArtPages(keepingDrag: false)
         }
-        .onAppear { reloadArtPages(keepingDrag: false) }
+        .onAppear {
+            var txn = Transaction()
+            txn.disablesAnimations = true
+            withTransaction(txn) { reloadArtPages(keepingDrag: false) }
+        }
     }
 
     private func coverCard(url: URL?, side: CGFloat) -> some View {
@@ -828,10 +863,15 @@ struct NowPlayingView: View {
                 }
 
                 if let badge = player.activeStreamBadge ?? song?.qualityBadge {
-                    Text(badge)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(DromeTheme.accent.opacity(0.95))
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        if let kind = QualityBadge.kind(from: badge) {
+                            QualityBadge(kind: kind, compact: true)
+                        }
+                        Text(badge)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(DromeTheme.accent.opacity(0.95))
+                            .lineLimit(1)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -844,10 +884,12 @@ struct NowPlayingView: View {
                     Image(systemName: "ellipsis")
                         .font(.title3.weight(.bold))
                         .foregroundStyle(.white)
-                        .frame(width: 40, height: titleLineHeight)
+                        .frame(width: 36, height: titleLineHeight)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("More")
+                .accessibilityIdentifier("drome.nowplaying.more")
             }
         }
     }
@@ -872,99 +914,118 @@ struct NowPlayingView: View {
     // Menu content moved to NowPlayingMoreSheet to avoid Menu flicker on playhead ticks.
 
     private var scrubber: some View {
-        let total = stableDuration
-        let rawElapsed = clock.elapsed.isFinite ? clock.elapsed : 0
-        let live = min(max(0, rawElapsed), total)
-        let displayed: Double = {
-            if isSeeking {
-                return seekElapsed.isFinite ? min(max(0, seekElapsed), total) : live
-            }
-            if let scrubAnimElapsed, scrubAnimElapsed.isFinite {
-                return min(max(0, scrubAnimElapsed), total)
-            }
-            return live
-        }()
-        let remaining = max(0, total - displayed)
-
-        return VStack(spacing: 6) {
-            Slider(
-                value: Binding(
-                    get: { displayed },
-                    set: { newValue in
-                        scrubAnimElapsed = nil
-                        seekElapsed = newValue.isFinite ? newValue : 0
-                        if !isSeeking { isSeeking = true }
-                    }
-                ),
-                in: 0...max(total, 0.1),
-                onEditingChanged: { editing in
-                    if editing {
-                        scrubAnimElapsed = nil
-                        if !isSeeking {
-                            seekElapsed = min(max(0, clock.elapsed), total)
-                        }
-                        isSeeking = true
-                    } else {
-                        let target = min(max(0, seekElapsed), total)
-                        seekElapsed = target
-                        if session.connect?.isRemote == true {
-                            Task { await session.connect?.sendRemote(ConnectCommandType.seek, seekTo: target) }
-                        } else {
-                            player.seek(to: target)
-                        }
-                        // Hold the scrubbed time briefly, then follow the real
-                        // playhead (seek may land short of a partial buffer).
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                            if isSeeking {
-                                seekElapsed = min(max(0, player.accurateElapsed()), stableDuration)
-                            }
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
-                            isSeeking = false
-                        }
-                    }
+        // Custom bar — SwiftUI `Slider` snaps on each value change; this draws
+        // continuous width from the interpolating clock.
+        TimelineView(.animation(
+            minimumInterval: 1.0 / 60.0,
+            paused: !clock.isPlaying || isSeeking || scrubAnimElapsed != nil
+        )) { context in
+            let total = max(stableDuration, 0.1)
+            let live = min(max(0, clock.displayElapsed(at: context.date)), total)
+            let displayed: Double = {
+                if isSeeking {
+                    return seekElapsed.isFinite ? min(max(0, seekElapsed), total) : live
                 }
-            )
-            .tint(.white)
+                if let scrubAnimElapsed, scrubAnimElapsed.isFinite {
+                    return min(max(0, scrubAnimElapsed), total)
+                }
+                return live
+            }()
+            let remaining = max(0, total - displayed)
+            let progress = CGFloat(displayed / total)
 
-            HStack {
-                Text(Formatters.playbackTime(displayed))
-                    .frame(minWidth: 40, alignment: .leading)
-                Spacer()
-                // Remaining matches what you hear — not a stale total that can
-                // hit 0:00 while the file still has a few seconds left.
-                Text("-\(Formatters.playbackTime(remaining))")
-                    .frame(minWidth: 44, alignment: .trailing)
+            VStack(spacing: 6) {
+                GeometryReader { geo in
+                    let width = max(0, geo.size.width)
+                    let fill = width * min(max(progress, 0), 1)
+                    let thumb: CGFloat = isSeeking ? 14 : 10
+
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.white.opacity(0.22))
+                            .frame(height: 4)
+                        Capsule()
+                            .fill(Color.white)
+                            .frame(width: max(4, fill), height: 4)
+                        Circle()
+                            .fill(Color.white)
+                            .frame(width: thumb, height: thumb)
+                            .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+                            .offset(x: min(max(fill - thumb / 2, 0), width - thumb))
+                    }
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                scrubAnimElapsed = nil
+                                let x = min(max(0, value.location.x), width)
+                                seekElapsed = total * Double(x / max(width, 1))
+                                if !isSeeking { isSeeking = true }
+                            }
+                            .onEnded { _ in
+                                let target = min(max(0, seekElapsed), total)
+                                seekElapsed = target
+                                if session.connect?.isRemote == true {
+                                    Task {
+                                        await session.connect?.sendRemote(
+                                            ConnectCommandType.seek, seekTo: target)
+                                    }
+                                } else {
+                                    player.seek(to: target)
+                                }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                    if isSeeking {
+                                        seekElapsed = min(
+                                            max(0, player.accurateElapsed()),
+                                            stableDuration)
+                                    }
+                                }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
+                                    isSeeking = false
+                                }
+                            }
+                    )
+                }
+                .frame(height: 28)
+                .accessibilityLabel("Playback position")
+                .accessibilityValue(Formatters.playbackTime(displayed))
+
+                HStack {
+                    Text(Formatters.playbackTime(displayed))
+                        .frame(minWidth: 40, alignment: .leading)
+                    Spacer()
+                    Text("-\(Formatters.playbackTime(remaining))")
+                        .frame(minWidth: 44, alignment: .trailing)
+                }
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(Color.white.opacity(0.5))
             }
-            .font(.caption.monospacedDigit().weight(.semibold))
-            .foregroundStyle(Color.white.opacity(0.7))
+            .frame(height: 44)
         }
-        .frame(height: 44)
     }
 
     private var transport: some View {
-        HStack {
+        HStack(spacing: 36) {
             Button {
                 player.cycleShuffleMode()
                 flash(player.shuffleMode.userLabel)
             } label: {
                 Image(systemName: "shuffle")
-                    .font(.body.weight(.semibold))
+                    .font(.title3)
                     .foregroundStyle(shuffleColor)
-                    .frame(width: 40, height: 44)
+                    .frame(minWidth: 32, minHeight: 32)
                     .overlay(alignment: .topTrailing) {
                         if player.shuffleMode == .smart {
                             Image(systemName: "star.fill")
                                 .font(.system(size: 7))
                                 .foregroundStyle(DromeTheme.accent)
-                                .offset(x: -2, y: 8)
+                                .offset(x: 2, y: -2)
                         }
                     }
             }
             .accessibilityLabel(player.shuffleMode.userLabel)
             .accessibilityHint(player.shuffleMode.userHint)
-
-            Spacer(minLength: 0)
 
             Button {
                 if session.connect?.isRemote == true {
@@ -974,11 +1035,11 @@ struct NowPlayingView: View {
                 }
             } label: {
                 Image(systemName: "backward.fill")
-                    .font(.title2)
+                    .font(.title)
                     .foregroundStyle(.white)
-                    .frame(width: 48, height: 48)
             }
             .disabled(artSwipeAnimating)
+            .accessibilityLabel("Previous track")
 
             Button {
                 if session.connect?.isRemote == true {
@@ -991,15 +1052,15 @@ struct NowPlayingView: View {
                     player.playPause()
                 }
             } label: {
-                ZStack {
-                    Circle().fill(Color.white).frame(width: 62, height: 62)
-                    Image(systemName: transportPlaying ? "pause.fill" : "play.fill")
-                        .font(.title2.weight(.bold))
-                        .foregroundStyle(.black)
-                        .frame(width: 62, height: 62)
-                }
+                Image(systemName: transportPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 50))
+                    .foregroundStyle(.white)
+                    .frame(width: 56, height: 56)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(ScaleButtonStyle())
+            .accessibilityLabel(transportPlaying ? "Pause" : "Play")
+            .accessibilityIdentifier("drome.nowplaying.transport.play")
 
             Button {
                 if session.connect?.isRemote == true {
@@ -1009,22 +1070,25 @@ struct NowPlayingView: View {
                 }
             } label: {
                 Image(systemName: "forward.fill")
-                    .font(.title2)
+                    .font(.title)
                     .foregroundStyle(.white)
-                    .frame(width: 48, height: 48)
             }
             .disabled(artSwipeAnimating)
-
-            Spacer(minLength: 0)
+            .accessibilityLabel("Next track")
 
             Button { player.cycleRepeatMode() } label: {
                 Image(systemName: player.repeatMode == .one ? "repeat.1" : "repeat")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(player.repeatMode == .off ? Color.white.opacity(0.45) : DromeTheme.accent)
-                    .frame(width: 40, height: 44)
+                    .font(.title3)
+                    .foregroundStyle(player.repeatMode == .off ? Color.white.opacity(0.7) : DromeTheme.accent)
+                    .frame(minWidth: 32, minHeight: 32)
             }
+            .accessibilityLabel(
+                player.repeatMode == .off ? "Repeat off"
+                : player.repeatMode == .one ? "Repeat one" : "Repeat all")
         }
-        .frame(height: 68)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 8)
+        .frame(height: 72)
     }
 
     private var transportPlaying: Bool {
@@ -1034,42 +1098,76 @@ struct NowPlayingView: View {
         return player.isPlaying
     }
 
+    /// Options: add to playlist, queue, sleep, output, EQ, share (lyrics stay in the pane picker).
     private var bottomBar: some View {
         HStack {
+            Spacer(minLength: 0)
+            Button { showAddToPlaylist = true } label: {
+                Image(systemName: "text.badge.plus")
+                    .font(.title2)
+                    .foregroundStyle(Color.white.opacity(0.6))
+            }
+            .disabled(player.current?.song == nil)
+            .accessibilityLabel("Add to playlist")
+            .accessibilityIdentifier("drome.nowplaying.add-playlist")
+
+            Spacer(minLength: 0)
+            Button { showQueue = true } label: {
+                Image(systemName: "list.bullet")
+                    .font(.title2)
+                    .foregroundStyle(Color.white.opacity(0.6))
+            }
+            .accessibilityLabel("Queue")
+            .accessibilityIdentifier("drome.nowplaying.queue")
+
+            Spacer(minLength: 0)
+            Button { showSleepTimer = true } label: {
+                Image(systemName: sleepTimer.isActive ? "moon.fill" : "moon.zzz")
+                    .font(.title2)
+                    .foregroundStyle(sleepTimer.isActive ? DromeTheme.accent : Color.white.opacity(0.6))
+            }
+            .accessibilityLabel(sleepTimer.isActive ? "Sleep timer active" : "Sleep timer")
+            .accessibilityIdentifier("drome.nowplaying.sleep")
+
+            Spacer(minLength: 0)
             Button { showConnect = true } label: {
                 Image(systemName: session.connect?.isRemote == true
                       ? "speaker.wave.2.fill"
-                      : "hifispeaker")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(session.connect?.isRemote == true ? DromeTheme.accent : .white)
-                    .frame(width: 44, height: 44)
+                      : "hifispeaker.2.fill")
+                    .font(.title2)
+                    .foregroundStyle(session.connect?.isRemote == true ? DromeTheme.accent : Color.white.opacity(0.6))
             }
             .accessibilityLabel(session.connect != nil ? "Connect and AirPlay" : "AirPlay")
+            .accessibilityIdentifier("drome.nowplaying.connect")
 
-            Spacer()
+            Spacer(minLength: 0)
+            Button { showEqualizer = true } label: {
+                Image(systemName: "slider.vertical.3")
+                    .font(.title2)
+                    .foregroundStyle(
+                        AudioFXPreferences.equalizerEnabled ? DromeTheme.accent : Color.white.opacity(0.6)
+                    )
+            }
+            .accessibilityLabel("Equalizer")
+            .accessibilityIdentifier("drome.nowplaying.eq")
 
+            Spacer(minLength: 0)
             Button {
-                player.autoplayEnabled.toggle()
-                flash(player.autoplayEnabled ? "\(AutoplayMode.label) on" : "\(AutoplayMode.label) off")
+                if let song = player.current?.song {
+                    SongShare.present(song: song)
+                }
             } label: {
-                Image(systemName: "infinity")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(player.autoplayEnabled ? DromeTheme.accent : Color.white.opacity(0.45))
-                    .frame(width: 44, height: 44)
+                // Arrow sits above the square — nudge up so the square’s bottom
+                // lines up with the other glyphs instead of sharing a midpoint.
+                Image(systemName: "square.and.arrow.up")
+                    .font(.title2)
+                    .foregroundStyle(Color.white.opacity(0.6))
+                    .offset(y: -2)
             }
-            .accessibilityLabel(
-                player.autoplayEnabled ? "\(AutoplayMode.label) on" : "\(AutoplayMode.label) off")
-            .accessibilityHint(AutoplayMode.hint)
-
-            Spacer()
-
-            Button { showQueue = true } label: {
-                Image(systemName: "list.bullet")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-            }
-            .accessibilityLabel("Queue")
+            .disabled(player.current?.song == nil)
+            .accessibilityLabel("Share")
+            .accessibilityIdentifier("drome.nowplaying.share")
+            Spacer(minLength: 0)
         }
         .frame(height: 44)
     }
@@ -1318,10 +1416,56 @@ struct NowPlayingMoreSheet: View {
     @EnvironmentObject private var rotation: RotationManager
     @EnvironmentObject private var downloads: DownloadManager
     @EnvironmentObject private var sleepTimer: SleepTimerController
+    @State private var mixBusy = false
+    @State private var steering = StationSteeringStore.current
 
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Button {
+                        Task { await startInstantMix(save: false) }
+                    } label: {
+                        Label(
+                            mixBusy ? "Starting Instant Mix…" : "Instant Mix",
+                            systemImage: "antenna.radiowaves.left.and.right"
+                        )
+                    }
+                    .disabled(mixBusy)
+                    .accessibilityIdentifier("drome.nowplaying.instant-mix")
+                    .listRowBackground(DromeTheme.elevated)
+
+                    Button {
+                        Task { await startInstantMix(save: true) }
+                    } label: {
+                        Label("Instant Mix & Save Playlist", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(mixBusy)
+                    .listRowBackground(DromeTheme.elevated)
+                } header: {
+                    Text("Radio")
+                }
+
+                Section("Station steering") {
+                    ForEach(StationSteering.allCases) { mode in
+                        Button {
+                            steering = mode
+                            StationSteeringStore.current = mode
+                            player.rerollAutoplayQueue()
+                        } label: {
+                            HStack {
+                                Label(mode.title, systemImage: mode.symbol)
+                                Spacer()
+                                if steering == mode {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(DromeTheme.accent)
+                                }
+                            }
+                        }
+                        .listRowBackground(DromeTheme.elevated)
+                    }
+                }
+
                 Section {
                     if let albumId = song.albumId, !albumId.isEmpty {
                         NavigationLink {
@@ -1502,12 +1646,32 @@ struct NowPlayingMoreSheet: View {
             .background(DromeTheme.background)
             .navigationTitle("More")
             .navigationBarTitleDisplayMode(.inline)
+            .accessibilityIdentifier("drome.nowplaying.more.sheet")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { isPresented = false }
+                        .foregroundStyle(.white)
                 }
             }
+            .tint(.white)
         }
         .preferredColorScheme(.dark)
+    }
+
+    private func startInstantMix(save: Bool) async {
+        mixBusy = true
+        defer { mixBusy = false }
+        let songs = await InstantMix.songs(from: song, client: session.client)
+        guard songs.count > 1 else { return }
+        player.play(
+            songs,
+            startAt: 0,
+            context: PlaybackContext(label: "Instant Mix", kind: .mix)
+        )
+        if save {
+            let name = "Instant Mix · \(song.artist ?? song.title)"
+            _ = try? await InstantMix.saveAsPlaylist(name: name, songs: songs, client: session.client)
+        }
+        isPresented = false
     }
 }

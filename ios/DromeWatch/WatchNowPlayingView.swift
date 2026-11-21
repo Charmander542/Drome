@@ -96,7 +96,8 @@ struct WatchNowPlayingView: View {
 
     private var emptyContent: some View {
         ZStack {
-            Color(red: 0.18, green: 0.16, blue: 0.15)
+            // Listening Club canvas (matches DromeTheme.background).
+            Color(red: 0.06, green: 0.05, blue: 0.08)
             VStack(spacing: 10) {
                 Image("LaunchLogo")
                     .resizable()
