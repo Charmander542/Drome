@@ -870,6 +870,16 @@ struct AddToPlaylistView: View {
     @State private var newName = ""
     @State private var error: String?
 
+    /// Visible (non-hidden) playlists in Library order, excluding Out of Rotation.
+    private var visiblePlaylists: [Playlist] {
+        let withoutOOR = playlists.filter { $0.name != RotationManager.playlistName }
+        return PlaylistOrderStore.visibleOrdered(
+            withoutOOR,
+            userKey: session.account.userKey,
+            serverKey: session.account.serverKey
+        )
+    }
+
     var body: some View {
         List {
             Section {
@@ -883,13 +893,16 @@ struct AddToPlaylistView: View {
             }
 
             Section("Your playlists") {
-                ForEach(playlists.filter { $0.name != RotationManager.playlistName }) { playlist in
+                ForEach(visiblePlaylists) { playlist in
                     Button {
                         Task { await add(to: playlist) }
                     } label: {
-                        HStack {
-                            Text(playlist.name).foregroundStyle(.white)
-                            Spacer()
+                        HStack(spacing: 12) {
+                            playlistCoverThumb(playlist)
+                            Text(playlist.name)
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
                             if pendingPlaylistIDs.contains(playlist.id) {
                                 ProgressView()
                             } else if alreadyInPlaylistIDs.contains(playlist.id) {
@@ -906,6 +919,7 @@ struct AddToPlaylistView: View {
                     .disabled(pendingPlaylistIDs.contains(playlist.id)
                               || alreadyInPlaylistIDs.contains(playlist.id))
                     .listRowBackground(DromeTheme.elevated)
+                    .accessibilityLabel(playlistAccessibilityLabel(playlist))
                 }
             }
 
@@ -930,6 +944,23 @@ struct AddToPlaylistView: View {
             }
             Button("Cancel", role: .cancel) { newName = "" }
         }
+    }
+
+    private func playlistCoverThumb(_ playlist: Playlist) -> some View {
+        RemoteImage(
+            url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 96),
+            placeholderSymbol: "music.note.list"
+        )
+        .frame(width: 44, height: 44)
+        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        .accessibilityHidden(true)
+    }
+
+    private func playlistAccessibilityLabel(_ playlist: Playlist) -> String {
+        if alreadyInPlaylistIDs.contains(playlist.id) {
+            return "\(playlist.name), already added"
+        }
+        return "\(playlist.name), \(playlist.songCountLabel)"
     }
 
     private func add(to playlist: Playlist) async {
