@@ -641,6 +641,8 @@ struct SearchView: View {
                 }
             }
             .listStyle(.plain)
+            .listSectionSpacing(8)
+            .contentMargins(.top, 0, for: .scrollContent)
             .scrollContentBackground(.hidden)
             .scrollDismissesKeyboard(.never)
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { oldY, newY in
@@ -715,6 +717,8 @@ struct SearchView: View {
             }
         }
         .listStyle(.plain)
+        .listSectionSpacing(8)
+        .contentMargins(.top, 0, for: .scrollContent)
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.never)
         .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { oldY, newY in
