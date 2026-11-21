@@ -865,7 +865,7 @@ struct NowPlayingView: View {
                     if isDownloaded {
                         Image(systemName: "arrow.down.circle.fill")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(DromeTheme.accent)
+                            .foregroundStyle(DromeTheme.muted)
                             .accessibilityLabel("Downloaded")
                     }
 

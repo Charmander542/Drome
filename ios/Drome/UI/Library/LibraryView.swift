@@ -1002,7 +1002,7 @@ struct LibraryView: View {
                     {
                         Image(systemName: "arrow.down.circle.fill")
                             .font(.caption)
-                            .foregroundStyle(DromeTheme.accent)
+                            .foregroundStyle(DromeTheme.muted)
                             .accessibilityLabel("Downloaded")
                     }
                 }

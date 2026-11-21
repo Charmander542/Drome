@@ -261,7 +261,7 @@ private struct EquatableSongRowContent: View, Equatable {
                     if isDownloaded {
                         Image(systemName: "arrow.down.circle.fill")
                             .font(.caption2)
-                            .foregroundStyle(DromeTheme.accent)
+                            .foregroundStyle(DromeTheme.muted)
                     }
                 }
                 Text(subtitleLine)

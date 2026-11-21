@@ -185,7 +185,7 @@ struct PlaylistDetailView: View {
                     if isFullyDownloaded {
                         Image(systemName: "arrow.down.circle.fill")
                             .font(.subheadline)
-                            .foregroundStyle(DromeTheme.accent)
+                            .foregroundStyle(DromeTheme.muted)
                             .accessibilityLabel("Downloaded")
                     }
                 }
@@ -481,7 +481,7 @@ struct PlaylistDetailView: View {
                         if isFullyDownloaded {
                             Image(systemName: "arrow.down.circle.fill")
                                 .font(.body.weight(.semibold))
-                                .foregroundStyle(DromeTheme.accent)
+                                .foregroundStyle(DromeTheme.muted)
                                 .accessibilityLabel("Downloaded")
                         }
                     }
