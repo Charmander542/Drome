@@ -130,8 +130,8 @@ enum OnboardingTourChrome {
     static let pageTransitionX: CGFloat = 18
     static let stepTransitionX: CGFloat = 14
 
-    // Cover art in player mocks
-    static let coverCorner: CGFloat = 10
+    // Cover art in player mocks — matches NowPlayingView coverCard radius.
+    static let coverCorner: CGFloat = 8
 }
 
 enum OnboardingMockDesign {
@@ -720,9 +720,10 @@ struct OnboardingNowPlayingMock: View {
 
             MockArtTile(
                 colors: [Color(hex: "#264653"), Color(hex: "#2A9D8F")],
-                corner: 10,
+                corner: OnboardingTourChrome.coverCorner,
                 symbol: "music.note")
-                .frame(width: 110, height: 110)
+                .frame(width: 104, height: 104)
+                .shadow(color: .black.opacity(0.35), radius: 10, y: 6)
                 .padding(.bottom, 10)
                 .opacity(0.45)
 
@@ -734,6 +735,9 @@ struct OnboardingNowPlayingMock: View {
                     Text("Neon Harbor")
                         .font(.system(size: 11))
                         .foregroundStyle(.white.opacity(0.65))
+                    Text("FLAC · 24-bit")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(DromeTheme.accent.opacity(0.95))
                 }
                 Spacer()
                 Image(systemName: "ellipsis")
@@ -767,16 +771,11 @@ struct OnboardingNowPlayingMock: View {
                 .padding(.bottom, 8)
 
             VStack(spacing: 8) {
-                Capsule()
-                    .fill(Color.white.opacity(0.18))
-                    .frame(height: 3)
-                    .overlay(alignment: .leading) {
-                        Capsule()
-                            .fill(.white)
-                            .frame(width: 48, height: 3)
-                    }
+                OnboardingScrubberMock(
+                    fraction: 0.38,
+                    dimmed: true,
+                    reduceMotion: reduceMotion)
                     .padding(.horizontal, 16)
-                    .opacity(0.45)
                 HStack(spacing: 24) {
                     Image(systemName: "shuffle")
                         .foregroundStyle(.white.opacity(0.55))
@@ -784,7 +783,7 @@ struct OnboardingNowPlayingMock: View {
                         .foregroundStyle(.white.opacity(0.55))
                     // Match real Now Playing / NP lesson: white disc + black glyph.
                     ZStack {
-                        Circle().fill(Color.white).frame(width: 26, height: 26)
+                        Circle().fill(Color.white).frame(width: 28, height: 28)
                         Image(systemName: "pause.fill")
                             .font(.system(size: 10, weight: .bold))
                             .foregroundStyle(.black)
@@ -803,9 +802,62 @@ struct OnboardingNowPlayingMock: View {
     }
 }
 
+/// Shared scrubber chrome — elapsed left, remaining (−m:ss) right, like NowPlayingView.
+private struct OnboardingScrubberMock: View {
+    var fraction: CGFloat = 0.42
+    var dimmed: Bool = false
+    var highlighted: Bool = false
+    var reduceMotion: Bool = false
+
+    var body: some View {
+        let fill = min(max(fraction, 0.08), 0.92)
+        return OnboardingSpotlightRing(
+            isActive: highlighted,
+            reduceMotion: reduceMotion,
+            cornerRadius: 10
+        ) {
+            VStack(spacing: 5) {
+                GeometryReader { geo in
+                    let width = max(0, geo.size.width)
+                    let thumbX = width * fill
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.white.opacity(0.18))
+                            .frame(height: 4)
+                        Capsule()
+                            .fill(Color.white)
+                            .frame(width: max(8, thumbX), height: 4)
+                        Circle()
+                            .fill(Color.white)
+                            .frame(width: 12, height: 12)
+                            .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+                            .offset(x: max(0, thumbX - 6))
+                    }
+                    .frame(maxHeight: .infinity, alignment: .center)
+                }
+                .frame(height: 16)
+
+                HStack {
+                    Text("1:24")
+                        .frame(minWidth: 32, alignment: .leading)
+                    Spacer()
+                    Text("-2:11")
+                        .frame(minWidth: 36, alignment: .trailing)
+                }
+                .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                .foregroundStyle(Color.white.opacity(0.7))
+            }
+            .padding(.vertical, highlighted ? 4 : 0)
+            .padding(.horizontal, highlighted ? 4 : 0)
+        }
+        .opacity(dimmed && !highlighted ? 0.5 : 1)
+    }
+}
+
 /// Manual steps on the Now Playing controls lesson (Continue / swipe advances).
 enum OnboardingNowPlayingStep: Int, CaseIterable {
     case artSwipe
+    case scrubber
     case shuffle
     case `repeat`
     case keepPlaying
@@ -815,6 +867,7 @@ enum OnboardingNowPlayingStep: Int, CaseIterable {
     var title: String {
         switch self {
         case .artSwipe: return "Swipe the artwork"
+        case .scrubber: return "Scrubber"
         case .shuffle: return "Shuffle"
         case .repeat: return "Repeat"
         case .keepPlaying: return "Keep Playing ∞"
@@ -830,6 +883,10 @@ enum OnboardingNowPlayingStep: Int, CaseIterable {
             return compact
                 ? "Swipe art left for next, right for previous."
                 : "Swipe album art left for the next song, right for the previous."
+        case .scrubber:
+            return compact
+                ? "Elapsed left, time left (−) right. Drag to seek."
+                : "Elapsed on the left, time remaining on the right. Drag the scrubber — it tracks the real song."
         case .shuffle:
             return compact
                 ? "Off: order. Smart: ★ rated. Random: any."
@@ -860,6 +917,7 @@ enum OnboardingNowPlayingStep: Int, CaseIterable {
     var symbolName: String {
         switch self {
         case .artSwipe: return "hand.draw"
+        case .scrubber: return "slider.horizontal.3"
         case .shuffle: return "shuffle"
         case .repeat: return "repeat"
         case .keepPlaying: return "infinity"
@@ -889,7 +947,7 @@ struct OnboardingNowPlayingControlsMock: View {
         [Color(hex: "#1D3557"), Color(hex: "#457B9D")],
     ]
 
-    private let coverSize: CGFloat = 118
+    private let coverSize: CGFloat = 102
 
     var body: some View {
         VStack(spacing: 0) {
@@ -897,35 +955,39 @@ struct OnboardingNowPlayingControlsMock: View {
                 .fill(Color.white.opacity(0.28))
                 .frame(width: 34, height: 4)
                 .padding(.top, 8)
-                .padding(.bottom, 8)
+                .padding(.bottom, 6)
                 .opacity(0.5)
 
             songLyricsPicker
                 .padding(.horizontal, 36)
-                .padding(.bottom, 10)
+                .padding(.bottom, 8)
 
             albumArt
-                .padding(.bottom, 10)
+                .padding(.bottom, 8)
 
             trackMeta
                 .padding(.horizontal, 18)
-                .padding(.bottom, 8)
+                .padding(.bottom, 6)
 
-            progressBar
+            ratingRow
                 .padding(.horizontal, 18)
-                .padding(.bottom, 10)
+                .padding(.bottom, 6)
+
+            scrubber
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
 
             transportRow
                 .padding(.horizontal, 14)
-                .padding(.bottom, 10)
+                .padding(.bottom, 8)
 
             bottomBar
                 .padding(.horizontal, 22)
-                .padding(.bottom, 8)
+                .padding(.bottom, 6)
 
             // Reserved chip slot — constant height across all tips.
             stateChipSlot
-                .frame(height: 72)
+                .frame(height: 64)
                 .padding(.horizontal, 12)
 
             Spacer(minLength: 0)
@@ -981,7 +1043,7 @@ struct OnboardingNowPlayingControlsMock: View {
             }
     }
 
-    /// One square cover. Neighbour tiles only exist on the swipe tip (avoids bleed on tips 2–6).
+    /// One square cover. Neighbour tiles only exist on the swipe tip (avoids bleed on other tips).
     private var albumArt: some View {
         let active = step == .artSwipe
         let hint = (active && !reduceMotion && !isAnimatingCover) ? swipeHintOffset : 0
@@ -1042,7 +1104,7 @@ struct OnboardingNowPlayingControlsMock: View {
                     .stroke(DromeTheme.accent, lineWidth: OnboardingTourChrome.highlightStroke)
             }
         }
-        .opacity(active || step == .lyrics ? 1 : 0.75)
+        .opacity(active || step == .lyrics ? 1 : (step == .scrubber ? 0.55 : 0.72))
         .background {
             GeometryReader { geo in
                 Color.clear.preference(
@@ -1118,25 +1180,50 @@ struct OnboardingNowPlayingControlsMock: View {
     }
 
     private var trackMeta: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(artIndex == 0 ? "Midnight Drive" : (artIndex == 1 ? "Neon Harbor" : "Glass Roads"))
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(artIndex == 0 ? "Midnight Drive" : (artIndex == 1 ? "Neon Harbor" : "Glass Roads"))
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text(artIndex == 0 ? "Neon Harbor" : (artIndex == 1 ? "Glass Roads" : "Midnight Drive"))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.white.opacity(0.65))
+                    .lineLimit(1)
+                Text("FLAC · 24-bit")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(DromeTheme.accent.opacity(0.95))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Image(systemName: "ellipsis")
                 .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(.white)
-            Text(artIndex == 0 ? "Neon Harbor" : (artIndex == 1 ? "Glass Roads" : "Midnight Drive"))
-                .font(.system(size: 11))
-                .foregroundStyle(Color.white.opacity(0.65))
+                .frame(width: 28, height: 22)
+                .opacity(0.85)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .opacity(step == .scrubber || step == .lyrics ? 0.85 : 0.7)
     }
 
-    private var progressBar: some View {
-        Capsule()
-            .fill(Color.white.opacity(0.18))
-            .frame(height: 3)
-            .overlay(alignment: .leading) {
-                Capsule().fill(.white).frame(width: 56, height: 3)
+    private var ratingRow: some View {
+        HStack(spacing: 5) {
+            ForEach(1...5, id: \.self) { star in
+                Image(systemName: star <= 4 ? "star.fill" : "star")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(star <= 4 ? RatingStyle.color(for: 4) : DromeTheme.muted)
             }
-            .opacity(0.55)
+            Spacer(minLength: 0)
+        }
+        .opacity(0.55)
+        .accessibilityHidden(true)
+    }
+
+    private var scrubber: some View {
+        OnboardingScrubberMock(
+            fraction: 0.42,
+            dimmed: step != .scrubber,
+            highlighted: step == .scrubber,
+            reduceMotion: reduceMotion)
     }
 
     private var transportRow: some View {
@@ -1148,17 +1235,17 @@ struct OnboardingNowPlayingControlsMock: View {
                 badge: step == .shuffle)
             Spacer(minLength: 4)
             Image(systemName: "backward.fill")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.4))
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.55))
             ZStack {
-                Circle().fill(Color.white).frame(width: 44, height: 44)
+                Circle().fill(Color.white).frame(width: 48, height: 48)
                 Image(systemName: "pause.fill")
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(.black)
             }
             Image(systemName: "forward.fill")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.4))
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.55))
             Spacer(minLength: 4)
             controlIcon(
                 "repeat",
