@@ -24,6 +24,15 @@ App wishlist URL (on this LAN): `http://192.168.8.193:4534`
 
 Health check: `curl http://127.0.0.1:4534/health`
 
+Wishlist **Downloads** (in the iOS app under Library → Wishlist) polls live
+progress for single-song and playlist SpotiFLAC jobs. The same data is also on
+the companion API:
+
+```bash
+# JSON snapshot of the queue, active job, playlist import progress, live SpotiFLAC log
+curl -s "http://127.0.0.1:4534/wishlist/downloads?u=USER&t=TOKEN&s=SALT"
+```
+
 Connect (multi-device) uses the **same** companion on `:4534`. After pulling
 Connect changes, rebuild so `/connect/devices` exists:
 

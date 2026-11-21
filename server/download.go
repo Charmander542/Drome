@@ -108,6 +108,9 @@ type downloadWorker struct {
 	mu     sync.Mutex
 	wake   chan struct{}
 	closed bool
+
+	// Live progress for GET /wishlist/downloads (and status_msg on the active row).
+	progress progressState
 }
 
 func newDownloadWorker(cfg downloadConfig, store *wishlistStore, navidrome *navidromeVerifier, spotify *spotifyClient, baseURL string) *downloadWorker {
@@ -228,13 +231,16 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 
 	logf("download start id=%d attempt=%d/%d %s %q — %q",
 		e.ID, attempt, w.cfg.MaxAttempts, e.Kind, e.Artist, e.Title)
-	_ = w.store.setStatus(e.ID, statusDownloading, "")
+	w.beginProgress(e, attempt)
+	defer w.endProgress()
+	_ = w.store.setStatus(e.ID, statusDownloading, "starting")
 
 	ctx, cancel := context.WithTimeout(parent, w.cfg.Timeout)
 	defer cancel()
 
 	started := time.Now()
-	if w.spotify != nil {
+	if w.spotify != nil && e.Kind != "playlist" {
+		w.setPhase("metadata", "resolving Spotify metadata")
 		w.spotify.completeEntry(ctx, e)
 		if err := w.store.updateMetadata(e); err != nil {
 			logf("update metadata id=%d: %v", e.ID, err)
@@ -243,6 +249,7 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 
 	if e.Kind == "track" && w.alreadyHave(ctx, e.Title, e.Artist) {
 		logf("skip download id=%d already have %q — %q", e.ID, e.Artist, e.Title)
+		w.setPhase("skipped", "already in library")
 		w.addEntryToNavidromePlaylist(ctx, e, false)
 		if err := w.store.delete(e.ID); err != nil {
 			_ = w.store.setStatus(e.ID, statusSkipped, "already in library")
@@ -250,11 +257,13 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 		return
 	}
 
+	w.setPhase("spotiflac", "running SpotiFLAC")
 	if err := w.runSpotiflac(ctx, e.SpotifyURL); err != nil {
 		w.fail(e, attempt, err)
 		return
 	}
 
+	w.setPhase("retag", "applying Spotify tags")
 	if err := w.retagRecent(ctx, e, started); err != nil {
 		// Audio may already be on disk — still treat as failure so we retry
 		// retag rather than deleting the wishlist row with broken tags.
@@ -264,15 +273,18 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 
 	// Amazon stages as {ASIN}.flac; if rename/embed was soft-failed upstream,
 	// drop dupes next to a good file or fail so we don't keep B0… / Unknown tracks.
+	w.setPhase("cleanup", "checking for leftover ASINs")
 	if err := cleanupRecentASINLeftovers(w.cfg.MusicDir, started); err != nil {
 		w.fail(e, attempt, err)
 		return
 	}
 
 	logf("download done id=%d — removing from wishlist", e.ID)
+	w.setPhase("scan", "triggering Navidrome scan")
 	if err := w.triggerScan(parent); err != nil {
 		logf("navidrome scan trigger: %v (library will pick up on next scheduled scan)", err)
 	}
+	w.setPhase("finishing", "syncing playlists")
 	if e.Kind == "playlist" {
 		w.syncWholePlaylist(parent, e)
 	} else {
@@ -511,14 +523,40 @@ func (w *downloadWorker) runSpotiflac(ctx context.Context, spotifyURL string) er
 	args = append(args, w.cfg.Services...)
 
 	cmd := exec.CommandContext(ctx, w.cfg.SpotiflacBin, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
 
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("spotiflac stdout: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("spotiflac stderr: %w", err)
+	}
+
 	started := time.Now().Add(-2 * time.Second)
-	err := cmd.Run()
-	out := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("spotiflac: %w", err)
+	}
+
+	var (
+		capture   strings.Builder
+		captureMu sync.Mutex
+		wg        sync.WaitGroup
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		w.readProgressStream(stdout, &capture, &captureMu)
+	}()
+	go func() {
+		defer wg.Done()
+		w.readProgressStream(stderr, &capture, &captureMu)
+	}()
+	wg.Wait()
+	err = cmd.Wait()
+
+	out := strings.TrimSpace(capture.String())
 	if soft := spotiflacSoftFailure(out); soft != "" {
 		// SpotiFLAC (and older wrappers) often exit 0 after "Successful: 0".
 		// Prefer the soft reason; append only the useful tail (not the banner).
