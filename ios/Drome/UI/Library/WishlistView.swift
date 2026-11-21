@@ -348,7 +348,11 @@ struct WishlistView: View {
     private func downloadStatusLine(_ entry: WishlistEntry) -> String? {
         switch entry.status {
         case "queued": return "Queued for download"
-        case "downloading": return "Downloading…"
+        case "downloading":
+            if let msg = entry.statusMessage, !msg.isEmpty {
+                return msg
+            }
+            return "Downloading…"
         case "failed":
             if let msg = entry.statusMessage, !msg.isEmpty {
                 return "Download failed: \(msg)"
