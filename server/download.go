@@ -195,6 +195,26 @@ func (w *downloadWorker) Run(ctx context.Context) {
 func (w *downloadWorker) process(parent context.Context, e *entry) {
 	attempt := e.Attempts + 1
 
+	// Legacy whole-album / whole-playlist jobs expand without SpotiFLAC, so do
+	// that before provider-cooldown gating (no Turnstile needed to list tracks).
+	if e.Kind == "album" || e.Kind == "playlist" {
+		logf("download expand id=%d %s %q — %q", e.ID, e.Kind, e.Artist, e.Title)
+		_ = w.store.setStatus(e.ID, statusDownloading, "expanding to per-track downloads")
+		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
+		defer cancel()
+		n, err := w.expandGroupedEntry(ctx, e)
+		if err != nil {
+			w.fail(e, attempt, err)
+			return
+		}
+		logf("expanded %s id=%d into %d track download(s); removing parent", e.Kind, e.ID, n)
+		if err := w.store.delete(e.ID); err != nil {
+			_ = w.store.setStatus(e.ID, statusDone, fmt.Sprintf("expanded to %d tracks", n))
+		}
+		w.kick()
+		return
+	}
+
 	// Respect SpotiFLAC verification cooldowns before burning an attempt.
 	if wait := w.providerCooldownRemaining(); wait > 0 {
 		msg := fmt.Sprintf("waiting for SpotiFLAC verification slot (%s)", wait.Round(time.Second))
@@ -214,7 +234,7 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 	defer cancel()
 
 	started := time.Now()
-	if w.spotify != nil && e.Kind != "playlist" {
+	if w.spotify != nil {
 		w.spotify.completeEntry(ctx, e)
 		if err := w.store.updateMetadata(e); err != nil {
 			logf("update metadata id=%d: %v", e.ID, err)
@@ -263,6 +283,95 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 		_ = w.store.setAcquired(e.ID, true)
 		_ = w.store.setStatus(e.ID, statusDone, "")
 	}
+}
+
+// expandGroupedEntry turns a whole-album / whole-playlist wishlist row into
+// per-track queued downloads so each song retries independently.
+func (w *downloadWorker) expandGroupedEntry(ctx context.Context, e *entry) (int, error) {
+	if w.spotify == nil {
+		return 0, fmt.Errorf("spotify client unavailable to expand %s", e.Kind)
+	}
+	var (
+		name        string
+		albumArtist string
+		cover       string
+		tracks      []playlistTrack
+		err         error
+	)
+	switch e.Kind {
+	case "album":
+		name, albumArtist, cover, tracks, err = w.spotify.albumTracks(ctx, e.SpotifyID)
+	case "playlist":
+		name, tracks, err = w.spotify.playlistTracks(ctx, e.SpotifyID)
+	default:
+		return 0, fmt.Errorf("cannot expand kind %q", e.Kind)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if name == "" {
+		name = e.Title
+	}
+	if name == "" {
+		name = "Spotify " + e.Kind
+	}
+	status := statusQueued
+	if !w.cfg.Enabled {
+		status = statusSkipped
+	}
+	now := time.Now()
+	added := 0
+	for _, t := range tracks {
+		if strings.TrimSpace(t.Title) == "" || t.SpotifyID == "" {
+			continue
+		}
+		if w.alreadyHave(ctx, t.Title, t.Artist) {
+			continue
+		}
+		if existing, err := w.store.findActiveByTitleArtist(e.Owner, "track", t.Title, t.Artist); err == nil && existing != nil {
+			continue
+		}
+		if t.Album == "" && e.Kind == "album" {
+			t.Album = name
+		}
+		if t.AlbumArtist == "" {
+			t.AlbumArtist = albumArtist
+		}
+		if t.CoverURL == "" {
+			t.CoverURL = cover
+		}
+		te := entry{
+			Owner:              e.Owner,
+			Kind:               "track",
+			SpotifyID:          t.SpotifyID,
+			SpotifyURL:         t.SpotifyURL,
+			Title:              t.Title,
+			Artist:             t.Artist,
+			AlbumArtist:        t.AlbumArtist,
+			Album:              t.Album,
+			CoverURL:           t.CoverURL,
+			Status:             status,
+			SourcePlaylistID:   e.SpotifyID,
+			SourcePlaylistName: name,
+			CreatedAt:          now,
+		}
+		if te.SpotifyURL == "" {
+			te.SpotifyURL = "https://open.spotify.com/track/" + t.SpotifyID
+		}
+		if err := w.store.insert(&te); err != nil {
+			logf("expand insert track %s: %v", t.SpotifyID, err)
+			continue
+		}
+		added++
+	}
+	if added == 0 && len(tracks) > 0 {
+		// Everything already owned / queued — still treat expand as success.
+		return 0, nil
+	}
+	if added == 0 {
+		return 0, fmt.Errorf("%s %s expanded to 0 tracks", e.Kind, e.SpotifyID)
+	}
+	return added, nil
 }
 
 func (w *downloadWorker) fail(e *entry, attempt int, err error) {

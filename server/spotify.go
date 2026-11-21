@@ -573,6 +573,92 @@ func (c *spotifyClient) albumUPC(ctx context.Context, albumID string) (string, e
 	return a.ExternalIDs.UPC, nil
 }
 
+// albumTracks lists every track on a Spotify album via the Web API so Drome
+// can queue per-track downloads instead of one brittle whole-album SpotiFLAC job.
+func (c *spotifyClient) albumTracks(ctx context.Context, albumID string) (name string, albumArtist string, cover string, tracks []playlistTrack, err error) {
+	if !c.hasAPICreds() {
+		return "", "", "", nil, fmt.Errorf("spotify API credentials required to expand albums")
+	}
+	var meta struct {
+		Name    string          `json:"name"`
+		Artists []spotifyArtist `json:"artists"`
+		Images  []spotifyImage  `json:"images"`
+		Tracks  struct {
+			Total int `json:"total"`
+		} `json:"tracks"`
+	}
+	if err := c.apiGET(ctx, "/albums/"+albumID+"?market="+url.QueryEscape(c.market), &meta); err != nil {
+		return "", "", "", nil, err
+	}
+	name = meta.Name
+	albumArtist = firstArtistName(meta.Artists)
+	if albumArtist == "" {
+		albumArtist = joinArtists(meta.Artists)
+	}
+	cover = bestImage(meta.Images)
+
+	type albumTracksPage struct {
+		Total int `json:"total"`
+		Items []struct {
+			ID      string          `json:"id"`
+			Name    string          `json:"name"`
+			Artists []spotifyArtist `json:"artists"`
+		} `json:"items"`
+	}
+
+	total := meta.Tracks.Total
+	seen := map[string]struct{}{}
+	for offset := 0; offset <= 2000; offset += 50 {
+		var page albumTracksPage
+		path := fmt.Sprintf("/albums/%s/tracks?limit=50&offset=%d&market=%s",
+			albumID, offset, url.QueryEscape(c.market))
+		if err := c.apiGET(ctx, path, &page); err != nil {
+			if offset == 0 {
+				return name, albumArtist, cover, nil, err
+			}
+			logf("album %s tracks offset %d: %v (keeping %d)", albumID, offset, err, len(tracks))
+			break
+		}
+		if page.Total > total {
+			total = page.Total
+		}
+		for _, item := range page.Items {
+			if item.ID == "" || item.Name == "" {
+				continue
+			}
+			if _, ok := seen[item.ID]; ok {
+				continue
+			}
+			seen[item.ID] = struct{}{}
+			artist := joinArtists(item.Artists)
+			trackAlbumArtist := firstArtistName(item.Artists)
+			if albumArtist != "" {
+				trackAlbumArtist = albumArtist
+			}
+			tracks = append(tracks, playlistTrack{
+				SpotifyID:   item.ID,
+				SpotifyURL:  "https://open.spotify.com/track/" + item.ID,
+				Title:       item.Name,
+				Artist:      artist,
+				AlbumArtist: trackAlbumArtist,
+				Album:       name,
+				CoverURL:    cover,
+			})
+		}
+		if total > 0 && len(tracks) >= total {
+			break
+		}
+		if len(page.Items) == 0 || len(page.Items) < 50 {
+			break
+		}
+	}
+	if len(tracks) == 0 {
+		return name, albumArtist, cover, nil, fmt.Errorf("album %s has no tracks", albumID)
+	}
+	logf("album %s: %d tracks (%s)", albumID, len(tracks), name)
+	return name, albumArtist, cover, tracks, nil
+}
+
 // albumIdentity returns primary album artist + UPC for retagging downloads so
 // Navidrome groups an album as one release even when tracks have guest artists.
 func (c *spotifyClient) albumIdentity(ctx context.Context, e *entry) (albumArtist, upc string) {
