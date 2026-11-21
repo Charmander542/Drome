@@ -53,7 +53,9 @@ struct SongRow: View {
         .accessibilityAddTraits(playsOnTap ? .isButton : [])
         .accessibilityHint(playsOnTap ? "Plays this song" : "")
         .contextMenu { contextMenu }
-        .modifier(ConditionalSongSwipe(enabled: enablesSwipeActions && !lightweight, song: song))
+        // Swipes stay available on lightweight Search/Library rows — only the
+        // label chrome is cheapened, not queue gestures.
+        .modifier(ConditionalSongSwipe(enabled: enablesSwipeActions, song: song))
         .confirmReplaceUserQueue(
             isPresented: $showReplaceQueueConfirm,
             queueCount: player.userQueue.count,
