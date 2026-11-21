@@ -379,15 +379,25 @@ func (s *wishlistStore) resetForRetry(id int64) error {
 // entry failed permanently once maxAttempts is reached.
 func (s *wishlistStore) markFailed(id int64, msg string, attempts, maxAttempts int, retryAfter time.Duration) error {
 	if attempts < maxAttempts {
-		next := time.Now().UTC().Add(retryAfter).Format(time.RFC3339)
-		_, err := s.db.Exec(`
-			UPDATE entries SET status = ?, status_msg = ?, attempts = ?, next_retry_at = ?
-			WHERE id = ?`, statusFailed, msg, attempts, next, id)
-		return err
+		return s.scheduleRetry(id, msg, attempts, retryAfter)
 	}
 	_, err := s.db.Exec(`
 		UPDATE entries SET status = ?, status_msg = ?, attempts = ?, next_retry_at = ''
 		WHERE id = ?`, statusFailed, msg, attempts, id)
+	return err
+}
+
+// scheduleRetry parks a job as failed with a future next_retry_at without
+// changing the attempt semantics beyond the provided attempts value. Used for
+// provider cooldown waits so we don't burn the attempt budget while paused.
+func (s *wishlistStore) scheduleRetry(id int64, msg string, attempts int, retryAfter time.Duration) error {
+	if retryAfter < time.Second {
+		retryAfter = time.Second
+	}
+	next := time.Now().UTC().Add(retryAfter).Format(time.RFC3339)
+	_, err := s.db.Exec(`
+		UPDATE entries SET status = ?, status_msg = ?, attempts = ?, next_retry_at = ?
+		WHERE id = ?`, statusFailed, msg, attempts, next, id)
 	return err
 }
 
