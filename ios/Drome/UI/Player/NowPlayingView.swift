@@ -818,7 +818,6 @@ struct NowPlayingView: View {
     private var metadataBlock: some View {
         let song = player.current?.song
         let title = cleaned(song?.title) ?? "Unknown Title"
-        let isDownloaded = song.map { downloads.isDownloaded($0.id) } ?? false
         // Caps glyphs are taller than mixed case — lock the title row so the
         // artist line doesn't jump when the ellipsis HStack recenters.
         let titleLineHeight = UIFont.preferredFont(forTextStyle: .title3).lineHeight + 2
@@ -862,13 +861,6 @@ struct NowPlayingView: View {
                     }
                     .layoutPriority(1)
 
-                    if isDownloaded {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(DromeTheme.muted)
-                            .accessibilityLabel("Downloaded")
-                    }
-
                     Spacer(minLength: 0)
                 }
                 .frame(height: titleLineHeight)
@@ -903,21 +895,62 @@ struct NowPlayingView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(minHeight: 48, alignment: .topLeading)
 
-            if song != nil {
-                Button {
-                    showMoreSheet = true
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 36, height: titleLineHeight)
-                        .contentShape(Rectangle())
+            if let song {
+                HStack(spacing: 2) {
+                    nowPlayingDownloadButton(for: song, height: titleLineHeight)
+                    Button {
+                        showMoreSheet = true
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: titleLineHeight)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("More")
+                    .accessibilityIdentifier("drome.nowplaying.more")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("More")
-                .accessibilityIdentifier("drome.nowplaying.more")
             }
         }
+    }
+
+    @ViewBuilder
+    private func nowPlayingDownloadButton(for song: Song, height: CGFloat) -> some View {
+        let downloaded = downloads.isDownloaded(song.id)
+        let busy = downloads.isBusy(song.id)
+        Button {
+            if downloaded {
+                downloads.remove(songId: song.id)
+                flash("Removed download")
+            } else if busy {
+                downloads.cancel(songId: song.id)
+                flash("Download cancelled")
+            } else {
+                downloads.download([song])
+                flash("Downloading…")
+            }
+        } label: {
+            Group {
+                if busy {
+                    ProgressView()
+                        .tint(.white.opacity(0.7))
+                        .scaleEffect(0.85)
+                } else {
+                    Image(systemName: downloaded ? "arrow.down.circle.fill" : "arrow.down.circle")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(downloaded ? DromeTheme.muted : Color.white.opacity(0.7))
+                }
+            }
+            .frame(width: 36, height: height)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            downloaded ? "Remove download"
+            : busy ? "Cancel download"
+            : "Download")
+        .accessibilityIdentifier("drome.nowplaying.download")
     }
 
     private var ratingBlock: some View {
