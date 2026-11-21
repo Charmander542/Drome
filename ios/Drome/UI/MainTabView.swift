@@ -73,6 +73,10 @@ struct MainTabView: View {
                     .allowsHitTesting(!keyboardVisible)
                     .accessibilityHidden(keyboardVisible)
             }
+            // Let the tab bar paint under the home indicator. Without this, sibling
+            // chrome stays above the safe area and DromeTheme.background shows as a
+            // black strip below the elevated tab bar.
+            .ignoresSafeArea(.container, edges: .bottom)
             // Hide Home / tabs from the accessibility tree while NP is up.
             .accessibilityHidden(isNowPlayingPresented)
             .allowsHitTesting(!isNowPlayingPresented)
@@ -322,25 +326,35 @@ struct MainTabView: View {
     }
 
     private var solidTabBar: some View {
-        HStack(spacing: 0) {
+        // Window insets — GeometryReader reports 0 once the parent ignores the
+        // bottom safe area (same pattern as NowPlayingView).
+        let bottomInset = Self.windowSafeAreaInsets.bottom
+        return HStack(spacing: 0) {
             solidTabItem(tab: .home, title: "Home", systemImage: "house.fill")
             solidTabItem(tab: .search, title: "Search", systemImage: "magnifyingglass")
             solidTabItem(tab: .library, title: "Your Library", systemImage: "rectangle.stack.fill")
             solidTabItem(tab: .podcasts, title: "Podcasts", systemImage: "headphones")
         }
         .padding(.top, 8)
-        .padding(.bottom, 6)
+        // Keep icons above the home indicator while elevated fill covers it.
+        .padding(.bottom, 6 + bottomInset)
         .frame(maxWidth: .infinity)
-        .background {
-            DromeTheme.elevated
-                .ignoresSafeArea(edges: .bottom)
-        }
+        .background(DromeTheme.elevated)
         .overlay(alignment: .top) {
             Rectangle()
                 .fill(DromeTheme.divider)
                 .frame(height: 1)
         }
         .accessibilityElement(children: .contain)
+    }
+
+    /// Safe area from the key window — reliable after `.ignoresSafeArea`.
+    private static var windowSafeAreaInsets: UIEdgeInsets {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .safeAreaInsets ?? .zero
     }
 
     private func solidTabItem(tab: AppNavigationRouter.Tab, title: String, systemImage: String) -> some View {

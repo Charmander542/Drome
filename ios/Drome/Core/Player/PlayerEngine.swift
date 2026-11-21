@@ -113,6 +113,8 @@ final class PlayerEngine: ObservableObject {
     /// Bumped whenever in-flight autoplay work is cancelled so stale
     /// `nextBatch` results cannot rebuild the player window.
     private var autoplayGeneration = 0
+    /// Cancels in-flight EQ/crossfade volume ramps so stale steps can't dip audio.
+    private var volumeFadeGeneration = 0
     private var cancellables = Set<AnyCancellable>()
     private var timeObserver: Any?
     /// Delayed lookahead insert so the current stream wins bandwidth first.
@@ -593,6 +595,8 @@ final class PlayerEngine: ObservableObject {
     private func silenceAndClearPlayerQueue(reason: String) {
         playbackGeneration += 1
         itemReadyGeneration += 1
+        // Drop any in-flight crossfade/EQ volume steps so they can't unmute mid-clear.
+        volumeFadeGeneration += 1
         itemReadyCancellable?.cancel()
         itemReadyCancellable = nil
         itemReadyTimeout?.cancel()
@@ -617,10 +621,10 @@ final class PlayerEngine: ObservableObject {
         DromeDiagnostics.logPlayer("silence+clear (\(reason)) gen=\(playbackGeneration)")
     }
 
+    /// Unmute after `silenceAndClearPlayerQueue` using ReplayGain + EQ target —
+    /// never slam back to 1.0 (that fought AudioFX and caused brief level jumps).
     private func restorePlayerOutputVolume() {
-        if player.volume < 0.999 {
-            player.volume = 1
-        }
+        applyAudioFXVolume(animated: false)
     }
 
     private func observeNetworkStreamChanges() {
@@ -2732,22 +2736,29 @@ final class PlayerEngine: ObservableObject {
     }
 
     /// ReplayGain + EQ tilt → AVQueuePlayer.volume. Optional fade for crossfade UX.
+    ///
+    /// Animated path ramps from the current level (or a mild floor) to the target —
+    /// never hard-cuts to ~silence, which read as audio dropouts when EQ/crossfade
+    /// prefs change or a track advances.
     private func applyAudioFXVolume(animated: Bool = false) {
-        let target = AudioFXController.shared.volume(for: current?.song)
+        let target = min(1.0, AudioFXController.shared.volume(for: current?.song))
+        volumeFadeGeneration += 1
+        let generation = volumeFadeGeneration
         let seconds = AudioFXPreferences.crossfadeSeconds
         if animated, seconds > 0 {
-            player.volume = 0.05
+            let start = max(player.volume, 0.35)
             let steps = max(6, seconds * 10)
             let stepDuration = Double(seconds) / Double(steps)
+            player.volume = start
             for i in 1...steps {
                 DispatchQueue.main.asyncAfter(deadline: .now() + stepDuration * Double(i)) { [weak self] in
-                    guard let self else { return }
+                    guard let self, self.volumeFadeGeneration == generation else { return }
                     let t = Float(i) / Float(steps)
-                    self.player.volume = 0.05 + (target - 0.05) * t
+                    self.player.volume = start + (target - start) * t
                 }
             }
         } else {
-            player.volume = min(1.0, target)
+            player.volume = target
         }
     }
 
