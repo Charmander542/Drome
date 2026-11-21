@@ -155,8 +155,10 @@ def main() -> int:
             seen.add(resolved)
             matches.append(m)
     if not matches:
-        print("SpotiFLAC amazon.py not found", file=sys.stderr)
-        return 1
+        # SpotiFLAC 5+ moved Amazon into JS extensions; native amazon.py is gone.
+        # Drome retag.py still rewrites provider IDs after download.
+        print("SpotiFLAC amazon.py not found (ok for SpotiFLAC>=5); skipping ASIN patch")
+        return 0
     for m in matches:
         patch(m)
     return 0

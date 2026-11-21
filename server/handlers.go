@@ -132,6 +132,10 @@ func (s *server) handleCreateOne(w http.ResponseWriter, r *http.Request, raw str
 		s.handlePlaylistImport(w, r, id)
 		return
 	}
+	if kind == "album" {
+		s.handleAlbumImport(w, r, id)
+		return
+	}
 
 	entry, existed, err := s.addResolvedEntry(r, kind, id)
 	if err != nil {
@@ -163,6 +167,21 @@ func (s *server) handleCreateBatch(w http.ResponseWriter, r *http.Request, rawLi
 		}
 		if kind == "playlist" {
 			res, err := s.importPlaylistTracks(r, id)
+			if err != nil {
+				failed = append(failed, raw+": "+err.Error())
+				continue
+			}
+			if playlistName == "" {
+				playlistName = res.Name
+				playlistID = id
+			}
+			entries = append(entries, res.Added...)
+			added += len(res.Added)
+			skippedOwned += res.SkippedOwned
+			continue
+		}
+		if kind == "album" {
+			res, err := s.importAlbumTracks(r, id)
 			if err != nil {
 				failed = append(failed, raw+": "+err.Error())
 				continue
@@ -259,6 +278,98 @@ func (s *server) handlePlaylistImport(w http.ResponseWriter, r *http.Request, pl
 		return
 	}
 	writeJSON(w, http.StatusCreated, playlistImportJSON(playlistID, res, nil))
+}
+
+func (s *server) handleAlbumImport(w http.ResponseWriter, r *http.Request, albumID string) {
+	res, err := s.importAlbumTracks(r, albumID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "could not load album: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, albumImportJSON(albumID, res))
+}
+
+func albumImportJSON(albumID string, res playlistImportResult) map[string]any {
+	if res.Added == nil {
+		res.Added = []entry{}
+	}
+	return map[string]any{
+		"kind":               "albumImport",
+		"albumId":            albumID,
+		"albumName":          res.Name,
+		"added":              len(res.Added),
+		"skippedOwned":       res.SkippedOwned,
+		"entries":            res.Added,
+		"sourcePlaylistId":   albumID,
+		"sourcePlaylistName": res.Name,
+	}
+}
+
+// importAlbumTracks expands a Spotify album into per-track wishlist downloads.
+// Whole-album SpotiFLAC jobs are brittle (one Turnstile failure aborts all tracks);
+// per-track jobs retry independently and retag merges them under the album.
+func (s *server) importAlbumTracks(r *http.Request, albumID string) (playlistImportResult, error) {
+	name, albumArtist, cover, tracks, err := s.spotify.albumTracks(r.Context(), albumID)
+	if err != nil {
+		return playlistImportResult{}, err
+	}
+	if name == "" {
+		name = "Spotify album"
+	}
+	owner := requestUser(r)
+	status := statusSkipped
+	if s.downloads != nil && s.downloads.cfg.Enabled {
+		status = statusQueued
+	}
+	now := time.Now()
+	var added []entry
+	skippedOwned := 0
+	for _, t := range tracks {
+		if t.Album == "" {
+			t.Album = name
+		}
+		if t.AlbumArtist == "" {
+			t.AlbumArtist = albumArtist
+		}
+		if t.CoverURL == "" {
+			t.CoverURL = cover
+		}
+		if s.alreadyHave(r, t.Title, t.Artist) {
+			skippedOwned++
+			continue
+		}
+		if existing, err := s.store.findActiveByTitleArtist(owner, "track", t.Title, t.Artist); err == nil && existing != nil {
+			skippedOwned++
+			continue
+		}
+		e := entry{
+			Owner:              owner,
+			Kind:               "track",
+			SpotifyID:          t.SpotifyID,
+			SpotifyURL:         t.SpotifyURL,
+			Title:              t.Title,
+			Artist:             t.Artist,
+			AlbumArtist:        t.AlbumArtist,
+			Album:              t.Album,
+			CoverURL:           t.CoverURL,
+			Status:             status,
+			SourcePlaylistID:   albumID,
+			SourcePlaylistName: name,
+			CreatedAt:          now,
+		}
+		if err := s.store.insert(&e); err != nil {
+			continue
+		}
+		added = append(added, e)
+	}
+	res := playlistImportResult{Name: name, Added: added, SkippedOwned: skippedOwned}
+	if added == nil {
+		res.Added = []entry{}
+	}
+	if status == statusQueued && s.downloads != nil && len(added) > 0 {
+		s.downloads.kick()
+	}
+	return res, nil
 }
 
 type playlistImportResult struct {

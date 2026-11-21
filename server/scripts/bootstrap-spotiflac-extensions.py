@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Install SpotiFLAC provider extensions from configured registries.
+
+SpotiFLAC 5+ ships with no download providers. Drome needs at least one
+extension (typically tidal-web) plus the python utilities package for the
+Chromium Turnstile solver.
+"""
+from __future__ import annotations
+
+import os
+import sys
+
+DEFAULT_EXTS = ("utilities", "tidal-web", "qobuz-web", "amazon", "deezer")
+
+
+def main() -> int:
+    raw = os.environ.get("SPOTIFLAC_REGISTRIES", "").strip()
+    if not raw:
+        print("SPOTIFLAC_REGISTRIES unset — skipping extension bootstrap", file=sys.stderr)
+        return 0
+
+    registries = [u.strip() for u in raw.split(",") if u.strip()]
+    wanted = [
+        e.strip()
+        for e in os.environ.get("DROME_SPOTIFLAC_EXTENSIONS", ",".join(DEFAULT_EXTS)).split(",")
+        if e.strip()
+    ]
+
+    try:
+        from SpotiFLAC.extensions.manager import ExtensionManager
+    except Exception as exc:  # pragma: no cover
+        print(f"SpotiFLAC ExtensionManager unavailable: {exc}", file=sys.stderr)
+        return 1
+
+    em = ExtensionManager()
+    ok = 0
+    for ext_id in wanted:
+        last_err: Exception | None = None
+        for reg in registries:
+            try:
+                em.install(ext_id, registry_url=reg)
+                print(f"installed/updated {ext_id} from {reg}")
+                ok += 1
+                last_err = None
+                break
+            except Exception as exc:  # noqa: BLE001 — try next registry
+                last_err = exc
+        if last_err is not None:
+            print(f"failed {ext_id}: {last_err}", file=sys.stderr)
+
+    installed = []
+    try:
+        installed = [getattr(x, "name", None) or getattr(x, "id", str(x)) for x in em.list_installed()]
+    except Exception:
+        pass
+    print(f"bootstrap done ({ok}/{len(wanted)}); installed={installed}")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
