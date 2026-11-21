@@ -6,6 +6,7 @@ extension Notification.Name {
     static let dromeNetworkPathChanged = Notification.Name("drome.networkPathChanged")
     static let dromeOpenPlaylist = Notification.Name("drome.openPlaylist")
     static let dromeReplayOnboarding = Notification.Name("drome.replayOnboarding")
+    static let dromeReloadGenres = Notification.Name("drome.reloadGenres")
 }
 
 enum NowPlayingPresenter {
