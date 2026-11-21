@@ -884,6 +884,7 @@ struct NowPlayingView: View {
             }
             return live
         }()
+        let remaining = max(0, total - displayed)
 
         return VStack(spacing: 6) {
             Slider(
@@ -895,7 +896,7 @@ struct NowPlayingView: View {
                         if !isSeeking { isSeeking = true }
                     }
                 ),
-                in: 0...total,
+                in: 0...max(total, 0.1),
                 onEditingChanged: { editing in
                     if editing {
                         scrubAnimElapsed = nil
@@ -911,8 +912,14 @@ struct NowPlayingView: View {
                         } else {
                             player.seek(to: target)
                         }
-                        // Hold the scrubbed time until AVPlayer finishes seeking.
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        // Hold the scrubbed time briefly, then follow the real
+                        // playhead (seek may land short of a partial buffer).
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            if isSeeking {
+                                seekElapsed = min(max(0, player.accurateElapsed()), stableDuration)
+                            }
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
                             isSeeking = false
                         }
                     }
@@ -924,8 +931,10 @@ struct NowPlayingView: View {
                 Text(Formatters.playbackTime(displayed))
                     .frame(minWidth: 40, alignment: .leading)
                 Spacer()
-                Text(Formatters.playbackTime(total))
-                    .frame(minWidth: 40, alignment: .trailing)
+                // Remaining matches what you hear — not a stale total that can
+                // hit 0:00 while the file still has a few seconds left.
+                Text("-\(Formatters.playbackTime(remaining))")
+                    .frame(minWidth: 44, alignment: .trailing)
             }
             .font(.caption.monospacedDigit().weight(.semibold))
             .foregroundStyle(Color.white.opacity(0.7))
@@ -1076,12 +1085,13 @@ struct NowPlayingView: View {
     }
 
     private var stableDuration: Double {
-        let live = clock.duration
-        if live.isFinite, live > 0.5 { return live }
-        if let meta = player.current?.song.duration, meta > 0 {
-            return Double(meta)
-        }
-        return 0.1
+        let meta = TimeInterval(player.current?.song.duration ?? 0)
+        let resolved = PlaybackResilience.reconciledDuration(
+            metadata: meta,
+            reported: clock.duration,
+            elapsed: clock.elapsed,
+            current: clock.duration)
+        return resolved > 0.5 ? resolved : 0.1
     }
 
     private var shuffleColor: Color {

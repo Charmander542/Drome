@@ -56,6 +56,35 @@ struct VibeTuner: View {
                         .stroke(selected.ink.opacity(0.22), lineWidth: 1)
                 }
         }
+        .overlay {
+            if spinning != nil {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(Color.black.opacity(0.28))
+                    .overlay {
+                        VStack(spacing: 10) {
+                            ProgressView()
+                                .controlSize(.large)
+                                .tint(.white)
+                            Text("Building your mix…")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.white)
+                            if player.current != nil {
+                                Text("Current song keeps playing")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(Color.white.opacity(0.72))
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(
+                            player.current != nil
+                                ? "Building your mix. Current song keeps playing."
+                                : "Building your mix.")
+                    }
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: spinning != nil)
         .padding(.horizontal, ax ? 0 : 16)
         // AX: asymmetric outer inset — clear the Home account button on the trailing edge.
         .padding(.leading, ax ? 16 : 0)
@@ -98,37 +127,43 @@ struct VibeTuner: View {
                 } label: {
                     playButtonLabel
                         .foregroundStyle(.black)
-                        .padding(.horizontal, ax ? 12 : 14)
+                        .padding(.horizontal, ax ? 14 : 16)
                         .padding(.vertical, ax ? 10 : 9)
+                        .frame(minWidth: ax ? 72 : 108)
                         .background(selected.ink, in: Capsule())
                 }
                 .buttonStyle(.plain)
                 .allowsHitTesting(spinning == nil)
                 .animation(nil, value: spinning)
-                .accessibilityLabel("Play \(selected.title)")
+                .accessibilityLabel(
+                    spinning == nil ? "Play \(selected.title) mix" : "Building \(selected.title) mix")
+                .accessibilityAddTraits(spinning == nil ? [] : .updatesFrequently)
             }
         }
     }
 
     @ViewBuilder
     private var playButtonLabel: some View {
-        // Fixed slot so ProgressView ↔ play doesn't resize the capsule.
+        let busy = spinning != nil
+        // Fixed min width so Play ↔ Mixing… doesn't jump the capsule.
         let icon = ZStack {
             Image(systemName: "play.fill")
                 .font(.caption.weight(.bold))
                 .offset(x: 0.5)
-                .opacity(spinning == nil ? 1 : 0)
+                .opacity(busy ? 0 : 1)
             ProgressView()
-                .controlSize(.small)
+                .controlSize(.regular)
                 .tint(.black)
-                .opacity(spinning == nil ? 0 : 1)
+                .opacity(busy ? 1 : 0)
+                .scaleEffect(0.85)
         }
-        .frame(width: 12, height: 12)
+        .frame(width: 14, height: 14)
 
-        let title = Text("Play")
+        let title = Text(busy ? "Mixing…" : "Play")
             .font(.subheadline.weight(.bold))
             .lineLimit(1)
             .minimumScaleFactor(0.8)
+            .contentTransition(.opacity)
 
         if ax {
             VStack(spacing: 4) {
@@ -136,7 +171,7 @@ struct VibeTuner: View {
                 title
             }
         } else {
-            HStack(spacing: 6) {
+            HStack(spacing: 7) {
                 icon
                 title
             }
@@ -395,8 +430,8 @@ struct VibeTuner: View {
         error = nil
         spinning = vibe
         defer { spinning = nil }
-        await MoodPlayer.play(vibe, session: session)
-        if player.current == nil {
+        let ok = await MoodPlayer.play(vibe, session: session)
+        if !ok {
             error = "Couldn't find tracks for that vibe — try another, or add more music."
         }
     }

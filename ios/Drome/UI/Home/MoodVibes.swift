@@ -6,10 +6,14 @@ enum MoodPlayer {
     private static var recentVibeSongIDs: [String] = []
     private static let recentCap = 160
 
-    static func play(_ vibe: MoodVibe, session: AppSession) async {
+    @discardableResult
+    static func play(_ vibe: MoodVibe, session: AppSession) async -> Bool {
+        let player = session.player
+        let keepingCurrent = player.current != nil
         var excluded = session.rotation.excludedIDs
         excluded.formUnion(recentVibeSongIDs)
-        if let currentID = session.player.current?.song.id {
+        // Keep the playing track out of the new Up Next list — it stays current.
+        if let currentID = player.current?.song.id {
             excluded.insert(currentID)
         }
 
@@ -22,15 +26,21 @@ enum MoodPlayer {
             picked = VibeEngine.pick(
                 vibe: vibe,
                 from: songs,
-                excluded: session.rotation.excludedIDs)
+                excluded: session.rotation.excludedIDs.union(
+                    player.current.map { [$0.song.id] } ?? []))
         }
-        guard !picked.isEmpty else { return }
+        guard !picked.isEmpty else { return false }
 
         remember(picked)
         session.ratings.ingest(picked)
-        session.player.play(
-            picked, startAt: 0,
-            context: PlaybackContext(label: vibe.title, kind: .mix))
+        let context = PlaybackContext(label: vibe.title, kind: .mix)
+        if keepingCurrent {
+            // Seamless Instant Mix: current audio never stops or rebuilds.
+            player.adoptUpcomingMix(picked, context: context)
+        } else {
+            player.play(picked, startAt: 0, context: context)
+        }
+        return true
     }
 
     private static func remember(_ songs: [Song]) {
@@ -128,8 +138,8 @@ struct MoodVibeRail: View {
         error = nil
         spinning = vibe
         defer { spinning = nil }
-        await MoodPlayer.play(vibe, session: session)
-        if player.current == nil {
+        let ok = await MoodPlayer.play(vibe, session: session)
+        if !ok {
             error = "Couldn't find tracks for that vibe — try another, or add more music."
         }
     }
@@ -152,7 +162,9 @@ struct MoodVibeCard: View {
                     .stroke(vibe.ink.opacity(0.18), lineWidth: 8)
                     .padding(10)
                 if isSpinning {
-                    ProgressView().tint(vibe.ink)
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(vibe.ink)
                 } else {
                     Image(systemName: vibe.symbol)
                         .font(.system(size: 28, weight: .semibold))
@@ -163,11 +175,11 @@ struct MoodVibeCard: View {
             .shadow(color: vibe.ink.opacity(0.22), radius: 10, y: 4)
 
             VStack(spacing: 2) {
-                Text(vibe.title)
+                Text(isSpinning ? "Mixing…" : vibe.title)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                Text(vibe.dialHint)
+                Text(isSpinning ? "Building mix" : vibe.dialHint)
                     .font(.caption2)
                     .foregroundStyle(DromeTheme.muted)
                     .lineLimit(1)
@@ -194,19 +206,27 @@ struct MoodVibeTile: View {
                     .font(.system(size: 52, weight: .bold))
                     .foregroundStyle(vibe.ink)
                 if isSpinning {
-                    ProgressView()
-                        .tint(.white)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                        .padding(12)
+                    ZStack {
+                        Color.black.opacity(0.35)
+                        VStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.large)
+                                .tint(.white)
+                            Text("Mixing…")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.white)
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
             }
             .aspectRatio(1, contentMode: .fit)
 
-            Text(vibe.title)
+            Text(isSpinning ? "Building mix" : vibe.title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
-            Text(vibe.blurb)
+            Text(isSpinning ? "Keeps current song" : vibe.blurb)
                 .font(.caption)
                 .foregroundStyle(DromeTheme.muted)
                 .lineLimit(1)

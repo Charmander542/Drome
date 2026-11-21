@@ -711,12 +711,13 @@ struct PodcastNowPlayingView: View {
     // MARK: - Helpers
 
     private var stableDuration: Double {
-        let live = podcastPlayer.duration
-        if live.isFinite, live > 0.5 { return live }
-        if let meta = podcastPlayer.currentEpisode?.duration, meta > 0 {
-            return meta
-        }
-        return 0.1
+        let meta = podcastPlayer.currentEpisode?.duration ?? 0
+        let resolved = PlaybackResilience.reconciledDuration(
+            metadata: meta,
+            reported: podcastPlayer.duration,
+            elapsed: podcastPlayer.elapsed,
+            current: podcastPlayer.duration)
+        return resolved > 0.5 ? resolved : 0.1
     }
 
     private func speedLabel(_ speed: Double) -> String {

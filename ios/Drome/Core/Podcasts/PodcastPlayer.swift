@@ -291,12 +291,26 @@ final class PodcastPlayer: ObservableObject {
     }
 
     func seek(to time: TimeInterval) {
-        let total = duration > 0 ? duration : (player.currentItem.flatMap { CMTimeGetSecondsIfFinite($0.duration) } ?? 0)
-        let target = max(0, total > 0 ? min(time, total) : time)
+        let reported = player.currentItem.flatMap { CMTimeGetSecondsIfFinite($0.duration) }
+        let total = PlaybackResilience.reconciledDuration(
+            metadata: currentEpisode?.duration ?? 0,
+            reported: reported,
+            elapsed: elapsed,
+            current: duration)
+        // Leave a tiny tail so seeking exactly to "end" still finishes naturally.
+        let maxSeekable = total > 0.5 ? max(0, total - 0.35) : total
+        let target = max(0, maxSeekable > 0 ? min(time, maxSeekable) : time)
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600),
                     toleranceBefore: .zero,
                     toleranceAfter: .zero)
         elapsed = target
+        if total > 0 {
+            duration = PlaybackResilience.reconciledDuration(
+                metadata: currentEpisode?.duration ?? 0,
+                reported: reported,
+                elapsed: target,
+                current: total)
+        }
     }
 
     func skipForward(seconds: TimeInterval = 30) {
@@ -456,10 +470,12 @@ final class PodcastPlayer: ObservableObject {
                 guard let self else { return }
                 let seconds = CMTimeGetSeconds(time)
                 if seconds.isFinite { self.elapsed = seconds }
-                if let currentItem = self.player.currentItem,
-                   let dur = CMTimeGetSecondsIfFinite(currentItem.duration), dur > 0 {
-                    self.duration = dur
-                }
+                let reported = self.player.currentItem.flatMap { CMTimeGetSecondsIfFinite($0.duration) }
+                self.duration = PlaybackResilience.reconciledDuration(
+                    metadata: self.currentEpisode?.duration ?? 0,
+                    reported: reported,
+                    elapsed: self.elapsed,
+                    current: self.duration)
                 if self.elapsed.isFinite, self.duration.isFinite, self.duration > 0 {
                     self.nowPlaying.updateElapsedTime(self.elapsed, duration: self.duration, rate: self.player.rate)
                 }

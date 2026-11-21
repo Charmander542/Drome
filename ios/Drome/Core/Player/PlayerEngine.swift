@@ -99,6 +99,9 @@ final class PlayerEngine: ObservableObject {
     private var pendingConnectApply: (snap: PlaybackSessionSnapshot, startPlaying: Bool, recordPlay: Bool)?
     /// Invalidates in-flight item-ready KVO / timeouts across rebuilds.
     private var itemReadyGeneration = 0
+    /// Bumped on every hard stop so a stale `play()` / ready callback cannot
+    /// resume an outgoing item after we've already started the next track.
+    private var playbackGeneration = 0
     private var seekEpoch = 0
     private var appliedSeekEpoch = 0
     private var autoplayTask: Task<Void, Never>?
@@ -123,6 +126,9 @@ final class PlayerEngine: ObservableObject {
     private var tvActivePlaybackItemID: UUID?
     #endif
     private var lastPublishedElapsed: TimeInterval = -1
+    /// Async precise-duration probe for local files (never on the play hot path).
+    private var durationRefineTask: Task<Void, Never>?
+    private var durationObservation: AnyCancellable?
     /// Tracks AirPlay so we only rebuild when the route actually flips.
     private var lastAirPlayActive = false
     private var pendingAirPlayRebuild = false
@@ -566,6 +572,45 @@ final class PlayerEngine: ObservableObject {
         playCurrentWhenReady()
     }
 
+    /// Fully detach audible output before swapping tracks.
+    ///
+    /// `pause` + `removeAllItems` alone is not enough on Bluetooth headphones —
+    /// the outgoing item's already-decoded PCM can keep draining into A2DP while
+    /// the next item starts, so two songs play at once. Mute first, cancel seeks,
+    /// and nil the current item before clearing the queue.
+    private func silenceAndClearPlayerQueue(reason: String) {
+        playbackGeneration += 1
+        itemReadyGeneration += 1
+        itemReadyCancellable?.cancel()
+        itemReadyCancellable = nil
+        itemReadyTimeout?.cancel()
+        itemReadyTimeout = nil
+        player.pause()
+        player.rate = 0
+        if player.volume > 0.001 {
+            player.volume = 0
+        }
+        for entry in window {
+            entry.playerItem.cancelPendingSeeks()
+        }
+        if let item = player.currentItem {
+            item.cancelPendingSeeks()
+        }
+        #if !os(tvOS)
+        iosActivePlaybackItemID = nil
+        #endif
+        player.replaceCurrentItem(with: nil)
+        player.removeAllItems()
+        window.removeAll()
+        DromeDiagnostics.logPlayer("silence+clear (\(reason)) gen=\(playbackGeneration)")
+    }
+
+    private func restorePlayerOutputVolume() {
+        if player.volume < 0.999 {
+            player.volume = 1
+        }
+    }
+
     private func observeNetworkStreamChanges() {
         NotificationCenter.default.publisher(for: .dromeNetworkPathChanged)
             .receive(on: DispatchQueue.main)
@@ -618,9 +663,8 @@ final class PlayerEngine: ObservableObject {
         healthProbeCancellable?.cancel()
         healthProbeCancellable = nil
         #endif
-        player.pause()
-        player.rate = 0
-        player.removeAllItems()
+        silenceAndClearPlayerQueue(reason: "shutdown")
+        restorePlayerOutputVolume()
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
             self.timeObserver = nil
@@ -671,6 +715,47 @@ final class PlayerEngine: ObservableObject {
         preserveUserQueueOnce = true
         action()
         preserveUserQueueOnce = false
+    }
+
+    /// Swap into a new mix / vibe queue without tearing down the current item.
+    /// Used by Instant Mix / Vibe Tuner so the song you are already hearing
+    /// keeps playing while Up Next becomes the new mix.
+    func adoptUpcomingMix(
+        _ songs: [Song],
+        context: PlaybackContext,
+        clearUserQueue: Bool = true
+    ) {
+        guard let current else {
+            guard !songs.isEmpty else { return }
+            play(songs, startAt: 0, context: context, clearUserQueue: clearUserQueue)
+            return
+        }
+        let upcoming = songs.filter { $0.id != current.song.id }
+        runLocalPlayback { [self] in
+            pushSessionUndoIfNeeded()
+            cancelAutoplayWork()
+            ratings.ingest([current.song] + upcoming)
+            // Fresh mix order — don't inherit a prior shuffle mode that would
+            // reshuffle the curated vibe picks under the user.
+            if shuffleMode != .off {
+                suppressShuffleReorder = true
+                shuffleMode = .off
+                suppressShuffleReorder = false
+            }
+            self.context = context
+            fullContextSongs = [current.song] + upcoming
+            originalContextOrder = upcoming.map { QueueItem(song: $0) }
+            contextQueue = originalContextOrder
+            if clearUserQueue {
+                userQueue.removeAll()
+            }
+            // Leave `current`, history, and AVPlayer alone — no rebuild.
+            resyncUpcomingWindow()
+            ensureAutoplayBuffer()
+            persistSessionSoon()
+            broadcastSharePlayIfNeeded()
+            pushNowPlayingInfo()
+        }
     }
 
     /// Shuffle-button entry point: enables shuffle (smart by default) and
@@ -933,6 +1018,15 @@ final class PlayerEngine: ObservableObject {
     /// drain / auto-skip (those would land on a different song than the cover).
     func advanceFromArtSwipe(goingNext: Bool) {
         let keepPlaying = wantsToPlay
+        // Same coalesce as `next()` — never nest removeAllItems / replace while
+        // a rebuild is already tearing the queue down (dual-audio on BT).
+        if isHandlingTrackEnd || isRebuilding || rebuildDepth > 0 {
+            if goingNext {
+                pendingNextCount += 1
+                pendingAdvanceAfterRebuild = true
+            }
+            return
+        }
         if goingNext {
             guard let upNext = peekUpcoming(limit: 1).first else { return }
             cancelAutoplayWork()
@@ -968,6 +1062,7 @@ final class PlayerEngine: ObservableObject {
             tvAudio.pause()
             #endif
             player.pause()
+            player.rate = 0
         }
         pushNowPlayingInfo()
     }
@@ -996,6 +1091,7 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func playCurrentWhenReady() {
+        let generation = playbackGeneration
         #if os(tvOS)
         if tvUsingAudioPlayer {
             tvAudio.play()
@@ -1009,11 +1105,14 @@ final class PlayerEngine: ObservableObject {
         if itemIsSafeToStart(item) {
             itemReadyCancellable = nil
             itemReadyTimeout?.cancel()
+            guard generation == playbackGeneration, item === player.currentItem else { return }
+            restorePlayerOutputVolume()
             player.play()
             return
         }
         waitUntilItemReady(item) { [weak self] in
-            self?.playCurrentWhenReady()
+            guard let self, generation == self.playbackGeneration else { return }
+            self.playCurrentWhenReady()
         }
         #else
         guard let item = player.currentItem else { return }
@@ -1029,7 +1128,9 @@ final class PlayerEngine: ObservableObject {
         if isFile {
             itemReadyCancellable = nil
             itemReadyTimeout?.cancel()
+            guard generation == playbackGeneration, item === player.currentItem else { return }
             player.automaticallyWaitsToMinimizeStalling = false
+            restorePlayerOutputVolume()
             player.play()
             return
         }
@@ -1037,10 +1138,12 @@ final class PlayerEngine: ObservableObject {
         if itemIsSafeToStart(item) {
             itemReadyCancellable = nil
             itemReadyTimeout?.cancel()
+            guard generation == playbackGeneration, item === player.currentItem else { return }
+            restorePlayerOutputVolume()
             player.play()
             return
         }
-        waitUntilItemReadyForPlayback(item)
+        waitUntilItemReadyForPlayback(item, playbackGeneration: generation)
         #endif
     }
 
@@ -1048,12 +1151,17 @@ final class PlayerEngine: ObservableObject {
     /// Hold play() until the first packets are buffered so remote audio
     /// doesn't start into an empty pipe (clicks / static / grain).
     /// tvOS uses `waitUntilItemReady` + `retryCurrentAfterDecodeFailure` instead.
-    private func waitUntilItemReadyForPlayback(_ item: AVPlayerItem) {
+    private func waitUntilItemReadyForPlayback(
+        _ item: AVPlayerItem,
+        playbackGeneration expectedPlayback: Int
+    ) {
         itemReadyCancellable?.cancel()
         itemReadyTimeout?.cancel()
         itemReadyGeneration += 1
         let generation = itemReadyGeneration
         if itemIsSafeToStart(item) {
+            guard expectedPlayback == playbackGeneration, item === player.currentItem else { return }
+            restorePlayerOutputVolume()
             player.play()
             return
         }
@@ -1065,6 +1173,7 @@ final class PlayerEngine: ObservableObject {
             await MainActor.run {
                 guard let self,
                       generation == self.itemReadyGeneration,
+                      expectedPlayback == self.playbackGeneration,
                       item === self.player.currentItem,
                       !self.isRebuilding else { return }
                 self.itemReadyCancellable = nil
@@ -1072,6 +1181,7 @@ final class PlayerEngine: ObservableObject {
                     _ = self.recoverFailedItemOrSkip(reason: "ready-timeout-failed")
                 } else if self.itemIsSafeToStart(item) || item.status == .readyToPlay {
                     // readyToPlay with a thin buffer is OK — AVPlayer will wait.
+                    self.restorePlayerOutputVolume()
                     self.player.play()
                 } else {
                     // Do NOT force-play into a totally empty pipe (1s blip → stall loop).
@@ -1090,6 +1200,7 @@ final class PlayerEngine: ObservableObject {
         .sink { [weak self] in
             guard let self,
                   generation == self.itemReadyGeneration,
+                  expectedPlayback == self.playbackGeneration,
                   item === self.player.currentItem,
                   !self.isRebuilding else { return }
             if item.status == .failed {
@@ -1105,6 +1216,7 @@ final class PlayerEngine: ObservableObject {
             if self.itemIsSafeToStart(item) {
                 self.itemReadyTimeout?.cancel()
                 self.itemReadyCancellable = nil
+                self.restorePlayerOutputVolume()
                 self.player.play()
                 self.flushPendingSharePlaySnapshotIfNeeded()
             }
@@ -1342,12 +1454,7 @@ final class PlayerEngine: ObservableObject {
             return
         }
 
-        let itemDuration: TimeInterval = {
-            let live = item.duration.seconds
-            if live.isFinite, live > 0 { return live }
-            if duration.isFinite, duration > 0 { return duration }
-            return max(time, 0)
-        }()
+        let itemDuration = resolvedItemDuration(fallback: max(time, 0))
 
         // Seeking exactly to duration often stalls the item without advancing.
         let maxSeekable = max(0, itemDuration - 0.35)
@@ -1357,7 +1464,11 @@ final class PlayerEngine: ObservableObject {
            let range = item.seekableTimeRanges.last?.timeRangeValue {
             let start = range.start.seconds
             let end = CMTimeRangeGetEnd(range).seconds
-            if start.isFinite, end.isFinite, end > start {
+            // Only clamp into a partial buffer when the seekable window clearly
+            // does not cover the target. Clamping to an early estimate of "end"
+            // is what made scrub-to-end land several seconds early.
+            if start.isFinite, end.isFinite, end > start,
+               !PlaybackResilience.seekableCovers(target: seconds, seekableEnd: end) {
                 seconds = min(max(seconds, start), max(start, end - 0.35))
             }
         }
@@ -1394,12 +1505,10 @@ final class PlayerEngine: ObservableObject {
                 } else {
                     nextElapsed = requested
                 }
-                var nextDuration = self.duration
-                if let itemDuration = self.player.currentItem?.duration.seconds,
-                   itemDuration.isFinite, itemDuration > 0 {
-                    nextDuration = itemDuration
-                }
-                self.setPlayhead(elapsed: nextElapsed, duration: nextDuration)
+                let itemDuration = self.player.currentItem?.duration.seconds
+                let reported = (itemDuration?.isFinite == true && (itemDuration ?? 0) > 0)
+                    ? itemDuration : nil
+                self.setPlayhead(elapsed: nextElapsed, duration: reported)
                 self.pushNowPlayingInfo()
                 if finished, shouldResume {
                     self.activateAudioSession()
@@ -1511,7 +1620,10 @@ final class PlayerEngine: ObservableObject {
         let safeElapsed = elapsed.isFinite ? max(0, elapsed) : 0
         let safeDuration = duration.isFinite && duration > 0 ? duration : 0
         remotePlayheadAnchor = (safeElapsed, Date(), isPlaying)
-        setPlayhead(elapsed: safeElapsed, duration: safeDuration > 0 ? safeDuration : nil)
+        setPlayhead(
+            elapsed: safeElapsed,
+            duration: safeDuration > 0 ? safeDuration : nil,
+            resetDuration: true)
     }
 
     func clearRemotePlayheadMirror() {
@@ -1526,13 +1638,72 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
-    private func setPlayhead(elapsed: TimeInterval, duration newDuration: TimeInterval? = nil) {
+    /// - Parameter resetDuration: New track / remote adopt — drop the previous
+    ///   song's length before reconciling, otherwise grow-only logic would keep
+    ///   a longer prior duration on a shorter next track.
+    private func setPlayhead(
+        elapsed: TimeInterval,
+        duration newDuration: TimeInterval? = nil,
+        resetDuration: Bool = false
+    ) {
         let safeElapsed = elapsed.isFinite ? max(0, elapsed) : 0
         self.elapsed = safeElapsed
-        if let newDuration, newDuration.isFinite, newDuration >= 0 {
-            duration = newDuration
+        if resetDuration {
+            duration = 0
         }
+        let metadata = TimeInterval(current?.song.duration ?? 0)
+        let reported: TimeInterval? = {
+            if let newDuration, newDuration.isFinite, newDuration > 0 { return newDuration }
+            return nil
+        }()
+        // Grow-only reconcile so short library tags / VBR estimates can't pin
+        // the scrubber at "0 left" while the file is still playing.
+        duration = PlaybackResilience.reconciledDuration(
+            metadata: metadata,
+            reported: reported,
+            elapsed: safeElapsed,
+            current: duration)
         clock.set(elapsed: safeElapsed, duration: duration)
+    }
+
+    /// Resolved length for seek clamps and UI — never shorter than the live playhead.
+    private func resolvedItemDuration(fallback: TimeInterval = 0) -> TimeInterval {
+        let live = player.currentItem?.duration.seconds
+        let reported = (live?.isFinite == true && (live ?? 0) > 0) ? live : nil
+        return PlaybackResilience.reconciledDuration(
+            metadata: TimeInterval(current?.song.duration ?? 0),
+            reported: reported,
+            elapsed: max(elapsed, accurateElapsed()),
+            current: duration > 0 ? duration : fallback)
+    }
+
+    /// After playback has started, refine duration so the scrubber matches the
+    /// real file. Precise probes stay off the tap-to-play path (FLAC cost).
+    private func refineDurationMatchingSong(for item: AVPlayerItem, song: Song) {
+        durationRefineTask?.cancel()
+        durationObservation?.cancel()
+        let songID = song.id
+
+        durationObservation = item.publisher(for: \.duration)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] cmDuration in
+                guard let self, self.current?.song.id == songID else { return }
+                let seconds = CMTimeGetSeconds(cmDuration)
+                guard seconds.isFinite, seconds > 0 else { return }
+                self.setPlayhead(elapsed: self.elapsed, duration: seconds)
+            }
+
+        guard let urlAsset = item.asset as? AVURLAsset, urlAsset.url.isFileURL else { return }
+        durationRefineTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            // Brief yield so decode/start wins over the duration probe.
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled, self.current?.song.id == songID else { return }
+            guard let cmDuration = try? await urlAsset.load(.duration) else { return }
+            let seconds = CMTimeGetSeconds(cmDuration)
+            guard seconds.isFinite, seconds > 0 else { return }
+            self.setPlayhead(elapsed: self.elapsed, duration: seconds)
+        }
     }
 
     func cycleShuffleMode() {
@@ -1704,7 +1875,10 @@ final class PlayerEngine: ObservableObject {
         }
 
         current = playItem
-        setPlayhead(elapsed: 0, duration: TimeInterval(playItem.song.duration ?? 0))
+        setPlayhead(
+            elapsed: 0,
+            duration: TimeInterval(playItem.song.duration ?? 0),
+            resetDuration: true)
         #if !os(tvOS)
         clearStallRecoveryState(resetForcedResilient: true)
         #endif
@@ -2044,7 +2218,7 @@ final class PlayerEngine: ObservableObject {
             tvUsingAudioPlayer = true
             isRebuilding = false
             let duration = tvAudio.duration > 0 ? tvAudio.duration : TimeInterval(song.duration ?? 0)
-            setPlayhead(elapsed: 0, duration: duration)
+            setPlayhead(elapsed: 0, duration: duration, resetDuration: true)
             pushNowPlayingInfo()
             let dispatched = finishRebuildSideEffects()
             if engagePlayback, !dispatched {
@@ -2067,6 +2241,10 @@ final class PlayerEngine: ObservableObject {
         let engagePlayback = shouldEngagePlayback(startPlaying: startPlaying)
         DromeDiagnostics.logPlayer("rebuildWindow start play=\(engagePlayback) \(diagnosticStateLine())")
         itemReadyGeneration += 1
+        durationRefineTask?.cancel()
+        durationRefineTask = nil
+        durationObservation?.cancel()
+        durationObservation = nil
         prefetchTask?.cancel()
         itemReadyCancellable?.cancel()
         itemReadyCancellable = nil
@@ -2077,12 +2255,10 @@ final class PlayerEngine: ObservableObject {
         let suspension = sharePlaySession.map { _ in
             player.playbackCoordinator.beginSuspension(for: .dromeRebuilding)
         }
-        iosActivePlaybackItemID = nil
-        window.removeAll()
-        player.pause()
-        player.rate = 0
-        player.removeAllItems()
         sharePlayBridge.reset()
+        // Mute + detach before inserting the next item so Bluetooth headphones
+        // cannot keep draining the previous track's buffer alongside the new one.
+        silenceAndClearPlayerQueue(reason: "rebuild")
 
         defer {
             suspension?.end()
@@ -2106,9 +2282,10 @@ final class PlayerEngine: ObservableObject {
             return
         }
         window.append((playerItem, current))
-        player.insert(playerItem, after: nil)
+        player.replaceCurrentItem(with: playerItem)
         iosActivePlaybackItemID = current.id
         updateActionAtItemEnd()
+        refineDurationMatchingSong(for: playerItem, song: current.song)
 
         if engagePlayback {
             activateAudioSession()
@@ -2335,12 +2512,10 @@ final class PlayerEngine: ObservableObject {
                     return
                 }
                 self.lastPublishedElapsed = seconds
-                var nextDuration = self.duration
-                if let itemDuration = self.player.currentItem?.duration.seconds,
-                   itemDuration.isFinite, itemDuration > 0 {
-                    nextDuration = itemDuration
-                }
-                self.setPlayhead(elapsed: seconds, duration: nextDuration)
+                let itemDuration = self.player.currentItem?.duration.seconds
+                let reported = (itemDuration?.isFinite == true && (itemDuration ?? 0) > 0)
+                    ? itemDuration : nil
+                self.setPlayhead(elapsed: seconds, duration: reported)
             }
         }
 
@@ -2484,7 +2659,10 @@ final class PlayerEngine: ObservableObject {
         window.removeFirst(index)
         consumeFromQueues(newCurrent)
         current = newCurrent
-        setPlayhead(elapsed: 0, duration: TimeInterval(newCurrent.song.duration ?? 0))
+        setPlayhead(
+            elapsed: 0,
+            duration: TimeInterval(newCurrent.song.duration ?? 0),
+            resetDuration: true)
         if isPlaying != wantsToPlay {
             isPlaying = wantsToPlay
         }
