@@ -181,6 +181,7 @@
 				UI/Library/RatedLibraryView.swift,
 				UI/Library/WishlistView.swift,
 				UI/MainTabView.swift,
+				UI/Onboarding/OnboardingAccentChooser.swift,
 				UI/Onboarding/OnboardingScreenMocks.swift,
 				UI/Onboarding/OnboardingView.swift,
 				UI/Player/LyricsView.swift,
