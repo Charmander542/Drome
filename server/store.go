@@ -477,3 +477,143 @@ func (s *wishlistStore) playlistMirror(owner, spotifyID string) (navidromeID, na
 	}
 	return navidromeID, name, err
 }
+
+// downloadQueueStats counts the caller's active download-related wishlist rows.
+func (s *wishlistStore) downloadQueueStats(owner string) (downloadQueueStats, error) {
+	var st downloadQueueStats
+	rows, err := s.db.Query(`
+		SELECT status,
+		       SUM(CASE WHEN next_retry_at != '' THEN 1 ELSE 0 END) AS retrying,
+		       COUNT(*)
+		FROM entries
+		WHERE owner = ? AND acquired = 0 AND status IN (?, ?, ?)
+		GROUP BY status`,
+		owner, statusQueued, statusDownloading, statusFailed)
+	if err != nil {
+		return st, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var retrying, n int
+		if err := rows.Scan(&status, &retrying, &n); err != nil {
+			return st, err
+		}
+		switch status {
+		case statusQueued:
+			st.Queued = n
+		case statusDownloading:
+			st.Downloading = n
+		case statusFailed:
+			st.Failed = n
+			st.Retrying = retrying
+		}
+	}
+	st.Total = st.Queued + st.Downloading + st.Failed
+	return st, rows.Err()
+}
+
+// playlistDownloadProgress groups remaining playlist-import tracks by source playlist.
+func (s *wishlistStore) playlistDownloadProgress(owner string) ([]playlistDownloadProgress, error) {
+	rows, err := s.db.Query(`
+		SELECT source_playlist_id, source_playlist_name, status, COUNT(*)
+		FROM entries
+		WHERE owner = ? AND acquired = 0
+		  AND source_playlist_id != ''
+		  AND status IN (?, ?, ?)
+		GROUP BY source_playlist_id, source_playlist_name, status
+		ORDER BY source_playlist_name COLLATE NOCASE, source_playlist_id`,
+		owner, statusQueued, statusDownloading, statusFailed)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	byID := map[string]*playlistDownloadProgress{}
+	var order []string
+	for rows.Next() {
+		var id, name, status string
+		var n int
+		if err := rows.Scan(&id, &name, &status, &n); err != nil {
+			return nil, err
+		}
+		p, ok := byID[id]
+		if !ok {
+			p = &playlistDownloadProgress{PlaylistID: id, PlaylistName: name}
+			byID[id] = p
+			order = append(order, id)
+		}
+		if p.PlaylistName == "" && name != "" {
+			p.PlaylistName = name
+		}
+		switch status {
+		case statusQueued:
+			p.Queued += n
+		case statusDownloading:
+			p.Downloading += n
+		case statusFailed:
+			p.Failed += n
+		}
+		p.Total = p.Queued + p.Downloading + p.Failed
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]playlistDownloadProgress, 0, len(order))
+	for _, id := range order {
+		p := byID[id]
+		// Done rows are deleted, so this is progress through the remaining queue
+		// (downloading/failed have left pure “queued”).
+		if p.Total > 0 {
+			advanced := p.Downloading + p.Failed
+			p.Percent = int(float64(advanced) / float64(p.Total) * 100)
+			if p.Percent > 100 {
+				p.Percent = 100
+			}
+		}
+		out = append(out, *p)
+	}
+	return out, nil
+}
+
+// listDownloadQueue returns the caller's queued / downloading / failed entries
+// (oldest first) so the progress page can show what is left to process.
+func (s *wishlistStore) listDownloadQueue(owner string) ([]entry, error) {
+	rows, err := s.db.Query(`
+		SELECT id, owner, kind, spotify_id, spotify_url, title, artist, album, cover_url,
+		       acquired, status, status_msg, attempts, next_retry_at,
+		       source_playlist_id, source_playlist_name, created_at
+		FROM entries
+		WHERE owner = ? AND acquired = 0 AND status IN (?, ?, ?)
+		ORDER BY
+			CASE status
+				WHEN 'downloading' THEN 0
+				WHEN 'queued' THEN 1
+				ELSE 2
+			END,
+			id ASC`,
+		owner, statusQueued, statusDownloading, statusFailed)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []entry
+	for rows.Next() {
+		var e entry
+		var acquired int
+		var createdAt, nextRetry string
+		if err := rows.Scan(&e.ID, &e.Owner, &e.Kind, &e.SpotifyID, &e.SpotifyURL,
+			&e.Title, &e.Artist, &e.Album, &e.CoverURL, &acquired, &e.Status, &e.StatusMsg,
+			&e.Attempts, &nextRetry, &e.SourcePlaylistID, &e.SourcePlaylistName, &createdAt); err != nil {
+			return nil, err
+		}
+		e.Acquired = acquired != 0
+		e.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		if nextRetry != "" {
+			e.NextRetry, _ = time.Parse(time.RFC3339, nextRetry)
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}

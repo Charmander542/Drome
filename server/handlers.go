@@ -32,6 +32,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /spotify/artist-image", s.requireAuth(s.handleArtistImage))
 	mux.HandleFunc("POST /wishlist", s.requireAuth(s.handleCreate))
 	mux.HandleFunc("GET /wishlist", s.requireAuth(s.handleList))
+	mux.HandleFunc("GET /wishlist/downloads", s.requireAuth(s.handleDownloadProgress))
 	mux.HandleFunc("DELETE /wishlist/source/{playlistId}", s.requireAuth(s.handleDeleteSourcePlaylist))
 	mux.HandleFunc("DELETE /wishlist/{id}", s.requireAuth(s.handleDelete))
 	mux.HandleFunc("PATCH /wishlist/{id}", s.requireAuth(s.handleUpdate))
@@ -588,6 +589,41 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 		entries = []entry{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
+}
+
+// GET /wishlist/downloads — live download queue / SpotiFLAC progress.
+// JSON by default; pass ?format=html (or Accept: text/html) for a browser page.
+func (s *server) handleDownloadProgress(w http.ResponseWriter, r *http.Request) {
+	user := requestUser(r)
+	var (
+		rep downloadStatusReport
+		err error
+	)
+	if s.downloads != nil {
+		rep, err = s.downloads.buildStatusReport(user)
+	} else {
+		rep = downloadStatusReport{
+			UpdatedAt: time.Now().UTC(),
+			Playlists: []playlistDownloadProgress{},
+			Items:     []entry{},
+			RecentLog: []string{},
+		}
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	wantHTML := strings.EqualFold(r.URL.Query().Get("format"), "html") ||
+		strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html")
+	if wantHTML {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(downloadProgressHTML(rep)))
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 // ownedEntry loads the entry from the path {id} and enforces ownership.
