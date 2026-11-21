@@ -391,6 +391,13 @@ struct NowPlayingView: View {
                 if !isDismissDragging {
                     guard dy > 6, dy >= abs(dx) * 1.05 else { return }
                     isDismissDragging = true
+                    // Cancel any in-progress art drag so an angled swipe can't
+                    // both dismiss and skip to the next track.
+                    if artDragX != 0 {
+                        var artTxn = Transaction()
+                        artTxn.disablesAnimations = true
+                        withTransaction(artTxn) { artDragX = 0 }
+                    }
                     if frozenPaneHeight == nil {
                         frozenPaneHeight = max(0, sheetHeight - (Self.windowSafeAreaInsets.top + 96))
                     }
@@ -627,21 +634,40 @@ struct NowPlayingView: View {
         DragGesture(minimumDistance: 20)
             .onChanged { value in
                 guard !artSwipeAnimating else { return }
-                guard abs(value.translation.width) > abs(value.translation.height) * 0.7 else { return }
-                var dx = value.translation.width
-                if dx > 0, !canSwipeArtPrevious {
-                    dx = rubberBand(dx, limit: containerWidth * 0.22)
-                } else if dx < 0, !canSwipeArtNext {
-                    dx = -rubberBand(-dx, limit: containerWidth * 0.22)
+                // Yield to sheet dismiss — angled downs must not also scrub art.
+                guard !isDismissDragging, !isDismissClosing else { return }
+                let dx = value.translation.width
+                let dy = value.translation.height
+                // Clearly horizontal only (was 0.7 — angled swipes double-fired).
+                guard abs(dx) > abs(dy) * 1.35 else { return }
+                var limited = dx
+                if limited > 0, !canSwipeArtPrevious {
+                    limited = rubberBand(limited, limit: containerWidth * 0.22)
+                } else if limited < 0, !canSwipeArtNext {
+                    limited = -rubberBand(-limited, limit: containerWidth * 0.22)
                 }
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
-                withTransaction(transaction) { artDragX = dx }
+                withTransaction(transaction) { artDragX = limited }
             }
             .onEnded { value in
                 guard !artSwipeAnimating else { return }
+                if isDismissDragging || isDismissClosing {
+                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
+                        artDragX = 0
+                    }
+                    return
+                }
                 let dx = value.translation.width
+                let dy = value.translation.height
                 let predicted = value.predictedEndTranslation.width
+                // Prefer close over skip when the finger traveled meaningfully down.
+                guard abs(dx) > abs(dy) * 1.35 else {
+                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
+                        artDragX = 0
+                    }
+                    return
+                }
                 let threshold = min(110, containerWidth * 0.22)
                 let goNext = (dx < -threshold || predicted < -threshold * 1.4) && canSwipeArtNext
                 let goPrevious = (dx > threshold || predicted > threshold * 1.4) && canSwipeArtPrevious
