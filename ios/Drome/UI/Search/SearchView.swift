@@ -630,9 +630,16 @@ struct SearchView: View {
                     }
                 } else {
                     ForEach(spotifyHits) { hit in
-                        spotifyRow(hit)
-                            .listRowBackground(DromeTheme.background)
-                            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                        Group {
+                            if hit.kind == "track", let song = matchedSongs[hit.spotifyId] {
+                                spotifyRow(hit)
+                                    .songSwipeActions(for: song)
+                            } else {
+                                spotifyRow(hit)
+                            }
+                        }
+                        .listRowBackground(DromeTheme.background)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     }
                 }
             }
