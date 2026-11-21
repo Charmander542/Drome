@@ -54,6 +54,115 @@ enum WishlistAddResult {
     case playlist(WishlistPlaylistImport)
 }
 
+/// Live companion download queue snapshot from `GET /wishlist/downloads`.
+struct WishlistDownloadStatus: Codable, Hashable {
+    var enabled: Bool = true
+    var updatedAt: String?
+    var cooldownRemaining: String?
+    var cooldownSeconds: Int?
+    var active: ActiveWishlistDownload?
+    var queue: WishlistDownloadQueueStats = .init()
+    var playlists: [WishlistPlaylistProgress] = []
+    var items: [WishlistEntry] = []
+    var recentLog: [String] = []
+
+    var hasActivity: Bool {
+        active != nil
+            || queue.total > 0
+            || !playlists.isEmpty
+            || (cooldownSeconds ?? 0) > 0
+    }
+
+    var remainingCount: Int {
+        max(queue.total, playlists.reduce(0) { $0 + $1.total })
+    }
+}
+
+struct WishlistDownloadQueueStats: Codable, Hashable {
+    var queued: Int = 0
+    var downloading: Int = 0
+    var failed: Int = 0
+    var retrying: Int = 0
+    var total: Int = 0
+}
+
+struct ActiveWishlistDownload: Codable, Hashable, Identifiable {
+    var entryId: Int64
+    var owner: String?
+    var kind: String
+    var title: String
+    var artist: String
+    var album: String?
+    var spotifyUrl: String?
+    var sourcePlaylistId: String?
+    var sourcePlaylistName: String?
+    var attempt: Int
+    var maxAttempts: Int
+    var startedAt: String?
+    var phase: String
+    var detail: String?
+    var tracksDone: Int?
+    var tracksTotal: Int?
+    var elapsedSec: Int
+
+    var id: Int64 { entryId }
+
+    var progressFraction: Double? {
+        guard let total = tracksTotal, total > 0 else { return nil }
+        let done = Double(tracksDone ?? 0)
+        return min(max(done / Double(total), 0), 1)
+    }
+
+    var statusLine: String {
+        var parts: [String] = []
+        if let detail, !detail.isEmpty {
+            parts.append(detail)
+        } else if !phase.isEmpty {
+            parts.append(phase)
+        }
+        if let total = tracksTotal, total > 0 {
+            parts.append("\(tracksDone ?? 0)/\(total)")
+        }
+        return parts.isEmpty ? "Downloading…" : parts.joined(separator: " · ")
+    }
+}
+
+struct WishlistPlaylistProgress: Codable, Hashable, Identifiable {
+    var playlistId: String
+    var playlistName: String
+    var queued: Int
+    var downloading: Int
+    var failed: Int
+    var total: Int
+    var currentTitle: String?
+    var currentArtist: String?
+    var percent: Int
+
+    var id: String { playlistId }
+
+    var displayName: String {
+        playlistName.isEmpty ? "Playlist" : playlistName
+    }
+
+    var progressFraction: Double {
+        min(max(Double(percent) / 100, 0), 1)
+    }
+
+    var subtitle: String {
+        if let title = currentTitle, !title.isEmpty {
+            if let artist = currentArtist, !artist.isEmpty {
+                return "\(title) — \(artist)"
+            }
+            return title
+        }
+        var parts: [String] = []
+        if downloading > 0 { parts.append("\(downloading) downloading") }
+        if queued > 0 { parts.append("\(queued) queued") }
+        if failed > 0 { parts.append("\(failed) failed") }
+        return parts.isEmpty ? "\(total) left" : parts.joined(separator: " · ")
+    }
+}
+
 /// Client for the Drome companion server. Authentication reuses the same
 /// Subsonic token credentials; the companion verifies them against Navidrome.
 struct DromeWishlistClient {
@@ -143,6 +252,11 @@ struct DromeWishlistClient {
     func list() async throws -> [WishlistEntry] {
         struct ListResponse: Decodable { var entries: [WishlistEntry] }
         return try await send(ListResponse.self, path: "/wishlist", method: "GET").entries
+    }
+
+    /// Live SpotiFLAC / wishlist download progress for the signed-in user.
+    func downloadStatus() async throws -> WishlistDownloadStatus {
+        try await send(WishlistDownloadStatus.self, path: "/wishlist/downloads", method: "GET")
     }
 
     func search(query: String, types: String = "track,album,playlist", limit: Int = 10) async throws -> [SpotifySearchHit] {

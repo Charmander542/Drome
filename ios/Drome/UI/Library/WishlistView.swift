@@ -18,6 +18,7 @@ struct WishlistView: View {
     @State private var shareUsername = ""
     @State private var searchTask: Task<Void, Never>?
     @State private var groupByPlaylist = false
+    @State private var downloadStatus: WishlistDownloadStatus?
 
     var body: some View {
         Group {
@@ -43,6 +44,9 @@ struct WishlistView: View {
         }
         .navigationTitle("Wishlist")
         .task { await load() }
+        .task(id: session.wishlist?.baseURL.absoluteString) {
+            await pollDownloadStatus()
+        }
         .refreshable { await load() }
         .alert("Share entry", isPresented: Binding(
             get: { shareTarget != nil },
@@ -162,6 +166,10 @@ struct WishlistView: View {
                 .listRowBackground(Color.clear)
             }
 
+            if let downloadStatus, downloadStatus.hasActivity {
+                downloadProgressSection(downloadStatus)
+            }
+
             Section {
                 Toggle("Group by Spotify playlist", isOn: $groupByPlaylist)
                     .listRowBackground(DromeTheme.elevated)
@@ -224,6 +232,165 @@ struct WishlistView: View {
                     .font(.caption)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func downloadProgressSection(_ status: WishlistDownloadStatus) -> some View {
+        Section {
+            if let active = status.active {
+                activeDownloadCard(active)
+                    .listRowBackground(DromeTheme.elevated)
+                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+            }
+
+            ForEach(status.playlists) { playlist in
+                playlistProgressRow(playlist)
+                    .listRowBackground(DromeTheme.background)
+            }
+
+            if status.active == nil, status.playlists.isEmpty, status.queue.total > 0 {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.down.circle")
+                        .foregroundStyle(DromeTheme.accent)
+                    Text(queueSummary(status.queue))
+                        .font(.subheadline)
+                        .foregroundStyle(DromeTheme.muted)
+                    Spacer()
+                }
+                .listRowBackground(DromeTheme.elevated)
+            }
+
+            if let cooldown = status.cooldownRemaining, !cooldown.isEmpty {
+                Text("Waiting on provider cooldown · \(cooldown)")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .listRowBackground(Color.clear)
+            }
+        } header: {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Downloads")
+                Spacer()
+                Text(downloadHeaderTrailing(status))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(DromeTheme.muted)
+                    .textCase(nil)
+            }
+        } footer: {
+            if status.queue.failed > 0 {
+                Text(status.queue.failed == 1
+                      ? "1 download failed — open the item below to retry."
+                      : "\(status.queue.failed) downloads failed — open an item below to retry.")
+            }
+        }
+    }
+
+    private func activeDownloadCard(_ active: ActiveWishlistDownload) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(DromeTheme.elevated2)
+                    Image(systemName: kindIcon(active.kind))
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(DromeTheme.accent)
+                }
+                .frame(width: 48, height: 48)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(active.title.isEmpty ? "Downloading…" : active.title)
+                        .font(DromeTheme.rowTitle)
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                    Text(activeArtistLine(active))
+                        .font(.caption)
+                        .foregroundStyle(DromeTheme.muted)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
+                if active.progressFraction == nil {
+                    ProgressView()
+                        .tint(DromeTheme.accent)
+                }
+            }
+
+            if let fraction = active.progressFraction {
+                ProgressView(value: fraction)
+                    .tint(DromeTheme.accent)
+            }
+            Text(active.statusLine)
+                .font(.caption2)
+                .foregroundStyle(DromeTheme.muted)
+                .lineLimit(2)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Downloading \(active.title)")
+        .accessibilityValue(active.statusLine)
+    }
+
+    private func playlistProgressRow(_ playlist: WishlistPlaylistProgress) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(playlist.displayName)
+                    .font(DromeTheme.rowTitle)
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Spacer()
+                Text("\(playlist.total) left")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(DromeTheme.muted)
+            }
+            Text(playlist.subtitle)
+                .font(.caption)
+                .foregroundStyle(DromeTheme.muted)
+                .lineLimit(1)
+            ProgressView(value: playlist.progressFraction)
+                .tint(DromeTheme.accent)
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Playlist \(playlist.displayName)")
+        .accessibilityValue("\(playlist.total) left. \(playlist.subtitle)")
+    }
+
+    private func downloadHeaderTrailing(_ status: WishlistDownloadStatus) -> String {
+        if status.active != nil {
+            let left = max(status.remainingCount, 1)
+            return left == 1 ? "1 active" : "\(left) left"
+        }
+        if status.remainingCount > 0 {
+            return status.remainingCount == 1 ? "1 left" : "\(status.remainingCount) left"
+        }
+        if (status.cooldownSeconds ?? 0) > 0 {
+            return "Paused"
+        }
+        return ""
+    }
+
+    private func queueSummary(_ queue: WishlistDownloadQueueStats) -> String {
+        var parts: [String] = []
+        if queue.downloading > 0 { parts.append("\(queue.downloading) downloading") }
+        if queue.queued > 0 { parts.append("\(queue.queued) queued") }
+        if queue.failed > 0 { parts.append("\(queue.failed) failed") }
+        return parts.isEmpty ? "Working…" : parts.joined(separator: " · ")
+    }
+
+    private func activeArtistLine(_ active: ActiveWishlistDownload) -> String {
+        var parts: [String] = []
+        if !active.artist.isEmpty { parts.append(active.artist) }
+        if let playlist = active.sourcePlaylistName, !playlist.isEmpty {
+            parts.append(playlist)
+        } else if !active.kind.isEmpty {
+            parts.append(active.kind)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func kindIcon(_ kind: String) -> String {
+        switch kind {
+        case "album": return "square.stack"
+        case "playlist": return "music.note.list"
+        default: return "music.note"
         }
     }
 
@@ -297,6 +464,7 @@ struct WishlistView: View {
                     Text(statusLine)
                         .font(.caption2)
                         .foregroundStyle(statusColor(entry))
+                        .lineLimit(2)
                 }
                 if let sharedBy = entry.sharedBy {
                     Text("Shared by \(sharedBy)")
@@ -307,6 +475,12 @@ struct WishlistView: View {
                     Text("From \(playlist)")
                         .font(.caption2)
                         .foregroundStyle(DromeTheme.muted)
+                }
+                if downloadStatus?.active?.entryId == entry.id,
+                   let fraction = downloadStatus?.active?.progressFraction {
+                    ProgressView(value: fraction)
+                        .tint(DromeTheme.accent)
+                        .padding(.top, 4)
                 }
             }
             Spacer()
@@ -346,6 +520,9 @@ struct WishlistView: View {
     }
 
     private func downloadStatusLine(_ entry: WishlistEntry) -> String? {
+        if isActivelyDownloading(entry), let active = downloadStatus?.active {
+            return active.statusLine
+        }
         switch entry.status {
         case "queued": return "Queued for download"
         case "downloading":
@@ -369,6 +546,10 @@ struct WishlistView: View {
         case "downloading", "queued": return DromeTheme.accent
         default: return DromeTheme.muted
         }
+    }
+
+    private func isActivelyDownloading(_ entry: WishlistEntry) -> Bool {
+        downloadStatus?.active?.entryId == entry.id || entry.status == "downloading"
     }
 
     private func scheduleSearch(_ raw: String) {
@@ -406,9 +587,44 @@ struct WishlistView: View {
         error = nil
         defer { isLoading = false }
         do {
-            entries = try await client.list()
+            async let listTask = client.list()
+            async let statusTask = client.downloadStatus()
+            entries = try await listTask
+            if let status = try? await statusTask {
+                downloadStatus = status
+            }
         } catch {
             self.error = CompanionNetworkError.shortReason(for: error)
+        }
+    }
+
+    /// Poll companion download progress while this screen is visible.
+    private func pollDownloadStatus() async {
+        guard session.wishlist != nil else {
+            downloadStatus = nil
+            return
+        }
+        while !Task.isCancelled {
+            await refreshDownloadStatus()
+            let hasWork = downloadStatus?.hasActivity == true
+            let delay: UInt64 = hasWork ? 2_500_000_000 : 8_000_000_000
+            try? await Task.sleep(nanoseconds: delay)
+        }
+    }
+
+    private func refreshDownloadStatus() async {
+        guard let client = session.wishlist else { return }
+        do {
+            let status = try await client.downloadStatus()
+            downloadStatus = status
+            // Keep list rows in sync when the worker finishes / advances jobs.
+            if status.hasActivity || !entries.isEmpty {
+                if let latest = try? await client.list() {
+                    entries = latest
+                }
+            }
+        } catch {
+            // Soft-fail: progress is advisory; wishlist list remains usable.
         }
     }
 
@@ -485,6 +701,7 @@ struct WishlistView: View {
             }
             let label = entry.kind == "album" ? "Album" : "Track"
             importBanner = "\(label) queued: \(entry.title)"
+            await refreshDownloadStatus()
         case .playlist(let imported):
             for entry in imported.entries.reversed() {
                 if let idx = entries.firstIndex(where: { $0.id == entry.id }) {
@@ -542,6 +759,7 @@ struct WishlistView: View {
             if imported.added > 0 || (imported.sourcePlaylistId?.isEmpty == false) {
                 groupByPlaylist = true
             }
+            await refreshDownloadStatus()
         }
     }
 
