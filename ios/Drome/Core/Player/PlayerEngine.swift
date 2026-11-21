@@ -676,6 +676,47 @@ final class PlayerEngine: ObservableObject {
         preserveUserQueueOnce = false
     }
 
+    /// Swap into a new mix / vibe queue without tearing down the current item.
+    /// Used by Instant Mix / Vibe Tuner so the song you are already hearing
+    /// keeps playing while Up Next becomes the new mix.
+    func adoptUpcomingMix(
+        _ songs: [Song],
+        context: PlaybackContext,
+        clearUserQueue: Bool = true
+    ) {
+        guard let current else {
+            guard !songs.isEmpty else { return }
+            play(songs, startAt: 0, context: context, clearUserQueue: clearUserQueue)
+            return
+        }
+        let upcoming = songs.filter { $0.id != current.song.id }
+        runLocalPlayback { [self] in
+            pushSessionUndoIfNeeded()
+            cancelAutoplayWork()
+            ratings.ingest([current.song] + upcoming)
+            // Fresh mix order — don't inherit a prior shuffle mode that would
+            // reshuffle the curated vibe picks under the user.
+            if shuffleMode != .off {
+                suppressShuffleReorder = true
+                shuffleMode = .off
+                suppressShuffleReorder = false
+            }
+            self.context = context
+            fullContextSongs = [current.song] + upcoming
+            originalContextOrder = upcoming.map { QueueItem(song: $0) }
+            contextQueue = originalContextOrder
+            if clearUserQueue {
+                userQueue.removeAll()
+            }
+            // Leave `current`, history, and AVPlayer alone — no rebuild.
+            resyncUpcomingWindow()
+            ensureAutoplayBuffer()
+            persistSessionSoon()
+            broadcastSharePlayIfNeeded()
+            pushNowPlayingInfo()
+        }
+    }
+
     /// Shuffle-button entry point: enables shuffle (smart by default) and
     /// picks the opening track from the weighted pool too.
     func playShuffled(_ songs: [Song], context: PlaybackContext, clearUserQueue: Bool = true) {
