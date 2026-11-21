@@ -99,4 +99,46 @@ enum PlaybackResilience {
         guard let end = seekableEnd, end.isFinite, end > 0 else { return false }
         return end + tolerance >= target
     }
+
+    /// Best duration for scrubber / remaining-time UI.
+    ///
+    /// Library tags and AVPlayer's non-precise MP3 estimates are often a few
+    /// seconds short. Taking the max of known signals (and never reporting a
+    /// duration behind the live playhead) stops the scrubber from showing
+    /// "0 left" while audio is still playing.
+    ///
+    /// Wild AV over-estimates (broken Content-Length / live-ish streams) are
+    /// capped relative to metadata so the bar doesn't stretch to nonsense.
+    static func reconciledDuration(
+        metadata: TimeInterval,
+        reported: TimeInterval?,
+        elapsed: TimeInterval,
+        current: TimeInterval
+    ) -> TimeInterval {
+        var best: TimeInterval = 0
+        if current.isFinite, current > 0 { best = current }
+        if metadata.isFinite, metadata > 0 { best = max(best, metadata) }
+
+        if let reported, reported.isFinite, reported > 0 {
+            if metadata.isFinite, metadata > 0 {
+                // Allow AV to stretch past the tag a bit (encoder delay, gapless
+                // padding, integer-second truncation) but ignore absurd outliers.
+                let cap = max(metadata + 30, metadata * 1.25)
+                if reported <= cap {
+                    best = max(best, reported)
+                }
+            } else {
+                best = max(best, reported)
+            }
+        }
+
+        // Playhead past every estimate means the file is longer than we thought.
+        // Keep a short open tail so remaining doesn't read 0:00 / "0 left" for
+        // several seconds of audio that is still playing. Require a real
+        // baseline duration so an unknown track at 0:00 doesn't invent 1.25s.
+        if best > 0.5, elapsed.isFinite, elapsed > 1, elapsed >= best - 0.05 {
+            best = max(best, elapsed + 1.25)
+        }
+        return best
+    }
 }

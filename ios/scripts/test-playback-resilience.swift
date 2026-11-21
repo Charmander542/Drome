@@ -82,6 +82,33 @@ enum PlaybackResilience {
         guard let end = seekableEnd, end.isFinite, end > 0 else { return false }
         return end + tolerance >= target
     }
+
+    static func reconciledDuration(
+        metadata: TimeInterval,
+        reported: TimeInterval?,
+        elapsed: TimeInterval,
+        current: TimeInterval
+    ) -> TimeInterval {
+        var best: TimeInterval = 0
+        if current.isFinite, current > 0 { best = current }
+        if metadata.isFinite, metadata > 0 { best = max(best, metadata) }
+
+        if let reported, reported.isFinite, reported > 0 {
+            if metadata.isFinite, metadata > 0 {
+                let cap = max(metadata + 30, metadata * 1.25)
+                if reported <= cap {
+                    best = max(best, reported)
+                }
+            } else {
+                best = max(best, reported)
+            }
+        }
+
+        if best > 0.5, elapsed.isFinite, elapsed > 1, elapsed >= best - 0.05 {
+            best = max(best, elapsed + 1.25)
+        }
+        return best
+    }
 }
 
 var failures = 0
@@ -220,6 +247,28 @@ expect(
 expect(
     PlaybackResilience.seekableCovers(target: 180, seekableEnd: 179),
     "seekable near target is enough")
+
+print("=== scrubber duration reconciliation ===")
+expect(
+    abs(PlaybackResilience.reconciledDuration(
+        metadata: 180, reported: 175, elapsed: 10, current: 175) - 180) < 0.01,
+    "short AV estimate keeps longer library tag")
+expect(
+    abs(PlaybackResilience.reconciledDuration(
+        metadata: 180, reported: 183, elapsed: 10, current: 180) - 183) < 0.01,
+    "slightly longer AV duration wins")
+let pastEnd = PlaybackResilience.reconciledDuration(
+    metadata: 180, reported: 175, elapsed: 182, current: 180)
+expect(pastEnd >= 183.2 && pastEnd <= 183.3,
+    "playhead past duration keeps a short open remaining tail")
+expect(
+    abs(PlaybackResilience.reconciledDuration(
+        metadata: 180, reported: 900, elapsed: 10, current: 180) - 180) < 0.01,
+    "absurd AV over-estimate is ignored vs metadata")
+expect(
+    abs(PlaybackResilience.reconciledDuration(
+        metadata: 0, reported: 210, elapsed: 5, current: 0) - 210) < 0.01,
+    "no metadata → trust AV duration")
 
 print("")
 if failures == 0 {

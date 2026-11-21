@@ -706,7 +706,7 @@ private struct TVScrubBar: View {
                             .foregroundStyle(Color.white.opacity(0.45))
                     }
                     Spacer()
-                    Text(Formatters.playbackTime(total))
+                    Text("-\(Formatters.playbackTime(max(0, total - elapsed)))")
                 }
                 .font(.system(size: 16, weight: .medium).monospacedDigit())
                 .foregroundStyle(Color.white.opacity(0.65))
@@ -735,10 +735,13 @@ private struct TVScrubBar: View {
     }
 
     private var duration: TimeInterval {
-        let live = player.duration
-        if live.isFinite, live > 0.5 { return live }
-        if let meta = player.current?.song.duration, meta > 0 { return TimeInterval(meta) }
-        return max(live, 1)
+        let meta = TimeInterval(player.current?.song.duration ?? 0)
+        let resolved = PlaybackResilience.reconciledDuration(
+            metadata: meta,
+            reported: player.duration,
+            elapsed: player.accurateElapsed(),
+            current: player.duration)
+        return resolved > 0.5 ? resolved : max(player.duration, 1)
     }
 
     private func applySeek(_ time: TimeInterval, throttle: Bool) {
