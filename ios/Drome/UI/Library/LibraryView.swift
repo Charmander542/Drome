@@ -396,8 +396,12 @@ struct LibraryView: View {
                         }
                     }
                 }
-                if filter == .genres {
-                    GenreBrowserView(showsTitle: false)
+                // Keep Genres mounted like the other tabs — remounting wiped
+                // @State genreGroups after a couple open/close cycles.
+                if visitedFilters.contains(.genres) {
+                    keepAlivePane(.genres) {
+                        GenreBrowserView(showsTitle: false)
+                    }
                 }
             }
             .animation(nil, value: filter)
@@ -416,6 +420,9 @@ struct LibraryView: View {
             || !albumWindow.isEmpty
             || !artistWindow.isEmpty
             || !songWindow.isEmpty
+            // Genres live in GenreBrowserView — count a visit so sibling-tab
+            // loads / refresh cannot replace the ZStack with a global spinner.
+            || visitedFilters.contains(.genres)
     }
 
     /// Keep visited tabs mounted so flips don't rebuild lists / re-fetch art.
@@ -1929,6 +1936,7 @@ struct LibraryView: View {
             await runLibraryScan(showBanner: true)
         }
         LibraryListCatalog.invalidate(serverKey: session.account.serverKey)
+        GenreBrowserCache.invalidate(serverKey: session.account.serverKey)
         let key = serverKey()
         let index = session.library
         try? await Task.detached {
@@ -1945,6 +1953,9 @@ struct LibraryView: View {
         songLetters = []
         playlists = []
         await load(forceNetwork: true)
+        if filter == .genres || visitedFilters.contains(.genres) {
+            NotificationCenter.default.post(name: .dromeReloadGenres, object: nil)
+        }
         Task { @MainActor in
             await hydrateSiblingTabsAfterRefresh()
         }
@@ -2117,6 +2128,24 @@ struct HiddenPlaylistsView: View {
     }
 }
 
+/// In-memory genre list so remounts / cancelled reloads don't flash empty.
+@MainActor
+enum GenreBrowserCache {
+    private static var groupsByServer: [String: [NormalizedGenre]] = [:]
+
+    static func cached(serverKey: String) -> [NormalizedGenre]? {
+        groupsByServer[serverKey]
+    }
+
+    static func store(_ groups: [NormalizedGenre], serverKey: String) {
+        groupsByServer[serverKey] = groups
+    }
+
+    static func invalidate(serverKey: String) {
+        groupsByServer.removeValue(forKey: serverKey)
+    }
+}
+
 /// Lightweight genres browser (moved off the top tab bar).
 struct GenreBrowserView: View {
     var showsTitle: Bool = true
@@ -2130,7 +2159,7 @@ struct GenreBrowserView: View {
             if isLoading && genreGroups.isEmpty {
                 LoadingStateView()
             } else if let error, genreGroups.isEmpty {
-                ErrorStateView(message: error) { Task { await load() } }
+                ErrorStateView(message: error) { Task { await load(forceNetwork: true) } }
             } else {
                 List(genreGroups) { genre in
                     NavigationLink {
@@ -2156,18 +2185,51 @@ struct GenreBrowserView: View {
         }
         .navigationTitle(showsTitle ? "Genres" : "")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
+        .task {
+            seedFromCacheIfNeeded()
+            await load(forceNetwork: false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dromeReloadGenres)) { _ in
+            Task { await load(forceNetwork: true) }
+        }
     }
 
-    private func load() async {
-        isLoading = true
+    private func seedFromCacheIfNeeded() {
+        guard genreGroups.isEmpty,
+              let cached = GenreBrowserCache.cached(serverKey: session.account.serverKey),
+              !cached.isEmpty else { return }
+        genreGroups = cached
+        isLoading = false
+    }
+
+    private func load(forceNetwork: Bool) async {
+        let hadContent = !genreGroups.isEmpty
+        if !hadContent {
+            seedFromCacheIfNeeded()
+        }
+        let showingCached = !genreGroups.isEmpty
+        if !showingCached { isLoading = true }
         defer { isLoading = false }
+
+        if !forceNetwork, showingCached { return }
+
         do {
             let raw = try await session.client.genres()
-            genreGroups = GenreNormalizer.shared.groupedGenres(raw)
+            let grouped = GenreNormalizer.shared.groupedGenres(raw)
+            // Never blank a populated list with an empty network response —
+            // that looked like "all categories disappeared".
+            if !grouped.isEmpty || !hadContent {
+                genreGroups = grouped
+                GenreBrowserCache.store(grouped, serverKey: session.account.serverKey)
+            }
             error = nil
+        } catch is CancellationError {
+            // Navigating into a category cancels `.task` — keep the list.
+            return
         } catch {
-            self.error = error.localizedDescription
+            if !showingCached {
+                self.error = error.localizedDescription
+            }
         }
     }
 }
