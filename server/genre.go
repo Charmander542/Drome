@@ -66,8 +66,10 @@ var genreAliases = map[string]string{
 	"classical": "Classical", "orchestral": "Classical",
 	"soundtrack": "Soundtrack", "ost": "Soundtrack", "score": "Soundtrack",
 	"film scores": "Soundtrack", "films games": "Soundtrack",
-	"stage and screen": "Musical", "musical": "Musical", "broadway": "Musical",
+	// Bare Discogs "Stage & Screen" is too broad (ballet, scores, theatre).
+	"musical": "Musical", "broadway": "Musical",
 	"show tunes": "Musical", "musical theatre": "Musical", "musical theater": "Musical",
+	"opera": "Classical", "ballet": "Classical",
 	"metal": "Metal", "heavy metal": "Metal", "death metal": "Metal", "black metal": "Metal",
 	"punk": "Punk", "pop punk": "Punk", "emo": "Punk",
 	"folk": "Folk", "singer songwriter": "Folk", "americana": "Folk",

@@ -95,12 +95,15 @@ GENRE_ALIASES: dict[str, str] = {
     "score": "Soundtrack",
     "film scores": "Soundtrack",
     "films games": "Soundtrack",
-    "stage and screen": "Musical",
+    # Do NOT map bare Discogs "Stage & Screen" — it covers classical ballet,
+    # film scores, and theatre. Rely on style "Musical" / Broadway aliases.
     "musical": "Musical",
     "broadway": "Musical",
     "show tunes": "Musical",
     "musical theatre": "Musical",
     "musical theater": "Musical",
+    "opera": "Classical",
+    "ballet": "Classical",
     "metal": "Metal",
     "heavy metal": "Metal",
     "death metal": "Metal",
@@ -139,8 +142,8 @@ GENRE_ALIASES: dict[str, str] = {
 
 # Priority when multiple curated genres are candidates (more specific first).
 GENRE_PRIORITY = [
-    "Musical",
     "Classical",
+    "Musical",
     "Jazz",
     "Hip-Hop",
     "Metal",
@@ -513,6 +516,22 @@ def iter_audio(music_dir: Path, since_epoch: float | None = None):
         yield path
 
 
+def prefer_cast_credit(name: str) -> str:
+    """Prefer 'Original … Cast of X' over a featured soloist credit."""
+    lower = name.lower()
+    for marker in (
+        "original broadway cast of ",
+        "original west end cast of ",
+        "original cast of ",
+        "broadway cast of ",
+        "cast of ",
+    ):
+        idx = lower.find(marker)
+        if idx >= 0:
+            return name[idx:].strip(" ,;-")
+    return name
+
+
 def resolve_artist_from_tags(
     path: Path,
     music_dir: Path,
@@ -522,8 +541,12 @@ def resolve_artist_from_tags(
     aa_n = normalize_artist(albumartist)
     ar_n = normalize_artist(artist)
     if aa_n and aa_n.lower() not in {"various artists", "various", "soundtrack", "compilation"}:
-        return aa_n
+        return prefer_cast_credit(aa_n)
     if ar_n:
+        # "Leslie Odom Jr., Original Broadway Cast of Hamilton" → cast credit.
+        cast = prefer_cast_credit(ar_n)
+        if cast != ar_n:
+            return cast
         return ar_n.split(",")[0].strip()
     try:
         rel = path.relative_to(music_dir)

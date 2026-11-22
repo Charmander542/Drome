@@ -11,8 +11,10 @@ func TestNormalizeGenre(t *testing.T) {
 		"lofi":               "Indie",
 		"R&B":                "R&B",
 		"synth-pop":          "Pop",
-		"Stage & Screen":     "Musical",
+		"Stage & Screen":     "", // too broad alone — need Musical/Broadway style
 		"broadway":           "Musical",
+		"Musical":            "Musical",
+		"opera":              "Classical",
 		"Films/Games":        "Soundtrack",
 		"Alternative Rock":   "Alternative",
 		"":                   "",
