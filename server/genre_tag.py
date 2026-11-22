@@ -457,16 +457,30 @@ def lookup_genre(
     return "", "none"
 
 
-def read_tags(path: Path) -> tuple[str, str, str]:
+def read_tags(path: Path) -> tuple[str, str, str, list[str]]:
+    """Return albumartist, artist, primary genre, and all genre values."""
     audio = MutagenFile(path, easy=True)
     if audio is None:
-        return "", "", ""
+        return "", "", "", []
     def first(key: str) -> str:
         v = audio.get(key)
         if isinstance(v, list) and v:
             return str(v[0])
         return str(v) if v else ""
-    return first("albumartist") or first("artist"), first("artist"), first("genre")
+    def all_vals(key: str) -> list[str]:
+        v = audio.get(key)
+        if isinstance(v, list):
+            return [str(x) for x in v if str(x).strip()]
+        if v:
+            return [str(v)]
+        return []
+    genres = all_vals("genre")
+    return (
+        first("albumartist") or first("artist"),
+        first("artist"),
+        genres[0] if genres else "",
+        genres,
+    )
 
 
 def write_genre(path: Path, genre: str) -> bool:
@@ -493,10 +507,14 @@ def iter_audio(music_dir: Path, since_epoch: float | None = None):
         yield path
 
 
-def resolve_artist(path: Path, music_dir: Path) -> str:
-    aa, ar, _ = read_tags(path)
-    aa_n = normalize_artist(aa)
-    ar_n = normalize_artist(ar)
+def resolve_artist_from_tags(
+    path: Path,
+    music_dir: Path,
+    albumartist: str,
+    artist: str,
+) -> str:
+    aa_n = normalize_artist(albumartist)
+    ar_n = normalize_artist(artist)
     if aa_n and aa_n.lower() not in {"various artists", "various", "soundtrack", "compilation"}:
         return aa_n
     if ar_n:
@@ -508,6 +526,11 @@ def resolve_artist(path: Path, music_dir: Path) -> str:
     except ValueError:
         pass
     return aa_n or ar_n
+
+
+def resolve_artist(path: Path, music_dir: Path) -> str:
+    aa, ar, _, _ = read_tags(path)
+    return resolve_artist_from_tags(path, music_dir, aa, ar)
 
 
 def process_files(
@@ -525,11 +548,11 @@ def process_files(
     wrote = skipped = failed = 0
     total = len(paths)
     for i, path in enumerate(paths, 1):
-        artist = resolve_artist(path, music_dir)
+        aa, ar, current, genres = read_tags(path)
+        artist = resolve_artist_from_tags(path, music_dir, aa, ar)
         if not artist:
             skipped += 1
             continue
-        _, _, current = read_tags(path)
         # force overwrites tags; refresh re-queries APIs. Cache/mem always reuse
         # per-artist results within a run so we don't hammer Discogs.
         genre, source = lookup_genre(
@@ -538,8 +561,12 @@ def process_files(
         if not genre:
             skipped += 1
             continue
-        # Skip rewrite when the file already maps to the curated genre.
-        if not force and (current == genre or normalize_genre(current) == genre):
+        # Already a single exact curated tag — never rewrite (NFS saves are expensive).
+        if len(genres) == 1 and genres[0] == genre:
+            skipped += 1
+            continue
+        # Without --force, also skip when the primary tag already normalizes correctly.
+        if not force and normalize_genre(current) == genre:
             skipped += 1
             continue
         if dry_run:
