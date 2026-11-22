@@ -39,6 +39,7 @@ type downloadConfig struct {
 	MusicDir     string
 	SpotiflacBin string
 	RetagBin     string
+	GenreBin     string
 	Services     []string
 	Timeout      time.Duration
 	MaxAttempts  int
@@ -52,6 +53,7 @@ func downloadConfigFromEnv() downloadConfig {
 		MusicDir:     envOr("DROME_MUSIC_DIR", "/music"),
 		SpotiflacBin: envOr("DROME_SPOTIFLAC_BIN", "spotiflac"),
 		RetagBin:     envOr("DROME_RETAG_BIN", "drome-retag"),
+		GenreBin:     envOr("DROME_GENRE_BIN", "drome-genre-tag"),
 		Timeout:      envDuration("DROME_DOWNLOAD_TIMEOUT", 45*time.Minute),
 		MaxAttempts:  envInt("DROME_DOWNLOAD_MAX_ATTEMPTS", 5),
 		RetryBase:    envDuration("DROME_DOWNLOAD_RETRY_BASE", 2*time.Minute),
@@ -269,6 +271,12 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 		// retag rather than deleting the wishlist row with broken tags.
 		w.fail(e, attempt, fmt.Errorf("retag: %w", err))
 		return
+	}
+
+	w.setPhase("genre", "looking up genre")
+	if err := w.tagGenreRecent(ctx, e, started); err != nil {
+		// Genre is best-effort — don't fail the download over a Discogs blip.
+		logf("genre tag id=%d: %v", e.ID, err)
 	}
 
 	// Amazon stages as {ASIN}.flac; if rename/embed was soft-failed upstream,
@@ -769,6 +777,64 @@ func (w *downloadWorker) retagRecent(ctx context.Context, e *entry, started time
 		return fmt.Errorf("%w: %s", err, truncate(out, 1000))
 	}
 	logf("retag ok id=%d: %s", e.ID, truncate(strings.TrimSpace(stdout.String()), 300))
+	return nil
+}
+
+// tagGenreRecent writes curated GENRE tags onto files touched by this download
+// using Discogs (primary) / MusicBrainz / Deezer lookups.
+func (w *downloadWorker) tagGenreRecent(ctx context.Context, e *entry, started time.Time) error {
+	bin := w.cfg.GenreBin
+	if bin == "" {
+		return nil
+	}
+	if _, err := exec.LookPath(bin); err != nil {
+		candidates := []string{
+			"/usr/local/bin/drome-genre-tag",
+			filepath.Join(filepath.Dir(w.cfg.SpotiflacBin), "genre_tag.py"),
+			"genre_tag.py",
+		}
+		found := ""
+		for _, c := range candidates {
+			if st, err := os.Stat(c); err == nil && !st.IsDir() {
+				found = c
+				break
+			}
+		}
+		if found == "" {
+			return fmt.Errorf("genre binary not found (%s)", bin)
+		}
+		bin = found
+	}
+
+	args := []string{
+		"--music-dir", w.cfg.MusicDir,
+		"--since-epoch", fmt.Sprintf("%d", started.Unix()),
+	}
+	if artist := strings.TrimSpace(e.AlbumArtist); artist != "" {
+		args = append(args, "--artist", artist)
+	} else if artist := strings.TrimSpace(e.Artist); artist != "" {
+		// Primary only — genre lookup strips feat. credits too.
+		if i := strings.Index(strings.ToLower(artist), " feat"); i > 0 {
+			artist = strings.TrimSpace(artist[:i])
+		}
+		args = append(args, "--artist", artist)
+	}
+	var cmd *exec.Cmd
+	if strings.HasSuffix(bin, ".py") {
+		cmd = exec.CommandContext(ctx, "python3", append([]string{bin}, args...)...)
+	} else {
+		cmd = exec.CommandContext(ctx, bin, args...)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		out := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
+		return fmt.Errorf("%w: %s", err, truncate(out, 500))
+	}
+	if msg := strings.TrimSpace(stdout.String()); msg != "" {
+		logf("genre ok id=%d: %s", e.ID, truncate(msg, 300))
+	}
 	return nil
 }
 
