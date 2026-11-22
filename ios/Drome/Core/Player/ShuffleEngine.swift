@@ -24,6 +24,10 @@ enum ShuffleEngine {
 
     /// Order the given songs for playback under a shuffle mode, dropping
     /// anything that is out of rotation (unless allowed by context).
+    ///
+    /// If every track is excluded (e.g. Shuffle on a playlist that is entirely
+    /// Out of Rotation), fall back to shuffling the full list so the button
+    /// still does what the user asked.
     static func order(_ songs: [Song], mode: ShuffleMode,
                       rating: (Song) -> Int,
                       excluded: Set<String>,
@@ -31,13 +35,17 @@ enum ShuffleEngine {
         switch mode {
         case .off:
             return songs
-        case .random:
-            return songs.filter { !excluded.contains($0.id) }.shuffled()
-        case .smart:
-            return weightedShuffle(
-                songs.filter { !excluded.contains($0.id) },
-                rating: rating,
-                taste: taste)
+        case .random, .smart:
+            let eligible = songs.filter { !excluded.contains($0.id) }
+            let pool = eligible.isEmpty ? songs : eligible
+            switch mode {
+            case .random:
+                return pool.shuffled()
+            case .smart:
+                return weightedShuffle(pool, rating: rating, taste: taste)
+            case .off:
+                return songs
+            }
         }
     }
 }

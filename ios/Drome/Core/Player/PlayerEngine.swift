@@ -791,25 +791,11 @@ final class PlayerEngine: ObservableObject {
             self.context = context
             fullContextSongs = songs
 
+            // ShuffleEngine keeps OOR out of algorithmic pools, but falls back
+            // to the full list when every track is excluded so Shuffle still
+            // shuffles (instead of silently playing in order).
             let pool = orderedForShuffle(songs)
-            guard let first = pool.first else {
-                // Everything was excluded (e.g. all out of rotation): play as-is.
-                // Undo already pushed; nested play would double-push — skip.
-                self.context = context
-                fullContextSongs = songs
-                originalContextOrder = Array(songs.dropFirst()).map { QueueItem(song: $0) }
-                contextQueue = originalContextOrder
-                if shouldClearUserQueue {
-                    userQueue.removeAll()
-                }
-                history.removeAll()
-                if let song = songs.first {
-                    setCurrent(QueueItem(song: song), startPlaying: true, allowLowRated: true)
-                }
-                ensureAutoplayBuffer()
-                persistSessionSoon()
-                return
-            }
+            guard let first = pool.first else { return }
             originalContextOrder = songs.filter { $0.id != first.id }.map { QueueItem(song: $0) }
             contextQueue = pool.dropFirst().map { QueueItem(song: $0) }
             if shouldClearUserQueue {
@@ -2874,7 +2860,10 @@ final class PlayerEngine: ObservableObject {
             contextQueue = restored + extras
         case .smart, .random:
             let excluded = (context?.allowsOutOfRotation ?? false) ? Set<String>() : rotation.excludedIDs
-            let kept = contextQueue.filter { !excluded.contains($0.song.id) }
+            let eligible = contextQueue.filter { !excluded.contains($0.song.id) }
+            // Same as ShuffleEngine: if the whole remaining queue is OOR,
+            // reshuffle it rather than emptying Up Next.
+            let kept = eligible.isEmpty ? contextQueue : eligible
             let taste = TasteAffinity.build(
                 ratings: ratings.ratings,
                 seeds: kept.prefix(40).map(\.song),
