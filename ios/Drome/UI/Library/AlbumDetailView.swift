@@ -66,8 +66,8 @@ struct AlbumDetailView: View {
                     .listRowInsets(EdgeInsets())
             }
 
-            Section {
-                if !songsReady {
+            if !songsReady {
+                Section {
                     HStack {
                         Spacer()
                         ProgressView()
@@ -78,27 +78,43 @@ struct AlbumDetailView: View {
                     }
                     .listRowBackground(Color.clear)
                 }
-
-                ForEach(Array(visible.enumerated()), id: \.element.id) { index, song in
-                    SongRow(song: song, index: index + 1) {
-                            player.play(allSongs, startAt: index,
-                                        context: PlaybackContext(label: album.name, kind: .album(id: album.id)))
+            } else {
+                ForEach(discSections(for: visible, allSongs: allSongs), id: \.id) { section in
+                    Section {
+                        ForEach(section.rows, id: \.song.id) { row in
+                            SongRow(song: row.song, index: row.displayTrack) {
+                                player.play(
+                                    allSongs,
+                                    startAt: row.albumIndex,
+                                    context: PlaybackContext(
+                                        label: album.name, kind: .album(id: album.id)))
+                            }
+                            .listRowBackground(DromeTheme.background)
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                         }
-                        .listRowBackground(DromeTheme.background)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    } header: {
+                        if let title = section.header {
+                            Text(title)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(DromeTheme.muted)
+                                .textCase(nil)
+                        }
+                    }
                 }
 
-                if songsReady, visibleSongCount < allSongs.count {
-                    HStack {
-                        Spacer()
-                        ProgressView()
-                            .padding(.vertical, 8)
-                        Spacer()
-                    }
-                    .listRowBackground(Color.clear)
-                    .onAppear {
-                        ProgressiveSongReveal.expand(
-                            visibleCount: &visibleSongCount, total: allSongs.count)
+                if visibleSongCount < allSongs.count {
+                    Section {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                                .padding(.vertical, 8)
+                            Spacer()
+                        }
+                        .listRowBackground(Color.clear)
+                        .onAppear {
+                            ProgressiveSongReveal.expand(
+                                visibleCount: &visibleSongCount, total: allSongs.count)
+                        }
                     }
                 }
             }
@@ -292,5 +308,65 @@ struct AlbumDetailView: View {
             return "album:\"\(name)\""
         }
         return "album:\"\(name)\" artist:\"\(artist)\""
+    }
+
+    // MARK: - Disc / track grouping (SubSonify Reddit request)
+
+    private struct DiscSection: Identifiable {
+        var id: String
+        var header: String?
+        var rows: [DiscRow]
+    }
+
+    private struct DiscRow {
+        var song: Song
+        /// Index into the full album song array for playback.
+        var albumIndex: Int
+        /// Number shown in the leading column (tag track # when present).
+        var displayTrack: Int
+    }
+
+    /// Groups visible songs into Disc 1 / Disc 2… when multi-disc; otherwise one untitled section.
+    private func discSections(for visible: [Song], allSongs: [Song]) -> [DiscSection] {
+        let indexByID = Dictionary(uniqueKeysWithValues: allSongs.enumerated().map { ($0.element.id, $0.offset) })
+        let discs = Set(visible.compactMap(\.discNumber)).filter { $0 > 0 }
+        let multiDisc = discs.count > 1
+            || (discs.contains(where: { $0 > 1 }) && visible.contains { ($0.discNumber ?? 1) > 1 })
+
+        if !multiDisc {
+            let rows: [DiscRow] = visible.enumerated().map { position, song in
+                DiscRow(
+                    song: song,
+                    albumIndex: indexByID[song.id] ?? position,
+                    displayTrack: song.track ?? (position + 1))
+            }
+            return [DiscSection(id: "all", header: nil, rows: rows)]
+        }
+
+        var buckets: [(disc: Int, songs: [Song])] = []
+        var order: [Int] = []
+        for song in visible {
+            let disc = max(1, song.discNumber ?? 1)
+            if let idx = buckets.firstIndex(where: { $0.disc == disc }) {
+                buckets[idx].songs.append(song)
+            } else {
+                buckets.append((disc, [song]))
+                order.append(disc)
+            }
+        }
+        buckets.sort { $0.disc < $1.disc }
+
+        return buckets.map { bucket in
+            let rows: [DiscRow] = bucket.songs.enumerated().map { position, song in
+                DiscRow(
+                    song: song,
+                    albumIndex: indexByID[song.id] ?? 0,
+                    displayTrack: song.track ?? (position + 1))
+            }
+            return DiscSection(
+                id: "disc-\(bucket.disc)",
+                header: "Disc \(bucket.disc)",
+                rows: rows)
+        }
     }
 }

@@ -58,6 +58,7 @@ struct SmartPlaylistDetailView: View {
 
     @State private var songs: [Song] = []
     @State private var isLoading = true
+    @State private var keepDownloaded = false
 
     private var playbackContext: PlaybackContext {
         PlaybackContext(label: definition.name, kind: .mix)
@@ -92,6 +93,10 @@ struct SmartPlaylistDetailView: View {
         }
         .task { await reload() }
         .refreshable { await reload() }
+        .onChange(of: keepDownloaded) { _, enabled in
+            SmartPlaylistDownloadStore.setKeepDownloaded(enabled, for: definition.id)
+            if enabled { downloads.download(songs) }
+        }
     }
 
     private var songsContent: some View {
@@ -119,6 +124,17 @@ struct SmartPlaylistDetailView: View {
                 }
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+
+                Toggle(isOn: $keepDownloaded) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Keep downloaded")
+                        Text("Auto-download matching tracks for offline (SubSonify-style).")
+                            .font(.caption)
+                            .foregroundStyle(DromeTheme.muted)
+                    }
+                }
+                .tint(DromeTheme.accent)
+                .listRowBackground(DromeTheme.elevated)
 
                 Text("\(songs.count) song\(songs.count == 1 ? "" : "s")")
                     .font(.caption)
@@ -159,15 +175,31 @@ struct SmartPlaylistDetailView: View {
     private func reload() async {
         isLoading = songs.isEmpty
         defer { isLoading = false }
+        keepDownloaded = SmartPlaylistDownloadStore.keepDownloaded(for: definition.id)
         let definition = self.definition
         let userKey = session.account.userKey
         let database = session.database
         let downloads = self.downloads
-        // Snapshot download state on the main actor, then evaluate (also MainActor).
         songs = SmartPlaylistEngine.evaluate(
             definition: definition,
             userKey: userKey,
             database: database,
             downloads: downloads)
+        if keepDownloaded, !songs.isEmpty {
+            downloads.download(songs)
+        }
+    }
+}
+
+/// Persist “keep downloaded” flags for smart playlists (SubSonify Pro parity).
+enum SmartPlaylistDownloadStore {
+    private static let prefix = "drome.smartPlaylist.keepDownloaded."
+
+    static func keepDownloaded(for id: String) -> Bool {
+        UserDefaults.standard.bool(forKey: prefix + id)
+    }
+
+    static func setKeepDownloaded(_ value: Bool, for id: String) {
+        UserDefaults.standard.set(value, forKey: prefix + id)
     }
 }
