@@ -1767,30 +1767,46 @@ final class PlayerEngine: ObservableObject {
     // MARK: - Public API: queue editing
 
     func playNext(_ song: Song) {
-        ratings.ingest([song])
+        playNext([song])
+    }
+
+    /// Insert songs at the front of the user queue (first song plays soonest).
+    func playNext(_ songs: [Song]) {
+        guard !songs.isEmpty else { return }
+        ratings.ingest(songs)
+        let items = songs.map { QueueItem(song: $0) }
         if current == nil {
             runLocalPlayback { [self] in
-                userQueue.insert(QueueItem(song: song), at: 0)
+                userQueue.insert(contentsOf: items, at: 0)
                 let item = userQueue.removeFirst()
                 setCurrent(item, startPlaying: true, allowLowRated: true)
+                resyncUpcomingWindow()
             }
             return
         }
-        userQueue.insert(QueueItem(song: song), at: 0)
+        userQueue.insert(contentsOf: items, at: 0)
         resyncUpcomingWindow()
     }
 
     func addToQueue(_ song: Song) {
-        ratings.ingest([song])
+        addToQueue([song])
+    }
+
+    /// Append songs to the end of the user queue.
+    func addToQueue(_ songs: [Song]) {
+        guard !songs.isEmpty else { return }
+        ratings.ingest(songs)
+        let items = songs.map { QueueItem(song: $0) }
         if current == nil {
             runLocalPlayback { [self] in
-                userQueue.append(QueueItem(song: song))
+                userQueue.append(contentsOf: items)
                 let item = userQueue.removeFirst()
                 setCurrent(item, startPlaying: true, allowLowRated: true)
+                resyncUpcomingWindow()
             }
             return
         }
-        userQueue.append(QueueItem(song: song))
+        userQueue.append(contentsOf: items)
         resyncUpcomingWindow()
     }
 
