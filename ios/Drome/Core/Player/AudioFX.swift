@@ -274,48 +274,54 @@ final class AudioFXController {
 // MARK: - Real 5-band EQ (PCM tap on AVPlayerItem)
 
 /// Attaches an `AVAudioMix` processing tap that runs five peaking EQ bands.
-/// Flat / near-flat gains clear the mix so the tap is bypassed.
+/// Flat / near-flat gains are a no-op inside the tap (graph stays attached).
 final class EqualizerProcessor {
     static let shared = EqualizerProcessor()
+    static let bandCount = 5
 
     /// Same centers as `AudioFXPreferences.bandFrequencies` (copied for audio-thread use).
     let bandFrequencies: [Float] = [60, 230, 910, 3600, 14000]
 
+    /// Fixed-size gain vector — audio thread copies these without allocating.
     private let lock = NSLock()
-    private var gains: [Float]
-    /// Bumped on every fader/preset change so the audio tap only rebuilds coeffs then.
-    private(set) var gainsGeneration: UInt64 = 0
+    private var gain0: Float = 0
+    private var gain1: Float = 0
+    private var gain2: Float = 0
+    private var gain3: Float = 0
+    private var gain4: Float = 0
 
     private init() {
-        gains = Array(repeating: 0, count: bandFrequencies.count)
         // Seed from prefs without hopping to MainActor during init.
         if let data = UserDefaults.standard.data(forKey: "drome.eqBands"),
            let decoded = try? JSONDecoder().decode([Float].self, from: data),
-           decoded.count == bandFrequencies.count {
-            gains = decoded
+           decoded.count == Self.bandCount {
+            applyGainsUnlocked(decoded)
         }
     }
 
     func updateGains(_ bands: [Float]) {
         lock.lock()
-        gains = bands
-        gainsGeneration &+= 1
+        applyGainsUnlocked(bands)
         lock.unlock()
     }
 
     var isActive: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return !gains.allSatisfy { abs($0) < 0.05 }
+        return !gainsAreFlatUnlocked()
     }
 
     /// Attach the EQ mix on a player item (once, even when Flat).
-    /// Live fader moves only update shared gains — never recreate or tear down
-    /// `audioMix` on a playing item (that clicks/scratches). Flat curves are a
-    /// no-op inside the tap, so the graph stays put across Flat ↔ EQ.
+    /// Prefer a synchronous attach so playback never starts dry then glitches
+    /// when an async `audioMix` lands mid-buffer.
     func attach(to item: AVPlayerItem) {
-        // Already processing via an existing tap that reads live gains.
         if item.audioMix != nil { return }
+
+        // Local / warmed assets often already expose tracks.
+        if let mix = makeMix(withAudioTracks: item.asset.tracks(withMediaType: .audio)) {
+            item.audioMix = mix
+            return
+        }
 
         let asset = item.asset
         Task { [weak item] in
@@ -334,6 +340,10 @@ final class EqualizerProcessor {
         } catch {
             return nil
         }
+        return makeMix(withAudioTracks: tracks)
+    }
+
+    private func makeMix(withAudioTracks tracks: [AVAssetTrack]) -> AVAudioMix? {
         guard let track = tracks.first else { return nil }
 
         var callbacks = MTAudioProcessingTapCallbacks(
@@ -369,6 +379,7 @@ final class EqualizerProcessor {
                     nil,
                     numberFramesOut)
                 flagsOut.pointee = localFlags
+                // On failure leave source audio untouched; never drop frames to silence.
                 guard status == noErr else { return }
 
                 let storagePtr = MTAudioProcessingTapGetStorage(tap)
@@ -392,6 +403,25 @@ final class EqualizerProcessor {
         mix.inputParameters = [params]
         return mix
     }
+
+    fileprivate func copyGains(into out: inout (Float, Float, Float, Float, Float)) {
+        lock.lock()
+        out = (gain0, gain1, gain2, gain3, gain4)
+        lock.unlock()
+    }
+
+    private func applyGainsUnlocked(_ bands: [Float]) {
+        gain0 = bands.count > 0 ? bands[0] : 0
+        gain1 = bands.count > 1 ? bands[1] : 0
+        gain2 = bands.count > 2 ? bands[2] : 0
+        gain3 = bands.count > 3 ? bands[3] : 0
+        gain4 = bands.count > 4 ? bands[4] : 0
+    }
+
+    private func gainsAreFlatUnlocked() -> Bool {
+        abs(gain0) < 0.05 && abs(gain1) < 0.05 && abs(gain2) < 0.05
+            && abs(gain3) < 0.05 && abs(gain4) < 0.05
+    }
 }
 
 // MARK: - Tap DSP
@@ -401,17 +431,18 @@ private final class TapStorage {
     private var sampleRate: Double = 44100
     private var channelCount: Int = 2
     private var nonInterleaved = true
+    private var isFloat = true
+    /// Pre-sized in `prepare` — never reallocated on the audio thread.
     private var filters: [[Biquad]] = []
-    /// Smoothed toward the UI target so preset / fader snaps don't jump.
-    private var smoothedGains: [Float] = Array(repeating: 0, count: 5)
+    private var smoothed: (Float, Float, Float, Float, Float) = (0, 0, 0, 0, 0)
+    private var lastCoeff: (Float, Float, Float, Float, Float) = (0, 0, 0, 0, 0)
     /// Dry→wet mix (0 = bypass, 1 = full EQ). Fades in when EQ engages.
     private var wet: Float = 0
-    private var lastCoeffGains: [Float] = Array(repeating: 0, count: 5)
 
-    /// ~120ms wet engage / release — audible fade without feeling sluggish.
-    private let wetSeconds: Float = 0.12
-    /// ~80ms gain chase for preset changes.
-    private let gainSeconds: Float = 0.08
+    /// ~80ms wet engage / release — short enough to avoid feeling like a dropout.
+    private let wetSeconds: Float = 0.08
+    /// ~60ms gain chase for preset changes.
+    private let gainSeconds: Float = 0.06
 
     init(processor: EqualizerProcessor) {
         self.processor = processor
@@ -422,23 +453,32 @@ private final class TapStorage {
         sampleRate = format.mSampleRate > 0 ? format.mSampleRate : 44100
         channelCount = max(1, Int(format.mChannelsPerFrame))
         nonInterleaved = (format.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0
-        // Start dry so first attach fades EQ in instead of slamming it on.
+        isFloat = (format.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+            && format.mBitsPerChannel == 32
         wet = 0
-        smoothedGains = Array(repeating: 0, count: 5)
-        lastCoeffGains = smoothedGains
-        rebuildFilters(gains: smoothedGains, freqs: processor?.bandFrequencies)
+        smoothed = (0, 0, 0, 0, 0)
+        lastCoeff = smoothed
+        // Allocate once here (prepare is off the realtime render path).
+        let freqs = processor?.bandFrequencies ?? [60, 230, 910, 3600, 14000]
+        filters = (0..<channelCount).map { _ in
+            freqs.map { freq in
+                Biquad.peaking(freq: freq, gainDB: 0, sampleRate: Float(sampleRate))
+            }
+        }
     }
 
     func unprepare() {
-        filters.removeAll()
+        filters.removeAll(keepingCapacity: true)
         wet = 0
     }
 
     func process(bufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: Int) {
-        guard frameCount > 0, let processor else { return }
-        let snapshot = processor.currentSnapshot()
-        let targetGains = snapshot.gains
-        let targetActive = !targetGains.allSatisfy { abs($0) < 0.05 }
+        // Integer PCM / unexpected formats: leave GetSourceAudio output alone.
+        guard frameCount > 0, isFloat, let processor, !filters.isEmpty else { return }
+
+        var target = (Float(0), Float(0), Float(0), Float(0), Float(0))
+        processor.copyGains(into: &target)
+        let targetActive = !tupleFlat(target)
         let targetWet: Float = targetActive ? 1 : 0
 
         let sr = Float(max(sampleRate, 1))
@@ -447,28 +487,21 @@ private final class TapStorage {
         wet += (targetWet - wet) * wetAlpha
 
         var gainsMoved = false
-        if smoothedGains.count != targetGains.count {
-            smoothedGains = targetGains
-            gainsMoved = true
-        } else {
-            for i in 0..<smoothedGains.count {
-                let next = smoothedGains[i] + (targetGains[i] - smoothedGains[i]) * gainAlpha
-                if abs(next - smoothedGains[i]) > 0.0001 { gainsMoved = true }
-                smoothedGains[i] = next
-            }
-        }
+        gainsMoved = chase(&smoothed.0, toward: target.0, alpha: gainAlpha) || gainsMoved
+        gainsMoved = chase(&smoothed.1, toward: target.1, alpha: gainAlpha) || gainsMoved
+        gainsMoved = chase(&smoothed.2, toward: target.2, alpha: gainAlpha) || gainsMoved
+        gainsMoved = chase(&smoothed.3, toward: target.3, alpha: gainAlpha) || gainsMoved
+        gainsMoved = chase(&smoothed.4, toward: target.4, alpha: gainAlpha) || gainsMoved
 
-        // Fully dry and settled → skip DSP.
-        if wet < 0.001, !targetActive,
-           smoothedGains.allSatisfy({ abs($0) < 0.05 }) {
+        // Fully dry and settled → skip DSP (source audio already in the buffer).
+        if wet < 0.001, !targetActive, tupleFlat(smoothed) {
             wet = 0
             return
         }
 
-        let structureBad = filters.isEmpty || filters.count != channelCount
-        if structureBad || (gainsMoved && maxAbsDelta(smoothedGains, lastCoeffGains) > 0.02) {
-            rebuildFilters(gains: smoothedGains, freqs: processor.bandFrequencies)
-            lastCoeffGains = smoothedGains
+        if gainsMoved, tupleDelta(smoothed, lastCoeff) > 0.02 {
+            updateCoefficientsInPlace(smoothed, freqs: processor.bandFrequencies)
+            lastCoeff = smoothed
         }
 
         let mix = min(1, max(0, wet))
@@ -483,7 +516,9 @@ private final class TapStorage {
             }
         } else if let buffer = abl.first,
                   let data = buffer.mData?.assumingMemoryBound(to: Float.self) {
-            let frames = min(frameCount, Int(buffer.mDataByteSize) / (MemoryLayout<Float>.size * max(channelCount, 1)))
+            let frames = min(
+                frameCount,
+                Int(buffer.mDataByteSize) / (MemoryLayout<Float>.size * max(channelCount, 1)))
             for i in 0..<frames {
                 for ch in 0..<min(channelCount, filters.count) {
                     let idx = i * channelCount + ch
@@ -511,50 +546,60 @@ private final class TapStorage {
     private func processSample(_ x: Float, channel: Int) -> Float {
         var sample = x
         guard channel < filters.count else { return sample }
-        for f in 0..<filters[channel].count {
-            sample = filters[channel][f].process(sample)
+        let bandCount = filters[channel].count
+        for f in 0..<bandCount {
+            var band = filters[channel][f]
+            sample = band.process(sample)
+            filters[channel][f] = band
         }
         return sample
     }
 
-    private func rebuildFilters(gains: [Float]? = nil, freqs: [Float]? = nil) {
-        let g = gains ?? smoothedGains
-        let f = freqs ?? processor?.bandFrequencies ?? [60, 230, 910, 3600, 14000]
-        // Keep delay state when only gains change to avoid clicks.
-        let previous = filters
-        filters = (0..<channelCount).map { channel in
-            zip(f, g).enumerated().map { index, pair in
-                var biquad = Biquad.peaking(
-                    freq: pair.0, gainDB: pair.1, sampleRate: Float(sampleRate))
-                if channel < previous.count, index < previous[channel].count {
-                    biquad.z1 = previous[channel][index].z1
-                    biquad.z2 = previous[channel][index].z2
+    /// Update peaking coeffs without reallocating filter arrays (audio-thread safe).
+    private func updateCoefficientsInPlace(
+        _ gains: (Float, Float, Float, Float, Float),
+        freqs: [Float]
+    ) {
+        let sr = Float(sampleRate)
+        let bandGains = (gains.0, gains.1, gains.2, gains.3, gains.4)
+        for channel in 0..<filters.count {
+            let count = min(filters[channel].count, EqualizerProcessor.bandCount, freqs.count)
+            for i in 0..<count {
+                let gain: Float
+                switch i {
+                case 0: gain = bandGains.0
+                case 1: gain = bandGains.1
+                case 2: gain = bandGains.2
+                case 3: gain = bandGains.3
+                default: gain = bandGains.4
                 }
-                return biquad
+                var band = filters[channel][i]
+                band.setPeaking(freq: freqs[i], gainDB: gain, sampleRate: sr)
+                filters[channel][i] = band
             }
         }
     }
 
-    private func maxAbsDelta(_ a: [Float], _ b: [Float]) -> Float {
-        guard a.count == b.count, !a.isEmpty else { return .greatestFiniteMagnitude }
-        var best: Float = 0
-        for i in 0..<a.count {
-            best = max(best, abs(a[i] - b[i]))
-        }
-        return best
-    }
-}
-
-private extension EqualizerProcessor {
-    struct Snapshot {
-        var gains: [Float]
-        var generation: UInt64
+    @inline(__always)
+    private func chase(_ value: inout Float, toward target: Float, alpha: Float) -> Bool {
+        let next = value + (target - value) * alpha
+        let moved = abs(next - value) > 0.0001
+        value = next
+        return moved
     }
 
-    func currentSnapshot() -> Snapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        return Snapshot(gains: gains, generation: gainsGeneration)
+    @inline(__always)
+    private func tupleFlat(_ g: (Float, Float, Float, Float, Float)) -> Bool {
+        abs(g.0) < 0.05 && abs(g.1) < 0.05 && abs(g.2) < 0.05
+            && abs(g.3) < 0.05 && abs(g.4) < 0.05
+    }
+
+    @inline(__always)
+    private func tupleDelta(
+        _ a: (Float, Float, Float, Float, Float),
+        _ b: (Float, Float, Float, Float, Float)
+    ) -> Float {
+        max(abs(a.0 - b.0), abs(a.1 - b.1), abs(a.2 - b.2), abs(a.3 - b.3), abs(a.4 - b.4))
     }
 }
 
