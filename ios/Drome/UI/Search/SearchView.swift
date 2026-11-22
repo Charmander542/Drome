@@ -22,7 +22,14 @@ struct SearchView: View {
             case .podcasts: return .podcasts
             }
         }
+
+        /// Spotify search needs the wishlist companion — hide it in streaming-only mode.
+        static func available(hasCompanion: Bool) -> [Source] {
+            hasCompanion ? allCases : [.library, .podcasts]
+        }
     }
+
+    private var hasCompanion: Bool { session.wishlist != nil }
 
     @Environment(AppNavigationRouter.self) private var router
     @EnvironmentObject private var session: AppSession
@@ -345,11 +352,19 @@ struct SearchView: View {
 
     private var sourcePicker: some View {
         Picker("Source", selection: $source) {
-            ForEach(Source.allCases, id: \.self) { s in
+            ForEach(Source.available(hasCompanion: hasCompanion), id: \.self) { s in
                 Text(s.rawValue).tag(s)
             }
         }
         .pickerStyle(.segmented)
+        .onAppear { clampSourceToCompanion() }
+        .onChange(of: hasCompanion) { _, _ in clampSourceToCompanion() }
+    }
+
+    private func clampSourceToCompanion() {
+        if !hasCompanion, source == .spotify {
+            source = .library
+        }
     }
 
     /// Horizontally scrolling chips so AX5 labels stay readable without wrapping.
