@@ -18,6 +18,7 @@ enum WatchBridgeKey {
 enum WatchCommand: String, Codable {
     case togglePlay, next, previous, toggleLike, toggleOutOfRotation
     case setRating, playContext, playPlaylist, adjustVolume, requestSync
+    case startSongRadio
 }
 
 struct WatchPlaylistItem: Codable, Equatable, Identifiable {

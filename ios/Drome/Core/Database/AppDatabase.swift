@@ -315,6 +315,8 @@ final class AppDatabase: @unchecked Sendable {
                 );
                 """)
         }
+        // Documents raising play_history prune from 500 → 2000 (enforced in recordPlay).
+        migrator.registerMigration("v8_play_history_retention") { _ in }
         return migrator
     }
 
@@ -518,7 +520,7 @@ final class AppDatabase: @unchecked Sendable {
 
     // MARK: - Play history
 
-    /// Records a play and retains at most the newest 500 rows for the user.
+    /// Records a play and retains at most the newest 2000 rows for the user.
     func recordPlay(userKey: String, song: Song, context: PlaybackContext? = nil) throws {
         let json = (try? JSONEncoder().encode(song))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
@@ -578,10 +580,48 @@ final class AppDatabase: @unchecked Sendable {
                     SELECT rowid FROM play_history
                     WHERE user_key = ?
                     ORDER BY played_at DESC
-                    LIMIT 500
+                    LIMIT 2000
                   )
                 """, arguments: [userKey, userKey])
         }
+    }
+
+    /// Aggregate listening stats from retained `play_history` for a user.
+    func listeningStats(
+        userKey: String,
+        period: ListeningStatsPeriod = .allTime,
+        topLimit: Int = 5
+    ) throws -> ListeningStats {
+        let cutoff: Double?
+        if let days = period.lookbackDays {
+            cutoff = Date().timeIntervalSince1970 - Double(days) * 86_400
+        } else {
+            cutoff = nil
+        }
+        let plays: [(playedAt: TimeInterval, song: Song)] = try pool.read { db in
+            let rows: [Row]
+            if let cutoff {
+                rows = try Row.fetchAll(db, sql: """
+                    SELECT played_at, song_json FROM play_history
+                    WHERE user_key = ? AND played_at >= ?
+                    ORDER BY played_at DESC
+                    """, arguments: [userKey, cutoff])
+            } else {
+                rows = try Row.fetchAll(db, sql: """
+                    SELECT played_at, song_json FROM play_history
+                    WHERE user_key = ?
+                    ORDER BY played_at DESC
+                    """, arguments: [userKey])
+            }
+            return rows.compactMap { row -> (playedAt: TimeInterval, song: Song)? in
+                let playedAt: Double = row["played_at"]
+                let json: String = row["song_json"]
+                guard let data = json.data(using: .utf8),
+                      let song = try? JSONDecoder().decode(Song.self, from: data) else { return nil }
+                return (playedAt, song)
+            }
+        }
+        return ListeningStats.aggregate(plays: plays, topLimit: topLimit)
     }
 
     /// Most-recent-first plays, unique by `song_id` (keeps the newest row).
@@ -702,6 +742,28 @@ final class AppDatabase: @unchecked Sendable {
                 ORDER BY MAX(played_at) DESC
                 LIMIT ?
                 """, arguments: [userKey, cutoff, limit])
+        }
+    }
+
+    /// Unique songs from play history with their most recent `played_at` (seconds since 1970).
+    /// Used by Smart Playlists to apply recency rules against local listening history.
+    func playHistorySongs(userKey: String, limit: Int = 2000) throws -> [(song: Song, playedAt: TimeInterval)] {
+        try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT song_id, song_json, MAX(played_at) AS last_played
+                FROM play_history
+                WHERE user_key = ?
+                GROUP BY song_id
+                ORDER BY last_played DESC
+                LIMIT ?
+                """, arguments: [userKey, limit])
+            return rows.compactMap { row -> (Song, TimeInterval)? in
+                let json: String = row["song_json"]
+                let playedAt: TimeInterval = row["last_played"]
+                guard let data = json.data(using: .utf8),
+                      let song = try? JSONDecoder().decode(Song.self, from: data) else { return nil }
+                return (song, playedAt)
+            }
         }
     }
 

@@ -179,6 +179,7 @@
 				UI/Library/LibraryView.swift,
 				UI/Library/PlaylistDetailView.swift,
 				UI/Library/RatedLibraryView.swift,
+				UI/Library/SmartPlaylistsView.swift,
 				UI/Library/WishlistView.swift,
 				UI/MainTabView.swift,
 				UI/Onboarding/OnboardingScreenMocks.swift,
@@ -196,6 +197,7 @@
 				UI/Search/RecentSearchesStore.swift,
 				UI/Search/SearchView.swift,
 				UI/Settings/DiagnosticsView.swift,
+				UI/Settings/ListeningStatsView.swift,
 				UI/Settings/SettingsView.swift,
 				UI/Settings/TVPairingView.swift,
 			);
@@ -1129,6 +1131,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = DromeMusic;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = drome.app;
+				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1159,6 +1162,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = DromeMusic;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = drome.app;
+				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

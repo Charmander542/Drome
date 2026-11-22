@@ -58,4 +58,14 @@ struct Account: Codable, Identifiable, Hashable {
     var displayName: String {
         "\(username) @ \(serverKey)"
     }
+
+    /// Public Navidrome playground (`demo` / `demo`) — streaming only, no companion.
+    var isPublicDemo: Bool {
+        let host = (serverURL.host ?? "").lowercased()
+        return host == "demo.navidrome.org" && username.lowercased() == "demo"
+    }
+
+    static let publicDemoServerURL = URL(string: "https://demo.navidrome.org")!
+    static let publicDemoUsername = "demo"
+    static let publicDemoPassword = "demo"
 }

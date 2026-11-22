@@ -489,18 +489,28 @@ struct LibraryView: View {
                 }
                 .listRowBackground(DromeTheme.elevated)
 
-                NavigationLink {
-                    WishlistView()
-                } label: {
-                    Label("Wishlist", systemImage: "heart.fill")
-                        .font(.body.weight(.semibold))
+                if session.wishlist != nil {
+                    NavigationLink {
+                        WishlistView()
+                    } label: {
+                        Label("Wishlist", systemImage: "heart.fill")
+                            .font(.body.weight(.semibold))
+                    }
+                    .listRowBackground(DromeTheme.elevated)
                 }
-                .listRowBackground(DromeTheme.elevated)
 
                 NavigationLink {
                     RatedLibraryView()
                 } label: {
                     Label("Top Rated", systemImage: "star.fill")
+                        .font(.body.weight(.semibold))
+                }
+                .listRowBackground(DromeTheme.elevated)
+
+                NavigationLink {
+                    SmartPlaylistsView()
+                } label: {
+                    Label("Smart Playlists", systemImage: "wand.and.stars")
                         .font(.body.weight(.semibold))
                 }
                 .listRowBackground(DromeTheme.elevated)

@@ -282,6 +282,11 @@ final class CarPlaySceneDelegate: UIResponder,
         }
         rate.isSelected = rating > 0
 
+        let radioImage = UIImage(systemName: "dot.radiowaves.left.and.right") ?? UIImage()
+        let radio = CPNowPlayingImageButton(image: radioImage) { [weak self] _ in
+            Task { await self?.startSongRadio(session: session) }
+        }
+
         let shuffle = CPNowPlayingShuffleButton { [weak self] _ in
             AppEnvironment.shared?.session?.player.cycleShuffleMode()
             self?.refreshNowPlayingButtons()
@@ -304,7 +309,7 @@ final class CarPlaySceneDelegate: UIResponder,
         }
         autoplay.isSelected = player.autoplayEnabled
 
-        np.updateNowPlayingButtons([rate, shuffle, repeatButton, autoplay])
+        np.updateNowPlayingButtons([rate, radio, shuffle, repeatButton, autoplay])
     }
 
     func nowPlayingTemplateUpNextButtonTapped(_ nowPlayingTemplate: CPNowPlayingTemplate) {
@@ -655,6 +660,18 @@ final class CarPlaySceneDelegate: UIResponder,
                         }
                     }
                     items.append(shuffleAll)
+                case "Song Radio":
+                    let radio = actionItem(
+                        title: item.title,
+                        detail: item.subtitle,
+                        systemImage: "dot.radiowaves.left.and.right")
+                    radio.handler = { [weak self] _, completion in
+                        Task {
+                            await self?.startSongRadio(session: session)
+                            completion()
+                        }
+                    }
+                    items.append(radio)
                 case "Daily Mixes":
                     let tiles = Array(mixes.prefix(tileCap))
                     let images = tiles.map {
@@ -892,6 +909,37 @@ final class CarPlaySceneDelegate: UIResponder,
         guard !songs.isEmpty else { return }
         session.player.playShuffled(
             songs, context: PlaybackContext(label: "Shuffle All", kind: .mix))
+        pushNowPlaying()
+    }
+
+    /// Song Radio / Instant Mix from the current track (or most recent play).
+    private func startSongRadio(session: AppSession) async {
+        var seed = session.player.current?.song
+        if seed == nil {
+            seed = (try? session.database.recentPlays(
+                userKey: session.account.userKey, limit: 1))?.first
+        }
+        guard let seed else {
+            presentSimpleAlert(
+                title: "Nothing to radio",
+                message: "Play a song first, then start Song Radio.")
+            return
+        }
+        let songs = await InstantMix.songs(from: seed, client: session.client, count: 40)
+        guard songs.count > 1 else {
+            presentSimpleAlert(
+                title: "Radio unavailable",
+                message: "Couldn’t build a mix from this track.")
+            return
+        }
+        let context = PlaybackContext(
+            label: "Song Radio · \(seed.artist ?? seed.title)",
+            kind: .mix)
+        if session.player.current?.song.id == seed.id {
+            session.player.adoptUpcomingMix(songs, context: context)
+        } else {
+            session.player.play(songs, startAt: 0, context: context)
+        }
         pushNowPlaying()
     }
 
@@ -1678,7 +1726,7 @@ final class CarPlaySceneDelegate: UIResponder,
             !PlaylistOrderStore.isHidden($0.id, userKey: userKey)
         }
         let playlistCap = min(
-            listLimits.maxItems - 5,
+            listLimits.maxItems - 6,
             listsLimited ? CarPlayListPolicy.limitedListItemCap : CarPlayListPolicy.libraryBrowseCap)
         let input = CarPlayListPolicy.LibraryInput(
             serverError: error,
@@ -1744,6 +1792,15 @@ final class CarPlaySceneDelegate: UIResponder,
                             await self?.showTopRatedFlat(session: session)
                             completion()
                         }
+                    }
+                    items.append(row)
+                case .browseSmartPlaylists:
+                    let row = libraryShortcut(
+                        title: item.title, detail: item.subtitle ?? "",
+                        systemImage: "wand.and.stars")
+                    row.handler = { [weak self] _, completion in
+                        self?.showSmartPlaylists(session: session)
+                        completion()
                     }
                     items.append(row)
                 case .browseGenres:
@@ -1814,6 +1871,50 @@ final class CarPlaySceneDelegate: UIResponder,
     }
 
     /// Flattened Top Rated — one screen with 5★ / 4★ / albums (no menu → collection → … chain).
+    private func showSmartPlaylists(session: AppSession) {
+        let definitions = SmartPlaylistCatalog.builtIn
+        let items: [CPListItem] = definitions.map { definition in
+            let item = listItem(
+                text: definition.name,
+                detail: definition.subtitle,
+                coverArt: nil,
+                fallbackId: definition.id,
+                session: session,
+                style: .playlist)
+            item.handler = { [weak self] _, completion in
+                Task {
+                    await self?.playSmartPlaylist(definition, session: session)
+                    completion()
+                }
+            }
+            item.accessoryType = .disclosureIndicator
+            return item
+        }
+        let list = CPListTemplate(
+            title: "Smart Playlists",
+            sections: clampSections([CPListSection(items: items)]))
+        pushTemplate(list, kind: .browse)
+    }
+
+    private func playSmartPlaylist(
+        _ definition: SmartPlaylistDefinition,
+        session: AppSession
+    ) async {
+        let songs = SmartPlaylistEngine.evaluate(
+            definition: definition,
+            userKey: session.account.userKey,
+            database: session.database,
+            downloads: session.downloads)
+        guard !songs.isEmpty else {
+            presentSimpleAlert(
+                title: definition.name,
+                message: "Nothing matches this smart playlist yet.")
+            return
+        }
+        playSongs(
+            songs, startAt: 0, label: definition.name, kind: .mix, session: session)
+    }
+
     private func showTopRatedFlat(session: AppSession) async {
         guard interfaceController != nil else { return }
 

@@ -20,8 +20,11 @@ struct HomeView: View {
     @State private var error: String?
     @State private var showSettings = false
     @State private var scrollToTopToken = 0
+    @State private var demoBusy = false
+    @State private var demoError: String?
 
     private var hasCompanion: Bool { session.wishlist != nil }
+    private var onPublicDemo: Bool { session.account.isPublicDemo }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -32,8 +35,15 @@ struct HomeView: View {
                     // Compact brand — Vibe Tuner is the hero immediately under it.
                     homeBrandRow
 
+                    if !onPublicDemo {
+                        tryDemoCard
+                    } else if !hasCompanion {
+                        streamingOnlyBanner
+                    }
+
                     VibeTuner()
 
+                    // Companion-only: Daily Mixes / For You need the wishlist server.
                     if hasCompanion {
                         DailyMixRail(
                             mixes: dailyMixes,
@@ -47,7 +57,7 @@ struct HomeView: View {
                         HorizontalRecentRail(
                             title: "Continue",
                             entries: recentEntries,
-                            dailyMixes: dailyMixes)
+                            dailyMixes: hasCompanion ? dailyMixes : [])
                     }
                     if !homePlaylists.isEmpty {
                         HorizontalPlaylistRail(title: "Playlists", playlists: homePlaylists)
@@ -154,8 +164,88 @@ struct HomeView: View {
         .padding(.bottom, 2)
     }
 
+    /// Switch into the public Navidrome playground (streaming-only, no companion).
+    private var tryDemoCard: some View {
+        Button {
+            Task { await connectPublicDemo() }
+        } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(DromeTheme.accent.opacity(0.2))
+                    Image(systemName: "play.circle.fill")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(DromeTheme.accent)
+                }
+                .frame(width: 48, height: 48)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Try the public demo")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(.white)
+                    Text("demo.navidrome.org · streaming only")
+                        .font(.caption)
+                        .foregroundStyle(DromeTheme.muted)
+                    if let demoError {
+                        Text(demoError)
+                            .font(.caption2)
+                            .foregroundStyle(.red.opacity(0.9))
+                    }
+                }
+                Spacer(minLength: 0)
+                if demoBusy {
+                    ProgressView().tint(.white)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(DromeTheme.muted)
+                }
+            }
+            .padding(14)
+            .background(DromeTheme.elevated, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(demoBusy)
+        .padding(.horizontal, 16)
+        .accessibilityIdentifier("drome.home.try-demo")
+    }
+
+    private var streamingOnlyBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "antenna.radiowaves.left.and.right")
+                .foregroundStyle(DromeTheme.accent)
+            Text("Demo mode — streaming only. Wishlist, Daily Mixes, and Spotify search stay off without a companion.")
+                .font(.caption)
+                .foregroundStyle(DromeTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(DromeTheme.elevated.opacity(0.7), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.horizontal, 16)
+        .accessibilityIdentifier("drome.home.demo-banner")
+    }
+
     private func dismissHomeSheets() {
         showSettings = false
+    }
+
+    private func connectPublicDemo() async {
+        demoBusy = true
+        demoError = nil
+        defer { demoBusy = false }
+        let account = Account(
+            serverURL: Account.publicDemoServerURL,
+            username: Account.publicDemoUsername,
+            allowSelfSigned: false,
+            wishlistURL: nil)
+        let client = SubsonicClient(account: account, password: Account.publicDemoPassword)
+        do {
+            try await client.ping()
+            env.signIn(account: account, password: Account.publicDemoPassword)
+        } catch {
+            demoError = error.localizedDescription
+        }
     }
 
     private func loadAll() async {

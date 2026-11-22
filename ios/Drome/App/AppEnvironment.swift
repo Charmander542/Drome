@@ -311,6 +311,28 @@ final class AppEnvironment: ObservableObject {
             session: session)
     }
 
+    /// Instant Mix / Song Radio kicked off from Apple Watch.
+    func startWatchSongRadio() async {
+        guard let session else { return }
+        var seed = session.player.current?.song
+        if seed == nil {
+            seed = (try? database.recentPlays(userKey: session.account.userKey, limit: 1))?.first
+        }
+        guard let seed else { return }
+        let songs = await InstantMix.songs(from: seed, client: session.client, count: 40)
+        guard songs.count > 1 else { return }
+        let context = PlaybackContext(
+            label: "Song Radio · \(seed.artist ?? seed.title)",
+            kind: .mix)
+        if session.player.current?.song.id == seed.id {
+            session.player.adoptUpcomingMix(songs, context: context)
+        } else {
+            session.player.play(songs, startAt: 0, context: context)
+        }
+        PhoneWatchSession.shared.broadcast(
+            session: session, database: database, priority: .full)
+    }
+
     private func fetchShareSongID(from url: URL) async -> String? {
         var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
         comps?.query = nil

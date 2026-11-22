@@ -2577,6 +2577,7 @@ final class PlayerEngine: ObservableObject {
                 let reported = (itemDuration?.isFinite == true && (itemDuration ?? 0) > 0)
                     ? itemDuration : nil
                 self.setPlayhead(elapsed: seconds, duration: reported)
+                self.applyMixTransitionFadeIfNeeded(elapsed: seconds)
             }
         }
 
@@ -2672,6 +2673,9 @@ final class PlayerEngine: ObservableObject {
                     self.configureAudioSession()
                     self.handlePossibleAirPlayRouteChange()
                     self.handlePossibleBluetoothRouteChange()
+                    #if os(iOS)
+                    _ = HeadphoneEQProfiles.applyForCurrentRouteIfNeeded()
+                    #endif
                     if self.wantsToPlay {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
                             guard let self, self.wantsToPlay else { return }
@@ -2731,7 +2735,9 @@ final class PlayerEngine: ObservableObject {
             pinPlayheadToStart()
         }
         updateActionAtItemEnd()
-        applyAudioFXVolume(animated: AudioFXPreferences.crossfadeSeconds > 0)
+        let fadeIn = AudioFXPreferences.resolvedCrossfadeSeconds(for: newCurrent.song) > 0
+            && !shouldKeepGapless(from: history.last?.song, to: newCurrent.song)
+        applyAudioFXVolume(animated: fadeIn)
         // Prefetch disabled — avoid second-stream races at song boundaries.
         pushNowPlayingInfo()
         scrobbleNowPlaying(newCurrent.song)
@@ -2744,7 +2750,7 @@ final class PlayerEngine: ObservableObject {
     /// ReplayGain → AVQueuePlayer.volume. EQ is applied in the PCM tap, not here.
     private func applyAudioFXVolume(animated: Bool = false) {
         let target = min(1.0, AudioFXController.shared.volume(for: current?.song))
-        let seconds = AudioFXPreferences.crossfadeSeconds
+        let seconds = AudioFXPreferences.resolvedCrossfadeSeconds(for: current?.song)
         if animated, seconds > 0 {
             player.volume = 0.05
             let steps = max(6, seconds * 10)
@@ -2761,6 +2767,37 @@ final class PlayerEngine: ObservableObject {
             // heavy UI (e.g. Search + keyboard) even when the gain is unchanged.
             player.volume = target
         }
+    }
+
+    /// Soft / beat-aligned mix: fade the outgoing track down before it ends so
+    /// the next track's fade-in overlaps perceptually (AVQueuePlayer can't dual-play).
+    private func applyMixTransitionFadeIfNeeded(elapsed: TimeInterval) {
+        guard wantsToPlay, let song = current?.song else { return }
+        let seconds = AudioFXPreferences.resolvedCrossfadeSeconds(for: song)
+        guard seconds > 0 else { return }
+        let total = duration > 1 ? duration : TimeInterval(song.duration ?? 0)
+        guard total > Double(seconds) + 2 else { return }
+        let remaining = total - elapsed
+        guard remaining > 0, remaining <= Double(seconds) else { return }
+
+        let nextSong = peekUpcoming(limit: 1).first?.song
+        if shouldKeepGapless(from: song, to: nextSong) { return }
+
+        let target = min(1.0, AudioFXController.shared.volume(for: song))
+        let t = Float(remaining / Double(seconds))
+        let faded = max(0.05, target * t)
+        if abs(player.volume - faded) > 0.02 {
+            player.volume = faded
+        }
+    }
+
+    /// Same-album contiguous tracks stay gapless even when mix transitions are on.
+    private func shouldKeepGapless(from a: Song?, to b: Song?) -> Bool {
+        guard let a, let b else { return false }
+        if let albumA = a.albumId, let albumB = b.albumId, !albumA.isEmpty, albumA == albumB {
+            return true
+        }
+        return false
     }
 
     private func handleItemDidEnd(_ item: AVPlayerItem?) {

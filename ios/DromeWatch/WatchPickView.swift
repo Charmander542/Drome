@@ -45,8 +45,18 @@ struct WatchPickView: View {
                 }
             }
 
+            if store.payload.nowPlaying != nil {
+                Section {
+                    Button {
+                        store.send(.startSongRadio)
+                    } label: {
+                        Label("Song Radio", systemImage: "dot.radiowaves.left.and.right")
+                    }
+                }
+            }
+
             if store.payload.recents.isEmpty && store.payload.playlists.isEmpty {
-                Text("Open Drome on iPhone to load playlists")
+                Text("Open Drome on iPhone to load playlists. Standalone Watch streaming is coming — controls work when the phone is nearby.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -22,10 +22,12 @@ struct SettingsView: View {
     @State private var scanFailed = false
     @State private var showAccounts = false
     @State private var path = NavigationPath()
+    @State private var listeningPreview: ListeningStats = .empty
 
     private enum Route: Hashable {
         case downloads
         case diagnostics
+        case listeningStats
         case tvPairing
         case connect
     }
@@ -75,26 +77,18 @@ struct SettingsView: View {
     private var settingsRoot: some View {
         List {
             titleRow
-            quickAccessGrid
-
-            accountSection
-            appearanceSection
-            companionSection
-            if session.connect != nil {
-                connectSection
-            }
-            networkSection
+            listeningHeroSection
+            youSection
             playbackSection
-            launchSection
-            lyricsSection
-            storageSection
-            librarySection
-            aboutSection
+            transitionsSection
+            libraryOfflineSection
+            connectionsSection
+            moreSection
             signOutSection
             versionFooter
         }
         .listStyle(.insetGrouped)
-        .listSectionSpacing(20)
+        .listSectionSpacing(18)
         .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
         .background(DromeTheme.background)
@@ -113,6 +107,7 @@ struct SettingsView: View {
             }
         }
         .accessibilityIdentifier("drome.settings.screen")
+        .task { refreshListeningPreview() }
     }
 
     @ViewBuilder
@@ -124,6 +119,10 @@ struct SettingsView: View {
                 .scrollIndicators(.hidden)
         case .diagnostics:
             DiagnosticsView()
+                .settingsNavChrome()
+                .scrollIndicators(.hidden)
+        case .listeningStats:
+            ListeningStatsView()
                 .settingsNavChrome()
                 .scrollIndicators(.hidden)
         case .tvPairing:
@@ -159,210 +158,106 @@ struct SettingsView: View {
             .accessibilityAddTraits(.isHeader)
     }
 
-    private var quickAccessGrid: some View {
+    /// Subsonify-style “Your listening” hero — hours / plays / days at a glance.
+    private var listeningHeroSection: some View {
         Section {
-            let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 3)
-            LazyVGrid(columns: columns, spacing: 10) {
-                quickTile(
-                    icon: isOnline ? "checkmark.circle.fill" : "xmark.circle.fill",
-                    label: isOnline ? "Online" : "Offline",
-                    color: isOnline ? Color(red: 0.35, green: 0.82, blue: 0.45) : .red,
-                    accessibilityId: "drome.settings.tile.online"
-                ) {
-                    Task { await refreshLibrary() }
-                }
+            Button {
+                path.append(Route.listeningStats)
+            } label: {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(spacing: 12) {
+                        ZStack {
+                            Circle()
+                                .fill(DromeTheme.accent.opacity(0.22))
+                            Image(systemName: "chart.bar.fill")
+                                .font(.title3.weight(.bold))
+                                .foregroundStyle(DromeTheme.accent)
+                        }
+                        .frame(width: 44, height: 44)
 
-                quickTile(
-                    icon: "arrow.down.circle.fill",
-                    label: "Downloads",
-                    color: Color(red: 0.35, green: 0.55, blue: 0.95),
-                    accessibilityId: "drome.settings.tile.downloads"
-                ) {
-                    path.append(Route.downloads)
-                }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Your listening")
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(.white)
+                            Text(listeningPreview.isEmpty
+                                 ? "Play something to fill your stats"
+                                 : "Top artists, albums, and songs")
+                                .font(.caption)
+                                .foregroundStyle(DromeTheme.muted)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(DromeTheme.muted)
+                    }
 
-                quickTile(
-                    icon: "arrow.triangle.2.circlepath",
-                    label: isScanning ? "Scanning" : "Scan",
-                    color: Color(red: 0.35, green: 0.85, blue: 0.72),
-                    accessibilityId: "drome.settings.tile.scan"
-                ) {
-                    Task { await refreshLibrary() }
-                }
-
-                quickTile(
-                    icon: "ladybug.fill",
-                    label: "Diagnostics",
-                    color: Color(red: 0.95, green: 0.55, blue: 0.35),
-                    accessibilityId: "drome.settings.tile.diagnostics"
-                ) {
-                    path.append(Route.diagnostics)
-                }
-
-                if session.connect != nil {
-                    quickTile(
-                        icon: "hifispeaker.2.fill",
-                        label: "Connect",
-                        color: Color(red: 0.72, green: 0.58, blue: 0.95),
-                        accessibilityId: "drome.settings.tile.connect"
-                    ) {
-                        path.append(Route.connect)
+                    HStack(spacing: 0) {
+                        heroStat(
+                            value: heroHoursLabel,
+                            label: "Hours")
+                        Divider().frame(height: 28).overlay(DromeTheme.divider)
+                        heroStat(
+                            value: "\(listeningPreview.totalPlays)",
+                            label: "Plays")
+                        Divider().frame(height: 28).overlay(DromeTheme.divider)
+                        heroStat(
+                            value: "\(listeningPreview.activeDays)",
+                            label: "Days")
                     }
                 }
+                .padding(.vertical, 6)
             }
-            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 8, trailing: 0))
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-        }
-    }
-
-    private func quickTile(
-        icon: String,
-        label: String,
-        color: Color,
-        accessibilityId: String? = nil,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            VStack(spacing: 10) {
-                Image(systemName: icon)
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(color)
-                    .symbolRenderingMode(.hierarchical)
-                    .frame(height: 32)
-                Text(label)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.white.opacity(0.72))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: 92)
-            .background(DromeTheme.elevated, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        }
-        // List rows swallow `.plain` taps; borderless keeps the tile actionable.
-        .buttonStyle(.borderless)
-        .accessibilityIdentifier(accessibilityId ?? "drome.settings.tile.\(label.lowercased())")
-    }
-
-    // MARK: - Sections
-
-    private var appearanceSection: some View {
-        Section {
-            AccentColourPicker()
-        } header: {
-            Text("Appearance")
-        } footer: {
-            Text("Accent colours buttons, tabs, and highlights. Amber is Drome’s default.")
-        }
-        .listRowBackground(DromeTheme.elevated)
-    }
-
-    private var accountSection: some View {
-        Section {
-            LabeledContent("User", value: session.account.username)
-            LabeledContent("Server", value: session.account.serverURL.absoluteString)
-            Button {
-                showAccounts = true
-            } label: {
-                Label("Switch Account", systemImage: "person.2")
-            }
-            Button {
-                path.append(Route.tvPairing)
-            } label: {
-                Label("Send to Apple TV", systemImage: "appletv")
-            }
-            Toggle(isOn: Binding(
-                get: { session.account.allowSelfSigned },
-                set: { newValue in
-                    var account = session.account
-                    account.allowSelfSigned = newValue
-                    env.accounts.update(account)
-                    env.activate(account)
-                }
-            )) {
-                Label("Allow self-signed cert", systemImage: "lock.open")
-            }
-        } header: {
-            Text("Account")
-        }
-        .listRowBackground(DromeTheme.elevated)
-    }
-
-    private var companionSection: some View {
-        Section {
-            TextField(companionPlaceholder, text: $wishlistURLText)
-                .font(.body)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-            Button {
-                saveWishlistURL()
-            } label: {
-                Label("Save Wishlist Server", systemImage: "checkmark.circle")
-            }
-            if let savedMessage {
-                Text(savedMessage)
-                    .font(.caption)
-                    .foregroundStyle(DromeTheme.accent)
-            }
-        } header: {
-            Text("Wishlist companion")
-        } footer: {
-            Text("Companion for Spotify wishlist downloads and Drome Connect. LAN example: http://host:4534")
-        }
-        .listRowBackground(DromeTheme.elevated)
-    }
-
-    @ViewBuilder
-    private var connectSection: some View {
-        if let connect = session.connect {
-            Section {
-                Button {
-                    path.append(Route.connect)
-                } label: {
-                    Label(
-                        connect.isRemote ? "Playing elsewhere" : "Connect devices",
-                        systemImage: "hifispeaker.2"
-                    )
-                }
-                LabeledContent("This device", value: connect.deviceName)
-                LabeledContent("Online", value: "\(max(connect.devices.count, 1))")
-            } header: {
-                Text("Connect")
-            } footer: {
-                Text("Same login on another Drome app. Tap a device to move playback there.")
-            }
+            .buttonStyle(.borderless)
+            .accessibilityIdentifier("drome.settings.listening")
             .listRowBackground(DromeTheme.elevated)
         }
     }
 
-    private var networkSection: some View {
+    private func heroStat(value: String, label: String) -> some View {
+        VStack(spacing: 2) {
+            Text(value)
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .minimumScaleFactor(0.7)
+                .lineLimit(1)
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(DromeTheme.muted)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var heroHoursLabel: String {
+        let hours = listeningPreview.hoursListened
+        if hours >= 10 { return String(format: "%.0f", hours.rounded()) }
+        if hours >= 1 { return String(format: "%.1f", hours) }
+        let minutes = max(0, listeningPreview.totalSeconds / 60)
+        return minutes > 0 ? "\(minutes)m" : "0"
+    }
+
+    // MARK: - Sections
+
+    private var youSection: some View {
         Section {
-            TextField("Home / LAN URL (optional)", text: $homeURLText)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-            TextField("Custom headers (Header: value per line)", text: $customHeadersText, axis: .vertical)
-                .font(.caption.monospaced())
-                .lineLimit(2...6)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
+            AccentColourPicker()
             Button {
-                saveNetworkSettings()
+                Task { await refreshLibrary() }
             } label: {
-                Label("Save network", systemImage: "network")
+                HStack {
+                    Label(
+                        isOnline ? "Online" : "Offline",
+                        systemImage: isOnline ? "checkmark.circle.fill" : "wifi.slash")
+                    Spacer()
+                    Text(session.account.username)
+                        .foregroundStyle(DromeTheme.muted)
+                }
             }
-            if let networkSavedMessage {
-                Text(networkSavedMessage)
-                    .font(.caption)
-                    .foregroundStyle(DromeTheme.accent)
-            }
+            .buttonStyle(.borderless)
+            .accessibilityIdentifier("drome.settings.tile.online")
         } header: {
-            Text("Home / Away")
+            Text("You")
         } footer: {
-            Text("When a home URL is set, Drome prefers it on your LAN. Custom headers help with Cloudflare Access and reverse proxies.")
+            Text("Accent colours buttons, tabs, and highlights. Amber is Drome’s default.")
         }
         .listRowBackground(DromeTheme.elevated)
     }
@@ -389,23 +284,6 @@ struct SettingsView: View {
                 set: { PlaybackPreferences.resilientRemoteStreaming = $0 }
             )) {
                 Label("Resilient streaming", systemImage: "wifi.exclamationmark")
-            }
-            Toggle(isOn: Binding(
-                get: { AudioFXPreferences.autoDownloadStarred },
-                set: { AudioFXPreferences.autoDownloadStarred = $0 }
-            )) {
-                Label("Auto-download starred", systemImage: "star.fill")
-            }
-            Picker(selection: Binding(
-                get: { AudioFXPreferences.prefetchCount },
-                set: { AudioFXPreferences.prefetchCount = $0 }
-            )) {
-                Text("2 tracks").tag(2)
-                Text("3 tracks").tag(3)
-                Text("5 tracks").tag(5)
-                Text("8 tracks").tag(8)
-            } label: {
-                Label("Pre-cache upcoming", systemImage: "arrow.down.to.line")
             }
             Picker(selection: Binding(
                 get: { player.shuffleMode },
@@ -438,69 +316,77 @@ struct SettingsView: View {
             } label: {
                 Label("Autoplay recency", systemImage: "clock.arrow.circlepath")
             }
+            Picker(selection: Binding(
+                get: { AudioFXPreferences.prefetchCount },
+                set: { AudioFXPreferences.prefetchCount = $0 }
+            )) {
+                Text("2 tracks").tag(2)
+                Text("3 tracks").tag(3)
+                Text("5 tracks").tag(5)
+                Text("8 tracks").tag(8)
+            } label: {
+                Label("Pre-cache upcoming", systemImage: "arrow.down.to.line")
+            }
         } header: {
             Text("Playback")
         } footer: {
-            Text("Equalizer lives on Now Playing. Compress on cellular uses MP3 over LTE/5G. Station steering reshapes Infinite Shuffle.")
+            Text("Equalizer (10-band + headphone profiles) opens from Now Playing. Compress on cellular uses MP3 over LTE/5G.")
         }
         .listRowBackground(DromeTheme.elevated)
     }
 
-    private var launchSection: some View {
+    private var transitionsSection: some View {
         Section {
-            Button {
-                OnboardingPresenter.replay()
-                dismiss()
-            } label: {
-                Label("Replay feature tour", systemImage: "sparkles")
-            }
-        } header: {
-            Text("Launch")
-        }
-        .listRowBackground(DromeTheme.elevated)
-    }
-
-    private var lyricsSection: some View {
-        Section {
-            Toggle(isOn: Binding(
-                get: { lyricsIndexer.isEnabled },
-                set: { lyricsIndexer.isEnabled = $0 }
+            Picker(selection: Binding(
+                get: { AudioFXPreferences.mixTransitionMode },
+                set: { AudioFXPreferences.mixTransitionMode = $0 }
             )) {
-                Label("Background indexer", systemImage: "text.quote")
-            }
-            LabeledContent("Cached lyrics", value: "\(lyricsIndexer.cachedCount)")
-            if lyricsIndexer.isRunning {
-                LabeledContent("Status", value: lyricsIndexer.statusText)
-            }
-            Button {
-                lyricsIndexer.reindexFromStart()
+                ForEach(AudioFXPreferences.MixTransitionMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
             } label: {
-                Label("Reindex from start", systemImage: "arrow.counterclockwise")
+                Label("Mix", systemImage: "waveform.path")
+            }
+            if AudioFXPreferences.mixTransitionMode != .off {
+                Picker(selection: Binding(
+                    get: { AudioFXPreferences.crossfadeSeconds == 0 ? 6 : AudioFXPreferences.crossfadeSeconds },
+                    set: { AudioFXPreferences.crossfadeSeconds = $0 }
+                )) {
+                    Text("3s").tag(3)
+                    Text("6s").tag(6)
+                    Text("9s").tag(9)
+                    Text("12s").tag(12)
+                } label: {
+                    Label("Crossfade", systemImage: "arrow.left.arrow.right")
+                }
             }
         } header: {
-            Text("Lyrics")
+            Text("Transitions")
         } footer: {
-            Text("Fetches lyrics (Navidrome first, LRCLIB fallback) so Deep Search can find songs by half-remembered lines.")
+            Text(AudioFXPreferences.mixTransitionMode.detail + " Same-album tracks stay gapless.")
         }
         .listRowBackground(DromeTheme.elevated)
     }
 
-    private var storageSection: some View {
+    private var libraryOfflineSection: some View {
         Section {
-            LabeledContent("Downloads", value: Formatters.fileSize(downloads.totalBytesUsed))
             Button {
                 path.append(Route.downloads)
             } label: {
-                Label("Manage downloads", systemImage: "arrow.down.circle")
+                HStack {
+                    Label("Downloads", systemImage: "arrow.down.circle.fill")
+                    Spacer()
+                    Text(Formatters.fileSize(downloads.totalBytesUsed))
+                        .foregroundStyle(DromeTheme.muted)
+                }
             }
-        } header: {
-            Text("Storage")
-        }
-        .listRowBackground(DromeTheme.elevated)
-    }
-
-    private var librarySection: some View {
-        Section {
+            .accessibilityIdentifier("drome.settings.tile.downloads")
+            Toggle(isOn: Binding(
+                get: { AudioFXPreferences.autoDownloadStarred },
+                set: { AudioFXPreferences.autoDownloadStarred = $0 }
+            )) {
+                Label("Auto-download starred", systemImage: "star.fill")
+            }
             Toggle(isOn: Binding(
                 get: { LibraryArtistFilter.hideCreditOnlyArtists },
                 set: { LibraryArtistFilter.hideCreditOnlyArtists = $0 }
@@ -511,7 +397,7 @@ struct SettingsView: View {
                 Task { await refreshLibrary() }
             } label: {
                 HStack {
-                    Label("Refresh Library", systemImage: "arrow.triangle.2.circlepath")
+                    Label("Refresh library", systemImage: "arrow.triangle.2.circlepath")
                     Spacer()
                     if isScanning {
                         ProgressView()
@@ -519,27 +405,125 @@ struct SettingsView: View {
                 }
             }
             .disabled(isScanning)
+            .accessibilityIdentifier("drome.settings.tile.scan")
             if let scanMessage {
                 Text(scanMessage)
                     .font(.caption)
                     .foregroundStyle(scanFailed ? Color.red.opacity(0.9) : DromeTheme.accent)
             }
         } header: {
-            Text("Library")
+            Text("Library & offline")
         } footer: {
             Text("Hide feature credits removes artists with no albums who only appear on other people's tracks.")
         }
         .listRowBackground(DromeTheme.elevated)
     }
 
-    private var aboutSection: some View {
+    private var connectionsSection: some View {
         Section {
+            LabeledContent("Server", value: session.account.serverURL.host ?? session.account.serverURL.absoluteString)
+            Button {
+                showAccounts = true
+            } label: {
+                Label("Switch account", systemImage: "person.2")
+            }
+            Button {
+                path.append(Route.tvPairing)
+            } label: {
+                Label("Send to Apple TV", systemImage: "appletv")
+            }
+            if session.connect != nil {
+                Button {
+                    path.append(Route.connect)
+                } label: {
+                    Label(
+                        session.connect?.isRemote == true ? "Playing elsewhere" : "Connect devices",
+                        systemImage: "hifispeaker.2")
+                }
+                .accessibilityIdentifier("drome.settings.tile.connect")
+            }
+            Toggle(isOn: Binding(
+                get: { session.account.allowSelfSigned },
+                set: { newValue in
+                    var account = session.account
+                    account.allowSelfSigned = newValue
+                    env.accounts.update(account)
+                    env.activate(account)
+                }
+            )) {
+                Label("Allow self-signed cert", systemImage: "lock.open")
+            }
+            TextField(companionPlaceholder, text: $wishlistURLText)
+                .font(.body)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+            Button {
+                saveWishlistURL()
+            } label: {
+                Label("Save companion URL", systemImage: "checkmark.circle")
+            }
+            if let savedMessage {
+                Text(savedMessage)
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.accent)
+            }
+            TextField("Home / LAN URL (optional)", text: $homeURLText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+            TextField("Custom headers (Header: value per line)", text: $customHeadersText, axis: .vertical)
+                .font(.caption.monospaced())
+                .lineLimit(2...6)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button {
+                saveNetworkSettings()
+            } label: {
+                Label("Save network", systemImage: "network")
+            }
+            if let networkSavedMessage {
+                Text(networkSavedMessage)
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.accent)
+            }
+        } header: {
+            Text("Connections")
+        } footer: {
+            Text("Companion powers wishlist downloads and Connect. Home URL is preferred on LAN; custom headers help with Cloudflare Access.")
+        }
+        .listRowBackground(DromeTheme.elevated)
+    }
+
+    private var moreSection: some View {
+        Section {
+            Toggle(isOn: Binding(
+                get: { lyricsIndexer.isEnabled },
+                set: { lyricsIndexer.isEnabled = $0 }
+            )) {
+                Label("Lyrics indexer", systemImage: "text.quote")
+            }
+            LabeledContent("Cached lyrics", value: "\(lyricsIndexer.cachedCount)")
+            if lyricsIndexer.isRunning {
+                LabeledContent("Status", value: lyricsIndexer.statusText)
+            }
+            Button {
+                lyricsIndexer.reindexFromStart()
+            } label: {
+                Label("Reindex lyrics", systemImage: "arrow.counterclockwise")
+            }
+            Button {
+                OnboardingPresenter.replay()
+                dismiss()
+            } label: {
+                Label("Replay feature tour", systemImage: "sparkles")
+            }
             Button {
                 path.append(Route.diagnostics)
             } label: {
                 Label("Diagnostics", systemImage: "ladybug")
             }
-            .accessibilityIdentifier("drome.settings.diagnostics")
+            .accessibilityIdentifier("drome.settings.tile.diagnostics")
             #if DEBUG
             NavigationLink {
                 DromeDesignSystemGuide()
@@ -548,9 +532,9 @@ struct SettingsView: View {
             }
             #endif
         } header: {
-            Text("About")
+            Text("More")
         } footer: {
-            Text("When something sounds wrong: Diagnostics → Copy report for Cursor → paste into chat.")
+            Text("Lyrics power Deep Search. Diagnostics → Copy report for Cursor when something sounds wrong.")
         }
         .listRowBackground(DromeTheme.elevated)
     }
@@ -624,6 +608,15 @@ struct SettingsView: View {
         env.accounts.update(account)
         env.activate(account)
         savedMessage = "Saved"
+    }
+
+    private func refreshListeningPreview() {
+        let database = session.database
+        let userKey = session.account.userKey
+        Task.detached(priority: .utility) {
+            let next = (try? database.listeningStats(userKey: userKey, period: .allTime)) ?? .empty
+            await MainActor.run { listeningPreview = next }
+        }
     }
 
     private func refreshLibrary() async {

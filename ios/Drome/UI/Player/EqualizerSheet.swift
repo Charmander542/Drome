@@ -10,16 +10,19 @@ struct EqualizerSheet: View {
     @State private var savedSlots = AudioFXPreferences.savedEqualizers
     @State private var replayGain = AudioFXPreferences.replayGainEnabled
     @State private var crossfade = AudioFXPreferences.crossfadeSeconds
+    @State private var mixMode = AudioFXPreferences.mixTransitionMode
+    @State private var headphoneAuto = HeadphoneEQProfiles.autoApply
+    @State private var headphoneProfiles = HeadphoneEQProfiles.profiles
     @State private var renameSlot: Int?
     @State private var renameText = ""
 
     private let gainRange: ClosedRange<Double> = -12...12
-    private let gainLabelHeight: CGFloat = 16
-    private let hzLabelHeight: CGFloat = 16
+    private let gainLabelHeight: CGFloat = 14
+    private let hzLabelHeight: CGFloat = 14
 
     private var isExpanded: Bool { detent == .large }
-    /// Taller faders in medium now that the EQ On / ReplayGain header is gone.
-    private var trackHeight: CGFloat { isExpanded ? 188 : 168 }
+    /// Slightly shorter faders so ten bands still fit medium detent.
+    private var trackHeight: CGFloat { isExpanded ? 176 : 152 }
     private var eqIsOn: Bool { !AudioFXPreferences.bandsAreFlat(bands) }
 
     private var builtInPresets: [(String, [Float])] {
@@ -81,7 +84,7 @@ struct EqualizerSheet: View {
     }
 
     private var graphicEQ: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: 6) {
             scaleColumn(trackHeight: trackHeight)
                 .padding(.top, gainLabelHeight + 8)
 
@@ -99,7 +102,7 @@ struct EqualizerSheet: View {
                 }
             }
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 10)
         .padding(.vertical, 12)
         .background {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -332,6 +335,9 @@ struct EqualizerSheet: View {
         savedSlots = AudioFXPreferences.savedEqualizers
         replayGain = AudioFXPreferences.replayGainEnabled
         crossfade = AudioFXPreferences.crossfadeSeconds
+        mixMode = AudioFXPreferences.mixTransitionMode
+        headphoneAuto = HeadphoneEQProfiles.autoApply
+        headphoneProfiles = HeadphoneEQProfiles.profiles
     }
 
     /// Full-screen only — keeps medium detent focused on faders + presets.
@@ -342,20 +348,95 @@ struct EqualizerSheet: View {
                 .onChange(of: replayGain) { _, v in AudioFXPreferences.replayGainEnabled = v }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Crossfade")
+                Text("Mix transitions")
                     .font(.subheadline.weight(.semibold))
-                Picker("Crossfade", selection: $crossfade) {
-                    Text("Off").tag(0)
-                    Text("3s").tag(3)
-                    Text("6s").tag(6)
-                    Text("9s").tag(9)
-                    Text("12s").tag(12)
+                Picker("Mix transitions", selection: $mixMode) {
+                    ForEach(AudioFXPreferences.MixTransitionMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: crossfade) { _, v in AudioFXPreferences.crossfadeSeconds = v }
+                .onChange(of: mixMode) { _, v in
+                    AudioFXPreferences.mixTransitionMode = v
+                    crossfade = AudioFXPreferences.crossfadeSeconds
+                }
+
+                if mixMode != .off {
+                    Picker("Length", selection: $crossfade) {
+                        Text("3s").tag(3)
+                        Text("6s").tag(6)
+                        Text("9s").tag(9)
+                        Text("12s").tag(12)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: crossfade) { _, v in
+                        AudioFXPreferences.crossfadeSeconds = v
+                        if mixMode == .off {
+                            mixMode = .soft
+                            AudioFXPreferences.mixTransitionMode = .soft
+                        }
+                    }
+                }
             }
 
-            Text("Same-album stays gapless. Crossfade soft-ramps between unrelated tracks. Flat turns EQ off.")
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Headphone profiles")
+                    .font(.subheadline.weight(.semibold))
+                Toggle("Auto-apply per output", isOn: $headphoneAuto)
+                    .tint(DromeTheme.accent)
+                    .onChange(of: headphoneAuto) { _, v in HeadphoneEQProfiles.autoApply = v }
+
+                Text("Current: \(HeadphoneEQProfiles.currentPortDisplayName())")
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.muted)
+
+                HStack(spacing: 8) {
+                    Button {
+                        HeadphoneEQProfiles.saveCurrentOutputProfile()
+                        headphoneProfiles = HeadphoneEQProfiles.profiles
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    } label: {
+                        Label("Save for this output", systemImage: "headphones")
+                            .font(.caption.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+
+                    if let key = HeadphoneEQProfiles.currentPortKey(),
+                       headphoneProfiles.contains(where: { $0.id == key }) {
+                        Button(role: .destructive) {
+                            HeadphoneEQProfiles.clearProfile(portKey: key)
+                            headphoneProfiles = HeadphoneEQProfiles.profiles
+                        } label: {
+                            Image(systemName: "trash")
+                                .frame(width: 44, height: 36)
+                                .background(DromeTheme.elevated2, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                if !headphoneProfiles.isEmpty {
+                    ForEach(headphoneProfiles) { profile in
+                        HStack {
+                            Text(profile.name)
+                                .font(.caption.weight(.semibold))
+                            Spacer()
+                            Button("Apply") {
+                                AudioFXPreferences.equalizerBands = profile.bands
+                                AudioFXPreferences.equalizerPreset = profile.preset
+                                syncFromPreferences()
+                            }
+                            .font(.caption.weight(.bold))
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+            }
+
+            Text("Same-album stays gapless. Soft/beat-aligned mix fades between unrelated tracks. Flat turns EQ off.")
                 .font(.caption2)
                 .foregroundStyle(DromeTheme.muted)
         }
@@ -402,7 +483,9 @@ private struct EQPresetGraphIcon: View {
 
     var body: some View {
         Canvas { context, size in
-            let values = bands.isEmpty ? [Float](repeating: 0, count: 5) : bands
+            let values = bands.isEmpty
+                ? [Float](repeating: 0, count: AudioFXPreferences.bandFrequencies.count)
+                : bands
             let count = max(values.count, 1)
             let midY = size.height * 0.5
             let amp = size.height * 0.42

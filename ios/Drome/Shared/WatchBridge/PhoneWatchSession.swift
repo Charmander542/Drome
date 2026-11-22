@@ -261,6 +261,10 @@ final class PhoneWatchSession: NSObject, WCSessionDelegate {
         case .adjustVolume:
             let delta = message[WatchBridgeKey.volumeDelta] as? Float ?? 0.08
             SystemVolumeController.adjust(by: delta)
+        case .startSongRadio:
+            Task {
+                await AppEnvironment.shared?.startWatchSongRadio()
+            }
         case .requestSync:
             break
         }

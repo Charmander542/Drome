@@ -19,7 +19,7 @@ struct WatchNowPlayingView: View {
 
     private func nowPlayingContent(_ np: WatchNowPlaying) -> some View {
         GeometryReader { geo in
-            let artSize = min(geo.size.width * 0.70, 134)
+            let artSize = min(geo.size.width * 0.62, 118)
 
             ZStack {
                 WatchWashBackground(nowPlaying: np)
@@ -62,32 +62,59 @@ struct WatchNowPlayingView: View {
                     Spacer(minLength: 0)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .safeAreaInset(edge: .bottom, spacing: 14) {
-                    TimelineView(.animation(minimumInterval: 0.5, paused: !np.isPlaying)) { timeline in
-                        let elapsed = np.elapsed(at: timeline.date)
-                        let progress = elapsed / max(np.duration, 1)
+                .safeAreaInset(edge: .bottom, spacing: 8) {
+                    VStack(spacing: 8) {
+                        TimelineView(.animation(minimumInterval: 0.5, paused: !np.isPlaying)) { timeline in
+                            let elapsed = np.elapsed(at: timeline.date)
+                            let progress = elapsed / max(np.duration, 1)
 
-                        HStack(spacing: 20) {
-                            WatchTransportButton(systemName: "backward.fill", size: 38) {
-                                store.send(.previous)
+                            HStack(spacing: 18) {
+                                WatchTransportButton(systemName: "backward.fill", size: 34) {
+                                    store.send(.previous)
+                                }
+
+                                WatchRadialPlayButton(
+                                    isPlaying: np.isPlaying,
+                                    progress: progress,
+                                    outerSize: 46,
+                                    innerSize: 36
+                                ) {
+                                    store.send(.togglePlay)
+                                }
+
+                                WatchTransportButton(systemName: "forward.fill", size: 34) {
+                                    store.send(.next)
+                                }
                             }
+                        }
 
-                            WatchRadialPlayButton(
-                                isPlaying: np.isPlaying,
-                                progress: progress,
-                                outerSize: 50,
-                                innerSize: 40
+                        HStack(spacing: 10) {
+                            WatchTransportButton(systemName: "speaker.minus.fill", size: 30) {
+                                store.send(.adjustVolume, extras: [
+                                    WatchBridgeKey.volumeDelta: Float(-0.08),
+                                ])
+                            }
+                            WatchTransportButton(
+                                systemName: np.rating >= 5 ? "star.fill" : "star",
+                                size: 30
                             ) {
-                                store.send(.togglePlay)
+                                let next = np.rating >= 5 ? 0 : min(5, max(1, np.rating + 1))
+                                store.send(.setRating, extras: [
+                                    WatchBridgeKey.rating: next,
+                                ])
                             }
-
-                            WatchTransportButton(systemName: "forward.fill", size: 38) {
-                                store.send(.next)
+                            WatchTransportButton(systemName: "dot.radiowaves.left.and.right", size: 30) {
+                                store.send(.startSongRadio)
+                            }
+                            WatchTransportButton(systemName: "speaker.plus.fill", size: 30) {
+                                store.send(.adjustVolume, extras: [
+                                    WatchBridgeKey.volumeDelta: Float(0.08),
+                                ])
                             }
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.bottom, 4)
+                    .padding(.bottom, 2)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
@@ -136,7 +163,7 @@ struct WatchNowPlayingView: View {
             return error
         }
         if store.isReachable {
-            return "Connected — start music in Drome on iPhone"
+            return "Connected — start music in Drome on iPhone, or pick a playlist below"
         }
         return "Open Drome on iPhone (keep both apps in foreground to sync)"
     }

@@ -2,7 +2,7 @@ import Foundation
 import AVFoundation
 import MediaToolbox
 
-/// Persisted 5-band EQ + ReplayGain + crossfade preferences (Aura-class audio).
+/// Persisted 10-band EQ + ReplayGain + crossfade preferences (Aura-class audio).
 /// Flat faders = EQ off; any non-flat curve = EQ on (no separate toggle).
 @MainActor
 enum AudioFXPreferences {
@@ -19,8 +19,12 @@ enum AudioFXPreferences {
     static let audioFXDidChange = Notification.Name("drome.audioFXDidChange")
     static let savedSlotCount = 3
 
-    /// Frequencies for the five bands (Hz) — Aura-shaped.
-    static let bandFrequencies: [Float] = [60, 230, 910, 3600, 14000]
+    /// Standard 10-band graphic EQ centers (Hz).
+    static let bandFrequencies: [Float] = [
+        32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000
+    ]
+
+    private static let legacyFiveBandFrequencies: [Float] = [60, 230, 910, 3600, 14000]
 
     struct SavedEQSlot: Codable, Equatable, Identifiable {
         var id: Int
@@ -64,6 +68,78 @@ enum AudioFXPreferences {
         }
     }
 
+    private static let mixTransitionKey = "drome.mixTransitionMode"
+
+    enum MixTransitionMode: String, CaseIterable, Identifiable {
+        case off
+        case soft
+        case beatAligned
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .off: return "Off"
+            case .soft: return "Soft"
+            case .beatAligned: return "Beat-aligned"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .off: return "Gapless only (same album always gapless)"
+            case .soft: return "Volume ramp between unrelated tracks"
+            case .beatAligned: return "Snap crossfade length to an estimated beat grid"
+            }
+        }
+    }
+
+    /// Soft / beat-aligned mix transitions. `off` forces crossfadeSeconds to 0 at read sites.
+    static var mixTransitionMode: MixTransitionMode {
+        get {
+            let raw = UserDefaults.standard.string(forKey: mixTransitionKey) ?? ""
+            if let mode = MixTransitionMode(rawValue: raw) { return mode }
+            // Migrate: previous installs used crossfadeSeconds alone.
+            return crossfadeSeconds > 0 ? .soft : .off
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: mixTransitionKey)
+            if newValue == .off {
+                UserDefaults.standard.set(0, forKey: crossfadeKey)
+            } else if crossfadeSeconds == 0 {
+                UserDefaults.standard.set(6, forKey: crossfadeKey)
+            }
+            notify()
+        }
+    }
+
+    /// Effective crossfade length after mix-mode + optional beat snapping.
+    static func resolvedCrossfadeSeconds(for song: Song?) -> Int {
+        let mode = mixTransitionMode
+        guard mode != .off else { return 0 }
+        var seconds = crossfadeSeconds
+        if seconds <= 0 { seconds = 6 }
+        if mode == .beatAligned {
+            seconds = beatAlignedSeconds(base: seconds, song: song)
+        }
+        return max(3, min(12, seconds))
+    }
+
+    /// Assume ~120 BPM (0.5s/beat) unless duration implies a different energy.
+    private static func beatAlignedSeconds(base: Int, song: Song?) -> Int {
+        let beat: Double
+        if let duration = song?.duration, duration > 0 {
+            // Prefer ~0.5s beats; nudge with track length so short radio edits
+            // don't get a sluggish 12s wash.
+            beat = duration < 150 ? 0.45 : 0.5
+        } else {
+            beat = 0.5
+        }
+        let beats = max(4, Int((Double(base) / beat).rounded()))
+        let snapped = Int((Double(beats) * beat).rounded())
+        return max(3, min(12, snapped))
+    }
+
     /// How many upcoming tracks to pre-cache (Arpeggi-style).
     static var prefetchCount: Int {
         get {
@@ -96,14 +172,19 @@ enum AudioFXPreferences {
     static var equalizerBands: [Float] {
         get {
             if let data = UserDefaults.standard.data(forKey: eqBandsKey),
-               let decoded = try? JSONDecoder().decode([Float].self, from: data),
-               decoded.count == bandFrequencies.count {
-                return decoded
+               let decoded = try? JSONDecoder().decode([Float].self, from: data) {
+                if decoded.count == bandFrequencies.count {
+                    return decoded
+                }
+                if decoded.count == legacyFiveBandFrequencies.count {
+                    return migrateFiveBandCurve(decoded)
+                }
             }
             return Array(repeating: 0, count: bandFrequencies.count)
         }
         set {
-            let clipped = Array(newValue.prefix(bandFrequencies.count).map { max(-12, min(12, $0)) })
+            var clipped = Array(newValue.prefix(bandFrequencies.count).map { max(-12, min(12, $0)) })
+            while clipped.count < bandFrequencies.count { clipped.append(0) }
             if let data = try? JSONEncoder().encode(clipped) {
                 UserDefaults.standard.set(data, forKey: eqBandsKey)
             }
@@ -112,6 +193,37 @@ enum AudioFXPreferences {
             notify()
         }
     }
+
+    /// Linear interpolate a legacy 5-band curve onto the 10-band centers.
+    private static func migrateFiveBandCurve(_ five: [Float]) -> [Float] {
+        guard five.count == legacyFiveBandFrequencies.count else {
+            return Array(repeating: 0, count: bandFrequencies.count)
+        }
+        return bandFrequencies.map { targetHz in
+            if let exact = zip(legacyFiveBandFrequencies, five).first(where: { abs($0.0 - targetHz) < 0.5 }) {
+                return exact.1
+            }
+            // Find surrounding legacy bands in log-frequency space.
+            let logT = log(max(targetHz, 1))
+            var lower = (legacyFiveBandFrequencies[0], five[0])
+            var upper = (legacyFiveBandFrequencies[fourCountSafe], five[fourCountSafe])
+            for i in 0..<legacyFiveBandFrequencies.count {
+                let hz = legacyFiveBandFrequencies[i]
+                if hz <= targetHz { lower = (hz, five[i]) }
+                if hz >= targetHz {
+                    upper = (hz, five[i])
+                    break
+                }
+            }
+            if lower.0 == upper.0 { return lower.1 }
+            let logL = log(max(lower.0, 1))
+            let logU = log(max(upper.0, 1))
+            let t = (logT - logL) / max(logU - logL, 0.0001)
+            return lower.1 + Float(t) * (upper.1 - lower.1)
+        }
+    }
+
+    private static var fourCountSafe: Int { max(0, legacyFiveBandFrequencies.count - 1) }
 
     static var equalizerPreset: String {
         get { UserDefaults.standard.string(forKey: eqPresetKey) ?? "Flat" }
@@ -126,8 +238,12 @@ enum AudioFXPreferences {
                   let decoded = try? JSONDecoder().decode([SavedEQSlot].self, from: data)
             else { return slots }
             for slot in decoded where slot.id >= 0 && slot.id < savedSlotCount {
-                guard slot.bands.count == bandFrequencies.count else { continue }
-                slots[slot.id] = slot
+                var migrated = slot
+                if migrated.bands.count == legacyFiveBandFrequencies.count {
+                    migrated.bands = migrateFiveBandCurve(migrated.bands)
+                }
+                guard migrated.bands.count == bandFrequencies.count else { continue }
+                slots[slot.id] = migrated
             }
             return slots
         }
@@ -153,22 +269,23 @@ enum AudioFXPreferences {
         set { UserDefaults.standard.set(newValue, forKey: autoDownloadStarredKey) }
     }
 
+    /// 10-band presets (32…16k). Values in dB.
     static let presets: [(String, [Float])] = [
-        ("Flat", [0, 0, 0, 0, 0]),
-        ("Bass Boost", [7, 4, 0, 0, 0]),
-        ("Treble Boost", [0, 0, 1, 5, 7]),
-        ("Vocal", [-2, 1, 4, 3, 0]),
-        ("Electronic", [5, 2, -1, 3, 5]),
-        ("Rock", [4, 2, -1, 2, 4]),
-        ("Jazz", [3, 1, 0, 2, 3]),
-        ("Classical", [3, 2, 0, 2, 4]),
-        ("Loudness", [5, 2, -2, 2, 4]),
-        ("Podcast", [-3, 0, 4, 5, 2]),
-        ("Night", [2, 1, 0, -1, -3]),
-        ("Acoustic", [3, 2, 1, 2, 3]),
-        ("Dance", [6, 3, 0, 2, 5]),
-        ("Hip-Hop", [7, 3, -1, 1, 3]),
-        ("Custom", [0, 0, 0, 0, 0]),
+        ("Flat",        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        ("Bass Boost",  [8, 7, 5, 3, 1, 0, 0, 0, 0, 0]),
+        ("Treble Boost",[0, 0, 0, 0, 0, 1, 2, 4, 6, 7]),
+        ("Vocal",       [-2, -1, 0, 2, 4, 4, 3, 2, 0, -1]),
+        ("Electronic",  [6, 5, 3, 0, -2, 0, 2, 4, 5, 4]),
+        ("Rock",        [5, 4, 3, 1, -1, 0, 2, 3, 4, 3]),
+        ("Jazz",        [3, 2, 1, 0, 0, 1, 2, 2, 3, 2]),
+        ("Classical",   [4, 3, 2, 1, 0, 0, 1, 2, 3, 4]),
+        ("Loudness",    [6, 5, 3, 1, -2, -1, 1, 2, 4, 5]),
+        ("Podcast",     [-4, -2, 0, 2, 4, 5, 4, 2, 0, -1]),
+        ("Night",       [2, 2, 1, 0, 0, -1, -1, -2, -3, -4]),
+        ("Acoustic",    [3, 3, 2, 1, 1, 1, 2, 2, 3, 2]),
+        ("Dance",       [7, 6, 4, 1, 0, 0, 2, 3, 5, 4]),
+        ("Hip-Hop",     [8, 7, 4, 1, -1, 0, 1, 2, 3, 2]),
+        ("Custom",      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
     ]
 
     static func applyPreset(_ name: String) {
@@ -231,6 +348,38 @@ enum AudioFXPreferences {
     }
 }
 
+
+extension AudioFXPreferences {
+    /// Nonisolated upsample for EqualizerProcessor cold start (mirrors private migrate).
+    nonisolated static func migrateFiveBandCurveForProcessor(_ five: [Float]) -> [Float] {
+        let legacy: [Float] = [60, 230, 910, 3600, 14000]
+        let targets: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+        guard five.count == legacy.count else {
+            return Array(repeating: 0, count: targets.count)
+        }
+        return targets.map { targetHz in
+            if let exact = zip(legacy, five).first(where: { abs($0.0 - targetHz) < 0.5 }) {
+                return exact.1
+            }
+            let logT = log(max(targetHz, 1))
+            var lower = (legacy[0], five[0])
+            var upper = (legacy[legacy.count - 1], five[five.count - 1])
+            for i in 0..<legacy.count {
+                if legacy[i] <= targetHz { lower = (legacy[i], five[i]) }
+                if legacy[i] >= targetHz {
+                    upper = (legacy[i], five[i])
+                    break
+                }
+            }
+            if lower.0 == upper.0 { return lower.1 }
+            let logL = log(max(lower.0, 1))
+            let logU = log(max(upper.0, 1))
+            let t = (logT - logL) / max(logU - logL, 0.0001)
+            return lower.1 + Float(t) * (upper.1 - lower.1)
+        }
+    }
+}
+
 /// Computes a linear volume multiplier from ReplayGain tags.
 enum ReplayGain {
     /// Prefer track gain, then album, then fallback.
@@ -271,15 +420,17 @@ final class AudioFXController {
     }
 }
 
-// MARK: - Real 5-band EQ (PCM tap on AVPlayerItem)
+// MARK: - Real 10-band EQ (PCM tap on AVPlayerItem)
 
-/// Attaches an `AVAudioMix` processing tap that runs five peaking EQ bands.
+/// Attaches an `AVAudioMix` processing tap that runs ten peaking EQ bands.
 /// Flat / near-flat gains clear the mix so the tap is bypassed.
 final class EqualizerProcessor {
     static let shared = EqualizerProcessor()
 
     /// Same centers as `AudioFXPreferences.bandFrequencies` (copied for audio-thread use).
-    let bandFrequencies: [Float] = [60, 230, 910, 3600, 14000]
+    let bandFrequencies: [Float] = [
+        32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000
+    ]
 
     private let lock = NSLock()
     private var gains: [Float]
@@ -290,9 +441,13 @@ final class EqualizerProcessor {
         gains = Array(repeating: 0, count: bandFrequencies.count)
         // Seed from prefs without hopping to MainActor during init.
         if let data = UserDefaults.standard.data(forKey: "drome.eqBands"),
-           let decoded = try? JSONDecoder().decode([Float].self, from: data),
-           decoded.count == bandFrequencies.count {
-            gains = decoded
+           let decoded = try? JSONDecoder().decode([Float].self, from: data) {
+            if decoded.count == bandFrequencies.count {
+                gains = decoded
+            } else if decoded.count == 5 {
+                // Rough upsample until MainActor prefs migrate on first read.
+                gains = AudioFXPreferences.migrateFiveBandCurveForProcessor(decoded)
+            }
         }
     }
 
@@ -403,10 +558,10 @@ private final class TapStorage {
     private var nonInterleaved = true
     private var filters: [[Biquad]] = []
     /// Smoothed toward the UI target so preset / fader snaps don't jump.
-    private var smoothedGains: [Float] = Array(repeating: 0, count: 5)
+    private var smoothedGains: [Float] = Array(repeating: 0, count: 10)
     /// Dry→wet mix (0 = bypass, 1 = full EQ). Fades in when EQ engages.
     private var wet: Float = 0
-    private var lastCoeffGains: [Float] = Array(repeating: 0, count: 5)
+    private var lastCoeffGains: [Float] = Array(repeating: 0, count: 10)
 
     /// ~120ms wet engage / release — audible fade without feeling sluggish.
     private let wetSeconds: Float = 0.12
@@ -424,7 +579,8 @@ private final class TapStorage {
         nonInterleaved = (format.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0
         // Start dry so first attach fades EQ in instead of slamming it on.
         wet = 0
-        smoothedGains = Array(repeating: 0, count: 5)
+        let bandCount = processor?.bandFrequencies.count ?? 10
+        smoothedGains = Array(repeating: 0, count: bandCount)
         lastCoeffGains = smoothedGains
         rebuildFilters(gains: smoothedGains, freqs: processor?.bandFrequencies)
     }
@@ -519,7 +675,9 @@ private final class TapStorage {
 
     private func rebuildFilters(gains: [Float]? = nil, freqs: [Float]? = nil) {
         let g = gains ?? smoothedGains
-        let f = freqs ?? processor?.bandFrequencies ?? [60, 230, 910, 3600, 14000]
+        let f = freqs ?? processor?.bandFrequencies ?? [
+            32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000
+        ]
         // Keep delay state when only gains change to avoid clicks.
         let previous = filters
         filters = (0..<channelCount).map { channel in

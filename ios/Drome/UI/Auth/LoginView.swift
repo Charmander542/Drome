@@ -77,6 +77,16 @@ struct LoginView: View {
                                     .padding(.horizontal, 28)
                                     .padding(.top, 18)
 
+                                Button {
+                                    fillPublicDemo()
+                                } label: {
+                                    Label("Try public Navidrome demo", systemImage: "sparkles")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(DromeTheme.accent)
+                                }
+                                .padding(.top, 22)
+                                .accessibilityIdentifier("drome.login.try-demo")
+
                                 if !env.accounts.accounts.isEmpty {
                                     Button {
                                         showSavedAccounts = true
@@ -85,7 +95,7 @@ struct LoginView: View {
                                             .font(.subheadline.weight(.semibold))
                                             .foregroundStyle(.white.opacity(0.65))
                                     }
-                                    .padding(.top, 20)
+                                    .padding(.top, 16)
                                     .accessibilityIdentifier("drome.login.saved-accounts")
                                 }
 
@@ -436,14 +446,28 @@ struct LoginView: View {
         }
     }
 
+    private func fillPublicDemo() {
+        serverURL = Account.publicDemoServerURL.absoluteString
+        username = Account.publicDemoUsername
+        password = Account.publicDemoPassword
+        wishlistURL = ""
+        allowSelfSigned = false
+        showAdvanced = false
+        errorMessage = nil
+        signIn()
+    }
+
     private func signIn() {
         guard let server = normalizedURL(serverURL) else {
             errorMessage = "Enter a valid server URL, e.g. http://192.168.1.10:4533"
             return
         }
-        let wishlist = wishlistURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? nil
-            : normalizedURL(wishlistURL)
+        // Demo / streaming-only: never attach a companion URL.
+        let isDemoHost = (server.host ?? "").lowercased() == "demo.navidrome.org"
+        let wishlist = (!isDemoHost
+                        && !wishlistURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            ? normalizedURL(wishlistURL)
+            : nil
 
         signInTask?.cancel()
         isWorking = true

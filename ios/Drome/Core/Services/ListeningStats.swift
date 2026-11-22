@@ -1,0 +1,160 @@
+import Foundation
+
+enum ListeningStatsPeriod: String, CaseIterable, Identifiable, Hashable {
+    case days7
+    case days30
+    case allTime
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .days7: return "7 days"
+        case .days30: return "30 days"
+        case .allTime: return "All time"
+        }
+    }
+
+    /// `nil` means no cutoff (all retained history).
+    var lookbackDays: Int? {
+        switch self {
+        case .days7: return 7
+        case .days30: return 30
+        case .allTime: return nil
+        }
+    }
+}
+
+struct ListeningStats {
+    struct RankedItem: Identifiable, Hashable {
+        let id: String
+        let name: String
+        let subtitle: String?
+        let playCount: Int
+        let coverArt: String?
+    }
+
+    struct RankedSong: Identifiable, Hashable {
+        let id: String
+        let song: Song
+        let playCount: Int
+    }
+
+    let totalPlays: Int
+    let totalSeconds: Int
+    let activeDays: Int
+    let topArtists: [RankedItem]
+    let topAlbums: [RankedItem]
+    let topSongs: [RankedSong]
+
+    var hoursListened: Double {
+        Double(totalSeconds) / 3600.0
+    }
+
+    var isEmpty: Bool { totalPlays == 0 }
+
+    static let empty = ListeningStats(
+        totalPlays: 0,
+        totalSeconds: 0,
+        activeDays: 0,
+        topArtists: [],
+        topAlbums: [],
+        topSongs: []
+    )
+
+    /// Aggregates decoded play rows. Prefer `Song.duration` from JSON; missing duration counts as 0.
+    static func aggregate(
+        plays: [(playedAt: TimeInterval, song: Song)],
+        topLimit: Int = 5,
+        calendar: Calendar = .current
+    ) -> ListeningStats {
+        guard !plays.isEmpty else { return .empty }
+
+        var totalSeconds = 0
+        var dayKeys = Set<String>()
+        var artistCounts: [String: (name: String, count: Int, cover: String?)] = [:]
+        var albumCounts: [String: (name: String, artist: String?, count: Int, cover: String?)] = [:]
+        var songCounts: [String: (song: Song, count: Int)] = [:]
+
+        for play in plays {
+            let song = play.song
+            totalSeconds += max(0, song.duration ?? 0)
+
+            let day = calendar.dateComponents(
+                [.year, .month, .day],
+                from: Date(timeIntervalSince1970: play.playedAt)
+            )
+            if let y = day.year, let m = day.month, let d = day.day {
+                dayKeys.insert("\(y)-\(m)-\(d)")
+            }
+
+            let artistName = song.displayArtist.isEmpty
+                ? (song.artist?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "Unknown Artist")
+                : song.displayArtist
+            let artistKey = (song.artistId?.nilIfEmpty) ?? artistName.lowercased()
+            var artist = artistCounts[artistKey] ?? (name: artistName, count: 0, cover: song.coverArt)
+            artist.count += 1
+            if artist.cover == nil { artist.cover = song.coverArt }
+            artistCounts[artistKey] = artist
+
+            let albumName = song.album?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "Unknown Album"
+            let albumKey = (song.albumId?.nilIfEmpty) ?? "\(albumName.lowercased())|\(artistName.lowercased())"
+            var album = albumCounts[albumKey] ?? (name: albumName, artist: artistName, count: 0, cover: song.coverArt)
+            album.count += 1
+            if album.cover == nil { album.cover = song.coverArt }
+            if album.artist == nil { album.artist = artistName }
+            albumCounts[albumKey] = album
+
+            var songEntry = songCounts[song.id] ?? (song: song, count: 0)
+            songEntry.count += 1
+            // Prefer a copy that still has metadata if an older row was sparse.
+            if (songEntry.song.coverArt == nil && song.coverArt != nil)
+                || (songEntry.song.duration == nil && song.duration != nil) {
+                songEntry.song = song
+            }
+            songCounts[song.id] = songEntry
+        }
+
+        let topArtists = artistCounts
+            .map { RankedItem(id: $0.key, name: $0.value.name, subtitle: nil, playCount: $0.value.count, coverArt: $0.value.cover) }
+            .sorted(by: Self.rankSort)
+            .prefix(topLimit)
+            .map { $0 }
+
+        let topAlbums = albumCounts
+            .map { RankedItem(id: $0.key, name: $0.value.name, subtitle: $0.value.artist, playCount: $0.value.count, coverArt: $0.value.cover) }
+            .sorted(by: Self.rankSort)
+            .prefix(topLimit)
+            .map { $0 }
+
+        let topSongs = songCounts
+            .map { RankedSong(id: $0.key, song: $0.value.song, playCount: $0.value.count) }
+            .sorted {
+                if $0.playCount != $1.playCount { return $0.playCount > $1.playCount }
+                return $0.song.title.localizedCaseInsensitiveCompare($1.song.title) == .orderedAscending
+            }
+            .prefix(topLimit)
+            .map { $0 }
+
+        return ListeningStats(
+            totalPlays: plays.count,
+            totalSeconds: totalSeconds,
+            activeDays: dayKeys.count,
+            topArtists: topArtists,
+            topAlbums: topAlbums,
+            topSongs: topSongs
+        )
+    }
+
+    private static func rankSort(_ a: RankedItem, _ b: RankedItem) -> Bool {
+        if a.playCount != b.playCount { return a.playCount > b.playCount }
+        return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}

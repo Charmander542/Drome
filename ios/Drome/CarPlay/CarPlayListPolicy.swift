@@ -62,6 +62,7 @@ enum CarPlayListPolicy: Sendable {
         case browseArtists
         case browseAlbums
         case browseTopRated
+        case browseSmartPlaylists
         case browseGenres
         case playlist
         case emptyPlaylists
@@ -330,6 +331,8 @@ enum CarPlayListPolicy: Sendable {
         var sections: [SectionSpec] = []
         var quick: [ItemSpec] = [
             ItemSpec(title: "Shuffle All", subtitle: "Random from your library",
+                     hasImage: true, role: .action),
+            ItemSpec(title: "Song Radio", subtitle: "Instant Mix from what’s playing",
                      hasImage: true, role: .action)
         ]
         let cap = max(1, tileCap)
@@ -415,6 +418,9 @@ enum CarPlayListPolicy: Sendable {
             ItemSpec(title: "Top Rated", subtitle: "5★, 4★ & up, top albums",
                      hasImage: true, accessory: "disclosure",
                      role: .browseTopRated),
+            ItemSpec(title: "Smart Playlists", subtitle: "Rule-based auto playlists",
+                     hasImage: true, accessory: "disclosure",
+                     role: .browseSmartPlaylists),
             ItemSpec(title: "Genres", subtitle: "Browse by genre",
                      hasImage: true, accessory: "disclosure",
                      role: .browseGenres)
@@ -486,7 +492,7 @@ enum CarPlayListPolicy: Sendable {
     static func fixtureSearchChooser() -> TemplateSpec { buildSearchChooserSpec() }
 
     static func fixtureNowPlayingMusicButtons() -> [String] {
-        ["Rate", "Shuffle", "Repeat", "Autoplay"]
+        ["Rate", "Radio", "Shuffle", "Repeat", "Autoplay"]
     }
 
     static func fixtureNowPlayingPodcastButtons() -> [String] {

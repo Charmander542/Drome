@@ -34,7 +34,7 @@ final class WatchSessionStore: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     func send(_ command: WatchCommand, extras: [String: Any] = [:]) {
-        applyOptimistic(command)
+        applyOptimistic(command, extras: extras)
 
         var message = extras
         message[WatchBridgeKey.command] = command.rawValue
@@ -181,12 +181,16 @@ final class WatchSessionStore: NSObject, ObservableObject, WCSessionDelegate {
         artworkEpoch &+= 1
     }
 
-    private func applyOptimistic(_ command: WatchCommand) {
+    private func applyOptimistic(_ command: WatchCommand, extras: [String: Any] = [:]) {
         guard var np = payload.nowPlaying else { return }
         switch command {
         case .togglePlay:
             np.isPlaying.toggle()
-        case .next, .previous:
+        case .setRating:
+            if let rating = extras[WatchBridgeKey.rating] as? Int {
+                np.rating = max(0, min(5, rating))
+            }
+        case .next, .previous, .startSongRadio:
             return
         default:
             return

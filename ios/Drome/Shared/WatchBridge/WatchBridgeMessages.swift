@@ -25,6 +25,8 @@ enum WatchCommand: String, Codable {
     case playPlaylist
     case adjustVolume
     case requestSync
+    /// Build Instant Mix / Song Radio from the current track on the phone.
+    case startSongRadio
 }
 
 struct WatchPlaylistItem: Codable, Equatable, Identifiable {
