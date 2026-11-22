@@ -198,7 +198,14 @@
 				UI/Search/SearchView.swift,
 				UI/Settings/DiagnosticsView.swift,
 				UI/Settings/ListeningStatsView.swift,
+				UI/Settings/SettingsAppearanceView.swift,
+				UI/Settings/SettingsConnectionsView.swift,
+				UI/Settings/SettingsHomeNetworkView.swift,
+				UI/Settings/SettingsLibrarySyncView.swift,
+				UI/Settings/SettingsPlaybackView.swift,
+				UI/Settings/SettingsStreamingView.swift,
 				UI/Settings/SettingsView.swift,
+				UI/Settings/SettingsWatchInfoView.swift,
 				UI/Settings/TVPairingView.swift,
 			);
 			target = D00DE0000000000000000044 /* DromeTV */;

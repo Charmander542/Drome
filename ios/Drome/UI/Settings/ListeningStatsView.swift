@@ -30,9 +30,9 @@ struct ListeningStatsView: View {
         .listStyle(.insetGrouped)
         .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
-        .background(DromeTheme.background)
+        .background(Color.black)
         .navigationTitle("Your listening")
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarTitleDisplayMode(.large)
         .accessibilityIdentifier("drome.listening.stats")
         .preferredColorScheme(.dark)
         .onAppear { reload() }

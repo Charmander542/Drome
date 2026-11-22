@@ -86,26 +86,34 @@ final class DecisionTreeWalk: XCTestCase {
 
         tapButton("drome.home.settings")
         assertExists("drome.settings.screen", timeout: 5)
-        assertExists("drome.settings.accent", timeout: 3)
         capture("settings")
 
-        // Downloads tile → Downloads list
+        // Appearance → accent swatches
+        tapButton("drome.settings.link.appearance")
+        assertExists("drome.settings.accent", timeout: 5)
+        capture("settings-appearance")
+        navigateBackOrSwipe()
+
+        // Streaming & Downloads → Manage downloads
         tapButton("drome.settings.tile.downloads")
+        // First landing is Streaming page; open Manage downloads.
+        tapIfExists("drome.settings.tile.downloads")
         assertExists("drome.downloads.screen", timeout: 5)
         capture("settings-downloads")
         navigateBackOrSwipe()
+        navigateBackOrSwipe()
 
-        // Diagnostics tile
+        // Diagnostics
         tapButton("drome.settings.tile.diagnostics")
         assertExists("drome.diagnostics.screen", timeout: 5)
         capture("settings-diagnostics")
         navigateBackOrSwipe()
 
-        // Online / Scan are action tiles (should not crash).
-        tapIfExists("drome.settings.tile.online")
-        capture("settings-online-tapped")
+        // Library sync (scan)
         tapIfExists("drome.settings.tile.scan")
+        tapIfExists("drome.settings.tile.online")
         capture("settings-scan-tapped")
+        navigateBackOrSwipe()
 
         capture("settings-after-tiles")
         dismissSettings()
