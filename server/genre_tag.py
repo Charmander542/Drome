@@ -413,15 +413,26 @@ def lookup_genre(
     discogs: RateLimitedClient,
     musicbrainz: RateLimitedClient,
     deezer: RateLimitedClient,
-    force: bool = False,
+    refresh: bool = False,
+    mem: dict[str, tuple[str, str]] | None = None,
 ) -> tuple[str, str]:
+    """Resolve curated genre for an artist.
+
+    Uses an in-process memo + sqlite cache so each artist is looked up once per
+    run. Pass refresh=True to re-query public APIs (still memoized afterward).
+    """
     artist = normalize_artist(artist)
     if not artist or artist.lower() in {"various artists", "various", "unknown artist", "unknown"}:
         return "", "skipped"
     key = genre_key(artist)
-    if not force:
+    if mem is not None and key in mem:
+        genre, source = mem[key]
+        return genre, source + "+mem"
+    if not refresh:
         hit = cache.get(key)
         if hit is not None:
+            if mem is not None:
+                mem[key] = hit
             return hit[0], hit[1] + "+cache"
 
     for name, fn, client in (
@@ -437,8 +448,12 @@ def lookup_genre(
         if result:
             genre, raw = result
             cache.set(key, genre, name, raw)
+            if mem is not None:
+                mem[key] = (genre, name)
             return genre, name
     cache.set(key, "", "none", {})
+    if mem is not None:
+        mem[key] = ("", "none")
     return "", "none"
 
 
@@ -501,19 +516,24 @@ def process_files(
     cache: GenreCache,
     force: bool,
     dry_run: bool,
+    refresh: bool = False,
 ) -> tuple[int, int, int]:
     discogs = RateLimitedClient(1.05)
     musicbrainz = RateLimitedClient(1.15)
     deezer = RateLimitedClient(0.35)
+    mem: dict[str, tuple[str, str]] = {}
     wrote = skipped = failed = 0
-    for path in paths:
+    total = len(paths)
+    for i, path in enumerate(paths, 1):
         artist = resolve_artist(path, music_dir)
         if not artist:
             skipped += 1
             continue
         _, _, current = read_tags(path)
+        # force overwrites tags; refresh re-queries APIs. Cache/mem always reuse
+        # per-artist results within a run so we don't hammer Discogs.
         genre, source = lookup_genre(
-            artist, cache, discogs, musicbrainz, deezer, force=force
+            artist, cache, discogs, musicbrainz, deezer, refresh=refresh, mem=mem
         )
         if not genre:
             skipped += 1
@@ -531,6 +551,12 @@ def process_files(
             print(f"OK  {path.name}: {current!r} -> {genre!r} [{source}] ({artist})")
         else:
             failed += 1
+        if i % 100 == 0 or i == total:
+            print(
+                f"progress {i}/{total} wrote={wrote} skipped={skipped} failed={failed} "
+                f"artists_cached={len(mem)}",
+                flush=True,
+            )
     return wrote, skipped, failed
 
 
@@ -549,7 +575,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--path", action="append", default=[], help="Audio file to tag (repeatable)")
     ap.add_argument("--all", action="store_true", help="Backfill every audio file under music-dir")
     ap.add_argument("--since-epoch", type=float, default=0, help="Only files mtime >= epoch")
-    ap.add_argument("--force", action="store_true", help="Re-query and overwrite existing genres")
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite GENRE even when it already matches the curated value",
+    )
+    ap.add_argument(
+        "--refresh-cache",
+        action="store_true",
+        help="Re-query Discogs/MusicBrainz/Deezer instead of using the sqlite cache",
+    )
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--lookup-only", action="store_true", help="Print genre for --artist and exit")
     args = ap.parse_args(argv)
@@ -568,7 +603,12 @@ def main(argv: list[str] | None = None) -> int:
         musicbrainz = RateLimitedClient(1.15)
         deezer = RateLimitedClient(0.35)
         genre, source = lookup_genre(
-            args.artist, cache, discogs, musicbrainz, deezer, force=args.force
+            args.artist,
+            cache,
+            discogs,
+            musicbrainz,
+            deezer,
+            refresh=args.refresh_cache,
         )
         print(json.dumps({"artist": args.artist, "genre": genre, "source": source}))
         return 0 if genre else 1
@@ -578,7 +618,9 @@ def main(argv: list[str] | None = None) -> int:
         paths = [Path(p) for p in args.path]
     elif args.all or args.since_epoch > 0:
         since = args.since_epoch if args.since_epoch > 0 else None
+        print(f"scanning {music_dir} …", flush=True)
         paths = list(iter_audio(music_dir, since))
+        print(f"found {len(paths)} audio files", flush=True)
         if args.artist:
             want = genre_key(normalize_artist(args.artist))
             paths = [p for p in paths if genre_key(resolve_artist(p, music_dir)) == want]
@@ -593,7 +635,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     wrote, skipped, failed = process_files(
-        paths, music_dir, cache, force=args.force, dry_run=args.dry_run
+        paths,
+        music_dir,
+        cache,
+        force=args.force,
+        dry_run=args.dry_run,
+        refresh=args.refresh_cache,
     )
     print(f"done wrote={wrote} skipped={skipped} failed={failed} files={len(paths)}")
     return 0 if failed == 0 else 1
