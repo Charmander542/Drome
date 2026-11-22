@@ -467,7 +467,11 @@ def lookup_genre(
 
 
 def read_tags(path: Path) -> tuple[str, str, str, list[str]]:
-    """Return albumartist, artist, primary genre, and all genre values."""
+    """Return albumartist, artist, primary genre, and all genre values.
+
+    Artist is joined from all ARTIST values so cast credits like
+    "Original Broadway Cast of Hamilton" aren't dropped when they aren't first.
+    """
     audio = MutagenFile(path, easy=True)
     if audio is None:
         return "", "", "", []
@@ -484,9 +488,11 @@ def read_tags(path: Path) -> tuple[str, str, str, list[str]]:
             return [str(v)]
         return []
     genres = all_vals("genre")
+    artists = all_vals("artist")
+    artist_joined = ", ".join(artists) if artists else ""
     return (
-        first("albumartist") or first("artist"),
-        first("artist"),
+        first("albumartist") or (artists[0] if artists else ""),
+        artist_joined,
         genres[0] if genres else "",
         genres,
     )
@@ -540,13 +546,18 @@ def resolve_artist_from_tags(
 ) -> str:
     aa_n = normalize_artist(albumartist)
     ar_n = normalize_artist(artist)
+    # Cast/company credits beat a solo albumartist (e.g. Lin-Manuel Miranda
+    # albums that still credit "Original Broadway Cast of Hamilton").
+    for candidate in (aa_n, ar_n):
+        if not candidate:
+            continue
+        cast = prefer_cast_credit(candidate)
+        if cast.lower() != candidate.lower() or " cast of " in candidate.lower():
+            if " cast of " in cast.lower() or cast.lower().startswith("cast of "):
+                return cast
     if aa_n and aa_n.lower() not in {"various artists", "various", "soundtrack", "compilation"}:
-        return prefer_cast_credit(aa_n)
+        return aa_n
     if ar_n:
-        # "Leslie Odom Jr., Original Broadway Cast of Hamilton" → cast credit.
-        cast = prefer_cast_credit(ar_n)
-        if cast != ar_n:
-            return cast
         return ar_n.split(",")[0].strip()
     try:
         rel = path.relative_to(music_dir)
