@@ -287,7 +287,13 @@ class RateLimitedClient:
             except urllib.error.HTTPError as e:
                 last_err = e
                 if e.code in (429, 503, 502):
-                    time.sleep(1.5 * (attempt + 1))
+                    # Honor Retry-After when present; otherwise back off hard.
+                    retry_after = e.headers.get("Retry-After") if e.headers else None
+                    try:
+                        wait = float(retry_after) if retry_after else 5.0 * (attempt + 1)
+                    except ValueError:
+                        wait = 5.0 * (attempt + 1)
+                    time.sleep(min(wait, 60.0))
                     continue
                 if e.code == 404:
                     return None
@@ -541,7 +547,8 @@ def process_files(
     dry_run: bool,
     refresh: bool = False,
 ) -> tuple[int, int, int]:
-    discogs = RateLimitedClient(1.05)
+    # Discogs anonymous limit is ~60/min; stay under it to avoid 429 storms.
+    discogs = RateLimitedClient(1.2)
     musicbrainz = RateLimitedClient(1.15)
     deezer = RateLimitedClient(0.35)
     mem: dict[str, tuple[str, str]] = {}
@@ -552,32 +559,28 @@ def process_files(
         artist = resolve_artist_from_tags(path, music_dir, aa, ar)
         if not artist:
             skipped += 1
-            continue
-        # force overwrites tags; refresh re-queries APIs. Cache/mem always reuse
-        # per-artist results within a run so we don't hammer Discogs.
-        genre, source = lookup_genre(
-            artist, cache, discogs, musicbrainz, deezer, refresh=refresh, mem=mem
-        )
-        if not genre:
-            skipped += 1
-            continue
-        # Already a single exact curated tag — never rewrite (NFS saves are expensive).
-        if len(genres) == 1 and genres[0] == genre:
-            skipped += 1
-            continue
-        # Without --force, also skip when the primary tag already normalizes correctly.
-        if not force and normalize_genre(current) == genre:
-            skipped += 1
-            continue
-        if dry_run:
-            print(f"DRY {path}: {current!r} -> {genre!r} ({source}, artist={artist})")
-            wrote += 1
-            continue
-        if write_genre(path, genre):
-            wrote += 1
-            print(f"OK  {path.name}: {current!r} -> {genre!r} [{source}] ({artist})")
         else:
-            failed += 1
+            # force overwrites tags; refresh re-queries APIs. Cache/mem always reuse
+            # per-artist results within a run so we don't hammer Discogs.
+            genre, source = lookup_genre(
+                artist, cache, discogs, musicbrainz, deezer, refresh=refresh, mem=mem
+            )
+            if not genre:
+                skipped += 1
+            # Already a single exact curated tag — never rewrite (NFS saves are expensive).
+            elif len(genres) == 1 and genres[0] == genre:
+                skipped += 1
+            # Without --force, also skip when the primary tag already normalizes correctly.
+            elif not force and normalize_genre(current) == genre:
+                skipped += 1
+            elif dry_run:
+                print(f"DRY {path}: {current!r} -> {genre!r} ({source}, artist={artist})")
+                wrote += 1
+            elif write_genre(path, genre):
+                wrote += 1
+                print(f"OK  {path.name}: {current!r} -> {genre!r} [{source}] ({artist})")
+            else:
+                failed += 1
         if i % 100 == 0 or i == total:
             print(
                 f"progress {i}/{total} wrote={wrote} skipped={skipped} failed={failed} "
@@ -626,7 +629,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.artist:
             print("need --artist", file=sys.stderr)
             return 2
-        discogs = RateLimitedClient(1.05)
+        discogs = RateLimitedClient(1.2)
         musicbrainz = RateLimitedClient(1.15)
         deezer = RateLimitedClient(0.35)
         genre, source = lookup_genre(
