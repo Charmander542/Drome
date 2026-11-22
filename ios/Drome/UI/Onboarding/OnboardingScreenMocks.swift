@@ -855,14 +855,20 @@ private struct OnboardingScrubberMock: View {
 }
 
 /// Manual steps on the Now Playing controls lesson (Continue / swipe advances).
+/// Order follows the real player: art → scrubber → transport → panes → bottom bar → ···.
 enum OnboardingNowPlayingStep: Int, CaseIterable {
     case artSwipe
     case scrubber
     case shuffle
     case `repeat`
-    case keepPlaying
-    case queue
     case lyrics
+    case addToPlaylist
+    case queue
+    case sleep
+    case output
+    case equalizer
+    case share
+    case more
 
     var title: String {
         switch self {
@@ -870,9 +876,14 @@ enum OnboardingNowPlayingStep: Int, CaseIterable {
         case .scrubber: return "Scrubber"
         case .shuffle: return "Shuffle"
         case .repeat: return "Repeat"
-        case .keepPlaying: return "Keep Playing ∞"
-        case .queue: return "Queue"
         case .lyrics: return "Song & Lyrics"
+        case .addToPlaylist: return "Add to Playlist"
+        case .queue: return "Queue"
+        case .sleep: return "Sleep Timer"
+        case .output: return "Output"
+        case .equalizer: return "Equalizer"
+        case .share: return "Share"
+        case .more: return "More"
         }
     }
 
@@ -895,18 +906,38 @@ enum OnboardingNowPlayingStep: Int, CaseIterable {
             return compact
                 ? "Once: list. Twice: one song."
                 : "Tap once to repeat the list, twice for one song, again to turn off."
-        case .keepPlaying:
-            return compact
-                ? "On: similar songs when the queue ends."
-                : "When your queue ends, Drome keeps playing similar songs."
-        case .queue:
-            return compact
-                ? "Opens upcoming tracks to reorder or clear."
-                : "Opens the upcoming tracks so you can reorder or clear what’s next."
         case .lyrics:
             return compact
                 ? "Song / Lyrics panes. Swipe up on art opens Lyrics."
                 : "Switch panes for the player or synced lyrics. Swipe up on art also opens Lyrics."
+        case .addToPlaylist:
+            return compact
+                ? "Save this song into one of your playlists."
+                : "Add the playing song to a playlist without leaving Now Playing."
+        case .queue:
+            return compact
+                ? "Opens upcoming tracks to reorder or clear."
+                : "Opens the upcoming tracks so you can reorder or clear what’s next."
+        case .sleep:
+            return compact
+                ? "Fade out after a set number of minutes."
+                : "Set a sleep timer so playback fades out after the minutes you pick."
+        case .output:
+            return compact
+                ? "AirPlay, Connect speakers, and phone output."
+                : "Pick AirPlay, a Connect speaker, or this iPhone — same sheet as the speaker button."
+        case .equalizer:
+            return compact
+                ? "Tune bass, mids, and treble while you listen."
+                : "Open the equalizer to shape bass, mids, and treble without leaving the player."
+        case .share:
+            return compact
+                ? "Share this track with the system share sheet."
+                : "Share the playing track via Messages, Mail, or anything else on your share sheet."
+        case .more:
+            return compact
+                ? "Instant Mix, Keep Playing, and station steering."
+                : "··· opens Instant Mix, Keep Playing (autoplay), and station steering for what’s next."
         }
     }
 
@@ -920,9 +951,14 @@ enum OnboardingNowPlayingStep: Int, CaseIterable {
         case .scrubber: return "slider.horizontal.3"
         case .shuffle: return "shuffle"
         case .repeat: return "repeat"
-        case .keepPlaying: return "infinity"
-        case .queue: return "list.bullet"
         case .lyrics: return "text.alignleft"
+        case .addToPlaylist: return "text.badge.plus"
+        case .queue: return "list.bullet"
+        case .sleep: return "moon.zzz"
+        case .output: return "hifispeaker.2.fill"
+        case .equalizer: return "slider.vertical.3"
+        case .share: return "square.and.arrow.up"
+        case .more: return "ellipsis"
         }
     }
 }
@@ -985,9 +1021,9 @@ struct OnboardingNowPlayingControlsMock: View {
                 .padding(.horizontal, 22)
                 .padding(.bottom, 6)
 
-            // Reserved chip slot — constant height across all tips.
+            // Reserved chip slot — constant height across all tips (fits 3 rows).
             stateChipSlot
-                .frame(height: 64)
+                .frame(height: 72)
                 .padding(.horizontal, 12)
 
             Spacer(minLength: 0)
@@ -1180,7 +1216,8 @@ struct OnboardingNowPlayingControlsMock: View {
     }
 
     private var trackMeta: some View {
-        HStack(alignment: .top, spacing: 8) {
+        let moreActive = step == .more
+        return HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(artIndex == 0 ? "Midnight Drive" : (artIndex == 1 ? "Neon Harbor" : "Glass Roads"))
                     .font(.system(size: 14, weight: .bold))
@@ -1196,13 +1233,12 @@ struct OnboardingNowPlayingControlsMock: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Image(systemName: "ellipsis")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 28, height: 22)
-                .opacity(0.85)
+            controlIcon(
+                "ellipsis",
+                tint: moreActive ? .white : Color.white.opacity(0.55),
+                active: moreActive)
         }
-        .opacity(step == .scrubber || step == .lyrics ? 0.85 : 0.7)
+        .opacity(moreActive || step == .scrubber || step == .lyrics ? 0.95 : 0.7)
     }
 
     private var ratingRow: some View {
@@ -1255,26 +1291,41 @@ struct OnboardingNowPlayingControlsMock: View {
     }
 
     private var bottomBar: some View {
-        HStack {
-            controlIcon("hifispeaker", tint: Color.white.opacity(0.35), active: false)
-            Spacer()
-            controlIcon(
-                "infinity",
-                tint: step == .keepPlaying ? DromeTheme.accent : Color.white.opacity(0.45),
-                active: step == .keepPlaying)
-            Spacer()
-            controlIcon(
-                "list.bullet",
-                tint: step == .queue ? .white : Color.white.opacity(0.45),
-                active: step == .queue)
+        // Match real Now Playing bottom bar: add · queue · sleep · output · EQ · share.
+        HStack(spacing: 0) {
+            bottomBarIcon("text.badge.plus", active: step == .addToPlaylist)
+            Spacer(minLength: 0)
+            bottomBarIcon("list.bullet", active: step == .queue)
+            Spacer(minLength: 0)
+            bottomBarIcon("moon.zzz", active: step == .sleep)
+            Spacer(minLength: 0)
+            bottomBarIcon("hifispeaker.2.fill", active: step == .output)
+            Spacer(minLength: 0)
+            bottomBarIcon("slider.vertical.3", active: step == .equalizer)
+            Spacer(minLength: 0)
+            bottomBarIcon("square.and.arrow.up", active: step == .share, shareOffset: true)
         }
+        .frame(height: 36)
+    }
+
+    private func bottomBarIcon(
+        _ systemName: String,
+        active: Bool,
+        shareOffset: Bool = false
+    ) -> some View {
+        controlIcon(
+            systemName,
+            tint: active ? .white : Color.white.opacity(0.4),
+            active: active,
+            yOffset: shareOffset ? -1.5 : 0)
     }
 
     private func controlIcon(
         _ systemName: String,
         tint: Color,
         active: Bool,
-        badge: Bool = false
+        badge: Bool = false,
+        yOffset: CGFloat = 0
     ) -> some View {
         OnboardingSpotlightRing(
             isActive: active,
@@ -1284,6 +1335,7 @@ struct OnboardingNowPlayingControlsMock: View {
             Image(systemName: systemName)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(tint)
+                .offset(y: yOffset)
                 .frame(width: 32, height: 32)
                 .overlay(alignment: .topTrailing) {
                     if badge {
@@ -1312,10 +1364,23 @@ struct OnboardingNowPlayingControlsMock: View {
                 ("List", "Once", true),
                 ("One", "Twice", true),
             ])
-        case .keepPlaying:
+        case .more:
             chipStack([
-                ("Off", "Ends", false),
-                ("On", "Similar", true),
+                ("Instant Mix", "Radio", true),
+                ("Keep Playing", "Autoplay", true),
+                ("Steering", "Next up", true),
+            ])
+        case .sleep:
+            chipStack([
+                ("15m", "Short", false),
+                ("30m", "Default", true),
+                ("45m", "Long", false),
+            ])
+        case .equalizer:
+            chipStack([
+                ("Bass", "Low", true),
+                ("Mids", "Mid", true),
+                ("Treble", "High", true),
             ])
         default:
             Color.clear

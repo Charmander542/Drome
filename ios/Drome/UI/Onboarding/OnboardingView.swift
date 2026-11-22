@@ -57,7 +57,7 @@ struct OnboardingView: View {
         OnboardingTourPage(
             title: "Keep the music going",
             caption: "The same Keep Playing switch also lives under Avatar → Settings → Playback.",
-            accessibilityMockLabel: "Settings is opened from the Home avatar menu. Keep Playing is in the Playback section — the same setting as the Now Playing infinity button."),
+            accessibilityMockLabel: "Settings is opened from the Home avatar menu. Keep Playing is in the Playback section — the same Autoplay switch as Now Playing ··· → Keep Playing."),
     ]
 
     private var isNowPlayingLesson: Bool { page == nowPlayingControlsPageIndex }
@@ -132,7 +132,7 @@ struct OnboardingView: View {
             if newPage == searchPageIndex { restartSearchCycle() }
             if newPage == nowPlayingControlsPageIndex {
                 if enterNowPlayingAtEnd || oldPage > nowPlayingControlsPageIndex {
-                    nowPlayingStep = .lyrics
+                    nowPlayingStep = OnboardingNowPlayingStep.allCases.last ?? .more
                     nowPlayingStepDirection = -1
                 } else {
                     nowPlayingStep = .artSwipe

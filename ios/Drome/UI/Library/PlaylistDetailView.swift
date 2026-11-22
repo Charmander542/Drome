@@ -153,12 +153,12 @@ struct PlaylistDetailView: View {
             isPresented: $showBulkOORConfirm,
             titleVisibility: .visible
         ) {
-            Button("Mark \(playlist?.songs.count ?? 0) Songs Out of Rotation") {
+            Button("Mark Songs Out of Rotation") {
                 Task { await bulkMarkOutOfRotation() }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("These tracks stay playable on demand but are excluded from shuffle and autoplay.")
+            Text("Tracks stay playable on demand but leave shuffle and autoplay. Songs that also live in other playlists are skipped until every playlist they belong to is marked too.")
         }
         .overlay(alignment: .bottom) {
             if let statusMessage {
@@ -669,7 +669,9 @@ struct PlaylistDetailView: View {
 
     private func hidePlaylistLocally() {
         guard !isSystem else { return }
-        PlaylistOrderStore.hide(playlistID, userKey: session.account.userKey)
+        let userKey = session.account.userKey
+        PlaylistOrderStore.hide(playlistID, userKey: userKey)
+        PlaylistOrderStore.clearBulkOOR(playlistID, userKey: userKey)
         onDeleted?()
         dismiss()
     }
@@ -682,7 +684,9 @@ struct PlaylistDetailView: View {
         }
         do {
             try await session.client.deletePlaylist(id: playlistID)
-            PlaylistOrderStore.unhide(playlistID, userKey: session.account.userKey)
+            let userKey = session.account.userKey
+            PlaylistOrderStore.unhide(playlistID, userKey: userKey)
+            PlaylistOrderStore.clearBulkOOR(playlistID, userKey: userKey)
             onDeleted?()
             dismiss()
         } catch {
@@ -691,9 +695,69 @@ struct PlaylistDetailView: View {
     }
 
     private func bulkMarkOutOfRotation() async {
-        guard let songs = playlist?.songs, !songs.isEmpty, !isSystem else { return }
-        await rotation.addAll(songs, manual: true)
-        flash("Marked \(songs.count) out of rotation")
+        guard let pl = playlist, !pl.songs.isEmpty, !isSystem else { return }
+        let userKey = session.account.userKey
+        let playlistID = pl.id
+        let songs = pl.songs
+
+        // Remember this playlist was bulk-marked so shared tracks can graduate
+        // into OOR only once every playlist they belong to is marked.
+        PlaylistOrderStore.markBulkOOR(playlistID, userKey: userKey)
+        let marked = PlaylistOrderStore.bulkOORMarkedIDs(userKey: userKey)
+
+        let toMark = await songsEligibleForBulkOOR(
+            songs: songs,
+            playlistID: playlistID,
+            markedPlaylistIDs: marked,
+            userKey: userKey)
+
+        await rotation.addAll(toMark, manual: true)
+        let skipped = songs.count - toMark.count
+        if skipped > 0 {
+            flash("Marked \(toMark.count) out of rotation · \(skipped) still in other playlists")
+        } else {
+            flash("Marked \(toMark.count) out of rotation")
+        }
+    }
+
+    /// Songs that only belong to bulk-OOR-marked playlists (plus this one).
+    private func songsEligibleForBulkOOR(
+        songs: [Song],
+        playlistID: String,
+        markedPlaylistIDs: Set<String>,
+        userKey: String
+    ) async -> [Song] {
+        var membership: [String: Set<String>] = [:]
+        for song in songs {
+            membership[song.id] = [playlistID]
+        }
+
+        let lists = (try? await session.client.playlists()) ?? []
+        let hidden = PlaylistOrderStore.hiddenIDs(userKey: userKey)
+        let others = lists.filter {
+            $0.id != playlistID
+                && $0.name != RotationManager.playlistName
+                && !hidden.contains($0.id)
+        }
+
+        await withTaskGroup(of: (String, Set<String>).self) { group in
+            for other in others {
+                group.addTask {
+                    let full = try? await session.client.playlist(id: other.id)
+                    return (other.id, Set((full?.songs ?? []).map(\.id)))
+                }
+            }
+            for await (otherID, ids) in group {
+                for song in songs where ids.contains(song.id) {
+                    membership[song.id, default: [playlistID]].insert(otherID)
+                }
+            }
+        }
+
+        return songs.filter { song in
+            let containers = membership[song.id] ?? [playlistID]
+            return containers.isSubset(of: markedPlaylistIDs)
+        }
     }
 
     private func loadSuggestions() async {
@@ -1070,7 +1134,7 @@ struct PlaylistMoreSheet: View {
                         .disabled(songCount == 0)
                         .listRowBackground(DromeTheme.elevated)
                     } footer: {
-                        Text("Keeps every track in this playlist out of shuffle and autoplay. They’re still playable anytime.")
+                        Text("Keeps tracks in this playlist out of shuffle and autoplay. Songs shared with other playlists wait until those playlists are marked too. They’re still playable anytime.")
                     }
                 }
 

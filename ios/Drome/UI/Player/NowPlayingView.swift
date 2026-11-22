@@ -156,7 +156,7 @@ struct NowPlayingView: View {
                         showAddToPlaylist = true
                     }
                     .dromeSession(session)
-                    .presentationDetents([.medium])
+                    .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
                 }
             }
@@ -1415,7 +1415,6 @@ struct NowPlayingMoreSheet: View {
     @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject private var rotation: RotationManager
     @EnvironmentObject private var downloads: DownloadManager
-    @EnvironmentObject private var sleepTimer: SleepTimerController
     @State private var mixBusy = false
     @State private var steering = StationSteeringStore.current
 
@@ -1454,7 +1453,7 @@ struct NowPlayingMoreSheet: View {
                             player.rerollAutoplayQueue()
                         } label: {
                             HStack {
-                                Label(mode.title, systemImage: mode.symbol)
+                                Text(mode.title)
                                 Spacer()
                                 if steering == mode {
                                     Image(systemName: "checkmark")
@@ -1606,41 +1605,6 @@ struct NowPlayingMoreSheet: View {
                     }
                     .listRowBackground(DromeTheme.elevated)
                 }
-
-                Section {
-                    ForEach(SleepTimerController.presets, id: \.self) { minutes in
-                        Button {
-                            sleepTimer.schedule(minutes: minutes)
-                            isPresented = false
-                        } label: {
-                            HStack {
-                                Label("\(minutes) minutes", systemImage: "moon.zzz")
-                                Spacer()
-                                if sleepTimer.selectedMinutes == minutes {
-                                    Image(systemName: "checkmark")
-                                        .foregroundStyle(DromeTheme.accent)
-                                }
-                            }
-                        }
-                        .listRowBackground(DromeTheme.elevated)
-                    }
-                    if sleepTimer.isActive {
-                        Button(role: .destructive) {
-                            sleepTimer.cancel()
-                            isPresented = false
-                        } label: {
-                            Label(
-                                sleepTimer.remainingLabel.map { "Turn Off (\($0))" } ?? "Turn Off",
-                                systemImage: "moon.zzz")
-                        }
-                        .listRowBackground(DromeTheme.elevated)
-                    }
-                } header: {
-                    Text("Sleep timer")
-                } footer: {
-                    Text("Pauses music and podcasts when the timer ends.")
-                        .font(.caption)
-                }
             }
             .scrollContentBackground(.hidden)
             .background(DromeTheme.background)
@@ -1663,11 +1627,14 @@ struct NowPlayingMoreSheet: View {
         defer { mixBusy = false }
         let songs = await InstantMix.songs(from: song, client: session.client)
         guard songs.count > 1 else { return }
-        player.play(
-            songs,
-            startAt: 0,
-            context: PlaybackContext(label: "Instant Mix", kind: .mix)
-        )
+        let context = PlaybackContext(label: "Instant Mix", kind: .mix)
+        // Same seed that's already under the playhead → keep audio seamless and
+        // only rewrite Up Next (don't rebuild AVPlayer / restart the track).
+        if player.current?.song.id == song.id {
+            player.adoptUpcomingMix(songs, context: context)
+        } else {
+            player.play(songs, startAt: 0, context: context)
+        }
         if save {
             let name = "Instant Mix · \(song.artist ?? song.title)"
             _ = try? await InstantMix.saveAsPlaylist(name: name, songs: songs, client: session.client)

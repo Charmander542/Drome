@@ -643,6 +643,7 @@ final class PlayerEngine: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.applyAudioFXVolume()
+                self?.refreshEqualizerOnWindow()
             }
             .store(in: &cancellables)
 
@@ -2114,7 +2115,16 @@ final class PlayerEngine: ObservableObject {
         // after a Tailscale hop isn't starting from an empty pipe.
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = !isFile
         item.preferredPeakBitRate = 0
+        // Real 5-band EQ via PCM tap (Flat = bypass). ReplayGain stays on volume.
+        EqualizerProcessor.shared.attach(to: item)
         return item
+    }
+
+    /// Re-apply EQ mix when faders / presets change without rebuilding the queue.
+    private func refreshEqualizerOnWindow() {
+        for entry in window {
+            EqualizerProcessor.shared.attach(to: entry.playerItem)
+        }
     }
 
     /// Badge for the bytes actually playing (transcoded MP3 vs library FLAC).
@@ -2731,9 +2741,9 @@ final class PlayerEngine: ObservableObject {
         broadcastSharePlayIfNeeded()
     }
 
-    /// ReplayGain + EQ tilt → AVQueuePlayer.volume. Optional fade for crossfade UX.
+    /// ReplayGain → AVQueuePlayer.volume. EQ is applied in the PCM tap, not here.
     private func applyAudioFXVolume(animated: Bool = false) {
-        let target = AudioFXController.shared.volume(for: current?.song)
+        let target = min(1.0, AudioFXController.shared.volume(for: current?.song))
         let seconds = AudioFXPreferences.crossfadeSeconds
         if animated, seconds > 0 {
             player.volume = 0.05
@@ -2746,8 +2756,10 @@ final class PlayerEngine: ObservableObject {
                     self.player.volume = 0.05 + (target - 0.05) * t
                 }
             }
-        } else {
-            player.volume = min(1.0, target)
+        } else if abs(player.volume - target) > 0.001 {
+            // Skip no-op writes — assigning volume mid-play can click under
+            // heavy UI (e.g. Search + keyboard) even when the gain is unchanged.
+            player.volume = target
         }
     }
 
