@@ -96,7 +96,6 @@ struct ArtistDetailView: View {
                 songSection(
                     title: "Top Songs",
                     songs: topSongs,
-                    previewCount: 5,
                     artist: artist)
             }
 
@@ -104,7 +103,6 @@ struct ArtistDetailView: View {
                 songSection(
                     title: "All Songs",
                     songs: ownedSongs.isEmpty ? allSongsPreview : ownedSongs,
-                    previewCount: 5,
                     artist: artist)
             }
 
@@ -148,25 +146,23 @@ struct ArtistDetailView: View {
     private func songSection(
         title: String,
         songs: [Song],
-        previewCount: Int,
         artist: ArtistWithAlbums
     ) -> some View {
-        let preview = Array(songs.prefix(previewCount))
         Section {
             songSectionHeader(title: title, songs: songs, artistName: artist.name)
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets(top: 16, leading: 16, bottom: 6, trailing: 16))
                 .listRowSeparator(.hidden)
 
-            ForEach(Array(preview.enumerated()), id: \.element.id) { index, song in
-                SongRow(song: song, showAlbum: true) {
-                    player.play(
-                        songs, startAt: index,
-                        context: PlaybackContext(label: artist.name, kind: .artist(id: artist.id)))
-                }
-                .listRowBackground(DromeTheme.background)
-                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-            }
+            // YouTube Music / Qobuz-style: swipe sideways through pages of song rows.
+            ArtistSongPagesRail(
+                songs: songs,
+                pageSize: 4,
+                artistName: artist.name,
+                artistID: artist.id)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 8, trailing: 0))
+                .listRowSeparator(.hidden)
         }
     }
 
@@ -176,7 +172,7 @@ struct ArtistDetailView: View {
                 .font(DromeTheme.headlineFont)
                 .foregroundStyle(.white)
             Spacer(minLength: 8)
-            if songs.count > 5 {
+            if songs.count > 4 {
                 NavigationLink {
                     ArtistSongsListView(
                         title: title,
@@ -201,13 +197,21 @@ struct ArtistDetailView: View {
     private func hero(_ artist: ArtistWithAlbums) -> some View {
         let coverFallback = session.artworkURL(id: artist.coverArt ?? artist.id, size: 800)
         let bleed = heroTopBleed
+        // Taller frame + slight downward bias so faces / subjects aren’t cropped off the top.
+        let heroBody: CGFloat = 400
         return ZStack(alignment: .bottomLeading) {
             GeometryReader { geo in
+                let w = geo.size.width
+                let h = geo.size.height
                 RemoteImage(
                     url: heroImageURL ?? coverFallback,
                     placeholderSymbol: "person.crop.rectangle",
                     holdImageWhileLoading: true)
-                    .frame(width: geo.size.width, height: geo.size.height)
+                    // Draw taller than the slot, then nudge down so more of the
+                    // upper subject stays in frame under the Dynamic Island.
+                    .frame(width: w, height: h * 1.18)
+                    .offset(y: h * 0.06)
+                    .frame(width: w, height: h, alignment: .center)
                     .clipped()
             }
 
@@ -231,7 +235,7 @@ struct ArtistDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 340 + bleed)
+        .frame(height: heroBody + bleed)
         // Negative inset pulls art under the transparent nav + Dynamic Island.
         .listRowInsets(EdgeInsets(top: -bleed, leading: 0, bottom: 0, trailing: 0))
     }
@@ -499,6 +503,68 @@ struct ArtistDetailView: View {
             .flatMap(\.windows)
             .first(where: \.isKeyWindow)?
             .safeAreaInsets ?? .zero
+    }
+}
+
+// MARK: - Horizontal song pages
+
+/// Columns of song rows you swipe sideways through (next page peeks on the right).
+private struct ArtistSongPagesRail: View {
+    let songs: [Song]
+    var pageSize: Int = 4
+    let artistName: String
+    let artistID: String
+
+    @EnvironmentObject private var player: PlayerEngine
+
+    private var pages: [[(offset: Int, song: Song)]] {
+        let indexed = Array(songs.enumerated()).map { (offset: $0.offset, song: $0.element) }
+        guard pageSize > 0 else { return [indexed] }
+        return stride(from: 0, to: indexed.count, by: pageSize).map { start in
+            Array(indexed[start..<min(start + pageSize, indexed.count)])
+        }
+    }
+
+    /// ~4 rows × (cover 56 + padding) ≈ page height.
+    private var pageHeight: CGFloat {
+        let rows = CGFloat(min(pageSize, max(songs.count, 1)))
+        return rows * 68
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let pageWidth = max(geo.size.width - 40, 280)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 12) {
+                    ForEach(Array(pages.enumerated()), id: \.offset) { _, page in
+                        VStack(spacing: 0) {
+                            ForEach(page, id: \.song.id) { item in
+                                SongRow(
+                                    song: item.song,
+                                    showAlbum: true,
+                                    // Nested horizontal paging owns the swipe.
+                                    enablesSwipeActions: false
+                                ) {
+                                    player.play(
+                                        songs, startAt: item.offset,
+                                        context: PlaybackContext(
+                                            label: artistName,
+                                            kind: .artist(id: artistID)))
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 6)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .frame(width: pageWidth, alignment: .topLeading)
+                    }
+                }
+                .scrollTargetLayout()
+                .padding(.trailing, 16)
+            }
+            .scrollTargetBehavior(.viewAligned)
+        }
+        .frame(height: pageHeight)
     }
 }
 
