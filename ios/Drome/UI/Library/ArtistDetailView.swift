@@ -34,8 +34,9 @@ struct ArtistDetailView: View {
         return downloadPool.allSatisfy { downloads.isDownloaded($0.id) }
     }
 
-    private var topSafeArea: CGFloat {
-        Self.windowSafeAreaInsets.top
+    /// Status / Dynamic Island + inline nav bar — List content starts below both.
+    private var heroTopBleed: CGFloat {
+        Self.windowSafeAreaInsets.top + 44
     }
 
     var body: some View {
@@ -61,7 +62,6 @@ struct ArtistDetailView: View {
             Section {
                 hero(artist)
                     .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets())
                     .listRowSeparator(.hidden)
             }
 
@@ -126,19 +126,22 @@ struct ArtistDetailView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .contentMargins(.top, 0, for: .scrollContent)
+        // Let the hero draw under the Dynamic Island / status bar.
+        .ignoresSafeArea(edges: .top)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 // Suppress the centered nav title over the hero art.
                 Color.clear.frame(width: 1, height: 1)
             }
         }
+        .toolbarColorScheme(.dark, for: .navigationBar)
     }
 
     // MARK: - Hero
 
     private func hero(_ artist: ArtistWithAlbums) -> some View {
         let coverFallback = session.artworkURL(id: artist.coverArt ?? artist.id, size: 800)
-        let bleed = topSafeArea
+        let bleed = heroTopBleed
         return ZStack(alignment: .bottomLeading) {
             GeometryReader { geo in
                 RemoteImage(
@@ -170,8 +173,8 @@ struct ArtistDetailView: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: 340 + bleed)
-        // Pull under the status / nav chrome so art is edge-to-edge at the top.
-        .padding(.top, -bleed)
+        // Negative inset pulls art under the transparent nav + Dynamic Island.
+        .listRowInsets(EdgeInsets(top: -bleed, leading: 0, bottom: 0, trailing: 0))
     }
 
     // MARK: - Actions
