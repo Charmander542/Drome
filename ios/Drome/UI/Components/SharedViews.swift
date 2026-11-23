@@ -162,25 +162,29 @@ struct AlbumMediaRow: View {
 }
 
 struct HorizontalAlbumRail: View {
-    let title: String
+    /// Nil / empty hides the section title (Qobuz-style bare album strip).
+    var title: String? = nil
     let albums: [Album]
     /// Optional year · type caption under each album (discography style).
     var showsReleaseMeta: Bool = false
+    var cardWidth: CGFloat = 148
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(DromeTheme.headlineFont)
-                .padding(.horizontal, 16)
+            if let title, !title.isEmpty {
+                Text(title)
+                    .font(DromeTheme.headlineFont)
+                    .padding(.horizontal, 16)
+            }
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 14) {
                     ForEach(albums) { album in
                         if showsReleaseMeta {
                             DiscographyAlbumCard(album: album)
-                                .frame(width: 148, alignment: .topLeading)
+                                .frame(width: cardWidth, alignment: .topLeading)
                         } else {
                             AlbumCard(album: album)
-                                .frame(width: 148, alignment: .topLeading)
+                                .frame(width: cardWidth, alignment: .topLeading)
                         }
                     }
                 }

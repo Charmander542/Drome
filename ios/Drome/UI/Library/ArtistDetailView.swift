@@ -34,6 +34,13 @@ struct ArtistDetailView: View {
         return downloadPool.allSatisfy { downloads.isDownloaded($0.id) }
     }
 
+    /// Library tracks that aren’t already in the Top Songs preview.
+    private var allSongsPreview: [Song] {
+        let topIDs = Set(topSongs.prefix(5).map(\.id))
+        let rest = ownedSongs.filter { !topIDs.contains($0.id) }
+        return rest.isEmpty ? ownedSongs : rest
+    }
+
     /// Status / Dynamic Island + inline nav bar — List content starts below both.
     private var heroTopBleed: CGFloat {
         Self.windowSafeAreaInsets.top + 44
@@ -68,37 +75,37 @@ struct ArtistDetailView: View {
             Section {
                 actionRow(artist)
                     .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
-            }
-
-            if !topSongs.isEmpty {
-                Section {
-                    Text("Popular")
-                        .font(DromeTheme.headlineFont)
-                        .foregroundStyle(.white)
-                        .listRowBackground(Color.clear)
-                        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 4, trailing: 16))
-
-                    ForEach(Array(topSongs.prefix(5).enumerated()), id: \.element.id) { index, song in
-                        SongRow(song: song, index: index + 1, showAlbum: true) {
-                            player.play(topSongs, startAt: index,
-                                        context: PlaybackContext(label: artist.name, kind: .artist(id: artist.id)))
-                        }
-                        .listRowBackground(DromeTheme.background)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                    }
-                }
+                    .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 8, trailing: 16))
+                    .listRowSeparator(.hidden)
             }
 
             if !artist.albums.isEmpty {
                 Section {
                     HorizontalAlbumRail(
-                        title: "Discography",
+                        title: nil,
                         albums: sortedAlbums(artist.albums),
-                        showsReleaseMeta: true)
+                        showsReleaseMeta: false,
+                        cardWidth: 140)
                         .listRowBackground(Color.clear)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
+                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 12, trailing: 0))
+                        .listRowSeparator(.hidden)
                 }
+            }
+
+            if !topSongs.isEmpty {
+                songSection(
+                    title: "Top Songs",
+                    songs: topSongs,
+                    previewCount: 5,
+                    artist: artist)
+            }
+
+            if allSongsPreview.count > 1 || (topSongs.isEmpty && !ownedSongs.isEmpty) {
+                songSection(
+                    title: "All Songs",
+                    songs: ownedSongs.isEmpty ? allSongsPreview : ownedSongs,
+                    previewCount: 5,
+                    artist: artist)
             }
 
             if !relatedArtists.isEmpty {
@@ -135,6 +142,58 @@ struct ArtistDetailView: View {
             }
         }
         .toolbarColorScheme(.dark, for: .navigationBar)
+    }
+
+    @ViewBuilder
+    private func songSection(
+        title: String,
+        songs: [Song],
+        previewCount: Int,
+        artist: ArtistWithAlbums
+    ) -> some View {
+        let preview = Array(songs.prefix(previewCount))
+        Section {
+            songSectionHeader(title: title, songs: songs, artistName: artist.name)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 16, leading: 16, bottom: 6, trailing: 16))
+                .listRowSeparator(.hidden)
+
+            ForEach(Array(preview.enumerated()), id: \.element.id) { index, song in
+                SongRow(song: song, showAlbum: true) {
+                    player.play(
+                        songs, startAt: index,
+                        context: PlaybackContext(label: artist.name, kind: .artist(id: artist.id)))
+                }
+                .listRowBackground(DromeTheme.background)
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+            }
+        }
+    }
+
+    private func songSectionHeader(title: String, songs: [Song], artistName: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .font(DromeTheme.headlineFont)
+                .foregroundStyle(.white)
+            Spacer(minLength: 8)
+            if songs.count > 5 {
+                NavigationLink {
+                    ArtistSongsListView(
+                        title: title,
+                        artistName: artistName,
+                        artistID: artistID,
+                        songs: songs)
+                } label: {
+                    HStack(spacing: 2) {
+                        Text("See All")
+                            .font(.subheadline.weight(.medium))
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(DromeTheme.muted)
+                }
+            }
+        }
     }
 
     // MARK: - Hero
@@ -179,17 +238,24 @@ struct ArtistDetailView: View {
 
     // MARK: - Actions
 
-    /// Compact Spotify-style chrome: small icon buttons + one primary circle.
-    /// Refs: [Spotify artist](https://mobbin.com/screens/5def950c-68f1-4df1-8a04-124f53ab97c5)
+    /// Qobuz-style chrome: outline icons on the left, large accent Play on the right.
     private func actionRow(_ artist: ArtistWithAlbums) -> some View {
-        HStack(spacing: 18) {
+        HStack(spacing: 20) {
             actionIconButton(
-                systemImage: isFullyDownloaded ? "checkmark" : "arrow.down",
+                systemImage: isFullyDownloaded ? "checkmark.circle" : "arrow.down.circle",
                 label: isFullyDownloaded ? "Downloaded" : "Download artist",
                 disabled: downloadPool.isEmpty,
                 accent: isFullyDownloaded
             ) {
                 downloadArtist()
+            }
+
+            actionIconButton(
+                systemImage: "heart",
+                label: mixBusy ? "Mixing" : "Instant Mix",
+                disabled: mixBusy
+            ) {
+                Task { await startInstantMix(artist) }
             }
 
             actionIconButton(
@@ -206,24 +272,21 @@ struct ArtistDetailView: View {
             Spacer(minLength: 8)
 
             Button {
-                Task { await startInstantMix(artist) }
+                guard !playPool.isEmpty else { return }
+                player.play(
+                    playPool, startAt: 0,
+                    context: PlaybackContext(label: artist.name, kind: .artist(id: artist.id)))
             } label: {
-                Group {
-                    if mixBusy {
-                        ProgressView()
-                            .tint(.black)
-                    } else {
-                        Image(systemName: "wand.and.stars")
-                            .font(.title3.weight(.bold))
-                            .foregroundStyle(.black)
-                    }
-                }
-                .frame(width: 56, height: 56)
-                .background(dromeAccent, in: Circle())
+                Image(systemName: "play.fill")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.black)
+                    .offset(x: 1)
+                    .frame(width: 56, height: 56)
+                    .background(dromeAccent, in: Circle())
             }
             .buttonStyle(.plain)
-            .disabled(mixBusy)
-            .accessibilityLabel(mixBusy ? "Mixing" : "Instant Mix")
+            .disabled(playPool.isEmpty)
+            .accessibilityLabel("Play")
         }
         .padding(.vertical, 2)
     }
@@ -237,7 +300,7 @@ struct ArtistDetailView: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.body.weight(.semibold))
+                .font(.title2.weight(.regular))
                 .foregroundStyle(accent ? dromeAccent : Color.white.opacity(disabled ? 0.35 : 0.92))
                 .frame(width: 36, height: 36)
                 .contentShape(Circle())
@@ -436,5 +499,35 @@ struct ArtistDetailView: View {
             .flatMap(\.windows)
             .first(where: \.isKeyWindow)?
             .safeAreaInsets ?? .zero
+    }
+}
+
+// MARK: - See All songs
+
+private struct ArtistSongsListView: View {
+    let title: String
+    let artistName: String
+    let artistID: String
+    let songs: [Song]
+
+    @EnvironmentObject private var player: PlayerEngine
+
+    var body: some View {
+        List {
+            ForEach(Array(songs.enumerated()), id: \.element.id) { index, song in
+                SongRow(song: song, showAlbum: true) {
+                    player.play(
+                        songs, startAt: index,
+                        context: PlaybackContext(label: artistName, kind: .artist(id: artistID)))
+                }
+                .listRowBackground(DromeTheme.background)
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(DromeTheme.background.ignoresSafeArea())
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
