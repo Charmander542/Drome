@@ -15,6 +15,17 @@
 			</array>
 		</dict>
 	</array>
+	<key>CFBundleSpokenName</key>
+	<string>Drome</string>
+	<key>INAlternativeAppNames</key>
+	<array>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Drome Music</string>
+			<key>INAlternativeAppNamePronunciationHint</key>
+			<string>drome music</string>
+		</dict>
+	</array>
 	<key>INIntentsSupported</key>
 	<array>
 		<string>INPlayMediaIntent</string>

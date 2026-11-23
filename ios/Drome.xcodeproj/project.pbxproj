@@ -200,6 +200,7 @@
 				UI/Settings/DiagnosticsView.swift,
 				UI/Settings/ListeningStatsView.swift,
 				UI/Settings/SettingsAppearanceView.swift,
+				UI/Settings/SettingsSiriShortcutsView.swift,
 				UI/Settings/SettingsConnectionsView.swift,
 				UI/Settings/SettingsHomeNetworkView.swift,
 				UI/Settings/SettingsLibrarySyncView.swift,

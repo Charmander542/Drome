@@ -1,4 +1,5 @@
 import Foundation
+import AppIntents
 
 /// Persistent library list catalogs so Playlists / Albums / Artists / Songs
 /// paint instantly on tab flips. Memory first, then Application Support disk.
@@ -40,6 +41,8 @@ enum LibraryListCatalog {
         playlistsByServer[serverKey] = Entry(items: playlists, isComplete: true)
         lock.unlock()
         scheduleDiskWrite(kind: "playlists", serverKey: serverKey, items: playlists, isComplete: true)
+        // Keep Siri playlist suggestions in sync with the library catalog.
+        DromeShortcuts.updateAppShortcutParameters()
     }
 
     // MARK: - Albums

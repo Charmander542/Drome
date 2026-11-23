@@ -17,6 +17,7 @@ struct SettingsView: View {
         case playback
         case streaming
         case appearance
+        case siriShortcuts
         case librarySync
         case listeningStats
         case appleWatch
@@ -188,6 +189,12 @@ struct SettingsView: View {
                 systemImage: "paintbrush",
                 route: .appearance)
             settingsLink(
+                title: "Siri & Shortcuts",
+                systemImage: "waveform",
+                route: .siriShortcuts,
+                subtitle: "Play vibes, playlists, and liked songs",
+                accessibilityId: "drome.settings.siri")
+            settingsLink(
                 title: "Library sync",
                 systemImage: "arrow.triangle.2.circlepath",
                 route: .librarySync,
@@ -262,6 +269,9 @@ struct SettingsView: View {
             .settingsNavChrome()
         case .appearance:
             SettingsAppearanceView()
+                .settingsNavChrome()
+        case .siriShortcuts:
+            SettingsSiriShortcutsView()
                 .settingsNavChrome()
         case .librarySync:
             SettingsLibrarySyncView()
