@@ -123,6 +123,16 @@ struct PlaylistDetailView: View {
                     PlaylistShare.present(playlist: playlist.asPlaylist, songs: playlist.songs)
                 },
                 onTogglePublic: { Task { await togglePublic() } },
+                onPlayNext: {
+                    guard let songs = playlist?.songs, !songs.isEmpty else { return }
+                    player.playNext(songs)
+                    flash(songs.count == 1 ? "Playing next" : "Playing \(songs.count) next")
+                },
+                onAddToQueue: {
+                    guard let songs = playlist?.songs, !songs.isEmpty else { return }
+                    player.addToQueue(songs)
+                    flash(songs.count == 1 ? "Added to queue" : "Added \(songs.count) to queue")
+                },
                 onDownload: {
                     guard let playlist else { return }
                     let songs = playlist.songs
@@ -1073,6 +1083,8 @@ struct PlaylistMoreSheet: View {
     var onToggleEdit: () -> Void
     var onShare: () -> Void
     var onTogglePublic: () -> Void
+    var onPlayNext: () -> Void
+    var onAddToQueue: () -> Void
     var onDownload: () -> Void
     var onBulkOutOfRotation: () -> Void
     var onHide: () -> Void
@@ -1140,12 +1152,30 @@ struct PlaylistMoreSheet: View {
 
                 Section {
                     Button {
+                        dismissThen(onPlayNext)
+                    } label: {
+                        Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                    }
+                    .disabled(songCount == 0)
+                    .listRowBackground(DromeTheme.elevated)
+
+                    Button {
+                        dismissThen(onAddToQueue)
+                    } label: {
+                        Label("Add to Queue", systemImage: "text.append")
+                    }
+                    .disabled(songCount == 0)
+                    .listRowBackground(DromeTheme.elevated)
+
+                    Button {
                         dismissThen(onDownload)
                     } label: {
                         Label("Download Playlist", systemImage: "arrow.down.circle")
                     }
                     .disabled(songCount == 0)
                     .listRowBackground(DromeTheme.elevated)
+                } footer: {
+                    Text("Play Next inserts the playlist at the front of your queue. Add to Queue appends it at the end.")
                 }
 
                 if !isSystem {
