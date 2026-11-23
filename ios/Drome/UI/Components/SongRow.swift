@@ -53,7 +53,9 @@ struct SongRow: View {
         .accessibilityAddTraits(playsOnTap ? .isButton : [])
         .accessibilityHint(playsOnTap ? "Plays this song" : "")
         .contextMenu { contextMenu }
-        .modifier(ConditionalSongSwipe(enabled: enablesSwipeActions && !lightweight, song: song))
+        // Swipes stay available on lightweight Search/Library rows — only the
+        // label chrome is cheapened, not queue gestures.
+        .modifier(ConditionalSongSwipe(enabled: enablesSwipeActions, song: song))
         .confirmReplaceUserQueue(
             isPresented: $showReplaceQueueConfirm,
             queueCount: player.userQueue.count,
@@ -259,7 +261,7 @@ private struct EquatableSongRowContent: View, Equatable {
                     if isDownloaded {
                         Image(systemName: "arrow.down.circle.fill")
                             .font(.caption2)
-                            .foregroundStyle(DromeTheme.accent)
+                            .foregroundStyle(DromeTheme.muted)
                     }
                 }
                 Text(subtitleLine)

@@ -37,6 +37,7 @@ struct LibraryView: View {
     @EnvironmentObject private var downloads: DownloadManager
     @EnvironmentObject private var player: PlayerEngine
     @Environment(\.tabPopToRootTrigger) private var tabPopToRootTrigger
+    @Environment(\.tabScrollToTopTrigger) private var tabScrollToTopTrigger
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     /// Explicit height so the AX horizontal ScrollView isn't a blank band.
     @ScaledMetric(relativeTo: .caption) private var filterBarHeightScaled: CGFloat = 44
@@ -157,10 +158,12 @@ struct LibraryView: View {
         }
         .onChange(of: tabPopToRootTrigger) { _, trigger in
             guard trigger > 0 else { return }
-            // Re-tap while deep already remounted us at root; only reset chrome
-            // here when already on the library root (second-tap / filter reset).
-            filter = .playlists
-            isReorderingPlaylists = false
+            // Re-tap Library → Playlists root (also covers Artists/Albums/… sub-tabs).
+            returnToLibraryRoot()
+        }
+        .onChange(of: tabScrollToTopTrigger) { _, trigger in
+            guard trigger > 0 else { return }
+            returnToLibraryRoot()
         }
         .onReceive(NotificationCenter.default.publisher(for: LibraryArtistFilter.preferenceDidChange)) { _ in
             Task {
@@ -1002,7 +1005,7 @@ struct LibraryView: View {
                     {
                         Image(systemName: "arrow.down.circle.fill")
                             .font(.caption)
-                            .foregroundStyle(DromeTheme.accent)
+                            .foregroundStyle(DromeTheme.muted)
                             .accessibilityLabel("Downloaded")
                     }
                 }
@@ -1090,6 +1093,12 @@ struct LibraryView: View {
 
     /// Instant tab switch: if this tab already has rows, do nothing on the
     /// critical path. Network fill / refresh happens only when empty or forced.
+    private func returnToLibraryRoot() {
+        filter = .playlists
+        isReorderingPlaylists = false
+        openedPlaylist = nil
+    }
+
     private func ensureActiveTabReady(forceNetwork: Bool) async {
         if filter == .genres {
             return

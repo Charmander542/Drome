@@ -30,23 +30,20 @@ enum SearchBrowseCache {
 struct SearchBrowseLanding: View {
     @EnvironmentObject private var session: AppSession
 
-    /// Full ranked list — pages peel off into `visibleCount` as you scroll.
+    /// Full ranked list — every tile is shown; artwork pages in as you scroll.
     @State private var ranked: [NormalizedGenre] = []
-    @State private var visibleCount = 0
+    /// How many leading genres have had artwork requested (tiles still show without it).
+    @State private var artFetchedCount = 0
     @State private var genreArt: [String: URL] = [:]
     @State private var genreColors: [String: Color] = [:]
     @State private var usedCoverIds = Set<String>()
     @State private var isLoadingGenres = true
-    @State private var isLoadingMore = false
+    @State private var isLoadingMoreArt = false
     @State private var selectedGenre: NormalizedGenre?
 
-    private let pageSize = 12
+    private let artworkPageSize = 12
 
     private var serverKey: String { session.account.serverKey }
-
-    private var visibleGenres: [NormalizedGenre] {
-        Array(ranked.prefix(visibleCount))
-    }
 
     var body: some View {
         ScrollView {
@@ -67,7 +64,7 @@ struct SearchBrowseLanding: View {
                 } else {
                     // Eager grid (not Lazy) so tiles stay in the render tree while
                     // Search covers this landing — Cancel never flashes empty black.
-                    let genres = visibleGenres
+                    let genres = ranked
                     let rows = stride(from: 0, to: genres.count, by: 2).map { start in
                         Array(genres[start..<min(start + 2, genres.count)])
                     }
@@ -97,14 +94,14 @@ struct SearchBrowseLanding: View {
                             }
                             .onAppear {
                                 let lastIndex = min((rowIndex + 1) * 2, genres.count) - 1
-                                if lastIndex >= genres.count - 4 {
-                                    Task { await loadNextPageIfNeeded() }
+                                if lastIndex >= artFetchedCount - 4 {
+                                    Task { await loadNextArtworkPageIfNeeded() }
                                 }
                             }
                         }
                     }
 
-                    if isLoadingMore {
+                    if isLoadingMoreArt, artFetchedCount < ranked.count {
                         ProgressView()
                             .tint(DromeTheme.muted)
                             .frame(maxWidth: .infinity)
@@ -144,7 +141,8 @@ struct SearchBrowseLanding: View {
 
     private func apply(_ snapshot: SearchBrowseCache.Snapshot) {
         ranked = snapshot.ranked
-        visibleCount = min(snapshot.visibleCount, snapshot.ranked.count)
+        // Older caches stored a partial visibleCount — always show every ranked tile.
+        artFetchedCount = min(max(snapshot.visibleCount, 0), snapshot.ranked.count)
         genreArt = snapshot.genreArt
         genreColors = snapshot.genreColors
         usedCoverIds = snapshot.usedCoverIds
@@ -155,7 +153,8 @@ struct SearchBrowseLanding: View {
         SearchBrowseCache.store(
             .init(
                 ranked: ranked,
-                visibleCount: max(visibleCount, 0),
+                // Reuse visibleCount slot for art progress so cache shape stays stable.
+                visibleCount: max(artFetchedCount, 0),
                 genreArt: genreArt,
                 genreColors: genreColors,
                 usedCoverIds: usedCoverIds
@@ -176,8 +175,8 @@ struct SearchBrowseLanding: View {
 
         if !forceNetwork, showingCached {
             // Still top up art for any tiles missing covers.
-            if visibleCount == 0 {
-                await loadNextPageIfNeeded()
+            if artFetchedCount < ranked.count {
+                await loadNextArtworkPageIfNeeded()
             }
             return
         }
@@ -191,15 +190,14 @@ struct SearchBrowseLanding: View {
 
             ranked = picks
             genreColors = SearchBrowsePalette.uniqueWashes(for: picks.map(\.id))
-            // Keep already-shown page when refreshing the same server list.
-            if hadContent, visibleCount > 0 {
-                visibleCount = min(visibleCount, picks.count)
+            if hadContent, artFetchedCount > 0 {
+                artFetchedCount = min(artFetchedCount, picks.count)
             } else {
-                visibleCount = 0
+                artFetchedCount = 0
                 usedCoverIds = []
                 genreArt = [:]
             }
-            await loadNextPageIfNeeded()
+            await loadNextArtworkPageIfNeeded()
             persistCache()
         } catch is CancellationError {
             // Pushing a genre cancels `.task` — keep whatever we already painted.
@@ -207,25 +205,31 @@ struct SearchBrowseLanding: View {
         } catch {
             if !showingCached {
                 ranked = []
-                visibleCount = 0
+                artFetchedCount = 0
                 genreArt = [:]
                 genreColors = [:]
             }
         }
     }
 
-    private func loadNextPageIfNeeded() async {
-        guard !isLoadingMore else { return }
-        guard visibleCount < ranked.count else { return }
-        isLoadingMore = true
-        defer { isLoadingMore = false }
+    private func loadNextArtworkPageIfNeeded() async {
+        guard !isLoadingMoreArt else { return }
+        guard artFetchedCount < ranked.count else { return }
+        isLoadingMoreArt = true
 
-        let start = visibleCount
-        let end = min(ranked.count, start + pageSize)
+        let start = artFetchedCount
+        let end = min(ranked.count, start + artworkPageSize)
         let page = Array(ranked[start..<end])
-        visibleCount = end
+        artFetchedCount = end
         await loadGenreArtwork(for: page)
         persistCache()
+        isLoadingMoreArt = false
+
+        // Eager VStack fires onAppear while a page is in flight — keep going
+        // so later tiles still get covers without another scroll nudge.
+        if artFetchedCount < ranked.count {
+            await loadNextArtworkPageIfNeeded()
+        }
     }
 
     /// Prefer genres you actually listen to, then strong library buckets —
@@ -313,7 +317,7 @@ struct SearchBrowseLanding: View {
         }
         usedCoverIds = used
         genreArt = urls
-        ImageLoader.shared.prefetch(Array(urls.values), limit: pageSize)
+        ImageLoader.shared.prefetch(Array(urls.values), limit: artworkPageSize)
     }
 }
 

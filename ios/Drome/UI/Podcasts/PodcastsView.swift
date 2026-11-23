@@ -5,35 +5,47 @@ struct PodcastsView: View {
     @Environment(AppNavigationRouter.self) private var router
     @EnvironmentObject private var podcastManager: PodcastManager
     @EnvironmentObject private var podcastPlayer: PodcastPlayer
+    @Environment(\.tabPopToRootTrigger) private var tabPopToRootTrigger
+    @Environment(\.tabScrollToTopTrigger) private var tabScrollToTopTrigger
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var isRefreshing = false
+    @State private var scrollToTopToken = 0
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                if let message = podcastPlayer.errorMessage {
-                    Text(message)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    Color.clear.frame(height: 0).id("podcasts-top")
 
-                let _ = podcastManager.starsRevision
-                let starred = podcastManager.starredEpisodes()
-                if !starred.isEmpty {
-                    starredSection(starred)
-                }
+                    if let message = podcastPlayer.errorMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 8)
+                    }
 
-                let inProgress = podcastManager.inProgressEpisodes()
-                if !inProgress.isEmpty {
-                    inProgressSection(inProgress)
-                }
+                    let _ = podcastManager.starsRevision
+                    let starred = podcastManager.starredEpisodes()
+                    if !starred.isEmpty {
+                        starredSection(starred)
+                    }
 
-                if podcastManager.subscribedShows.isEmpty {
-                    emptyState
-                } else {
-                    subscriptionsSection
+                    let inProgress = podcastManager.inProgressEpisodes()
+                    if !inProgress.isEmpty {
+                        inProgressSection(inProgress)
+                    }
+
+                    if podcastManager.subscribedShows.isEmpty {
+                        emptyState
+                    } else {
+                        subscriptionsSection
+                    }
+                }
+            }
+            .onChange(of: scrollToTopToken) { _, _ in
+                withAnimation(.easeOut(duration: 0.25)) {
+                    proxy.scrollTo("podcasts-top", anchor: .top)
                 }
             }
         }
@@ -61,6 +73,14 @@ struct PodcastsView: View {
                 .disabled(isRefreshing || podcastManager.subscribedShows.isEmpty)
                 .accessibilityLabel("Refresh podcasts")
             }
+        }
+        .onChange(of: tabPopToRootTrigger) { _, trigger in
+            guard trigger > 0 else { return }
+            scrollToTopToken += 1
+        }
+        .onChange(of: tabScrollToTopTrigger) { _, trigger in
+            guard trigger > 0 else { return }
+            scrollToTopToken += 1
         }
         .onAppear {
             // Warm ImageLoader so show → episode list art is instant.

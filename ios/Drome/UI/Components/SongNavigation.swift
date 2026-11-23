@@ -213,6 +213,7 @@ struct SongNavigationStack<Content: View>: View {
     @State private var stackID = UUID()
     @State private var navigationDepth = 0
     @State private var scrollToTopTrigger = 0
+    @State private var uiKitPopToRoot: (() -> Void)?
     @ViewBuilder var content: () -> Content
 
     init(popToRootTrigger: Int = 0, @ViewBuilder content: @escaping () -> Content) {
@@ -231,7 +232,9 @@ struct SongNavigationStack<Content: View>: View {
         NavigationStack(path: $path) {
             content()
                 .background {
-                    NavigationDepthReader(depth: $navigationDepth)
+                    NavigationDepthReader(
+                        depth: $navigationDepth,
+                        popToRoot: $uiKitPopToRoot)
                         .frame(width: 0, height: 0)
                         .accessibilityHidden(true)
                 }
@@ -257,18 +260,17 @@ struct SongNavigationStack<Content: View>: View {
         .environment(\.tabScrollToTopTrigger, scrollToTopTrigger)
         .onChange(of: popToRootTrigger) { _, trigger in
             guard trigger > 0 else { return }
-            if isDeep {
-                // Destination NavigationLinks (playlists, downloads, …) are not in
-                // `path` — remount when UIKit reports pushed pages. Album/artist
-                // item routes clear via the navigator alone when depth is 0.
-                let shouldRemount = navigationDepth > 0 || !path.isEmpty
-                path = NavigationPath()
-                navigator.popToRoot()
-                if shouldRemount {
-                    stackID = UUID()
-                }
-                navigationDepth = 0
-            } else {
+            // Always return to the tab root. NavigationLink pushes (Daily Mix,
+            // playlists, podcast shows, …) often never land in `path`, and UIKit
+            // depth probing can lag — remounting is the reliable clear.
+            let wasDeep = isDeep
+            path = NavigationPath()
+            navigator.popToRoot()
+            uiKitPopToRoot?()
+            stackID = UUID()
+            navigationDepth = 0
+            // When already at root, also nudge scroll-to-top listeners.
+            if !wasDeep {
                 scrollToTopTrigger += 1
             }
         }
@@ -278,13 +280,19 @@ struct SongNavigationStack<Content: View>: View {
 /// Reports how many pages are pushed on the hosting `UINavigationController`.
 private struct NavigationDepthReader: UIViewControllerRepresentable {
     @Binding var depth: Int
+    @Binding var popToRoot: (() -> Void)?
 
     func makeUIViewController(context: Context) -> ProbeController {
-        ProbeController(depth: $depth)
+        let controller = ProbeController(depth: $depth)
+        DispatchQueue.main.async {
+            popToRoot = { [weak controller] in controller?.popToRoot() }
+        }
+        return controller
     }
 
     func updateUIViewController(_ controller: ProbeController, context: Context) {
         controller.depth = $depth
+        popToRoot = { [weak controller] in controller?.popToRoot() }
         DispatchQueue.main.async { controller.publish() }
     }
 
@@ -318,6 +326,16 @@ private struct NavigationDepthReader: UIViewControllerRepresentable {
             if depth.wrappedValue != next {
                 depth.wrappedValue = next
             }
+        }
+
+        func popToRoot() {
+            guard let navigationController,
+                  navigationController.viewControllers.count > 1 else {
+                publish()
+                return
+            }
+            navigationController.popToRootViewController(animated: true)
+            publish()
         }
 
         private func startObserving() {
