@@ -115,31 +115,21 @@ struct SettingsView: View {
             .accessibilityAddTraits(.isHeader)
     }
 
-    /// Top card (SubSonify Pro slot) → Drome feature tour / identity.
+    /// Identity only — feature tour lives under About so it isn’t one tap away.
     private var brandCard: some View {
         Section {
-            Button {
-                OnboardingPresenter.replay()
-                dismiss()
-            } label: {
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Drome")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(.white)
-                        Text("Offline · Discover · CarPlay · Watch")
-                            .font(.subheadline)
-                            .foregroundStyle(DromeTheme.muted)
-                    }
-                    Spacer(minLength: 8)
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.white.opacity(0.28))
-                }
-                .padding(.vertical, 4)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Drome")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.white)
+                Text("Offline · Discover · CarPlay · Watch")
+                    .font(.subheadline)
+                    .foregroundStyle(DromeTheme.muted)
             }
-            .buttonStyle(.borderless)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .listRowBackground(DromeTheme.elevated)
+            .accessibilityElement(children: .combine)
         }
     }
 
@@ -235,10 +225,21 @@ struct SettingsView: View {
             }
             .buttonStyle(.borderless)
 
+            Button {
+                OnboardingPresenter.replay()
+                dismiss()
+            } label: {
+                settingsIconLabel(title: "Replay feature tour", systemImage: "sparkles")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityIdentifier("drome.settings.replay-onboarding")
+
             Button("Sign Out", role: .destructive) {
                 env.signOut()
                 dismiss()
             }
+        } header: {
+            Text("About")
         }
         .listRowBackground(DromeTheme.elevated)
     }
