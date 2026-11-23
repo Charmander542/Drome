@@ -102,6 +102,8 @@ struct MainTabView: View {
                     txn.disablesAnimations = true
                     withTransaction(txn) { showPodcastNowPlaying = false }
                 }
+                // Shadow music's PlaybackClock with the podcast clock in this subtree.
+                .environmentObject(podcastPlayer.clock)
                 .compositingGroup()
                 .ignoresSafeArea()
                 .accessibilityAddTraits(.isModal)

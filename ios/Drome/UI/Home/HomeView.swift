@@ -29,7 +29,7 @@ struct HomeView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
+                LazyVStack(alignment: .leading, spacing: 22) {
                     Color.clear.frame(height: 0).id("home-top")
 
                     // Compact brand — Vibe Tuner is the hero immediately under it.

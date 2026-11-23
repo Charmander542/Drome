@@ -132,7 +132,20 @@ final class ImageLoader: @unchecked Sendable {
     // MARK: - Fetch
 
     private func fetchAndDecode(url: URL, key: NSString) async -> UIImage? {
-        guard let (data, response) = try? await session.data(from: url),
+        // File URLs may carry a synthetic `?size=` tag for cache/decode sizing —
+        // strip it before reading so FileManager / URLSession can open the path.
+        let resource = Self.resourceURL(for: url)
+        let data: Data?
+        let response: URLResponse?
+        if resource.isFileURL {
+            data = try? Data(contentsOf: resource)
+            response = nil
+        } else {
+            let result = try? await session.data(from: resource)
+            data = result?.0
+            response = result?.1
+        }
+        guard let data,
               (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true
         else {
             markFailed(key)
@@ -155,12 +168,46 @@ final class ImageLoader: @unchecked Sendable {
 
     /// Any previously decoded size for this cover — used so the player never
     /// flashes a placeholder while a larger fetch is in flight.
+    /// Oversized hero bitmaps are withheld from list-sized requests so scroll
+    /// cells don't composite 1200px textures.
     func previewImage(for url: URL) -> UIImage? {
         if let exact = cachedImage(for: url) { return exact }
-        if let id = Self.coverIdentity(for: url) {
-            return coverCache.object(forKey: id as NSString)
+        if let id = Self.coverIdentity(for: url),
+           let preview = coverCache.object(forKey: id as NSString) {
+            let target = Self.maxPixelDimension(for: url)
+            let pixels = max(preview.size.width, preview.size.height) * preview.scale
+            if pixels <= target * 1.35 {
+                return preview
+            }
         }
         return nil
+    }
+
+    /// Off-main downsample for freshly saved offline covers.
+    static func downsample(_ data: Data, maxPixel: CGFloat) -> UIImage? {
+        downsampledImage(data: data, maxPixel: maxPixel)
+    }
+
+    /// Strip synthetic query items from file URLs before disk I/O.
+    static func resourceURL(for url: URL) -> URL {
+        guard url.isFileURL,
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.query != nil
+        else { return url }
+        components.query = nil
+        return components.url ?? url
+    }
+
+    /// Tag a local cover file with the requested display size so decode/cache
+    /// keys match remote `size=` URLs.
+    static func sizedFileURL(_ url: URL, size: Int) -> URL {
+        guard url.isFileURL,
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return url }
+        var items = (components.queryItems ?? []).filter { $0.name != "size" }
+        items.append(URLQueryItem(name: "size", value: String(max(1, size))))
+        components.queryItems = items
+        return components.url ?? url
     }
 
     /// Instant cover lookup by Navidrome ids (no network).

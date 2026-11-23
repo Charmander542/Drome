@@ -6,6 +6,8 @@ import UIKit
 /// center remaining, without stacking elapsed + −remaining + “X left”.
 struct PodcastNowPlayingView: View {
     @EnvironmentObject private var podcastPlayer: PodcastPlayer
+    /// Injected as `podcastPlayer.clock` from MainTabView (shadows music clock).
+    @EnvironmentObject private var clock: PlaybackClock
     @EnvironmentObject private var podcastManager: PodcastManager
     @EnvironmentObject private var sleepTimer: SleepTimerController
     @Environment(\.dismiss) private var dismiss
@@ -381,7 +383,7 @@ struct PodcastNowPlayingView: View {
 
     private var progressBlock: some View {
         let total = stableDuration
-        let rawElapsed = podcastPlayer.elapsed.isFinite ? podcastPlayer.elapsed : 0
+        let rawElapsed = clock.elapsed.isFinite ? clock.elapsed : 0
         let live = min(max(0, rawElapsed), total)
         let displayed: Double = {
             if isSeeking {
@@ -602,7 +604,7 @@ struct PodcastNowPlayingView: View {
                 ForEach(Array(podcastPlayer.chapters.enumerated()), id: \.element.id) { index, chapter in
                     let isCurrent = PodcastChapterResolver.currentIndex(
                         in: podcastPlayer.chapters,
-                        at: podcastPlayer.elapsed) == index
+                        at: clock.elapsed) == index
                     Button {
                         podcastPlayer.seek(to: chapter.startTime)
                         showChapters = false
@@ -714,9 +716,9 @@ struct PodcastNowPlayingView: View {
         let meta = podcastPlayer.currentEpisode?.duration ?? 0
         let resolved = PlaybackResilience.reconciledDuration(
             metadata: meta,
-            reported: podcastPlayer.duration,
-            elapsed: podcastPlayer.elapsed,
-            current: podcastPlayer.duration)
+            reported: clock.duration,
+            elapsed: clock.elapsed,
+            current: clock.duration)
         return resolved > 0.5 ? resolved : 0.1
     }
 
