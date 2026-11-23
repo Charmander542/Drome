@@ -2158,7 +2158,10 @@ struct HiddenPlaylistsView: View {
         List {
             Section {
                 ForEach(playlists) { playlist in
-                    HStack(spacing: 12) {
+                    // Open without unhiding — hide is library visibility only.
+                    NavigationLink {
+                        PlaylistDetailView(playlistID: playlist.id, placeholder: playlist)
+                    } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(playlist.name)
                                 .font(DromeTheme.rowTitle)
@@ -2166,17 +2169,26 @@ struct HiddenPlaylistsView: View {
                                 .font(.caption)
                                 .foregroundStyle(DromeTheme.muted)
                         }
-                        Spacer(minLength: 0)
-                        Button("Unhide") {
-                            onUnhide(playlist)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(DromeTheme.accent)
                     }
                     .listRowBackground(DromeTheme.elevated)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button {
+                            onUnhide(playlist)
+                        } label: {
+                            Label("Unhide", systemImage: "eye")
+                        }
+                        .tint(DromeTheme.accent)
+                    }
+                    .contextMenu {
+                        Button {
+                            onUnhide(playlist)
+                        } label: {
+                            Label("Unhide", systemImage: "eye")
+                        }
+                    }
                 }
             } footer: {
-                Text("Hidden playlists stay on the server for everyone else. Unhide brings them back to your library.")
+                Text("Tap a playlist to open it. Unhide (swipe or long-press) brings it back to your library. Hidden playlists stay on the server for everyone else.")
             }
         }
         .scrollContentBackground(.hidden)
