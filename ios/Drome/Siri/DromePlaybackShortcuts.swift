@@ -12,7 +12,7 @@ enum DromePlaybackCommands {
 
         var spoken: String {
             switch self {
-            case .started(let label): return "Playing \(label)."
+            case .started(let label): return "Okay, playing \(label)."
             case .notSignedIn: return "Open Drome and sign in first."
             case .empty(let reason): return reason
             }
@@ -61,6 +61,25 @@ enum DromePlaybackCommands {
             return .empty("Couldn't resume \(label).")
         }
         return .started(label)
+    }
+
+    static func playPlaylist(id: String, name: String) async -> Result {
+        guard let session = AppEnvironment.shared?.session else { return .notSignedIn }
+        if session.player.resumeSession(forKey: "playlist:\(id)") {
+            return .started(name)
+        }
+        guard let playlist = try? await session.client.playlist(id: id),
+              !playlist.songs.isEmpty else {
+            return .empty("Couldn't find \(name).")
+        }
+        LibraryDetailCache.store(playlist: playlist)
+        let kind: PlaybackContext.Kind = playlist.name == RotationManager.playlistName
+            ? .outOfRotation
+            : .playlist(id: id)
+        session.player.play(
+            playlist.songs, startAt: 0,
+            context: PlaybackContext(label: name, kind: kind))
+        return .started(name)
     }
 
     private static func playRatedCollection(_ collection: RatedCollection) async -> Result {
@@ -167,8 +186,9 @@ enum DromePlaybackCommands {
 // MARK: - Intents
 
 struct PlayFourStarsAndUpIntent: AudioPlaybackIntent {
-    static var title: LocalizedStringResource = "Play 4 Stars and Up"
-    static var description = IntentDescription("Shuffle tracks you've rated four stars or higher.")
+    static var title: LocalizedStringResource = "Play Liked Songs"
+    static var description = IntentDescription(
+        "Play tracks you've rated four stars or higher — Drome’s take on Liked Songs.")
     static var openAppWhenRun = true
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
@@ -178,7 +198,7 @@ struct PlayFourStarsAndUpIntent: AudioPlaybackIntent {
 }
 
 struct PlayRandomIntent: AudioPlaybackIntent {
-    static var title: LocalizedStringResource = "Play Random"
+    static var title: LocalizedStringResource = "Shuffle Library"
     static var description = IntentDescription("Shuffle random tracks from your library.")
     static var openAppWhenRun = true
 

@@ -15,18 +15,18 @@ enum DromeSiriPlayback {
             switch self {
             case .played(let title, let artist):
                 if let artist, !artist.isEmpty {
-                    return "Playing \(title) by \(artist)."
+                    return "Okay, playing \(title) by \(artist)."
                 }
-                return "Playing \(title)."
+                return "Okay, playing \(title)."
             case .wishlisted(let title, let artist):
                 if let artist, !artist.isEmpty {
-                    return "That’s not in your library. I added \(title) by \(artist) to your wishlist."
+                    return "That’s not in your library yet — I added \(title) by \(artist) to your wishlist."
                 }
-                return "That’s not in your library. I added \(title) to your wishlist."
+                return "That’s not in your library yet — I added \(title) to your wishlist."
             case .notSignedIn:
                 return "Open Drome and sign in first."
             case .notFound(let query):
-                return "I couldn’t find \(query) in Drome."
+                return "I couldn’t find \(query) in your Drome library."
             case .wishlistFailed(let message):
                 return message
             }
