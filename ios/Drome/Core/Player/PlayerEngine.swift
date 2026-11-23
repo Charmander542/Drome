@@ -107,6 +107,8 @@ final class PlayerEngine: ObservableObject {
     /// Bumped on every hard stop so a stale `play()` / ready callback cannot
     /// resume an outgoing item after we've already started the next track.
     private var playbackGeneration = 0
+    /// Bumped to cancel in-flight ReplayGain / crossfade volume ramps.
+    private var volumeFadeGeneration = 0
     private var seekEpoch = 0
     private var appliedSeekEpoch = 0
     private var autoplayTask: Task<Void, Never>?
@@ -2744,16 +2746,20 @@ final class PlayerEngine: ObservableObject {
     /// ReplayGain → AVQueuePlayer.volume. EQ is applied in the PCM tap, not here.
     private func applyAudioFXVolume(animated: Bool = false) {
         let target = min(1.0, AudioFXController.shared.volume(for: current?.song))
+        volumeFadeGeneration &+= 1
+        let fadeID = volumeFadeGeneration
         let seconds = AudioFXPreferences.crossfadeSeconds
         if animated, seconds > 0 {
-            player.volume = 0.05
+            // Soft rise from ~half level — not near-silence (0.05 felt like cutouts).
+            let start = max(0.45, min(player.volume, target) * 0.7)
+            player.volume = start
             let steps = max(6, seconds * 10)
             let stepDuration = Double(seconds) / Double(steps)
             for i in 1...steps {
                 DispatchQueue.main.asyncAfter(deadline: .now() + stepDuration * Double(i)) { [weak self] in
-                    guard let self else { return }
+                    guard let self, self.volumeFadeGeneration == fadeID else { return }
                     let t = Float(i) / Float(steps)
-                    self.player.volume = 0.05 + (target - 0.05) * t
+                    self.player.volume = start + (target - start) * t
                 }
             }
         } else if abs(player.volume - target) > 0.001 {
