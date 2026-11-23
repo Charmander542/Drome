@@ -7,12 +7,18 @@ import (
 
 func TestNormalizeGenre(t *testing.T) {
 	cases := map[string]string{
-		"Hip-Hop/Rap": "Hip-Hop",
-		"lofi":        "Indie",
-		"R&B":         "R&B",
-		"synth-pop":   "Pop",
-		"":            "",
-		"xyzzy":       "",
+		"Hip-Hop/Rap":        "Hip-Hop",
+		"lofi":               "Indie",
+		"R&B":                "R&B",
+		"synth-pop":          "Pop",
+		"Stage & Screen":     "", // too broad alone — need Musical/Broadway style
+		"broadway":           "Musical",
+		"Musical":            "Musical",
+		"opera":              "Classical",
+		"Films/Games":        "Soundtrack",
+		"Alternative Rock":   "Alternative",
+		"":                   "",
+		"xyzzy":              "",
 	}
 	for in, want := range cases {
 		if got := normalizeGenre(in); got != want {
