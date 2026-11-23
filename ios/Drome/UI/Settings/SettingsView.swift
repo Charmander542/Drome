@@ -61,7 +61,8 @@ struct SettingsView: View {
                 }
         }
         .tint(accentStore.color)
-        .onDisappear { accentStore.bumpRevision() }
+        // Only remount the app when accent actually changed; otherwise Home/tabs reload.
+        .onDisappear { accentStore.bumpRevisionIfNeeded() }
         .sheet(isPresented: $showAccounts) {
             AccountSwitcherSheet().environmentObject(env)
         }

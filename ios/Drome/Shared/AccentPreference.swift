@@ -58,8 +58,10 @@ final class AccentStore: ObservableObject {
 
     @Published private(set) var preset: DromeAccentColor
     @Published private(set) var customRGB: [Double]
-    /// Bumped when the whole UI should rebuild (leaving Settings).
+    /// Bumped when the whole UI should rebuild after an accent change.
     @Published private(set) var revision: UInt64 = 0
+    /// True when preset/RGB changed since the last remount (Settings defers remount).
+    private var needsRemount = false
 
     var color: Color { preset.color(customRGB: customRGB) }
 
@@ -76,26 +78,42 @@ final class AccentStore: ObservableObject {
 
     func setPreset(_ value: DromeAccentColor) {
         guard value != .custom else {
-            preset = .custom
-            persist()
+            if preset != .custom {
+                preset = .custom
+                needsRemount = true
+                persist()
+            }
             return
         }
+        guard value != preset else { return }
         preset = value
+        needsRemount = true
         persist()
         // Remount is deferred to Settings.onDisappear so the sheet stays up.
     }
 
     func setCustomRGB(_ rgb: [Double]) {
         guard rgb.count == 3 else { return }
-        customRGB = rgb.map { min(max($0, 0), 1) }
+        let next = rgb.map { min(max($0, 0), 1) }
+        guard next != customRGB || preset != .custom else { return }
+        customRGB = next
         if preset != .custom { preset = .custom }
+        needsRemount = true
         persist()
         // Don’t remount while the system colour picker is open — tint updates live.
         objectWillChange.send()
     }
 
+    /// Remount the root tree so `DromeTheme.accent` call sites pick up a new colour.
     func bumpRevision() {
+        needsRemount = false
         revision &+= 1
+    }
+
+    /// Remount only if Appearance changed — avoids wiping Home/tabs on every Settings dismiss.
+    func bumpRevisionIfNeeded() {
+        guard needsRemount else { return }
+        bumpRevision()
     }
 
     private func persist() {
