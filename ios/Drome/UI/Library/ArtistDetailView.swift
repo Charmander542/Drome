@@ -28,10 +28,6 @@ struct ArtistDetailView: View {
         ownedSongs.isEmpty ? topSongs : ownedSongs
     }
 
-    private var libraryPlayCount: Int {
-        ownedSongs.reduce(0) { $0 + ($1.playCount ?? 0) }
-    }
-
     private var isFullyDownloaded: Bool {
         guard !downloadPool.isEmpty else { return false }
         return downloadPool.allSatisfy { downloads.isDownloaded($0.id) }
@@ -169,11 +165,7 @@ struct ArtistDetailView: View {
                     .lineLimit(3)
                     .minimumScaleFactor(0.75)
 
-                if libraryPlayCount > 0 {
-                    Text(playCountLabel(libraryPlayCount))
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(Color.white.opacity(0.78))
-                } else if let count = artist.albumCount, count > 0 {
+                if let count = artist.albumCount, count > 0 {
                     Text(count == 1 ? "1 album in library" : "\(count) albums in library")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(Color.white.opacity(0.78))
@@ -296,15 +288,6 @@ struct ArtistDetailView: View {
             if ly != ry { return ly > ry }
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
-    }
-
-    private func playCountLabel(_ count: Int) -> String {
-        if count == 1 { return "1 play in your library" }
-        if count >= 1000 {
-            let formatted = String(format: "%.1fK", Double(count) / 1000)
-            return "\(formatted) plays in your library"
-        }
-        return "\(count) plays in your library"
     }
 
     private func resolveHeroImage(_ artist: ArtistWithAlbums) async {
