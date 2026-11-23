@@ -842,21 +842,21 @@ struct NowPlayingView: View {
                                     )
                                 )
                             } label: {
-                                Text(title)
-                                    .font(.title3.weight(.bold))
-                                    .foregroundStyle(.white)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.85)
-                                    .frame(maxWidth: .infinity, minHeight: titleLineHeight, maxHeight: titleLineHeight, alignment: .leading)
+                                MarqueeText(
+                                    text: title,
+                                    font: .title3.weight(.bold),
+                                    color: .white,
+                                    speed: 36)
+                                .frame(maxWidth: .infinity, minHeight: titleLineHeight, maxHeight: titleLineHeight, alignment: .leading)
                             }
                             .buttonStyle(.plain)
                         } else {
-                            Text(title)
-                                .font(.title3.weight(.bold))
-                                .foregroundStyle(.white)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.85)
-                                .frame(maxWidth: .infinity, minHeight: titleLineHeight, maxHeight: titleLineHeight, alignment: .leading)
+                            MarqueeText(
+                                text: title,
+                                font: .title3.weight(.bold),
+                                color: .white,
+                                speed: 36)
+                            .frame(maxWidth: .infinity, minHeight: titleLineHeight, maxHeight: titleLineHeight, alignment: .leading)
                         }
                     }
                     .layoutPriority(1)

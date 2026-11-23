@@ -173,14 +173,15 @@ struct MiniPlayerBar: View {
             .frame(width: 48, height: 48)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(page.title.isEmpty ? "Unknown Title" : page.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Text(page.artist)
-                    .font(.caption)
-                    .foregroundStyle(Color.white.opacity(0.65))
-                    .lineLimit(1)
+                MarqueeText(
+                    text: page.title.isEmpty ? "Unknown Title" : page.title,
+                    font: .subheadline.weight(.semibold),
+                    color: .white)
+                MarqueeText(
+                    text: page.artist,
+                    font: .caption,
+                    color: Color.white.opacity(0.65),
+                    speed: 28)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
