@@ -16,6 +16,7 @@ struct MarqueeText: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var textWidth: CGFloat = 0
     @State private var containerWidth: CGFloat = 0
+    @State private var lineHeight: CGFloat = 0
     @State private var offset: CGFloat = 0
     @State private var running = false
 
@@ -39,7 +40,8 @@ struct MarqueeText: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .frame(width: width, alignment: .leading)
+            // Keep glyphs vertically centered inside the measured line box.
+            .frame(width: width, height: geo.size.height, alignment: .leading)
             .clipped()
             .onAppear { containerWidth = width }
             .onChange(of: width) { _, newValue in
@@ -48,7 +50,7 @@ struct MarqueeText: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        // Intrinsic height from the font — GeometryReader alone would collapse.
+        .frame(height: lineHeight > 0 ? lineHeight : nil, alignment: .center)
         .background(heightProbe)
         .accessibilityLabel(text)
         .onChange(of: text) { _, _ in
@@ -89,6 +91,13 @@ struct MarqueeText: View {
             .lineLimit(1)
             .hidden()
             .accessibilityHidden(true)
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .preference(key: MarqueeTextHeightKey.self, value: geo.size.height)
+                }
+            )
+            .onPreferenceChange(MarqueeTextHeightKey.self) { lineHeight = $0 }
     }
 
     private func restartIfNeeded() {
@@ -113,6 +122,13 @@ struct MarqueeText: View {
 }
 
 private struct MarqueeTextWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct MarqueeTextHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
