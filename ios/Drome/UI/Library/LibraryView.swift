@@ -453,7 +453,8 @@ struct LibraryView: View {
 
     private var isEmpty: Bool {
         switch filter {
-        case .playlists: return playlists.isEmpty
+        // Hidden rows still count as loaded library state.
+        case .playlists: return playlists.isEmpty && hiddenPlaylists.isEmpty
         case .albums: return albumWindow.isEmpty
         case .artists: return artistWindow.isEmpty
         case .songs: return songWindow.isEmpty
@@ -545,7 +546,9 @@ struct LibraryView: View {
                         .listRowBackground(Color.clear)
                 }
                 if playlists.isEmpty && !isLoading {
-                    Text("No playlists yet.")
+                    Text(hiddenPlaylists.isEmpty
+                         ? "No playlists yet."
+                         : "All playlists are hidden.")
                         .foregroundStyle(DromeTheme.muted)
                         .listRowBackground(Color.clear)
                 }
@@ -1030,12 +1033,33 @@ struct LibraryView: View {
             withoutSystem, userKey: userKey, serverKey: serverKey)
     }
 
+    /// Full playlist set for disk cache — visible + hidden.
+    ///
+    /// Older builds only stored the visible list, which made the Hidden
+    /// Playlists row vanish on the next cold start even though hide IDs
+    /// were still in UserDefaults.
+    private func catalogPlaylists() -> [Playlist] {
+        var byID: [String: Playlist] = [:]
+        for playlist in playlists { byID[playlist.id] = playlist }
+        for playlist in hiddenPlaylists { byID[playlist.id] = playlist }
+        return Array(byID.values)
+    }
+
+    /// True when UserDefaults still has hidden IDs but we have no matching
+    /// playlist metadata (broken visible-only catalog from older builds).
+    private func needsHiddenPlaylistBackfill(userKey: String) -> Bool {
+        let hiddenIDs = PlaylistOrderStore.hiddenIDs(userKey: userKey)
+        guard !hiddenIDs.isEmpty else { return false }
+        let known = Set(playlists.map(\.id)).union(hiddenPlaylists.map(\.id))
+        return !hiddenIDs.isSubset(of: known)
+    }
+
     private func persistPlaylistOrder() {
         let userKey = session.account.userKey
         let serverKey = session.account.serverKey
         PlaylistOrderStore.save(playlists.map(\.id), userKey: userKey)
-        // Catalog keeps the visible list for Home / Watch chrome.
-        LibraryListCatalog.storePlaylists(playlists, serverKey: serverKey)
+        // Keep hidden playlists in the catalog so Unhide can rehydrate offline.
+        LibraryListCatalog.storePlaylists(catalogPlaylists(), serverKey: serverKey)
     }
 
     private func movePlaylist(from source: IndexSet, to destination: Int) {
@@ -1084,7 +1108,7 @@ struct LibraryView: View {
 
     private func hydratePlaylistsFromCache() async {
         let serverKey = session.account.serverKey
-        if playlists.isEmpty,
+        if playlists.isEmpty && hiddenPlaylists.isEmpty,
            let cached = LibraryListCatalog.playlists(serverKey: serverKey),
            !cached.isEmpty {
             applyPlaylists(cached)
@@ -1107,8 +1131,14 @@ struct LibraryView: View {
         parkInactiveFills()
 
         if !forceNetwork, !isEmpty {
-            resumeBackgroundFillIfNeeded()
-            return
+            // Visible-only catalogs from older builds paint rows but leave
+            // Hidden Playlists empty — still hit the network to rebuild it.
+            let needsHiddenBackfill = filter == .playlists
+                && needsHiddenPlaylistBackfill(userKey: session.account.userKey)
+            if !needsHiddenBackfill {
+                resumeBackgroundFillIfNeeded()
+                return
+            }
         }
 
         await load(forceNetwork: forceNetwork)
@@ -1179,16 +1209,21 @@ struct LibraryView: View {
         do {
             switch filter {
             case .playlists:
+                let userKey = session.account.userKey
                 if !forceNetwork,
-                   playlists.isEmpty,
+                   playlists.isEmpty && hiddenPlaylists.isEmpty,
                    let cached = LibraryListCatalog.playlists(serverKey: session.account.serverKey),
                    !cached.isEmpty {
                     applyPlaylists(cached)
                 }
-                if forceNetwork || playlists.isEmpty {
+                // Also refetch when an older visible-only cache left us with
+                // hidden IDs but no Hidden Playlists rows to show/unhide.
+                if forceNetwork
+                    || (playlists.isEmpty && hiddenPlaylists.isEmpty)
+                    || needsHiddenPlaylistBackfill(userKey: userKey)
+                {
                     let fresh = try await session.client.playlists()
                     applyPlaylists(fresh)
-                    LibraryListCatalog.storePlaylists(playlists, serverKey: session.account.serverKey)
                     persistPlaylistOrder()
                 }
                 await rotation.refresh()
@@ -1987,7 +2022,7 @@ struct LibraryView: View {
         if active != .playlists {
             if let fresh = try? await session.client.playlists() {
                 applyPlaylists(fresh)
-                LibraryListCatalog.storePlaylists(playlists, serverKey: session.account.serverKey)
+                persistPlaylistOrder()
             }
         }
         if active != .artists {
