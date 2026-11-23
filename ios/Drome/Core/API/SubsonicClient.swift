@@ -160,6 +160,15 @@ final class SubsonicClient {
                           parameters: [URLQueryItem(name: "id", value: id)]).artist
     }
 
+    /// Biography + similar artists (Navidrome agents / Last.fm). Soft-fails to empty.
+    func artistInfo2(id: String, count: Int = 12) async throws -> ArtistInfo2 {
+        try await request(ArtistInfo2Payload.self, endpoint: "getArtistInfo2", parameters: [
+            URLQueryItem(name: "id", value: id),
+            URLQueryItem(name: "count", value: String(count)),
+            URLQueryItem(name: "includeNotPresent", value: "false"),
+        ]).artistInfo2.asInfo
+    }
+
     func album(id: String) async throws -> AlbumWithSongs {
         try await request(AlbumPayload.self, endpoint: "getAlbum",
                           parameters: [URLQueryItem(name: "id", value: id)]).album

@@ -178,6 +178,45 @@ struct ArtistWithAlbums: Decodable {
     var albums: [Album] { album ?? [] }
 }
 
+/// External artist enrichment from `getArtistInfo2` (biography + similar artists).
+struct ArtistInfo2: Decodable {
+    var biography: String?
+    var musicBrainzId: String?
+    var lastFmUrl: String?
+    var smallImageUrl: String?
+    var mediumImageUrl: String?
+    var largeImageUrl: String?
+    var similarArtist: [Artist]?
+
+    var similarArtists: [Artist] { similarArtist ?? [] }
+
+    /// Plain-text blurb suitable for UI (strips common Last.fm HTML).
+    var plainBiography: String? {
+        guard let biography, !biography.isEmpty else { return nil }
+        return ArtistBioText.plain(biography)
+    }
+}
+
+enum ArtistBioText {
+    static func plain(_ raw: String) -> String {
+        var text = raw
+        text = text.replacingOccurrences(of: #"<br\s*/?>"#, with: "\n", options: .regularExpression)
+        text = text.replacingOccurrences(of: #"</p\s*>"#, with: "\n", options: .regularExpression)
+        text = text.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+        let entities: [(String, String)] = [
+            ("&nbsp;", " "), ("&amp;", "&"), ("&quot;", "\""),
+            ("&apos;", "'"), ("&#39;", "'"), ("&lt;", "<"), ("&gt;", ">"),
+        ]
+        for (entity, value) in entities {
+            text = text.replacingOccurrences(of: entity, with: value)
+        }
+        text = text
+            .replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return text
+    }
+}
+
 // MARK: - Genres
 
 struct Genre: Decodable, Identifiable, Hashable {
@@ -356,6 +395,46 @@ struct ArtistsPayload: Decodable {
     var artists: Indexes
 }
 struct ArtistPayload: Decodable { var artist: ArtistWithAlbums }
+struct ArtistInfo2Payload: Decodable {
+    struct Info: Decodable {
+        var biography: String?
+        var musicBrainzId: String?
+        var lastFmUrl: String?
+        var smallImageUrl: String?
+        var mediumImageUrl: String?
+        var largeImageUrl: String?
+        var similarArtist: [Artist]?
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            biography = try c.decodeIfPresent(String.self, forKey: .biography)
+            musicBrainzId = try c.decodeIfPresent(String.self, forKey: .musicBrainzId)
+            lastFmUrl = try c.decodeIfPresent(String.self, forKey: .lastFmUrl)
+            smallImageUrl = try c.decodeIfPresent(String.self, forKey: .smallImageUrl)
+            mediumImageUrl = try c.decodeIfPresent(String.self, forKey: .mediumImageUrl)
+            largeImageUrl = try c.decodeIfPresent(String.self, forKey: .largeImageUrl)
+            similarArtist = (try? c.decode(SubsonicJSON.OneOrMany<Artist>.self, forKey: .similarArtist))?.values
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case biography, musicBrainzId, lastFmUrl
+            case smallImageUrl, mediumImageUrl, largeImageUrl, similarArtist
+        }
+
+        var asInfo: ArtistInfo2 {
+            ArtistInfo2(
+                biography: biography,
+                musicBrainzId: musicBrainzId,
+                lastFmUrl: lastFmUrl,
+                smallImageUrl: smallImageUrl,
+                mediumImageUrl: mediumImageUrl,
+                largeImageUrl: largeImageUrl,
+                similarArtist: similarArtist)
+        }
+    }
+
+    var artistInfo2: Info
+}
 struct AlbumPayload: Decodable { var album: AlbumWithSongs }
 struct AlbumList2Payload: Decodable {
     struct List: Decodable { var album: [Album]? }

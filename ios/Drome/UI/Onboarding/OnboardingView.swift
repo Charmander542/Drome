@@ -8,6 +8,7 @@ struct OnboardingView: View {
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var accentStore = AccentStore.shared
     @State private var page = 0
     @State private var searchFocus: OnboardingSearchFocus = .library
     @State private var searchCycleToken = 0
@@ -21,9 +22,12 @@ struct OnboardingView: View {
     @State private var enterNowPlayingAtEnd = false
 
     private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
+    private var liveAccent: Color { accentStore.color }
 
     private let searchPageIndex = 2
     private let nowPlayingControlsPageIndex = 4
+    /// Final page — theme accent chooser after Keep Playing.
+    private let accentPageIndex = 7
     private let nowPlayingStepCount = OnboardingNowPlayingStep.allCases.count
 
     /// Named space so tour drag can exclude the cover hit target.
@@ -58,6 +62,10 @@ struct OnboardingView: View {
             title: "Keep the music going",
             caption: "The same Keep Playing switch also lives under Avatar → Settings → Playback.",
             accessibilityMockLabel: "Settings is opened from the Home avatar menu. Keep Playing is in the Playback section — the same Autoplay switch as Now Playing ··· → Keep Playing."),
+        OnboardingTourPage(
+            title: "Make it yours",
+            caption: "Pick a theme color — buttons, highlights, and vibes follow it. Change it anytime in Settings.",
+            accessibilityMockLabel: "Choose a theme accent color. Preset swatches and a custom color picker update the tour preview live. You can change this later in Settings."),
     ]
 
     private var isNowPlayingLesson: Bool { page == nowPlayingControlsPageIndex }
@@ -300,6 +308,12 @@ struct OnboardingView: View {
                         .id(isNowPlayingLesson ? "np-cap-\(nowPlayingStep.rawValue)" : "tour-caption")
                         .transition(stepTransition)
                         .animation(chromeAnimation, value: nowPlayingStep)
+
+                    if page == accentPageIndex {
+                        OnboardingAccentChooser(reduceMotion: reduceMotion)
+                            .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
+                            .padding(.top, accessibilityLayout ? 10 : 6)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
                 .padding(.top, accessibilityLayout ? 2 : 6)
@@ -359,7 +373,7 @@ struct OnboardingView: View {
                     case 5:
                         OnboardingPlaylistsMock(reduceMotion: reduceMotion)
                     default:
-                        OnboardingSettingsMock(reduceMotion: reduceMotion)
+                        OnboardingAccentMock(reduceMotion: reduceMotion)
                     }
                 }
                 .allowsHitTesting(index == nowPlayingControlsPageIndex)
@@ -382,11 +396,17 @@ struct OnboardingView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, OnboardingTourChrome.continueVerticalPadding)
                     .background(
-                        DromeTheme.accent,
+                        liveAccent,
                         in: RoundedRectangle(
                             cornerRadius: OnboardingTourChrome.continueCorner,
                             style: .continuous))
                     .foregroundStyle(.white)
+                    .animation(
+                        reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.78),
+                        value: accentStore.preset)
+                    .animation(
+                        reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.78),
+                        value: accentStore.customRGB)
             }
             .padding(.horizontal, 24)
             .accessibilityIdentifier("onboarding-continue")
@@ -412,7 +432,7 @@ struct OnboardingView: View {
                                 reduceMotion: reduceMotion)
                         } else {
                             Capsule()
-                                .fill(index == page ? DromeTheme.accent : DromeTheme.divider)
+                                .fill(index == page ? liveAccent : DromeTheme.divider)
                                 .frame(width: index == page ? 18 : 7, height: 7)
                         }
                     }
@@ -448,14 +468,22 @@ struct OnboardingView: View {
 
     private var ambientGlow: some View {
         RadialGradient(
-            colors: [DromeTheme.accent.opacity(0.12), DromeTheme.accent.opacity(0.03), .clear],
+            colors: [liveAccent.opacity(0.16), liveAccent.opacity(0.04), .clear],
             center: UnitPoint(x: 0.5, y: 0.16),
             startRadius: 20,
             endRadius: 380)
         .ignoresSafeArea()
+        .animation(
+            reduceMotion ? nil : .easeInOut(duration: 0.28),
+            value: accentStore.preset)
+        .animation(
+            reduceMotion ? nil : .easeInOut(duration: 0.28),
+            value: accentStore.customRGB)
     }
 
     private func finish() {
+        // Remount the signed-in shell so static `DromeTheme.accent` call sites refresh.
+        AccentStore.shared.bumpRevision()
         OnboardingPreference.markCompleted(userKey: userKey)
         onFinished()
     }
@@ -480,7 +508,7 @@ private struct OnboardingStepProgressPill: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(DromeTheme.divider)
                 Capsule()
-                    .fill(DromeTheme.accent)
+                    .fill(AccentStore.shared.color)
                     .frame(width: max(geo.size.width * clamped, geo.size.height))
                     .animation(
                         reduceMotion ? .easeInOut(duration: 0.15) : .easeInOut(duration: 0.28),

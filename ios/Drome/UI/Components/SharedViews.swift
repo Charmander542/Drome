@@ -164,6 +164,8 @@ struct AlbumMediaRow: View {
 struct HorizontalAlbumRail: View {
     let title: String
     let albums: [Album]
+    /// Optional year · type caption under each album (discography style).
+    var showsReleaseMeta: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -173,8 +175,97 @@ struct HorizontalAlbumRail: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 14) {
                     ForEach(albums) { album in
-                        AlbumCard(album: album)
-                            .frame(width: 148, alignment: .topLeading)
+                        if showsReleaseMeta {
+                            DiscographyAlbumCard(album: album)
+                                .frame(width: 148, alignment: .topLeading)
+                        } else {
+                            AlbumCard(album: album)
+                                .frame(width: 148, alignment: .topLeading)
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+        }
+    }
+}
+
+/// Square cover + title + "Year · Album" caption for artist discography rails.
+struct DiscographyAlbumCard: View {
+    let album: Album
+    @Environment(\.session) private var session
+    @Environment(\.songNavigator) private var songNavigator
+
+    private var meta: String {
+        var parts: [String] = []
+        if let year = album.year { parts.append(String(year)) }
+        parts.append("Album")
+        return parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        Button {
+            songNavigator?.viewAlbum(album)
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                RemoteImage(url: session?.artworkURL(id: album.coverArt ?? album.id, size: 300))
+                    .aspectRatio(1, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: DromeTheme.Radius.md, style: .continuous))
+                Text(album.name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Text(meta)
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.muted)
+                    .lineLimit(1)
+            }
+        }
+        .buttonStyle(.plain)
+        .hoverEffectDisabled()
+        .transaction { $0.animation = nil }
+        .accessibilityHint("Opens the album")
+    }
+}
+
+struct HorizontalArtistRail: View {
+    let title: String
+    let artists: [Artist]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(DromeTheme.headlineFont)
+                .padding(.horizontal, 16)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 16) {
+                    ForEach(artists) { artist in
+                        // NavigationLink stacks correctly when already on an artist page
+                        // (songNavigator.artistRoute would replace instead of push).
+                        NavigationLink {
+                            ArtistDetailView(artistID: artist.id, placeholderName: artist.name)
+                        } label: {
+                            VStack(spacing: 8) {
+                                ArtistAvatar(
+                                    artistId: artist.id,
+                                    name: artist.name,
+                                    size: 96,
+                                    navidromeCoverArt: artist.coverArt,
+                                    allowsSpotifyLookup: true)
+                                Text(artist.name)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.center)
+                                    .frame(width: 96)
+                                Text("Artist")
+                                    .font(.caption)
+                                    .foregroundStyle(DromeTheme.muted)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .hoverEffectDisabled()
                     }
                 }
                 .padding(.horizontal, 16)
@@ -206,7 +297,7 @@ struct PlaylistCard: View {
                 {
                     Image(systemName: "arrow.down.circle.fill")
                         .font(.caption2)
-                        .foregroundStyle(DromeTheme.accent)
+                        .foregroundStyle(DromeTheme.muted)
                 }
             }
             Text(playlist.songCountLabel)

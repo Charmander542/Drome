@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Shared swipe actions for any song row in a List:
-/// - Trailing: Play Next (first in queue), Add to Queue (last)
+/// - Trailing (swipe left): Play Next + Queue
+/// - Full swipe left commits Queue (first action)
 ///
 /// Do not remount the row after a tap (e.g. via `.id`). That collapses the
 /// swipe panel by destroying the cell and often shifts List hit-testing to the
@@ -14,7 +15,8 @@ struct SongSwipeModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                // First = full-swipe action (far left swipe → add to queue).
                 Button {
                     player.addToQueue(song)
                 } label: {

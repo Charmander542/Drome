@@ -37,3 +37,12 @@ func TestFileTitleKey(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestIsCompilationArtist(t *testing.T) {
+	if !isCompilationArtist("Various Artists") || !isCompilationArtist("VA") {
+		t.Fatal("expected compilation")
+	}
+	if isCompilationArtist("Elaine Paige") {
+		t.Fatal("solo artist")
+	}
+}

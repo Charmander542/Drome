@@ -142,7 +142,9 @@ final class PhoneWatchSession: NSObject, WCSessionDelegate {
         let playlists: [WatchPlaylistItem]
         if let session {
             let serverKey = session.account.serverKey
+            let userKey = session.account.userKey
             playlists = (LibraryListCatalog.playlists(serverKey: serverKey) ?? [])
+                .filter { !PlaylistOrderStore.isHidden($0.id, userKey: userKey) }
                 .prefix(24)
                 .map { WatchPlaylistItem(id: $0.id, name: $0.name, songCount: $0.songCount ?? 0) }
         } else {

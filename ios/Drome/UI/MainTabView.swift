@@ -68,10 +68,12 @@ struct MainTabView: View {
                 // Keep mini + tabs mounted (avoids remount jumps on Search mode
                 // switches). Collapse to height 0 for the keyboard; use nil height
                 // when expanded so intrinsic size wins (never maxHeight: .infinity).
+                // Only clip while collapsed — clipping the expanded chrome shears off
+                // the tab bar's bottom safe-area fill and leaves a black home-indicator strip.
                 bottomChrome
                     .opacity(keyboardVisible ? 0 : 1)
                     .frame(height: keyboardVisible ? 0 : nil, alignment: .top)
-                    .clipped()
+                    .modifier(ClipWhenCollapsed(collapsed: keyboardVisible))
                     .allowsHitTesting(!keyboardVisible)
                     .accessibilityHidden(keyboardVisible)
             }
@@ -340,6 +342,8 @@ struct MainTabView: View {
         .padding(.bottom, 6)
         .frame(maxWidth: .infinity)
         .background {
+            // Extends elevated into the home-indicator region. Parent must not
+            // clip while expanded (see ClipWhenCollapsed on bottomChrome).
             DromeTheme.elevated
                 .ignoresSafeArea(edges: .bottom)
         }
@@ -420,5 +424,18 @@ enum MiniPlayerKind: Equatable {
         if hasPodcastEpisode { return .podcast }
         if hasMusicCurrent { return .music }
         return .none
+    }
+}
+
+/// Clips only while the bottom chrome is height-collapsed for the keyboard.
+private struct ClipWhenCollapsed: ViewModifier {
+    let collapsed: Bool
+
+    func body(content: Content) -> some View {
+        if collapsed {
+            content.clipped()
+        } else {
+            content
+        }
     }
 }
