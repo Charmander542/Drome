@@ -90,13 +90,18 @@ struct SettingsView: View {
         .settingsNavChrome()
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("Done") { dismiss() }
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(DromeTheme.accent)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(DromeTheme.elevated2, in: Capsule(style: .continuous))
-                    .accessibilityIdentifier("drome.settings.close")
+                Button {
+                    dismiss()
+                } label: {
+                    Text("Done")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(DromeTheme.accent)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(DromeTheme.elevated2, in: Capsule(style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("drome.settings.close")
             }
         }
         .accessibilityIdentifier("drome.settings.screen")

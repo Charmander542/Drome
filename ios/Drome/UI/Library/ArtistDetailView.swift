@@ -24,13 +24,21 @@ struct ArtistDetailView: View {
         topSongs.isEmpty ? ownedSongs : topSongs
     }
 
+    private var downloadPool: [Song] {
+        ownedSongs.isEmpty ? topSongs : ownedSongs
+    }
+
     private var libraryPlayCount: Int {
         ownedSongs.reduce(0) { $0 + ($1.playCount ?? 0) }
     }
 
     private var isFullyDownloaded: Bool {
-        guard !ownedSongs.isEmpty else { return false }
-        return ownedSongs.allSatisfy { downloads.isDownloaded($0.id) }
+        guard !downloadPool.isEmpty else { return false }
+        return downloadPool.allSatisfy { downloads.isDownloaded($0.id) }
+    }
+
+    private var topSafeArea: CGFloat {
+        Self.windowSafeAreaInsets.top
     }
 
     var body: some View {
@@ -57,6 +65,7 @@ struct ArtistDetailView: View {
                 hero(artist)
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
             }
 
             Section {
@@ -119,25 +128,11 @@ struct ArtistDetailView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .contentMargins(.top, 0, for: .scrollContent)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 // Suppress the centered nav title over the hero art.
                 Color.clear.frame(width: 1, height: 1)
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    downloadArtist()
-                } label: {
-                    Image(systemName: isFullyDownloaded
-                          ? "arrow.down.circle.fill"
-                          : "arrow.down.circle")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(isFullyDownloaded ? DromeTheme.accent : .white)
-                        .padding(8)
-                        .background(.ultraThinMaterial, in: Circle())
-                }
-                .disabled(ownedSongs.isEmpty)
-                .accessibilityLabel(isFullyDownloaded ? "Downloaded" : "Download artist")
             }
         }
     }
@@ -146,6 +141,7 @@ struct ArtistDetailView: View {
 
     private func hero(_ artist: ArtistWithAlbums) -> some View {
         let coverFallback = session.artworkURL(id: artist.coverArt ?? artist.id, size: 800)
+        let bleed = topSafeArea
         return ZStack(alignment: .bottomLeading) {
             GeometryReader { geo in
                 RemoteImage(
@@ -188,7 +184,9 @@ struct ArtistDetailView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 340)
+        .frame(height: 340 + bleed)
+        // Pull under the status / nav chrome so art is edge-to-edge at the top.
+        .padding(.top, -bleed)
         .task(id: artist.id) {
             await resolveHeroImage(artist)
         }
@@ -230,18 +228,17 @@ struct ArtistDetailView: View {
             .tint(.white)
             .disabled(playPool.isEmpty)
 
+            // Plain arrow (not arrow.down.circle) — bordered already supplies chrome.
             Button {
                 downloadArtist()
             } label: {
-                Image(systemName: isFullyDownloaded
-                      ? "arrow.down.circle.fill"
-                      : "arrow.down.circle")
-                    .font(.title3.weight(.semibold))
+                Image(systemName: isFullyDownloaded ? "checkmark" : "arrow.down")
+                    .font(.body.weight(.semibold))
                     .frame(width: 46, height: 46)
             }
             .buttonStyle(.bordered)
             .tint(isFullyDownloaded ? DromeTheme.accent : .white)
-            .disabled(ownedSongs.isEmpty)
+            .disabled(downloadPool.isEmpty)
             .accessibilityLabel(isFullyDownloaded ? "Downloaded" : "Download artist")
         }
     }
@@ -274,9 +271,9 @@ struct ArtistDetailView: View {
     // MARK: - Actions helpers
 
     private func downloadArtist() {
-        guard !ownedSongs.isEmpty else { return }
+        guard !downloadPool.isEmpty else { return }
         let name = artist?.name ?? placeholderName
-        downloads.download(ownedSongs, artist: name)
+        downloads.download(downloadPool, artist: name)
     }
 
     private func startInstantMix(_ artist: ArtistWithAlbums) async {
@@ -346,13 +343,17 @@ struct ArtistDetailView: View {
 
             async let topTask = session.client.topSongs(artistName: loaded.name, count: 10)
             async let searchTask = session.client.search(
-                loaded.name, artistCount: 0, albumCount: 0, songCount: 50)
+                loaded.name, artistCount: 0, albumCount: 0, songCount: 40)
             async let infoTask = session.client.artistInfo2(id: loaded.id, count: 12)
-            async let similarTask = session.client.similarSongs(artistId: loaded.id, count: 40)
 
+            // Paint popular + unlock download as soon as top songs arrive.
             let fetchedTop = (try? await topTask) ?? []
             topSongs = fetchedTop
+            if ownedSongs.isEmpty {
+                ownedSongs = fetchedTop
+            }
             session.ratings.ingest(fetchedTop)
+            LibraryDetailCache.store(artist: loaded, topSongs: topSongs, owned: ownedSongs)
 
             let search = try? await searchTask
             var byID: [String: Song] = [:]
@@ -373,10 +374,10 @@ struct ArtistDetailView: View {
             if let plain = info?.plainBiography, !plain.isEmpty {
                 biography = plain
             }
-
             var related = (info?.similarArtists ?? []).filter { $0.id != loaded.id && !$0.id.isEmpty }
             if related.isEmpty {
-                let similar = (try? await similarTask) ?? []
+                // Only hit similarSongs when Last.fm / agents didn’t return peers.
+                let similar = (try? await session.client.similarSongs(artistId: loaded.id, count: 40)) ?? []
                 related = Self.relatedArtists(from: similar, excluding: loaded.id)
             }
             relatedArtists = Array(related.prefix(12))
@@ -403,5 +404,13 @@ struct ArtistDetailView: View {
             if out.count >= 12 { break }
         }
         return out
+    }
+
+    private static var windowSafeAreaInsets: UIEdgeInsets {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .safeAreaInsets ?? .zero
     }
 }

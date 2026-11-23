@@ -224,10 +224,9 @@ struct AlbumDetailView: View {
                     downloads.download(album.songs, albumId: album.id,
                                        albumName: album.name, artist: album.artist)
                 } label: {
-                    Image(systemName: albumFullyDownloaded(album)
-                          ? "arrow.down.circle.fill"
-                          : "arrow.down.circle")
-                        .font(.title3.weight(.semibold))
+                    // Plain arrow — bordered already supplies chrome (avoids double-circle).
+                    Image(systemName: albumFullyDownloaded(album) ? "checkmark" : "arrow.down")
+                        .font(.body.weight(.semibold))
                         .frame(width: 46, height: 46)
                 }
                 .buttonStyle(.bordered)
