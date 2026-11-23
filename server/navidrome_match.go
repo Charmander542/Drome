@@ -210,16 +210,33 @@ type diskTrackHit struct {
 }
 
 func matchIndexedTrack(index []diskTrackHit, title, artist string) *diskTrackHit {
+	var artistHit, compilationHit, titleOnly *diskTrackHit
 	for i := range index {
 		hit := &index[i]
 		if !titlesMatch(hit.Stem, title) {
 			continue
 		}
-		if artist == "" || hit.DirArtist == "" || artistsMatch(hit.DirArtist, artist) {
-			return hit
+		switch {
+		case isCompilationArtist(hit.DirArtist):
+			// Playlist downloads are retagged under Various Artists — prefer that copy.
+			compilationHit = hit
+		case artist == "" || hit.DirArtist == "" || artistsMatch(hit.DirArtist, artist):
+			if artistHit == nil {
+				artistHit = hit
+			}
+		default:
+			if titleOnly == nil {
+				titleOnly = hit
+			}
 		}
 	}
-	return nil
+	if compilationHit != nil {
+		return compilationHit
+	}
+	if artistHit != nil {
+		return artistHit
+	}
+	return titleOnly
 }
 
 func diskHasTrack(musicDir, title, artist string) bool {
@@ -259,7 +276,7 @@ func diskFindTrack(musicDir, title, artist string) (string, string) {
 		if len(parts) >= 2 {
 			dirArtist = parts[0]
 		}
-		if artist == "" || dirArtist == "" || artistsMatch(dirArtist, artist) {
+		if artist == "" || dirArtist == "" || isCompilationArtist(dirArtist) || artistsMatch(dirArtist, artist) {
 			abs = path
 			rel = filepath.ToSlash(r)
 			return fs.SkipAll
