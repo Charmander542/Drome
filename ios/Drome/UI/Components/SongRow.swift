@@ -52,9 +52,16 @@ struct SongRow: View {
         })
         .accessibilityAddTraits(playsOnTap ? .isButton : [])
         .accessibilityHint(playsOnTap ? "Plays this song" : "")
-        .contextMenu { contextMenu }
+        // Lightweight catalog rows skip context menu + sheet attach cost.
+        .modifier(ConditionalSongContext(
+            enabled: !lightweight,
+            menu: { contextMenu },
+            showAddToPlaylist: $showAddToPlaylist,
+            song: song,
+            session: session
+        ))
         // Swipes stay available on lightweight Search/Library rows — only the
-        // label chrome is cheapened, not queue gestures.
+        // context menu / add-to-playlist sheet is stripped for catalog flings.
         .modifier(ConditionalSongSwipe(enabled: enablesSwipeActions, song: song))
         .confirmReplaceUserQueue(
             isPresented: $showReplaceQueueConfirm,
@@ -62,20 +69,6 @@ struct SongRow: View {
             onClearAndPlay: { commitPlay(clearUserQueue: true) },
             onKeepAndPlay: { commitPlay(clearUserQueue: false) }
         )
-        .sheet(isPresented: $showAddToPlaylist) {
-            if let session {
-                NavigationStack {
-                    AddToPlaylistView(song: song)
-                        .dromeSession(session)
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("Close") { showAddToPlaylist = false }
-                            }
-                        }
-                }
-                .preferredColorScheme(.dark)
-            }
-        }
     }
 
     private func playTapped() {
@@ -300,6 +293,37 @@ private struct ConditionalSongSwipe: ViewModifier {
     func body(content: Content) -> some View {
         if enabled {
             content.songSwipeActions(for: song)
+        } else {
+            content
+        }
+    }
+}
+
+private struct ConditionalSongContext<Menu: View>: ViewModifier {
+    let enabled: Bool
+    @ViewBuilder var menu: () -> Menu
+    @Binding var showAddToPlaylist: Bool
+    let song: Song
+    let session: AppSession?
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .contextMenu { menu() }
+                .sheet(isPresented: $showAddToPlaylist) {
+                    if let session {
+                        NavigationStack {
+                            AddToPlaylistView(song: song)
+                                .dromeSession(session)
+                                .toolbar {
+                                    ToolbarItem(placement: .cancellationAction) {
+                                        Button("Close") { showAddToPlaylist = false }
+                                    }
+                                }
+                        }
+                        .preferredColorScheme(.dark)
+                    }
+                }
         } else {
             content
         }

@@ -354,11 +354,18 @@ final class DownloadManager: ObservableObject {
                 try FileManager.default.removeItem(at: dest)
             }
             try data.write(to: dest, options: .atomic)
-            // Seed memory cache so offline rows paint without another decode wait.
-            if let image = UIImage(data: data) {
-                ImageLoader.shared.cacheImage(image, for: dest)
+            // Seed a list-sized decode off the main thread (not a full-res UIImage).
+            let seeded = await Task.detached(priority: .utility) {
+                ImageLoader.downsample(data, maxPixel: 240)
+            }.value
+            if let seeded {
+                // Cache under the common list size tag so SongRow hits immediately.
+                let listURL = ImageLoader.sizedFileURL(dest, size: 96)
+                ImageLoader.shared.cacheImage(seeded, for: listURL)
+                ImageLoader.shared.cacheImage(seeded, for: dest)
             }
-            coverRevision &+= 1
+            // Avoid bumping coverRevision — it invalidates every downloads observer
+            // and rebuilds list rows during backfill.
         } catch {
             // Non-fatal — audio download still succeeded.
         }

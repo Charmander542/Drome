@@ -74,22 +74,42 @@ struct RecentSearchItem: Codable, Identifiable, Equatable {
             payloadJSON: encode(song))
     }
 
+    /// Cached so List rows don’t JSON-decode on every body pass while scrolling.
+    private static var songCache: [String: Song] = [:]
+    private static var albumCache: [String: Album] = [:]
+    private static var artistCache: [String: Artist] = [:]
+
     func decodedSong() -> Song? {
-        guard kind == .song, let payloadJSON,
-              let data = payloadJSON.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(Song.self, from: data)
+        guard kind == .song else { return nil }
+        if let cached = Self.songCache[entityId] { return cached }
+        guard let payloadJSON,
+              let data = payloadJSON.data(using: .utf8),
+              let song = try? JSONDecoder().decode(Song.self, from: data)
+        else { return nil }
+        Self.songCache[entityId] = song
+        return song
     }
 
     func decodedAlbum() -> Album? {
-        guard kind == .album, let payloadJSON,
-              let data = payloadJSON.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(Album.self, from: data)
+        guard kind == .album else { return nil }
+        if let cached = Self.albumCache[entityId] { return cached }
+        guard let payloadJSON,
+              let data = payloadJSON.data(using: .utf8),
+              let album = try? JSONDecoder().decode(Album.self, from: data)
+        else { return nil }
+        Self.albumCache[entityId] = album
+        return album
     }
 
     func decodedArtist() -> Artist? {
-        guard kind == .artist, let payloadJSON,
-              let data = payloadJSON.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(Artist.self, from: data)
+        guard kind == .artist else { return nil }
+        if let cached = Self.artistCache[entityId] { return cached }
+        guard let payloadJSON,
+              let data = payloadJSON.data(using: .utf8),
+              let artist = try? JSONDecoder().decode(Artist.self, from: data)
+        else { return nil }
+        Self.artistCache[entityId] = artist
+        return artist
     }
 
     private static func encode<T: Encodable>(_ value: T) -> String? {

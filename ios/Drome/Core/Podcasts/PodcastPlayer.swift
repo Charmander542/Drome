@@ -15,8 +15,11 @@ final class PodcastPlayer: ObservableObject {
 
     @Published var currentEpisode: PodcastEpisode?
     @Published var isPlaying = false
-    @Published var elapsed: TimeInterval = 0
-    @Published var duration: TimeInterval = 0
+    /// Kept off `@Published` — transport UIs observe `clock` so list tabs don’t
+    /// rebuild several times a second while a podcast plays (mirrors music).
+    private(set) var elapsed: TimeInterval = 0
+    private(set) var duration: TimeInterval = 0
+    let clock = PlaybackClock()
     @Published var errorMessage: String?
     @Published var chapters: [PodcastChapter] = []
     @Published var playbackSpeed: Double = 1.0 {
@@ -31,6 +34,10 @@ final class PodcastPlayer: ObservableObject {
         guard let idx = PodcastChapterResolver.currentIndex(in: chapters, at: elapsed),
               chapters.indices.contains(idx) else { return nil }
         return chapters[idx]
+    }
+
+    private func publishClock(playing: Bool? = nil) {
+        clock.set(elapsed: elapsed, duration: duration, playing: playing ?? isPlaying)
     }
 
     /// Called before podcast audio starts so music can yield the session.
@@ -109,6 +116,7 @@ final class PodcastPlayer: ObservableObject {
         errorMessage = nil
         elapsed = 0
         duration = episode.duration ?? 0
+        clock.reset(duration: duration)
         wantsToPlay = true
         resumeAfterInterruption = false
         pendingSeek = startPosition > 1 ? startPosition : nil
@@ -311,6 +319,7 @@ final class PodcastPlayer: ObservableObject {
                 elapsed: target,
                 current: total)
         }
+        publishClock()
     }
 
     func skipForward(seconds: TimeInterval = 30) {
@@ -335,6 +344,7 @@ final class PodcastPlayer: ObservableObject {
         resumeAfterInterruption = false
         elapsed = 0
         duration = 0
+        clock.reset()
         pendingSeek = nil
         AudioFocus.shared.release(.podcast)
         // Episode is gone — don't sticky-block music remote Play.
@@ -357,6 +367,7 @@ final class PodcastPlayer: ObservableObject {
         isPlaying = playing
         wantsToPlay = playing
         errorMessage = nil
+        publishClock(playing: playing)
     }
 
     /// Clears chrome-only episode state so music mini can surface in UITests.
@@ -367,6 +378,7 @@ final class PodcastPlayer: ObservableObject {
         wantsToPlay = false
         elapsed = 0
         duration = 0
+        clock.reset()
         errorMessage = nil
     }
 
@@ -487,6 +499,7 @@ final class PodcastPlayer: ObservableObject {
                     reported: reported,
                     elapsed: self.elapsed,
                     current: self.duration)
+                self.publishClock()
                 if self.elapsed.isFinite, self.duration.isFinite, self.duration > 0 {
                     self.nowPlaying.updateElapsedTime(self.elapsed, duration: self.duration, rate: self.player.rate)
                 }
@@ -500,6 +513,7 @@ final class PodcastPlayer: ObservableObject {
                 let playing = newRate > 0.01
                 if self.isPlaying != playing {
                     self.isPlaying = playing
+                    self.clock.setPlaying(playing)
                     if !playing, !self.wantsToPlay {
                         self.saveCurrentPosition()
                     }

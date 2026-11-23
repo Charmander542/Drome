@@ -419,10 +419,14 @@ final class AppSession: ObservableObject, Identifiable {
 
     /// Prefer locally downloaded cover art when present (offline-safe).
     /// Remote / Funnel hosts clamp `size` via `PlaybackPreferences.remoteCoverMaxSize`.
+    /// Local files are tagged with `?size=` so ImageLoader downsamples for list cells
+    /// instead of painting hero-resolution bitmaps in every row.
     func artworkURL(id: String?, size: Int = 600) -> URL? {
-        if let local = downloads.localCoverURL(coverId: id) { return local }
         let clamped = PlaybackPreferences.clampedCoverSize(
             size, serverHost: account.serverURL.host)
+        if let local = downloads.localCoverURL(coverId: id) {
+            return ImageLoader.sizedFileURL(local, size: clamped)
+        }
         return client.coverArtURL(id: id, size: clamped)
     }
 
