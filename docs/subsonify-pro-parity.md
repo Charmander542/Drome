@@ -25,7 +25,7 @@ Without a wishlist companion URL, Drome is streaming-only:
 - Spotify “missing tracks” search hidden on album/artist pages
 - Connect multi-device needs the companion — also off
 
-**Try public demo:** Login and Home both offer `demo.navidrome.org` (`demo` / `demo`).
+**Try public demo:** Login offers `demo.navidrome.org` (`demo` / `demo`) before connect; Home does not.
 
 ## Reddit / community triage (`r/SubSonify`)
 

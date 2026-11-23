@@ -44,7 +44,12 @@ struct LoginView: View {
                             VStack(spacing: 0) {
                                 header
                                     .padding(.top, accessibilityLayout ? 28 : 48)
-                                    .padding(.bottom, 28)
+                                    .padding(.bottom, 20)
+
+                                // Demo is the unauthenticated try-path — not on Home.
+                                demoEntry
+                                    .padding(.horizontal, 28)
+                                    .padding(.bottom, 22)
 
                                 formFields
                                     .padding(.horizontal, 28)
@@ -77,16 +82,6 @@ struct LoginView: View {
                                     .padding(.horizontal, 28)
                                     .padding(.top, 18)
 
-                                Button {
-                                    fillPublicDemo()
-                                } label: {
-                                    Label("Try public Navidrome demo", systemImage: "sparkles")
-                                        .font(.subheadline.weight(.semibold))
-                                        .foregroundStyle(DromeTheme.accent)
-                                }
-                                .padding(.top, 22)
-                                .accessibilityIdentifier("drome.login.try-demo")
-
                                 if !env.accounts.accounts.isEmpty {
                                     Button {
                                         showSavedAccounts = true
@@ -95,7 +90,7 @@ struct LoginView: View {
                                             .font(.subheadline.weight(.semibold))
                                             .foregroundStyle(.white.opacity(0.65))
                                     }
-                                    .padding(.top, 16)
+                                    .padding(.top, 22)
                                     .accessibilityIdentifier("drome.login.saved-accounts")
                                 }
 
@@ -237,13 +232,48 @@ struct LoginView: View {
                 .tracking(2)
                 .foregroundStyle(.white)
 
-            Text("Add your Navidrome server to get started.")
+            Text("Connect your Navidrome server, or try the public demo.")
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.55))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// Public playground entry — lives here (pre-session), not on Home.
+    private var demoEntry: some View {
+        Button {
+            fillPublicDemo()
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "sparkles")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(DromeTheme.accent)
+                    .frame(width: 28, alignment: .center)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Try the public demo")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                    Text("demo.navidrome.org · streaming only")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.45))
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.35))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(
+                Color.white.opacity(0.08),
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(isWorking)
+        .accessibilityIdentifier("drome.login.try-demo")
     }
 
     private var formFields: some View {
