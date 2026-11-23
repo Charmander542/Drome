@@ -7,6 +7,8 @@ struct MainTabView: View {
     @EnvironmentObject private var connectivity: ConnectivityMonitor
     @EnvironmentObject private var podcastManager: PodcastManager
     @EnvironmentObject private var podcastPlayer: PodcastPlayer
+    @ObservedObject private var accentStore = AccentStore.shared
+    @Environment(\.dromeAccent) private var dromeAccent
     @State private var router = AppNavigationRouter()
     @State private var showNowPlaying = false
     @State private var showPodcastNowPlaying = false
@@ -56,7 +58,7 @@ struct MainTabView: View {
                 Group {
                     if connectivity.isOnline {
                         tabContent
-                            .tint(DromeTheme.accent)
+                            .tint(accentStore.color)
                     } else {
                         SongNavigationStack {
                             DownloadsView(isOfflineMode: true)
@@ -370,7 +372,7 @@ struct MainTabView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(ax ? 0.7 : 0.8)
             }
-            .foregroundStyle(selected ? DromeTheme.accent : DromeTheme.muted)
+            .foregroundStyle(selected ? dromeAccent : DromeTheme.muted)
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }
@@ -407,7 +409,7 @@ struct MainTabView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        .background(DromeTheme.accent.ignoresSafeArea(edges: .top))
+        .background(dromeAccent.ignoresSafeArea(edges: .top))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Disconnected. Showing downloaded music.")
     }

@@ -19,6 +19,7 @@ struct SongRow: View {
     @EnvironmentObject private var rotation: RotationManager
     @EnvironmentObject private var downloads: DownloadManager
     @Environment(\.session) private var session
+    @Environment(\.dromeAccent) private var dromeAccent
 
     @State private var showAddToPlaylist = false
     @State private var showReplaceQueueConfirm = false
@@ -42,6 +43,8 @@ struct SongRow: View {
             inRotation: rotation.contains(song.id),
             isDownloaded: downloads.isDownloaded(song.id),
             coverURL: session?.artworkURL(for: song, size: 96),
+            accent: dromeAccent,
+            accentToken: "\(dromeAccent)",
             lightweight: lightweight
         )
         .equatable()
@@ -212,6 +215,9 @@ private struct EquatableSongRowContent: View, Equatable {
     let inRotation: Bool
     let isDownloaded: Bool
     let coverURL: URL?
+    let accent: Color
+    /// String form so equatable reliably notices accent changes (Color == is flaky).
+    let accentToken: String
     let lightweight: Bool
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -227,6 +233,7 @@ private struct EquatableSongRowContent: View, Equatable {
             && lhs.inRotation == rhs.inRotation
             && lhs.isDownloaded == rhs.isDownloaded
             && lhs.coverURL == rhs.coverURL
+            && lhs.accentToken == rhs.accentToken
             && lhs.lightweight == rhs.lightweight
             && (lhs.trailing == nil) == (rhs.trailing == nil)
     }
@@ -236,7 +243,7 @@ private struct EquatableSongRowContent: View, Equatable {
             if let index {
                 Text("\(index)")
                     .font(.subheadline.monospacedDigit())
-                    .foregroundStyle(isCurrent ? DromeTheme.accent : DromeTheme.muted)
+                    .foregroundStyle(isCurrent ? accent : DromeTheme.muted)
                     .frame(width: 22, alignment: .trailing)
             } else {
                 RemoteImage(url: coverURL)
@@ -248,7 +255,7 @@ private struct EquatableSongRowContent: View, Equatable {
                 HStack(spacing: 6) {
                     Text(song.title)
                         .font(DromeTheme.rowTitle)
-                        .foregroundStyle(isCurrent ? DromeTheme.accent : .white)
+                        .foregroundStyle(isCurrent ? accent : .white)
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .layoutPriority(1)

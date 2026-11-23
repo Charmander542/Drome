@@ -44,8 +44,9 @@ enum DromeAccentColor: String, CaseIterable, Identifiable {
     }
 }
 
-/// Persisted accent selection. Views that need live updates observe this store
-/// (or remount via `revision`); `DromeTheme.accent` reads `cachedColor`.
+/// Persisted accent selection. `RootView` / chrome observe this for live tint;
+/// `DromeTheme.accent` reads `cachedColor`. Never remount the signed-in tree for
+/// colour changes — only account switches should rebuild session UI.
 final class AccentStore: ObservableObject {
     static let shared = AccentStore()
 
@@ -58,10 +59,6 @@ final class AccentStore: ObservableObject {
 
     @Published private(set) var preset: DromeAccentColor
     @Published private(set) var customRGB: [Double]
-    /// Bumped when the whole UI should rebuild after an accent change.
-    @Published private(set) var revision: UInt64 = 0
-    /// True when preset/RGB changed since the last remount (Settings defers remount).
-    private var needsRemount = false
 
     var color: Color { preset.color(customRGB: customRGB) }
 
@@ -80,16 +77,13 @@ final class AccentStore: ObservableObject {
         guard value != .custom else {
             if preset != .custom {
                 preset = .custom
-                needsRemount = true
                 persist()
             }
             return
         }
         guard value != preset else { return }
         preset = value
-        needsRemount = true
         persist()
-        // Remount is deferred to Settings.onDisappear so the sheet stays up.
     }
 
     func setCustomRGB(_ rgb: [Double]) {
@@ -98,22 +92,8 @@ final class AccentStore: ObservableObject {
         guard next != customRGB || preset != .custom else { return }
         customRGB = next
         if preset != .custom { preset = .custom }
-        needsRemount = true
         persist()
-        // Don’t remount while the system colour picker is open — tint updates live.
         objectWillChange.send()
-    }
-
-    /// Remount the root tree so `DromeTheme.accent` call sites pick up a new colour.
-    func bumpRevision() {
-        needsRemount = false
-        revision &+= 1
-    }
-
-    /// Remount only if Appearance changed — avoids wiping Home/tabs on every Settings dismiss.
-    func bumpRevisionIfNeeded() {
-        guard needsRemount else { return }
-        bumpRevision()
     }
 
     private func persist() {

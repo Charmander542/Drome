@@ -482,8 +482,6 @@ struct OnboardingView: View {
     }
 
     private func finish() {
-        // Remount the signed-in shell so static `DromeTheme.accent` call sites refresh.
-        AccentStore.shared.bumpRevision()
         OnboardingPreference.markCompleted(userKey: userKey)
         onFinished()
     }
