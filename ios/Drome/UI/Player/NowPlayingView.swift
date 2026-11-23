@@ -156,7 +156,7 @@ struct NowPlayingView: View {
                         showAddToPlaylist = true
                     }
                     .dromeSession(session)
-                    .presentationDetents([.medium])
+                    .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
                 }
             }
@@ -391,6 +391,13 @@ struct NowPlayingView: View {
                 if !isDismissDragging {
                     guard dy > 6, dy >= abs(dx) * 1.05 else { return }
                     isDismissDragging = true
+                    // Cancel any in-progress art drag so an angled swipe can't
+                    // both dismiss and skip to the next track.
+                    if artDragX != 0 {
+                        var artTxn = Transaction()
+                        artTxn.disablesAnimations = true
+                        withTransaction(artTxn) { artDragX = 0 }
+                    }
                     if frozenPaneHeight == nil {
                         frozenPaneHeight = max(0, sheetHeight - (Self.windowSafeAreaInsets.top + 96))
                     }
@@ -627,21 +634,40 @@ struct NowPlayingView: View {
         DragGesture(minimumDistance: 20)
             .onChanged { value in
                 guard !artSwipeAnimating else { return }
-                guard abs(value.translation.width) > abs(value.translation.height) * 0.7 else { return }
-                var dx = value.translation.width
-                if dx > 0, !canSwipeArtPrevious {
-                    dx = rubberBand(dx, limit: containerWidth * 0.22)
-                } else if dx < 0, !canSwipeArtNext {
-                    dx = -rubberBand(-dx, limit: containerWidth * 0.22)
+                // Yield to sheet dismiss — angled downs must not also scrub art.
+                guard !isDismissDragging, !isDismissClosing else { return }
+                let dx = value.translation.width
+                let dy = value.translation.height
+                // Clearly horizontal only (was 0.7 — angled swipes double-fired).
+                guard abs(dx) > abs(dy) * 1.35 else { return }
+                var limited = dx
+                if limited > 0, !canSwipeArtPrevious {
+                    limited = rubberBand(limited, limit: containerWidth * 0.22)
+                } else if limited < 0, !canSwipeArtNext {
+                    limited = -rubberBand(-limited, limit: containerWidth * 0.22)
                 }
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
-                withTransaction(transaction) { artDragX = dx }
+                withTransaction(transaction) { artDragX = limited }
             }
             .onEnded { value in
                 guard !artSwipeAnimating else { return }
+                if isDismissDragging || isDismissClosing {
+                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
+                        artDragX = 0
+                    }
+                    return
+                }
                 let dx = value.translation.width
+                let dy = value.translation.height
                 let predicted = value.predictedEndTranslation.width
+                // Prefer close over skip when the finger traveled meaningfully down.
+                guard abs(dx) > abs(dy) * 1.35 else {
+                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86)) {
+                        artDragX = 0
+                    }
+                    return
+                }
                 let threshold = min(110, containerWidth * 0.22)
                 let goNext = (dx < -threshold || predicted < -threshold * 1.4) && canSwipeArtNext
                 let goPrevious = (dx > threshold || predicted > threshold * 1.4) && canSwipeArtPrevious
@@ -792,7 +818,6 @@ struct NowPlayingView: View {
     private var metadataBlock: some View {
         let song = player.current?.song
         let title = cleaned(song?.title) ?? "Unknown Title"
-        let isDownloaded = song.map { downloads.isDownloaded($0.id) } ?? false
         // Caps glyphs are taller than mixed case — lock the title row so the
         // artist line doesn't jump when the ellipsis HStack recenters.
         let titleLineHeight = UIFont.preferredFont(forTextStyle: .title3).lineHeight + 2
@@ -836,13 +861,6 @@ struct NowPlayingView: View {
                     }
                     .layoutPriority(1)
 
-                    if isDownloaded {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(DromeTheme.accent)
-                            .accessibilityLabel("Downloaded")
-                    }
-
                     Spacer(minLength: 0)
                 }
                 .frame(height: titleLineHeight)
@@ -877,21 +895,62 @@ struct NowPlayingView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(minHeight: 48, alignment: .topLeading)
 
-            if song != nil {
-                Button {
-                    showMoreSheet = true
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 36, height: titleLineHeight)
-                        .contentShape(Rectangle())
+            if let song {
+                HStack(spacing: 2) {
+                    nowPlayingDownloadButton(for: song, height: titleLineHeight)
+                    Button {
+                        showMoreSheet = true
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: titleLineHeight)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("More")
+                    .accessibilityIdentifier("drome.nowplaying.more")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("More")
-                .accessibilityIdentifier("drome.nowplaying.more")
             }
         }
+    }
+
+    @ViewBuilder
+    private func nowPlayingDownloadButton(for song: Song, height: CGFloat) -> some View {
+        let downloaded = downloads.isDownloaded(song.id)
+        let busy = downloads.isBusy(song.id)
+        Button {
+            if downloaded {
+                downloads.remove(songId: song.id)
+                flash("Removed download")
+            } else if busy {
+                downloads.cancel(songId: song.id)
+                flash("Download cancelled")
+            } else {
+                downloads.download([song])
+                flash("Downloading…")
+            }
+        } label: {
+            Group {
+                if busy {
+                    ProgressView()
+                        .tint(.white.opacity(0.7))
+                        .scaleEffect(0.85)
+                } else {
+                    Image(systemName: downloaded ? "arrow.down.circle.fill" : "arrow.down.circle")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(downloaded ? DromeTheme.muted : Color.white.opacity(0.7))
+                }
+            }
+            .frame(width: 36, height: height)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            downloaded ? "Remove download"
+            : busy ? "Cancel download"
+            : "Download")
+        .accessibilityIdentifier("drome.nowplaying.download")
     }
 
     private var ratingBlock: some View {
@@ -1415,7 +1474,6 @@ struct NowPlayingMoreSheet: View {
     @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject private var rotation: RotationManager
     @EnvironmentObject private var downloads: DownloadManager
-    @EnvironmentObject private var sleepTimer: SleepTimerController
     @State private var mixBusy = false
     @State private var steering = StationSteeringStore.current
 
@@ -1454,7 +1512,7 @@ struct NowPlayingMoreSheet: View {
                             player.rerollAutoplayQueue()
                         } label: {
                             HStack {
-                                Label(mode.title, systemImage: mode.symbol)
+                                Text(mode.title)
                                 Spacer()
                                 if steering == mode {
                                     Image(systemName: "checkmark")
@@ -1606,41 +1664,6 @@ struct NowPlayingMoreSheet: View {
                     }
                     .listRowBackground(DromeTheme.elevated)
                 }
-
-                Section {
-                    ForEach(SleepTimerController.presets, id: \.self) { minutes in
-                        Button {
-                            sleepTimer.schedule(minutes: minutes)
-                            isPresented = false
-                        } label: {
-                            HStack {
-                                Label("\(minutes) minutes", systemImage: "moon.zzz")
-                                Spacer()
-                                if sleepTimer.selectedMinutes == minutes {
-                                    Image(systemName: "checkmark")
-                                        .foregroundStyle(DromeTheme.accent)
-                                }
-                            }
-                        }
-                        .listRowBackground(DromeTheme.elevated)
-                    }
-                    if sleepTimer.isActive {
-                        Button(role: .destructive) {
-                            sleepTimer.cancel()
-                            isPresented = false
-                        } label: {
-                            Label(
-                                sleepTimer.remainingLabel.map { "Turn Off (\($0))" } ?? "Turn Off",
-                                systemImage: "moon.zzz")
-                        }
-                        .listRowBackground(DromeTheme.elevated)
-                    }
-                } header: {
-                    Text("Sleep timer")
-                } footer: {
-                    Text("Pauses music and podcasts when the timer ends.")
-                        .font(.caption)
-                }
             }
             .scrollContentBackground(.hidden)
             .background(DromeTheme.background)
@@ -1663,11 +1686,14 @@ struct NowPlayingMoreSheet: View {
         defer { mixBusy = false }
         let songs = await InstantMix.songs(from: song, client: session.client)
         guard songs.count > 1 else { return }
-        player.play(
-            songs,
-            startAt: 0,
-            context: PlaybackContext(label: "Instant Mix", kind: .mix)
-        )
+        let context = PlaybackContext(label: "Instant Mix", kind: .mix)
+        // Same seed that's already under the playhead → keep audio seamless and
+        // only rewrite Up Next (don't rebuild AVPlayer / restart the track).
+        if player.current?.song.id == song.id {
+            player.adoptUpcomingMix(songs, context: context)
+        } else {
+            player.play(songs, startAt: 0, context: context)
+        }
         if save {
             let name = "Instant Mix · \(song.artist ?? song.title)"
             _ = try? await InstantMix.saveAsPlaylist(name: name, songs: songs, client: session.client)

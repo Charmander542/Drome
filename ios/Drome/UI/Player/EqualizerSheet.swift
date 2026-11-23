@@ -5,7 +5,6 @@ import UIKit
 struct EqualizerSheet: View {
     @Binding var detent: PresentationDetent
     @Environment(\.dismiss) private var dismiss
-    @State private var enabled = AudioFXPreferences.equalizerEnabled
     @State private var bands = AudioFXPreferences.equalizerBands
     @State private var preset = AudioFXPreferences.equalizerPreset
     @State private var savedSlots = AudioFXPreferences.savedEqualizers
@@ -19,7 +18,9 @@ struct EqualizerSheet: View {
     private let hzLabelHeight: CGFloat = 16
 
     private var isExpanded: Bool { detent == .large }
-    private var trackHeight: CGFloat { isExpanded ? 188 : 148 }
+    /// Taller faders in medium now that the EQ On / ReplayGain header is gone.
+    private var trackHeight: CGFloat { isExpanded ? 188 : 168 }
+    private var eqIsOn: Bool { !AudioFXPreferences.bandsAreFlat(bands) }
 
     private var builtInPresets: [(String, [Float])] {
         AudioFXPreferences.presets.filter { $0.0 != "Custom" }
@@ -29,25 +30,24 @@ struct EqualizerSheet: View {
         NavigationStack {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 0) {
-                    header
-
                     graphicEQ
                         .padding(.horizontal, 16)
-                        .padding(.top, 2)
+                        .padding(.top, 8)
 
                     savedSlotsRow
-                        .padding(.top, 12)
+                        .padding(.top, 10)
 
                     presetsSection
                         .padding(.top, 8)
-                        .padding(.bottom, 12)
+                        .padding(.bottom, isExpanded ? 12 : 16)
 
-                    Divider().overlay(DromeTheme.divider)
-
-                    extras
-                        .padding(.horizontal, 16)
-                        .padding(.top, 12)
-                        .padding(.bottom, 20)
+                    if isExpanded {
+                        Divider().overlay(DromeTheme.divider)
+                        expandedExtras
+                            .padding(.horizontal, 16)
+                            .padding(.top, 12)
+                            .padding(.bottom, 20)
+                    }
                 }
             }
             .background(DromeTheme.background.ignoresSafeArea())
@@ -80,27 +80,6 @@ struct EqualizerSheet: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 14) {
-            Toggle(isOn: $enabled) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(enabled ? "EQ On" : "EQ Off")
-                        .font(.headline)
-                    Text(enabled ? "Dragging faders shapes the sound" : "Turn on to hear band changes")
-                        .font(.caption)
-                        .foregroundStyle(DromeTheme.muted)
-                }
-            }
-            .tint(DromeTheme.accent)
-            .onChange(of: enabled) { _, v in
-                AudioFXPreferences.equalizerEnabled = v
-                if v { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-    }
-
     private var graphicEQ: some View {
         HStack(alignment: .top, spacing: 10) {
             scaleColumn(trackHeight: trackHeight)
@@ -130,8 +109,8 @@ struct EqualizerSheet: View {
                         .stroke(Color.white.opacity(0.06), lineWidth: 1)
                 }
         }
-        .opacity(enabled ? 1 : 0.45)
-        .animation(.easeOut(duration: 0.2), value: enabled)
+        .opacity(eqIsOn ? 1 : 0.72)
+        .animation(.easeOut(duration: 0.2), value: eqIsOn)
         .accessibilityElement(children: .contain)
     }
 
@@ -350,12 +329,14 @@ struct EqualizerSheet: View {
     private func syncFromPreferences() {
         bands = AudioFXPreferences.equalizerBands
         preset = AudioFXPreferences.equalizerPreset
-        enabled = AudioFXPreferences.equalizerEnabled
         savedSlots = AudioFXPreferences.savedEqualizers
+        replayGain = AudioFXPreferences.replayGainEnabled
+        crossfade = AudioFXPreferences.crossfadeSeconds
     }
 
-    private var extras: some View {
-        VStack(alignment: .leading, spacing: 12) {
+    /// Full-screen only — keeps medium detent focused on faders + presets.
+    private var expandedExtras: some View {
+        VStack(alignment: .leading, spacing: 14) {
             Toggle("ReplayGain", isOn: $replayGain)
                 .tint(DromeTheme.accent)
                 .onChange(of: replayGain) { _, v in AudioFXPreferences.replayGainEnabled = v }
@@ -374,7 +355,7 @@ struct EqualizerSheet: View {
                 .onChange(of: crossfade) { _, v in AudioFXPreferences.crossfadeSeconds = v }
             }
 
-            Text("Same-album stays gapless. Crossfade soft-ramps between unrelated tracks.")
+            Text("Same-album stays gapless. Crossfade soft-ramps between unrelated tracks. Flat turns EQ off.")
                 .font(.caption2)
                 .foregroundStyle(DromeTheme.muted)
         }
@@ -390,11 +371,12 @@ struct EqualizerSheet: View {
                 guard bands[index] != stepped else { return }
                 bands[index] = stepped
                 AudioFXPreferences.equalizerBands = bands
-                AudioFXPreferences.equalizerPreset = "Custom"
-                preset = "Custom"
-                if !enabled {
-                    enabled = true
-                    AudioFXPreferences.equalizerEnabled = true
+                if AudioFXPreferences.bandsAreFlat(bands) {
+                    AudioFXPreferences.equalizerPreset = "Flat"
+                    preset = "Flat"
+                } else {
+                    AudioFXPreferences.equalizerPreset = "Custom"
+                    preset = "Custom"
                 }
             }
         )

@@ -136,22 +136,53 @@ enum VibeEngine {
             return Array(pool.shuffled().prefix(mixLength))
         }
         let spec = taste(for: vibe)
-        let eligible = pool.filter { passesHardGate($0, spec: spec) }
-        let candidatePool = eligible.isEmpty ? pool : eligible
+
+        // Prefer hard-gated fits. Never fall back to the full pool (that used to
+        // re-admit avoid-genre tracks from untagged random pulls).
+        let hard = pool.filter { passesHardGate($0, spec: spec) }
+        let preferred = pool.filter { song in
+            guard let g = normalizedGenre(song) else { return false }
+            return spec.prefer.contains(g) && !spec.avoid.contains(g)
+        }
+        let soft = pool.filter { song in
+            let g = normalizedGenre(song)
+            if let g, spec.avoid.contains(g) { return false }
+            return true
+        }
+
+        let candidatePool: [Song]
+        if hard.count >= 8 {
+            candidatePool = hard
+        } else if preferred.count >= 8 {
+            candidatePool = preferred
+        } else if !hard.isEmpty {
+            candidatePool = hard
+        } else if !preferred.isEmpty {
+            candidatePool = preferred
+        } else if vibe == .focus {
+            // Focus stays strict — soft untagged junk breaks the instrumental vibe.
+            candidatePool = hard.isEmpty ? preferred : hard
+        } else {
+            candidatePool = soft
+        }
+        guard !candidatePool.isEmpty else { return [] }
+
         var scored = candidatePool.compactMap { song -> (Song, Double)? in
             let s = score(song, spec: spec)
+            // Prefer-genre tracks always stay eligible even if energy is a bit off.
+            if let g = normalizedGenre(song), spec.prefer.contains(g) {
+                return (song, max(0.4, s))
+            }
             return s > 0.35 ? (song, s) : nil
         }
-        if scored.count < 12, vibe != .focus {
-            // Relax: keep anything that isn't in the avoid set.
+        if scored.count < 12 {
             scored = candidatePool.compactMap { song -> (Song, Double)? in
                 let g = normalizedGenre(song)
                 if let g, spec.avoid.contains(g) { return nil }
-                return (song, max(0.2, score(song, spec: spec)))
+                return (song, max(0.25, score(song, spec: spec)))
             }
         }
         // Weighted random sample — not "always the same top band shuffled".
-        // Each Play draws a new queue from the fit pool.
         return weightedSample(scored, count: mixLength)
     }
 
@@ -162,6 +193,8 @@ enum VibeEngine {
 
         let energy = estimatedEnergy(song, genre: genre)
         if energy > spec.energy.upperBound + 0.06 { return false }
+        // Also reject tracks that are way too sleepy for high-energy vibes.
+        if energy < spec.energy.lowerBound - 0.18 { return false }
 
         if spec.vocals == .instrumental {
             let hay = haystack(song)

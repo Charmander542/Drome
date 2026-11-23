@@ -435,7 +435,6 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (playl
 		added        []entry
 		skippedOwned int
 		ownedSongIDs []string
-		fileTracks   []playlistFileTrack
 		diskIndex    []diskTrackHit
 		indexed      bool
 	)
@@ -457,7 +456,6 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (playl
 			ensureIndex()
 			if hit := matchIndexedTrack(diskIndex, t.Title, t.Artist); hit != nil {
 				rel = hit.Rel
-				fileTracks = append(fileTracks, playlistFileTrack{Title: t.Title, Artist: t.Artist, Rel: hit.Rel})
 				if s.navidrome != nil && user != "" {
 					sid = s.navidrome.findSongID(r.Context(), user, token, salt, hit.Stem, hit.DirArtist)
 					if sid == "" {
@@ -520,11 +518,18 @@ func (s *server) importPlaylistTracks(r *http.Request, playlistID string) (playl
 		}
 	}
 
-	if len(fileTracks) > 0 && musicDir != "" && res.NavidromeID == "" {
+	// Always materialize a library .m3u8 for whatever is already on disk so
+	// the playlist shows up even when Navidrome API credentials are missing.
+	if musicDir != "" && len(tracks) > 0 {
+		fileTracks := buildPlaylistFileTracks(musicDir, tracks)
+		if len(fileTracks) == 0 {
+			fileTracks = playlistFileTracksNamedAlbum(musicDir, name)
+		}
 		if path, err := writeLibraryPlaylist(musicDir, name, fileTracks); err != nil {
 			logf("write playlist file %q: %v", name, err)
-		} else {
+		} else if path != "" {
 			res.PlaylistFile = path
+			logf("playlist file ready %q → %s (%d tracks)", name, path, len(fileTracks))
 		}
 	}
 
@@ -566,7 +571,8 @@ func (s *server) syncImportedPlaylist(ctx context.Context, creds subsonicCreds, 
 		return s.appendSongsToPlaylist(ctx, creds, existing, songIDs, res)
 	}
 	if len(songIDs) == 0 {
-		id, created, err := s.navidrome.ensureNamedPlaylist(ctx, creds, name, owner, false)
+		// Public so household members can see the requester's imported playlist.
+		id, created, err := s.navidrome.ensureNamedPlaylist(ctx, creds, name, owner, true)
 		if err != nil {
 			return err
 		}
@@ -579,11 +585,12 @@ func (s *server) syncImportedPlaylist(ctx context.Context, creds subsonicCreds, 
 	if err != nil {
 		return err
 	}
+	s.navidrome.setPlaylistPublic(ctx, creds, id)
 	res.NavidromeID = id
 	res.NavidromeCreated = true
 	res.NavidromeSongs = len(songIDs)
 	_ = s.store.upsertPlaylistMirror(owner, spotifyID, id, name)
-	logf("created navidrome playlist %q id=%s songs=%d", name, id, len(songIDs))
+	logf("created navidrome playlist %q id=%s songs=%d owner=%s (public)", name, id, len(songIDs), owner)
 	return nil
 }
 
@@ -644,12 +651,29 @@ func (s *server) enqueueWholePlaylist(r *http.Request, playlistID, fallbackName 
 	}
 	user, token, salt := requestCreds(r)
 	if s.navidrome != nil && user != "" && token != "" {
+		// Owned by the requester, public so others in the library can play it.
 		id, _, perr := s.navidrome.ensureNamedPlaylist(r.Context(),
-			subsonicCreds{user: user, token: token, salt: salt}, e.Title, e.Owner, false)
+			subsonicCreds{user: user, token: token, salt: salt}, e.Title, e.Owner, true)
 		if perr != nil {
 			logf("navidrome playlist %q: %v", e.Title, perr)
 		} else if err := s.store.upsertPlaylistMirror(e.Owner, playlistID, id, e.Title); err != nil {
 			logf("save playlist mirror: %v", err)
+		}
+	} else if s.downloads != nil {
+		if scan, ok := s.downloads.scanCreds(); ok && s.navidrome != nil {
+			id, _, perr := s.navidrome.ensureNamedPlaylist(r.Context(), scan, e.Title, e.Owner, true)
+			if perr != nil {
+				logf("navidrome playlist %q via scan user: %v", e.Title, perr)
+			} else {
+				_ = s.store.upsertPlaylistMirror(e.Owner, playlistID, id, e.Title)
+			}
+		}
+	}
+	if s.downloads != nil && s.downloads.cfg.MusicDir != "" {
+		if path, err := s.downloads.writePlaylistFileNow(r.Context(), e.Owner, playlistID, e.Title); err != nil {
+			logf("write playlist file %q: %v", e.Title, err)
+		} else if path != "" {
+			logf("playlist file ready %q → %s", e.Title, path)
 		}
 	}
 	if err := s.store.insert(e); err != nil {

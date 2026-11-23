@@ -65,11 +65,15 @@ struct MainTabView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                // Always keep mini + tabs mounted. Hiding them while the keyboard
-                // is up made Search mode switches (which resign the field) animate
-                // the chrome back in and jump Recently Searched with it.
+                // Keep mini + tabs mounted (avoids remount jumps on Search mode
+                // switches). Collapse to height 0 for the keyboard; use nil height
+                // when expanded so intrinsic size wins (never maxHeight: .infinity).
+                // Only clip while collapsed — clipping the expanded chrome shears off
+                // the tab bar's bottom safe-area fill and leaves a black home-indicator strip.
                 bottomChrome
                     .opacity(keyboardVisible ? 0 : 1)
+                    .frame(height: keyboardVisible ? 0 : nil, alignment: .top)
+                    .modifier(ClipWhenCollapsed(collapsed: keyboardVisible))
                     .allowsHitTesting(!keyboardVisible)
                     .accessibilityHidden(keyboardVisible)
             }
@@ -106,7 +110,7 @@ struct MainTabView: View {
                     removal: .identity))
             }
         }
-        // No keyboard-driven layout animation — opacity-only hide above.
+        // No keyboard-driven layout animation — height collapse is instant above.
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: activeMiniPlayer)
         .alert(
             "Switch playback?",
@@ -122,10 +126,16 @@ struct MainTabView: View {
             Text("\(session.connect?.switchPromptDeviceName ?? "Another device") is the current player. Switch playback to this device?")
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            keyboardVisible = true
+            // Instant collapse — animating chrome height left a black slab above
+            // the keyboard while Search results sat mid-screen.
+            var txn = Transaction()
+            txn.disablesAnimations = true
+            withTransaction(txn) { keyboardVisible = true }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            keyboardVisible = false
+            var txn = Transaction()
+            txn.disablesAnimations = true
+            withTransaction(txn) { keyboardVisible = false }
         }
         .onReceive(NotificationCenter.default.publisher(for: .dromeOpenNowPlaying)) { _ in
             if player.current != nil {
@@ -332,6 +342,8 @@ struct MainTabView: View {
         .padding(.bottom, 6)
         .frame(maxWidth: .infinity)
         .background {
+            // Extends elevated into the home-indicator region. Parent must not
+            // clip while expanded (see ClipWhenCollapsed on bottomChrome).
             DromeTheme.elevated
                 .ignoresSafeArea(edges: .bottom)
         }
@@ -412,5 +424,18 @@ enum MiniPlayerKind: Equatable {
         if hasPodcastEpisode { return .podcast }
         if hasMusicCurrent { return .music }
         return .none
+    }
+}
+
+/// Clips only while the bottom chrome is height-collapsed for the keyboard.
+private struct ClipWhenCollapsed: ViewModifier {
+    let collapsed: Bool
+
+    func body(content: Content) -> some View {
+        if collapsed {
+            content.clipped()
+        } else {
+            content
+        }
     }
 }

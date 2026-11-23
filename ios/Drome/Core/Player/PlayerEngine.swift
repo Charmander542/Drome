@@ -107,6 +107,8 @@ final class PlayerEngine: ObservableObject {
     /// Bumped on every hard stop so a stale `play()` / ready callback cannot
     /// resume an outgoing item after we've already started the next track.
     private var playbackGeneration = 0
+    /// Bumped to cancel in-flight ReplayGain / crossfade volume ramps.
+    private var volumeFadeGeneration = 0
     private var seekEpoch = 0
     private var appliedSeekEpoch = 0
     private var autoplayTask: Task<Void, Never>?
@@ -643,6 +645,7 @@ final class PlayerEngine: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.applyAudioFXVolume()
+                self?.refreshEqualizerOnWindow()
             }
             .store(in: &cancellables)
 
@@ -791,25 +794,11 @@ final class PlayerEngine: ObservableObject {
             self.context = context
             fullContextSongs = songs
 
+            // ShuffleEngine keeps OOR out of algorithmic pools, but falls back
+            // to the full list when every track is excluded so Shuffle still
+            // shuffles (instead of silently playing in order).
             let pool = orderedForShuffle(songs)
-            guard let first = pool.first else {
-                // Everything was excluded (e.g. all out of rotation): play as-is.
-                // Undo already pushed; nested play would double-push — skip.
-                self.context = context
-                fullContextSongs = songs
-                originalContextOrder = Array(songs.dropFirst()).map { QueueItem(song: $0) }
-                contextQueue = originalContextOrder
-                if shouldClearUserQueue {
-                    userQueue.removeAll()
-                }
-                history.removeAll()
-                if let song = songs.first {
-                    setCurrent(QueueItem(song: song), startPlaying: true, allowLowRated: true)
-                }
-                ensureAutoplayBuffer()
-                persistSessionSoon()
-                return
-            }
+            guard let first = pool.first else { return }
             originalContextOrder = songs.filter { $0.id != first.id }.map { QueueItem(song: $0) }
             contextQueue = pool.dropFirst().map { QueueItem(song: $0) }
             if shouldClearUserQueue {
@@ -1766,30 +1755,46 @@ final class PlayerEngine: ObservableObject {
     // MARK: - Public API: queue editing
 
     func playNext(_ song: Song) {
-        ratings.ingest([song])
+        playNext([song])
+    }
+
+    /// Insert songs at the front of the user queue (first song plays soonest).
+    func playNext(_ songs: [Song]) {
+        guard !songs.isEmpty else { return }
+        ratings.ingest(songs)
+        let items = songs.map { QueueItem(song: $0) }
         if current == nil {
             runLocalPlayback { [self] in
-                userQueue.insert(QueueItem(song: song), at: 0)
+                userQueue.insert(contentsOf: items, at: 0)
                 let item = userQueue.removeFirst()
                 setCurrent(item, startPlaying: true, allowLowRated: true)
+                resyncUpcomingWindow()
             }
             return
         }
-        userQueue.insert(QueueItem(song: song), at: 0)
+        userQueue.insert(contentsOf: items, at: 0)
         resyncUpcomingWindow()
     }
 
     func addToQueue(_ song: Song) {
-        ratings.ingest([song])
+        addToQueue([song])
+    }
+
+    /// Append songs to the end of the user queue.
+    func addToQueue(_ songs: [Song]) {
+        guard !songs.isEmpty else { return }
+        ratings.ingest(songs)
+        let items = songs.map { QueueItem(song: $0) }
         if current == nil {
             runLocalPlayback { [self] in
-                userQueue.append(QueueItem(song: song))
+                userQueue.append(contentsOf: items)
                 let item = userQueue.removeFirst()
                 setCurrent(item, startPlaying: true, allowLowRated: true)
+                resyncUpcomingWindow()
             }
             return
         }
-        userQueue.append(QueueItem(song: song))
+        userQueue.append(contentsOf: items)
         resyncUpcomingWindow()
     }
 
@@ -2114,7 +2119,16 @@ final class PlayerEngine: ObservableObject {
         // after a Tailscale hop isn't starting from an empty pipe.
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = !isFile
         item.preferredPeakBitRate = 0
+        // Real 5-band EQ via PCM tap (Flat = bypass). ReplayGain stays on volume.
+        EqualizerProcessor.shared.attach(to: item)
         return item
+    }
+
+    /// Re-apply EQ mix when faders / presets change without rebuilding the queue.
+    private func refreshEqualizerOnWindow() {
+        for entry in window {
+            EqualizerProcessor.shared.attach(to: entry.playerItem)
+        }
     }
 
     /// Badge for the bytes actually playing (transcoded MP3 vs library FLAC).
@@ -2731,23 +2745,29 @@ final class PlayerEngine: ObservableObject {
         broadcastSharePlayIfNeeded()
     }
 
-    /// ReplayGain + EQ tilt → AVQueuePlayer.volume. Optional fade for crossfade UX.
+    /// ReplayGain → AVQueuePlayer.volume. EQ is applied in the PCM tap, not here.
     private func applyAudioFXVolume(animated: Bool = false) {
-        let target = AudioFXController.shared.volume(for: current?.song)
+        let target = min(1.0, AudioFXController.shared.volume(for: current?.song))
+        volumeFadeGeneration &+= 1
+        let fadeID = volumeFadeGeneration
         let seconds = AudioFXPreferences.crossfadeSeconds
         if animated, seconds > 0 {
-            player.volume = 0.05
+            // Soft rise from ~half level — not near-silence (0.05 felt like cutouts).
+            let start = max(0.45, min(player.volume, target) * 0.7)
+            player.volume = start
             let steps = max(6, seconds * 10)
             let stepDuration = Double(seconds) / Double(steps)
             for i in 1...steps {
                 DispatchQueue.main.asyncAfter(deadline: .now() + stepDuration * Double(i)) { [weak self] in
-                    guard let self else { return }
+                    guard let self, self.volumeFadeGeneration == fadeID else { return }
                     let t = Float(i) / Float(steps)
-                    self.player.volume = 0.05 + (target - 0.05) * t
+                    self.player.volume = start + (target - start) * t
                 }
             }
-        } else {
-            player.volume = min(1.0, target)
+        } else if abs(player.volume - target) > 0.001 {
+            // Skip no-op writes — assigning volume mid-play can click under
+            // heavy UI (e.g. Search + keyboard) even when the gain is unchanged.
+            player.volume = target
         }
     }
 
@@ -2874,7 +2894,10 @@ final class PlayerEngine: ObservableObject {
             contextQueue = restored + extras
         case .smart, .random:
             let excluded = (context?.allowsOutOfRotation ?? false) ? Set<String>() : rotation.excludedIDs
-            let kept = contextQueue.filter { !excluded.contains($0.song.id) }
+            let eligible = contextQueue.filter { !excluded.contains($0.song.id) }
+            // Same as ShuffleEngine: if the whole remaining queue is OOR,
+            // reshuffle it rather than emptying Up Next.
+            let kept = eligible.isEmpty ? contextQueue : eligible
             let taste = TasteAffinity.build(
                 ratings: ratings.ratings,
                 seeds: kept.prefix(40).map(\.song),

@@ -26,7 +26,8 @@ struct OnboardingView: View {
 
     private let searchPageIndex = 2
     private let nowPlayingControlsPageIndex = 4
-    private let accentPageIndex = 6
+    /// Final page — theme accent chooser after Keep Playing.
+    private let accentPageIndex = 7
     private let nowPlayingStepCount = OnboardingNowPlayingStep.allCases.count
 
     /// Named space so tour drag can exclude the cover hit target.
@@ -57,6 +58,10 @@ struct OnboardingView: View {
             title: "Playlists & sharing",
             caption: "Create with + in Your Library; Share Playlist is in a playlist’s ··· menu.",
             accessibilityMockLabel: "Your Library plus button creates a playlist. Share Playlist is in the playlist detail more menu."),
+        OnboardingTourPage(
+            title: "Keep the music going",
+            caption: "The same Keep Playing switch also lives under Avatar → Settings → Playback.",
+            accessibilityMockLabel: "Settings is opened from the Home avatar menu. Keep Playing is in the Playback section — the same Autoplay switch as Now Playing ··· → Keep Playing."),
         OnboardingTourPage(
             title: "Make it yours",
             caption: "Pick a theme color — buttons, highlights, and vibes follow it. Change it anytime in Settings.",
@@ -135,7 +140,7 @@ struct OnboardingView: View {
             if newPage == searchPageIndex { restartSearchCycle() }
             if newPage == nowPlayingControlsPageIndex {
                 if enterNowPlayingAtEnd || oldPage > nowPlayingControlsPageIndex {
-                    nowPlayingStep = .lyrics
+                    nowPlayingStep = OnboardingNowPlayingStep.allCases.last ?? .more
                     nowPlayingStepDirection = -1
                 } else {
                     nowPlayingStep = .artSwipe

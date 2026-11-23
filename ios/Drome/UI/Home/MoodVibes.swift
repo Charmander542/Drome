@@ -9,10 +9,9 @@ enum MoodPlayer {
     @discardableResult
     static func play(_ vibe: MoodVibe, session: AppSession) async -> Bool {
         let player = session.player
-        let keepingCurrent = player.current != nil
         var excluded = session.rotation.excludedIDs
         excluded.formUnion(recentVibeSongIDs)
-        // Keep the playing track out of the new Up Next list — it stays current.
+        // Prefer not to open on the track already under the playhead.
         if let currentID = player.current?.song.id {
             excluded.insert(currentID)
         }
@@ -33,13 +32,13 @@ enum MoodPlayer {
 
         remember(picked)
         session.ratings.ingest(picked)
-        let context = PlaybackContext(label: vibe.title, kind: .mix)
-        if keepingCurrent {
-            // Seamless Instant Mix: current audio never stops or rebuilds.
-            player.adoptUpcomingMix(picked, context: context)
-        } else {
-            player.play(picked, startAt: 0, context: context)
-        }
+        // Always start the vibe — Play is a station button, not "queue for later".
+        // adoptUpcomingMix left unrelated music/podcast audio running and only
+        // rewrote Up Next, which felt like the tuner was broken.
+        player.play(
+            picked,
+            startAt: 0,
+            context: PlaybackContext(label: vibe.title, kind: .mix))
         return true
     }
 
@@ -58,40 +57,93 @@ enum MoodPlayer {
             async let b = (try? await client.randomSongs(size: 100)) ?? []
             return (await a + b).uniquedByID()
         }
-        let tags = VibeEngine.taste(for: vibe).fetch
+
+        let taste = VibeEngine.taste(for: vibe)
+        let tags = await resolvedFetchTags(for: taste, client: client)
         var pool: [Song] = []
-        // Pull across more genre tags + larger batches so each Play has a
-        // wide enough pool to sample a fresh queue.
+
+        // Genre-scoped pulls only — untagged randoms used to flood the pool and
+        // made Hype/Chill/Focus sound like plain Shuffle All.
         await withTaskGroup(of: [Song].self) { group in
-            for tag in tags.prefix(6) {
+            for tag in tags.prefix(8) {
                 group.addTask {
-                    var batch = (try? await client.randomSongs(size: 40, genre: tag)) ?? []
-                    if batch.count < 16 {
-                        batch += (try? await client.songsByGenre(tag, count: 40)) ?? []
+                    var batch = (try? await client.randomSongs(size: 50, genre: tag)) ?? []
+                    if batch.count < 20 {
+                        batch += (try? await client.songsByGenre(tag, count: 50)) ?? []
                     }
                     return batch
-                }
-            }
-            // Untagged randoms widen discovery, but they pollute Focus with off-vibe tracks.
-            if vibe != .focus {
-                group.addTask {
-                    (try? await client.randomSongs(size: 80)) ?? []
                 }
             }
             for await batch in group {
                 pool.append(contentsOf: batch)
             }
         }
-        if pool.count < 40, vibe != .focus {
+
+        // Still thin? Retry remaining tags, then a last-resort untagged pull that
+        // pick() will still filter by prefer/avoid.
+        if pool.count < 24 {
+            let more = Array(tags.dropFirst(8).prefix(6))
+            await withTaskGroup(of: [Song].self) { group in
+                for tag in more {
+                    group.addTask {
+                        var batch = (try? await client.songsByGenre(tag, count: 60)) ?? []
+                        if batch.isEmpty {
+                            batch = (try? await client.randomSongs(size: 40, genre: tag)) ?? []
+                        }
+                        return batch
+                    }
+                }
+                for await batch in group {
+                    pool.append(contentsOf: batch)
+                }
+            }
+        }
+        if pool.count < 12 {
             pool += (try? await client.randomSongs(size: 120)) ?? []
         }
         return pool.uniquedByID()
+    }
+
+    /// Prefer the library's real genre strings that map into this vibe, then
+    /// fall back to the curated fetch list (Cool Jazz, Trap, …).
+    private static func resolvedFetchTags(
+        for taste: VibeEngine.Taste,
+        client: SubsonicClient
+    ) async -> [String] {
+        var ordered: [String] = []
+        var seen = Set<String>()
+
+        func append(_ raw: String) {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            let key = trimmed.lowercased()
+            guard seen.insert(key).inserted else { return }
+            ordered.append(trimmed)
+        }
+
+        let serverGenres = (try? await client.genres()) ?? []
+        let grouped = GenreNormalizer.shared.groupedGenres(serverGenres)
+            .filter { taste.prefer.contains($0.displayName) }
+            .sorted { $0.songCount > $1.songCount }
+
+        for group in grouped {
+            // Raw tags first — Navidrome matches getSongsByGenre / getRandomSongs
+            // on the exact library string, not the curated display name.
+            for raw in group.rawTags {
+                append(raw)
+            }
+            append(group.displayName)
+        }
+
+        for tag in taste.fetch {
+            append(tag)
+        }
+        return ordered
     }
 }
 
 struct MoodVibeRail: View {
     @EnvironmentObject private var session: AppSession
-    @EnvironmentObject private var player: PlayerEngine
 
     @State private var spinning: MoodVibe?
     @State private var error: String?
@@ -226,7 +278,7 @@ struct MoodVibeTile: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
-            Text(isSpinning ? "Keeps current song" : vibe.blurb)
+            Text(isSpinning ? "Starting mix…" : vibe.blurb)
                 .font(.caption)
                 .foregroundStyle(DromeTheme.muted)
                 .lineLimit(1)

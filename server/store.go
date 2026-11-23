@@ -333,6 +333,22 @@ func (s *wishlistStore) deleteBySourcePlaylist(owner, playlistID string) (int64,
 	return res.RowsAffected()
 }
 
+// countActiveBySourcePlaylist counts unfinished wishlist rows still tied to a
+// Spotify playlist import (queued / downloading / failed-retrying).
+func (s *wishlistStore) countActiveBySourcePlaylist(owner, playlistID string) (int, error) {
+	if owner == "" || playlistID == "" {
+		return 0, nil
+	}
+	var n int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM entries
+		WHERE owner = ? AND source_playlist_id = ? AND acquired = 0
+		  AND status IN (?, ?, ?)`,
+		owner, playlistID, statusQueued, statusDownloading, statusFailed,
+	).Scan(&n)
+	return n, err
+}
+
 func (s *wishlistStore) setAcquired(id int64, acquired bool) error {
 	if acquired {
 		// “Got it” / downloaded — drop from the active wishlist.

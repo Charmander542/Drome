@@ -32,11 +32,12 @@ COPY --from=build /out/drome-server /usr/local/bin/drome-server
 COPY download-entry.sh /usr/local/bin/drome-download
 COPY entrypoint.sh /usr/local/bin/drome-entrypoint
 COPY retag.py /usr/local/bin/drome-retag
+COPY genre_tag.py /usr/local/bin/drome-genre-tag
 COPY list-playlist.py /usr/local/bin/drome-list-playlist
 COPY scripts/cleanup_library.py /usr/local/bin/drome-cleanup-library
 COPY scripts/bootstrap-spotiflac-extensions.py /usr/local/bin/drome-bootstrap-spotiflac
-RUN chmod 755 /usr/local/bin/drome-download /usr/local/bin/drome-entrypoint /usr/local/bin/drome-retag /usr/local/bin/drome-list-playlist /usr/local/bin/drome-cleanup-library /usr/local/bin/drome-bootstrap-spotiflac \
- && sed -i '1s|^#!.*|#!/usr/bin/env python3|' /usr/local/bin/drome-retag /usr/local/bin/drome-list-playlist /usr/local/bin/drome-cleanup-library /usr/local/bin/drome-bootstrap-spotiflac
+RUN chmod 755 /usr/local/bin/drome-download /usr/local/bin/drome-entrypoint /usr/local/bin/drome-retag /usr/local/bin/drome-genre-tag /usr/local/bin/drome-list-playlist /usr/local/bin/drome-cleanup-library /usr/local/bin/drome-bootstrap-spotiflac \
+ && sed -i '1s|^#!.*|#!/usr/bin/env python3|' /usr/local/bin/drome-retag /usr/local/bin/drome-genre-tag /usr/local/bin/drome-list-playlist /usr/local/bin/drome-cleanup-library /usr/local/bin/drome-bootstrap-spotiflac
 
 USER drome
 ENV DROME_DB_PATH=/data/drome.db \
@@ -45,6 +46,7 @@ ENV DROME_DB_PATH=/data/drome.db \
     DROME_SPOTIFLAC_BIN=/usr/local/bin/drome-download \
     DROME_SPOTIFLAC_LIST_BIN=/usr/local/bin/drome-list-playlist \
     DROME_RETAG_BIN=/usr/local/bin/drome-retag \
+    DROME_GENRE_BIN=/usr/local/bin/drome-genre-tag \
     DROME_AUTO_DOWNLOAD=true \
     DROME_DOWNLOAD_MAX_ATTEMPTS=5 \
     DROME_CLEANUP_ENABLED=true \

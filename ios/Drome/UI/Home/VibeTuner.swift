@@ -5,7 +5,6 @@ import WidgetKit
 /// a queue on-device from tempo and genre (not Daily Mix collages / ratings).
 struct VibeTuner: View {
     @EnvironmentObject private var session: AppSession
-    @EnvironmentObject private var player: PlayerEngine
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var selected: MoodVibe = WidgetVibeStore.selectedVibe
@@ -69,18 +68,10 @@ struct VibeTuner: View {
                             Text("Building your mix…")
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(.white)
-                            if player.current != nil {
-                                Text("Current song keeps playing")
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(Color.white.opacity(0.72))
-                            }
                         }
                         .padding(.horizontal, 20)
                         .accessibilityElement(children: .combine)
-                        .accessibilityLabel(
-                            player.current != nil
-                                ? "Building your mix. Current song keeps playing."
-                                : "Building your mix.")
+                        .accessibilityLabel("Building your mix.")
                     }
                     .transition(.opacity)
             }

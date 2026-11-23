@@ -203,6 +203,21 @@ struct AlbumDetailView: View {
                 .buttonStyle(.bordered)
                 .tint(.white)
                 .disabled(!canPlay)
+
+                Button {
+                    downloads.download(album.songs, albumId: album.id,
+                                       albumName: album.name, artist: album.artist)
+                } label: {
+                    Image(systemName: albumFullyDownloaded(album)
+                          ? "arrow.down.circle.fill"
+                          : "arrow.down.circle")
+                        .font(.title3.weight(.semibold))
+                        .frame(width: 46, height: 46)
+                }
+                .buttonStyle(.bordered)
+                .tint(albumFullyDownloaded(album) ? DromeTheme.accent : .white)
+                .disabled(!canPlay)
+                .accessibilityLabel(albumFullyDownloaded(album) ? "Downloaded" : "Download album")
             }
             .padding(.horizontal, 16)
         }
@@ -243,6 +258,11 @@ struct AlbumDetailView: View {
             parts.append(Formatters.longDuration(seconds: duration))
         }
         return parts.joined(separator: " · ")
+    }
+
+    private func albumFullyDownloaded(_ album: AlbumWithSongs) -> Bool {
+        guard !album.songs.isEmpty else { return false }
+        return album.songs.allSatisfy { downloads.isDownloaded($0.id) }
     }
 
     private func load() async {

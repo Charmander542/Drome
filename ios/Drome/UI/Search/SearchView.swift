@@ -50,8 +50,6 @@ struct SearchView: View {
     @State private var isSearchPresented = false
     /// Browse landing (Aura/Apple Music) vs focused text-search mode.
     @State private var isBrowseMode = true
-    /// Scroll dismisses the searchable field without returning to the genre landing.
-    @State private var suppressBrowseReturnOnSearchDismiss = false
     /// Block scroll-to-dismiss while browse→results layout settles (that offset
     /// jump was killing the keyboard the instant it appeared).
     @State private var ignoreScrollKeyboardDismissUntil: Date = .distantPast
@@ -160,7 +158,6 @@ struct SearchView: View {
         }
         .onChange(of: isSearchPresented) { _, presented in
             if presented {
-                suppressBrowseReturnOnSearchDismiss = false
                 // Results List mounting shifts contentOffset — ignore that.
                 ignoreScrollKeyboardDismissUntil = Date().addingTimeInterval(0.75)
                 if isBrowseMode {
@@ -178,12 +175,8 @@ struct SearchView: View {
                 }
                 return
             }
-            // Scroll-dismiss keeps results / Recently Searched; Cancel with an
-            // empty query still returns to the browse landing.
-            if suppressBrowseReturnOnSearchDismiss {
-                suppressBrowseReturnOnSearchDismiss = false
-                return
-            }
+            // Cancel / ✕ with an empty query returns to the browse landing.
+            // Scroll only resigns the keyboard and leaves the field mounted.
             if !isBrowseMode,
                query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 returnToBrowse()
@@ -249,12 +242,13 @@ struct SearchView: View {
         .scrollDismissesKeyboard(.never)
     }
 
-    /// Hide the keyboard as soon as the user scrolls; tap the search field to bring it back.
+    /// Hide the keyboard on scroll but keep the searchable field (query + ✕)
+    /// mounted — collapsing `isSearchPresented` was swapping to the bare
+    /// “Search” title and dropping the typed text from the chrome.
     private func dismissSearchKeyboardOnScroll() {
-        guard isSearchPresented else { return }
+        guard !isBrowseMode else { return }
         guard Date() >= ignoreScrollKeyboardDismissUntil else { return }
-        suppressBrowseReturnOnSearchDismiss = true
-        isSearchPresented = false
+        dismissKeyboard()
     }
 
     private func enterTextSearch(
@@ -327,19 +321,16 @@ struct SearchView: View {
     }
 
     /// Source + type chips while in text-search mode.
-    /// Chip row stays in the layout for every source so switching Library ↔
-    /// Spotify/Podcasts doesn’t resize the top inset and bounce Recently Searched.
+    /// Library keeps All/Songs/… chips; Spotify & Podcasts drop that row so
+    /// results sit directly under the source segmented control.
     private var searchControls: some View {
         let showChips = source == .library
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: showChips ? 8 : 0) {
             sourcePicker
-            resultFilterChips
-                .opacity(showChips ? 1 : 0)
-                .allowsHitTesting(showChips)
-                .accessibilityHidden(!showChips)
-                // Reserve chip-row height even when hidden (Spotify / Podcasts).
-                .frame(height: 40)
-                .clipped()
+            if showChips {
+                resultFilterChips
+                    .frame(height: 40)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.top, 6)
@@ -630,13 +621,22 @@ struct SearchView: View {
                     }
                 } else {
                     ForEach(spotifyHits) { hit in
-                        spotifyRow(hit)
-                            .listRowBackground(DromeTheme.background)
-                            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                        Group {
+                            if hit.kind == "track", let song = matchedSongs[hit.spotifyId] {
+                                spotifyRow(hit)
+                                    .songSwipeActions(for: song)
+                            } else {
+                                spotifyRow(hit)
+                            }
+                        }
+                        .listRowBackground(DromeTheme.background)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     }
                 }
             }
             .listStyle(.plain)
+            .listSectionSpacing(8)
+            .contentMargins(.top, 0, for: .scrollContent)
             .scrollContentBackground(.hidden)
             .scrollDismissesKeyboard(.never)
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { oldY, newY in
@@ -711,6 +711,8 @@ struct SearchView: View {
             }
         }
         .listStyle(.plain)
+        .listSectionSpacing(8)
+        .contentMargins(.top, 0, for: .scrollContent)
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.never)
         .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { oldY, newY in
