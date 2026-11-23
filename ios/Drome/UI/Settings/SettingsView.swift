@@ -61,7 +61,6 @@ struct SettingsView: View {
                 }
         }
         .tint(accentStore.color)
-        .onDisappear { accentStore.bumpRevision() }
         .sheet(isPresented: $showAccounts) {
             AccountSwitcherSheet().environmentObject(env)
         }

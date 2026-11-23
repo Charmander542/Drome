@@ -44,8 +44,9 @@ enum DromeAccentColor: String, CaseIterable, Identifiable {
     }
 }
 
-/// Persisted accent selection. Views that need live updates observe this store
-/// (or remount via `revision`); `DromeTheme.accent` reads `cachedColor`.
+/// Persisted accent selection. `RootView` / chrome observe this for live tint;
+/// `DromeTheme.accent` reads `cachedColor`. Never remount the signed-in tree for
+/// colour changes — only account switches should rebuild session UI.
 final class AccentStore: ObservableObject {
     static let shared = AccentStore()
 
@@ -58,8 +59,6 @@ final class AccentStore: ObservableObject {
 
     @Published private(set) var preset: DromeAccentColor
     @Published private(set) var customRGB: [Double]
-    /// Bumped when the whole UI should rebuild (leaving Settings).
-    @Published private(set) var revision: UInt64 = 0
 
     var color: Color { preset.color(customRGB: customRGB) }
 
@@ -76,26 +75,25 @@ final class AccentStore: ObservableObject {
 
     func setPreset(_ value: DromeAccentColor) {
         guard value != .custom else {
-            preset = .custom
-            persist()
+            if preset != .custom {
+                preset = .custom
+                persist()
+            }
             return
         }
+        guard value != preset else { return }
         preset = value
         persist()
-        // Remount is deferred to Settings.onDisappear so the sheet stays up.
     }
 
     func setCustomRGB(_ rgb: [Double]) {
         guard rgb.count == 3 else { return }
-        customRGB = rgb.map { min(max($0, 0), 1) }
+        let next = rgb.map { min(max($0, 0), 1) }
+        guard next != customRGB || preset != .custom else { return }
+        customRGB = next
         if preset != .custom { preset = .custom }
         persist()
-        // Don’t remount while the system colour picker is open — tint updates live.
         objectWillChange.send()
-    }
-
-    func bumpRevision() {
-        revision &+= 1
     }
 
     private func persist() {

@@ -28,10 +28,11 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: env.session?.id)
+        // Live tint only — never remount the signed-in tree for accent changes
+        // (that wiped Home/tabs and looked like a full server reload). Account
+        // switches still remount via `.id(session.id)` above.
         .tint(accentStore.color)
         .environment(\.dromeAccent, accentStore.color)
-        // Remount on preset changes so `DromeTheme.accent` call sites pick up the colour.
-        .id("accent-\(accentStore.revision)")
         .dromeScreen()
         .task { SharePlayRuntime.shared.startListening() }
         .onReceive(NotificationCenter.default.publisher(for: .dromeReplayOnboarding)) { _ in
