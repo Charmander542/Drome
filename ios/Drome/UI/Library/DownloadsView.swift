@@ -146,16 +146,12 @@ struct DownloadsView: View {
     }
 
     private var downloadsHeader: some View {
-        VStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(DromeTheme.elevated2)
-                Image(systemName: "arrow.down.circle.fill")
-                    .font(.system(size: 56, weight: .semibold))
-                    .foregroundStyle(DromeTheme.accent)
-            }
-            .frame(width: 180, height: 180)
-            .shadow(color: .black.opacity(0.35), radius: 18, y: 10)
+        VStack(spacing: 12) {
+            Image(systemName: "arrow.down.to.line")
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundStyle(DromeTheme.accent)
+                .frame(width: 56, height: 56)
+                .background(DromeTheme.elevated2, in: Circle())
 
             VStack(spacing: 6) {
                 Text(isOfflineMode ? "Offline Library" : "Downloaded")
@@ -168,6 +164,8 @@ struct DownloadsView: View {
                     .foregroundStyle(DromeTheme.muted)
             }
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
     }
 
     private var headerSubtitle: String {

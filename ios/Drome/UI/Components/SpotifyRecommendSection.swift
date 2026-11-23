@@ -31,10 +31,10 @@ struct SpotifyMissingTracksSection: View {
                             Task { await loadIfNeeded() }
                         } label: {
                             HStack(spacing: 12) {
-                                Image(systemName: "opticaldisc.fill")
-                                    .font(.title3)
+                                Image(systemName: "magnifyingglass")
+                                    .font(.body.weight(.semibold))
                                     .foregroundStyle(DromeTheme.accent)
-                                    .frame(width: 36)
+                                    .frame(width: 28, alignment: .center)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(buttonTitle)
                                         .font(DromeTheme.rowTitle)
