@@ -19,6 +19,8 @@ struct WishlistView: View {
     @State private var searchTask: Task<Void, Never>?
     @State private var groupByPlaylist = false
     @State private var downloadStatus: WishlistDownloadStatus?
+    @State private var retryingIDs: Set<Int64> = []
+    @State private var isRetryingAllFailed = false
 
     var body: some View {
         Group {
@@ -278,9 +280,27 @@ struct WishlistView: View {
             }
         } footer: {
             if status.queue.failed > 0 {
-                Text(status.queue.failed == 1
-                      ? "1 download failed — open the item below to retry."
-                      : "\(status.queue.failed) downloads failed — open an item below to retry.")
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(status.queue.failed == 1
+                          ? "1 download failed."
+                          : "\(status.queue.failed) downloads failed.")
+                    Button {
+                        Task { await retryAllFailed() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            if isRetryingAllFailed {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            Text(status.queue.failed == 1 ? "Retry failed download" : "Retry all failed")
+                                .fontWeight(.semibold)
+                        }
+                    }
+                    .disabled(isRetryingAllFailed || !retryingIDs.isEmpty)
+                    .foregroundStyle(DromeTheme.accent)
+                }
             }
         }
     }
@@ -483,7 +503,23 @@ struct WishlistView: View {
                         .padding(.top, 4)
                 }
             }
-            Spacer()
+            Spacer(minLength: 8)
+            if canRetryDownload(entry) {
+                Button {
+                    Task { await retryDownload(entry) }
+                } label: {
+                    if retryingIDs.contains(entry.id) {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "arrow.clockwise.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(DromeTheme.accent)
+                    }
+                }
+                .buttonStyle(.borderless)
+                .disabled(retryingIDs.contains(entry.id))
+                .accessibilityLabel("Retry download")
+            }
             if entry.kind == "album" || entry.kind == "playlist" {
                 Text(entry.kind == "album" ? "ALBUM" : "PLAYLIST")
                     .font(.caption2.weight(.bold))
@@ -503,6 +539,15 @@ struct WishlistView: View {
         }
         .swipeActions(edge: .leading) {
             if entry.owner == session.account.username {
+                if canRetryDownload(entry) {
+                    Button {
+                        Task { await retryDownload(entry) }
+                    } label: {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                    }
+                    .tint(DromeTheme.accent)
+                    .disabled(retryingIDs.contains(entry.id))
+                }
                 Button {
                     Task { await toggleAcquired(entry) }
                 } label: {
@@ -516,6 +561,14 @@ struct WishlistView: View {
                     Label("Share", systemImage: "person.badge.plus")
                 }
             }
+        }
+    }
+
+    private func canRetryDownload(_ entry: WishlistEntry) -> Bool {
+        guard entry.owner == session.account.username, !entry.acquired else { return false }
+        switch entry.status {
+        case "failed", "skipped": return true
+        default: return false
         }
     }
 
@@ -761,6 +814,50 @@ struct WishlistView: View {
             }
             await refreshDownloadStatus()
         }
+    }
+
+    private func retryDownload(_ entry: WishlistEntry) async {
+        guard canRetryDownload(entry), let client = session.wishlist else { return }
+        retryingIDs.insert(entry.id)
+        defer { retryingIDs.remove(entry.id) }
+        error = nil
+        do {
+            let updated = try await client.retry(id: entry.id)
+            if let idx = entries.firstIndex(where: { $0.id == entry.id }) {
+                entries[idx] = updated
+            }
+            await refreshDownloadStatus()
+        } catch {
+            self.error = CompanionNetworkError.shortReason(for: error)
+        }
+    }
+
+    private func retryAllFailed() async {
+        guard let client = session.wishlist else { return }
+        let failed = entries.filter { canRetryDownload($0) }
+        guard !failed.isEmpty else { return }
+        isRetryingAllFailed = true
+        defer { isRetryingAllFailed = false }
+        error = nil
+        var firstError: String?
+        for entry in failed {
+            retryingIDs.insert(entry.id)
+            defer { retryingIDs.remove(entry.id) }
+            do {
+                let updated = try await client.retry(id: entry.id)
+                if let idx = entries.firstIndex(where: { $0.id == entry.id }) {
+                    entries[idx] = updated
+                }
+            } catch {
+                if firstError == nil {
+                    firstError = CompanionNetworkError.shortReason(for: error)
+                }
+            }
+        }
+        if let firstError {
+            self.error = firstError
+        }
+        await refreshDownloadStatus()
     }
 
     private func delete(_ entry: WishlistEntry) async {

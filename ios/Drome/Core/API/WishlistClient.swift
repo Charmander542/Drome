@@ -407,6 +407,11 @@ struct DromeWishlistClient {
                            body: Body(acquired: acquired))
     }
 
+    /// Re-queue a failed (or skipped) download with a fresh attempt budget.
+    func retry(id: Int64) async throws -> WishlistEntry {
+        try await send(WishlistEntry.self, path: "/wishlist/\(id)/retry", method: "POST")
+    }
+
     func share(id: Int64, with user: String, remove: Bool = false) async throws {
         struct Body: Encodable { var user: String; var remove: Bool }
         _ = try await send(EmptyWishlistResponse.self, path: "/wishlist/\(id)/share", method: "POST",
