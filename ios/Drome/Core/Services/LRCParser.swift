@@ -11,18 +11,59 @@ import Foundation
 /// spread across the *sung* portion of the line, not the full gap to the next
 /// stamp (instrumental breaks used to make karaoke crawl).
 enum LRCParser {
+    /// A line sung `passes` times ("… x4") — Aura `LyricRepeat`.
+    struct LyricRepeat: Equatable, Hashable {
+        let lineStartMs: Int
+        let periodMs: Int
+        let passes: Int
+        /// Uneven pass starts when measured by ear; otherwise even `periodMs` slices.
+        var startsMs: [Int]? = nil
+    }
+
     struct Word: Identifiable, Equatable, Hashable {
         let id: UUID
         var text: String
         var startMs: Int
         var endMs: Int?
+        /// Present on "… x4" phrase words so highlight restarts each pass.
+        var cycle: LyricRepeat? = nil
+        /// The "x4" marker itself — not sung as a word.
+        var marker: Bool = false
+        /// True for Enhanced LRC / server word cues (not pace-interpolated).
+        var measured: Bool = false
 
-        init(id: UUID = UUID(), text: String, startMs: Int, endMs: Int? = nil) {
+        init(
+            id: UUID = UUID(),
+            text: String,
+            startMs: Int,
+            endMs: Int? = nil,
+            cycle: LyricRepeat? = nil,
+            marker: Bool = false,
+            measured: Bool = false
+        ) {
             self.id = id
             self.text = text
             self.startMs = startMs
             self.endMs = endMs
+            self.cycle = cycle
+            self.marker = marker
+            self.measured = measured
         }
+
+        /// Ms since this word was reached in the pass being sung at `time`
+        /// (Aura `LyricWord.elapsed`). Negative ⇒ not yet lit this pass.
+        func elapsed(atMs time: Int) -> Int {
+            guard let cycle else { return time - startMs }
+            if let heard = cycle.startsMs, let first = heard.first {
+                let pass = heard.last(where: { $0 <= time }) ?? first
+                return time - (pass - first) - startMs
+            }
+            let period = max(cycle.periodMs, 1)
+            let pass = min(max((time - cycle.lineStartMs) / period, 0), cycle.passes - 1)
+            return time - pass * period - startMs
+        }
+
+        func isLit(atMs time: Int) -> Bool { elapsed(atMs: time) >= 0 }
     }
 
     struct Line: Identifiable, Equatable {
@@ -145,6 +186,14 @@ enum LRCParser {
                 if let end = word.endMs {
                     w.endMs = max(w.startMs + 40, end + deltaMs)
                 }
+                if var cycle = w.cycle {
+                    cycle = LyricRepeat(
+                        lineStartMs: max(0, cycle.lineStartMs + deltaMs),
+                        periodMs: cycle.periodMs,
+                        passes: cycle.passes,
+                        startsMs: cycle.startsMs?.map { max(0, $0 + deltaMs) })
+                    w.cycle = cycle
+                }
                 return w
             }
             return copy
@@ -152,14 +201,16 @@ enum LRCParser {
     }
 
     /// Linearly scale timestamps so lyrics timed for `fromDurationMs` land on a
-    /// song of `toDurationMs`. Keeps the first stamp anchored and stretches the
-    /// rest — fixes progressive early/late drift from radio-edit vs album cuts.
+    /// song of `toDurationMs`.
+    ///
+    /// Only tiny near-cuts (±2.5%). Larger stretches used to “sometimes” look
+    /// fine at the start and drift seconds off by the chorus — better to leave
+    /// a constant nudge the user can fix than progressive drift.
     static func scale(_ lines: [Line], fromDurationMs: Int, toDurationMs: Int) -> [Line] {
         guard fromDurationMs > 1_000, toDurationMs > 1_000 else { return lines }
         let ratio = Double(toDurationMs) / Double(fromDurationMs)
-        // Ignore tiny differences; reject wild mismatches (wrong song).
-        if abs(ratio - 1) < 0.008 { return lines }
-        if abs(ratio - 1) > 0.12 { return lines }
+        if abs(ratio - 1) < 0.005 { return lines }
+        if abs(ratio - 1) > 0.025 { return lines }
 
         func map(_ ms: Int) -> Int {
             max(0, Int((Double(ms) * ratio).rounded()))
@@ -175,6 +226,14 @@ enum LRCParser {
                 w.startMs = map(word.startMs)
                 if let end = word.endMs {
                     w.endMs = max(w.startMs + 40, map(end))
+                }
+                if let cycle = word.cycle {
+                    let scaledPeriod = max(1, Int((Double(cycle.periodMs) * ratio).rounded()))
+                    w.cycle = LyricRepeat(
+                        lineStartMs: map(cycle.lineStartMs),
+                        periodMs: scaledPeriod,
+                        passes: cycle.passes,
+                        startsMs: cycle.startsMs?.map(map))
                 }
                 return w
             }
@@ -279,24 +338,36 @@ enum LRCParser {
                 result[i].words = tokenize(result[i].text).map { Word(text: $0, startMs: lineStart) }
             }
 
-            // "… x4": phrase lights once per pass across the sung window.
+            // Measured Enhanced LRC on a "… x4" line — wrap first-pass cues in a cycle
+            // so later passes re-light (Aura `repeatedPasses`).
+            if result[i].words.contains(where: \.measured),
+               let cycled = repeatedPasses(of: result[i].words, lines: result, index: i, paceMs: songPace) {
+                result[i].words = cycled
+                continue
+            }
+
+            // Interpolated "… x4": phrase lights once per pass; marker on last pass.
             if let marked = repeated(result[i].text),
+               !result[i].words.contains(where: \.measured),
                let end = lineEndMs(lines: result, index: i, paceMs: songPace),
                end > lineStart {
                 let passes = marked.passes
-                let period = (end - lineStart) / passes
-                let phraseEnd = lineStart + min(period, max(1_500, marked.phrase.count * songPace * 12 / 10))
+                let period = max((end - lineStart) / passes, 1)
+                let phraseLen = max(1_500, marked.phrase.count * songPace * 12 / 10)
+                let phraseEnd = lineStart + min(period, phraseLen)
+                let cycle = LyricRepeat(lineStartMs: lineStart, periodMs: period, passes: passes)
                 var words = distributeWords(tokenize(marked.phrase), from: lineStart, to: phraseEnd)
-                if let last = words.indices.last {
-                    // Keep a space so joins stay lossless if we ever re-serialize.
-                    if !words[last].text.hasSuffix(" ") {
-                        words[last].text += " "
-                    }
+                for w in words.indices {
+                    words[w].cycle = cycle
+                }
+                if let last = words.indices.last, !words[last].text.hasSuffix(" ") {
+                    words[last].text += " "
                 }
                 words.append(Word(
                     text: marked.marker.trimmingCharacters(in: .whitespaces),
                     startMs: lineStart + period * (passes - 1),
-                    endMs: end))
+                    endMs: end,
+                    marker: true))
                 result[i].words = words
                 continue
             }
@@ -306,16 +377,62 @@ enum LRCParser {
                 result[i].words = distributeWords(
                     result[i].words.map(\.text), from: lineStart, to: wordWindowEnd)
             } else {
-                // Server / Enhanced LRC measured words — keep starts, fill ends.
+                // Measured words — keep starts, fill ends through the sung window.
                 var words = result[i].words
                 for w in words.indices {
                     let end = w + 1 < words.count ? words[w + 1].startMs : wordWindowEnd
                     words[w].endMs = max(end, words[w].startMs + 80)
+                    words[w].measured = true
                 }
                 result[i].words = words
             }
         }
         return result
+    }
+
+    /// Measured first-pass words on a repeat line → cycle for remaining passes.
+    private static func repeatedPasses(
+        of real: [Word],
+        lines: [Line],
+        index: Int,
+        paceMs: Int
+    ) -> [Word]? {
+        guard let marked = repeated(lines[index].text),
+              let start = lines[index].startMs,
+              let end = lineEndMs(lines: lines, index: index, paceMs: paceMs),
+              end > start
+        else { return nil }
+        let markerText = marked.marker.trimmingCharacters(in: .whitespaces)
+        let heard = real.filter { $0.text.isEmpty }.map(\.startMs)
+        var sung = real.filter { !$0.text.isEmpty }
+        if sung.last?.text.trimmingCharacters(in: .whitespaces) == markerText {
+            sung.removeLast()
+        }
+        guard let first = sung.first, let last = sung.last else { return nil }
+        let period = max(
+            (end - first.startMs) / marked.passes,
+            last.startMs - first.startMs + 600)
+        let starts = heard.isEmpty ? nil : [first.startMs] + heard.sorted()
+        let cycle = LyricRepeat(
+            lineStartMs: first.startMs,
+            periodMs: period,
+            passes: marked.passes,
+            startsMs: starts)
+        var words = sung.map { word -> Word in
+            var w = word
+            w.cycle = cycle
+            w.measured = true
+            return w
+        }
+        if let tail = words.indices.last, !words[tail].text.hasSuffix(" ") {
+            words[tail].text += " "
+        }
+        words.append(Word(
+            text: marked.marker,
+            startMs: starts?.last ?? first.startMs + period * (marked.passes - 1),
+            marker: true,
+            measured: true))
+        return words
     }
 
     // MARK: - Song-relative sync (Aura LyricWordTiming)
@@ -336,12 +453,16 @@ enum LRCParser {
             else { continue }
             samples.append((next - start) / lines[index].text.count)
         }
+        // Aura: need a few fair samples; otherwise default pace.
         guard samples.count >= 3 else { return defaultPaceMsPerChar }
         samples.sort()
         return min(max(samples[samples.count / 2], 40), 300)
     }
 
-    /// When the line at `index` stops being sung (not when the next stamp starts).
+    /// When the line at `index` stops being sung (word karaoke window end).
+    ///
+    /// Aura `LyricWordTiming.lineEnd`: paced sung length × 1.2, capped by the
+    /// next stamp. Ordinary gaps run to the next line; instrumentals end early.
     static func lineEndMs(lines: [Line], index: Int, paceMs: Int? = nil) -> Int? {
         guard lines.indices.contains(index), let start = lines[index].startMs else { return nil }
         let pace = paceMs ?? paceMsPerChar(of: lines)
@@ -358,21 +479,32 @@ enum LRCParser {
         return sung
     }
 
-    /// When the active line has been fully sung (measured last word + beat, else `lineEndMs`).
+    /// When the line has been sung — Aura `lineFinish`.
+    /// Measured cues: last word start + 600ms. Interpolated: `lineEndMs`.
     static func lineFinishMs(lines: [Line], index: Int) -> Int? {
         guard lines.indices.contains(index) else { return nil }
         if repeated(lines[index].text) == nil,
            let last = lines[index].words.last,
-           Set(lines[index].words.map(\.startMs)).count > 1 {
+           lines[index].words.contains(where: \.measured) {
             return last.startMs + 600
         }
         return lineEndMs(lines: lines, index: index)
     }
 
-    /// Which line holds focus at `elapsedMs`, given `last` (most recently started).
-    ///
-    /// Across a real instrumental break (>2s), focus moves halfway through so the
-    /// sheet isn’t stuck on a finished line — and doesn’t jump before its last word.
+    /// Last line whose stamp has started (heard position).
+    static func activeLineIndex(lines: [Line], atMs elapsedMs: Int) -> Int {
+        var last = 0
+        for (i, line) in lines.enumerated() {
+            guard let start = line.startMs else { continue }
+            if start <= elapsedMs { last = i } else { break }
+        }
+        return last
+    }
+
+    /// Focus line at `elapsedMs` (Aura `focusIndex`): after a real instrumental
+    /// (>2s past finish), move halfway to the coming line so the sheet isn’t
+    /// stuck on a finished line. Words on that preview stay unlit until their
+    /// starts — karaoke still keys off `Word.isLit`.
     static func focusIndex(lines: [Line], after last: Int?, atMs elapsedMs: Int) -> Int? {
         guard let index = last, index + 1 < lines.count,
               let nextStart = lines[index + 1].startMs,
@@ -381,6 +513,12 @@ enum LRCParser {
         let breakLength = nextStart - finished
         guard breakLength > 2_000, elapsedMs >= finished + breakLength / 2 else { return index }
         return index + 1
+    }
+
+    /// Heard stamp + Aura mid-break focus — one index for scroll and line chrome.
+    static func currentLineIndex(lines: [Line], atMs elapsedMs: Int) -> Int {
+        let last = activeLineIndex(lines: lines, atMs: elapsedMs)
+        return focusIndex(lines: lines, after: last, atMs: elapsedMs) ?? last
     }
 
     /// Line ending in a repeat marker — "x4", "(x4)", "[4x]", "×4".
@@ -452,7 +590,7 @@ enum LRCParser {
             let wordText = ns.substring(with: NSRange(location: textStart, length: max(0, textEnd - textStart)))
                 .trimmingCharacters(in: .whitespaces)
             guard !wordText.isEmpty else { continue }
-            words.append(Word(text: wordText, startMs: start))
+            words.append(Word(text: wordText, startMs: start, measured: true))
             displayParts.append(wordText)
         }
         return (displayParts.joined(separator: " "), words)
@@ -466,21 +604,27 @@ enum LRCParser {
     /// so a line of short words doesn’t race ahead of one with fewer, longer words.
     private static func distributeWords(_ tokens: [String], from start: Int, to end: Int) -> [Word] {
         guard !tokens.isEmpty else { return [] }
-        let duration = max(end - start, tokens.count * 120)
-        let weights = tokens.map { Double(max($0.count, 0) + 1) }
-        let totalWeight = max(weights.reduce(0, +), 1)
         guard end > start else {
             return [Word(text: tokens.joined(separator: " "), startMs: start, endMs: start + 80)]
         }
+        let duration = Double(max(end - start, tokens.count * 120))
+        let weights = tokens.map { Double(max($0.count, 0) + 1) }
+        let totalWeight = max(weights.reduce(0, +), 1)
         var elapsed = 0.0
         var result: [Word] = []
+        result.reserveCapacity(tokens.count)
         for (idx, token) in tokens.enumerated() {
             let wordStart = start + Int(elapsed.rounded())
-            elapsed += Double(duration) * (weights[idx] / totalWeight)
+            elapsed += duration * (weights[idx] / totalWeight)
             let wordEnd = idx == tokens.count - 1
                 ? end
                 : min(end, start + Int(elapsed.rounded()))
-            result.append(Word(text: token, startMs: wordStart, endMs: max(wordEnd, wordStart + 80)))
+            // Ensure strictly increasing starts so karaoke never stalls on a tie.
+            let clampedStart = result.last.map { max(wordStart, $0.startMs + 40) } ?? wordStart
+            result.append(Word(
+                text: token,
+                startMs: min(clampedStart, max(start, end - (tokens.count - idx) * 40)),
+                endMs: max(wordEnd, clampedStart + 80)))
         }
         if let last = result.indices.last {
             result[last].endMs = end

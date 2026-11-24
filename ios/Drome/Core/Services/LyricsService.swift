@@ -40,10 +40,10 @@ actor LyricsService {
     private let serverKey: String
 
     /// Bumped when matching / alignment rules change so old hits refetch once.
-    private static let lrclibSource = "lrclib.v3"
-    private static let navidromeSource = "navidrome.v2"
+    private static let lrclibSource = "lrclib.v4"
+    private static let navidromeSource = "navidrome.v3"
     private static let legacySources: Set<String> = [
-        "lrclib", "lrclib.v2", "navidrome",
+        "lrclib", "lrclib.v2", "lrclib.v3", "navidrome", "navidrome.v2",
     ]
 
     init(database: AppDatabase, client: SubsonicClient, serverKey: String) {
