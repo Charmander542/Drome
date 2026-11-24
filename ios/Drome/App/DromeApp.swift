@@ -24,6 +24,7 @@ struct DromeApp: App {
                     case .active:
                         DromeDiagnostics.log("scene active")
                         DeepLink.consumePending(env: env)
+                        PodcastFeedSync.refreshIfNeeded(manager: env.podcastManager)
                     case .inactive:
                         DromeDiagnostics.log("scene inactive")
                     case .background:
