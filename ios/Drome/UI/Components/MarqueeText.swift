@@ -17,39 +17,19 @@ struct MarqueeText: View {
     @State private var textWidth: CGFloat = 0
     @State private var containerWidth: CGFloat = 0
     @State private var lineHeight: CGFloat = 0
-    @State private var offset: CGFloat = 0
-    /// Bumped to cancel an in-flight loop when text / size / motion changes.
-    @State private var loopGeneration = 0
-    /// Cycle length the active loop was started with — avoids preference-key thrash restarts.
-    @State private var activeCycle: CGFloat = 0
+    /// Epoch for the current text — changing text restarts the pause/scroll clock.
+    @State private var clockStart = Date()
 
     private var needsScroll: Bool {
         textWidth > 0 && containerWidth > 0 && textWidth > containerWidth + 1
     }
 
     var body: some View {
-        GeometryReader { geo in
-            let width = geo.size.width
-            ZStack(alignment: .leading) {
-                if needsScroll && !reduceMotion {
-                    HStack(spacing: spacing) {
-                        label
-                        label
-                    }
-                    .offset(x: offset)
-                    .frame(width: textWidth * 2 + spacing, alignment: .leading)
-                } else {
-                    label
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            // Keep glyphs vertically centered inside the measured line box.
-            .frame(width: width, height: geo.size.height, alignment: .leading)
-            .clipped()
-            .onAppear { containerWidth = width }
-            .onChange(of: width) { _, newValue in
-                containerWidth = newValue
-                restartIfNeeded()
+        Group {
+            if needsScroll && !reduceMotion {
+                scrollingBody
+            } else {
+                staticBody
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -57,18 +37,73 @@ struct MarqueeText: View {
         .background(heightProbe)
         .accessibilityLabel(text)
         .onChange(of: text) { _, _ in
-            stopLoop(resetOffset: true)
-            restartIfNeeded()
+            clockStart = Date()
+            textWidth = 0
         }
-        .onChange(of: textWidth) { _, _ in restartIfNeeded() }
-        .onChange(of: containerWidth) { _, _ in restartIfNeeded() }
+        .onChange(of: textWidth) { old, new in
+            // First real measure — start the pause clock from here, not view appear.
+            if old < 1, new > 1 { clockStart = Date() }
+        }
         .onChange(of: reduceMotion) { _, _ in
-            stopLoop(resetOffset: true)
-            restartIfNeeded()
+            clockStart = Date()
         }
-        .onDisappear {
-            stopLoop(resetOffset: false)
+    }
+
+    private var staticBody: some View {
+        GeometryReader { geo in
+            label
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .leading)
+                .onAppear { containerWidth = geo.size.width }
+                .onChange(of: geo.size.width) { _, w in containerWidth = w }
         }
+        .clipped()
+    }
+
+    /// Frame-driven offset — avoids `withAnimation` + `Task.sleep` desync jank.
+    private var scrollingBody: some View {
+        let cycle = textWidth + spacing
+        let scrollDuration = Double(cycle / max(speed, 1))
+        let period = max(startDelay, 0) + max(scrollDuration, 0.05)
+
+        return TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: false)) { context in
+            let offset = Self.offset(
+                at: context.date,
+                since: clockStart,
+                cycle: cycle,
+                startDelay: startDelay,
+                scrollDuration: scrollDuration,
+                period: period)
+
+            GeometryReader { geo in
+                HStack(spacing: spacing) {
+                    label
+                    label
+                }
+                .offset(x: offset)
+                .frame(width: cycle * 2 - spacing, alignment: .leading)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .leading)
+                .clipped()
+                .onAppear { containerWidth = geo.size.width }
+                .onChange(of: geo.size.width) { _, w in containerWidth = w }
+            }
+        }
+    }
+
+    /// Hold at 0, ease linearly across one copy, then loop (dual labels make the wrap seamless).
+    private static func offset(
+        at date: Date,
+        since start: Date,
+        cycle: CGFloat,
+        startDelay: TimeInterval,
+        scrollDuration: TimeInterval,
+        period: TimeInterval
+    ) -> CGFloat {
+        guard cycle > 0, period > 0 else { return 0 }
+        let elapsed = max(0, date.timeIntervalSince(start))
+        let t = elapsed.truncatingRemainder(dividingBy: period)
+        if t < startDelay { return 0 }
+        let progress = min(max((t - startDelay) / scrollDuration, 0), 1)
+        return -cycle * progress
     }
 
     private var label: some View {
@@ -102,59 +137,6 @@ struct MarqueeText: View {
                 }
             )
             .onPreferenceChange(MarqueeTextHeightKey.self) { lineHeight = $0 }
-    }
-
-    private func stopLoop(resetOffset: Bool) {
-        loopGeneration += 1
-        activeCycle = 0
-        if resetOffset {
-            var txn = Transaction()
-            txn.disablesAnimations = true
-            withTransaction(txn) { offset = 0 }
-        }
-    }
-
-    private func restartIfNeeded() {
-        guard needsScroll, !reduceMotion else {
-            stopLoop(resetOffset: true)
-            return
-        }
-
-        let cycle = textWidth + spacing
-        // Already looping this width — don’t restart on preference-key chatter.
-        if activeCycle > 0, abs(activeCycle - cycle) < 0.5 {
-            return
-        }
-
-        loopGeneration += 1
-        let generation = loopGeneration
-        activeCycle = cycle
-
-        let duration = Double(cycle / max(speed, 1))
-        let pauseNanos = UInt64(max(startDelay, 0) * 1_000_000_000)
-        let scrollNanos = UInt64(max(duration, 0.05) * 1_000_000_000)
-
-        var txn = Transaction()
-        txn.disablesAnimations = true
-        withTransaction(txn) { offset = 0 }
-
-        Task { @MainActor in
-            // Pause at start → scroll one cycle → snap to start → pause → …
-            while generation == loopGeneration {
-                try? await Task.sleep(nanoseconds: pauseNanos)
-                guard generation == loopGeneration else { return }
-
-                withAnimation(.linear(duration: duration)) {
-                    offset = -cycle
-                }
-                try? await Task.sleep(nanoseconds: scrollNanos)
-                guard generation == loopGeneration else { return }
-
-                var reset = Transaction()
-                reset.disablesAnimations = true
-                withTransaction(reset) { offset = 0 }
-            }
-        }
     }
 }
 
