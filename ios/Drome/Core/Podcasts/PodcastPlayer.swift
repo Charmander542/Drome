@@ -662,9 +662,13 @@ final class PodcastPlayer: ObservableObject {
     private func handleRouteChange(_ notification: Notification) {
         let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
             .flatMap(AVAudioSession.RouteChangeReason.init)
-        // Car Bluetooth unplug / route loss — stay paused; do not auto-resume
-        // when a new device appears (that path races with interruptions).
+        // Only pause when the output route is gone. AirPlay / Bluetooth handoffs
+        // fire oldDeviceUnavailable while another output is already active —
+        // pausing there fights music's soft re-seat and feels like a false move.
         if reason == .oldDeviceUnavailable {
+            let stillHasOutput = !AVAudioSession.sharedInstance()
+                .currentRoute.outputs.isEmpty
+            guard !stillHasOutput else { return }
             resumeAfterInterruption = false
             if wantsToPlay || isPlaying {
                 pause()

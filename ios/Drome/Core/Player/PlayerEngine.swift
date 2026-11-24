@@ -143,6 +143,10 @@ final class PlayerEngine: ObservableObject {
     /// initial buffer (~45–60s); we switch to MP3 like AirPlay.
     private var lastBluetoothRoute = false
     private var pendingBluetoothRebuild = false
+    #if !os(tvOS)
+    /// Coalesce AirPlay / A2DP routeConfigurationChange storms before rebuilding.
+    private var routeSampleTask: Task<Void, Never>?
+    #endif
     /// Cellular / remote resilient stream format.
     private var lastCellularCompressed = false
     private var pendingNetworkRebuild = false
@@ -397,36 +401,121 @@ final class PlayerEngine: ObservableObject {
         return true
     }
 
-    /// Rebuild current item when AirPlay turns on/off so FLAC raw ↔ MP3.
-    private func handlePossibleAirPlayRouteChange() {
-        let airPlay = isAirPlayRouteActive
-        guard airPlay != lastAirPlayActive else { return }
-        lastAirPlayActive = airPlay
-        DromeDiagnostics.logPlayer("airPlay route → \(airPlay)")
-        scheduleStreamFormatRebuild(pending: \.pendingAirPlayRebuild)
+    /// Debounce AirPlay / A2DP route flaps, then rebuild only when the stable
+    /// route needs a different stream format (FLAC ↔ AirPlay/A2DP MP3).
+    private func scheduleRouteFormatSample(reassertPlay: Bool = false) {
+        #if os(tvOS)
+        // tvOS has no AirPlay/A2DP format swap — only soft-reseat when asked.
+        if reassertPlay, wantsToPlay {
+            activateAudioSession()
+            playCurrentWhenReady()
+        }
+        #else
+        routeSampleTask?.cancel()
+        routeSampleTask = Task { @MainActor [weak self] in
+            // AirPlay fires several routeConfigurationChange events in a few
+            // hundred ms while negotiating. Wait for a stable sample.
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.commitRouteFormatIfNeeded(reassertPlay: reassertPlay)
+        }
+        #endif
     }
 
-    /// Bluetooth / car audio — prefer compressed MP3 and re-seat the audio
-    /// session so we don't go silent after the first buffer (~45–60s).
-    private func handlePossibleBluetoothRouteChange() {
+    private func commitRouteFormatIfNeeded(reassertPlay: Bool) {
         #if os(tvOS)
         return
         #else
+        let airPlay = isAirPlayRouteActive
         let bluetooth = isBluetoothRouteActive
-        guard bluetooth != lastBluetoothRoute else { return }
-        lastBluetoothRoute = bluetooth
-        DromeDiagnostics.logIncident(
-            "bluetooth route → \(bluetooth) outputs=\(Self.routeSummary)",
-            player: self)
-        configureAudioSession()
-        if bluetooth {
-            // Clears leftover spokenAudio from podcasts and moves FLAC streams
-            // onto an A2DP-friendly MP3 item.
-            scheduleStreamFormatRebuild(pending: \.pendingBluetoothRebuild)
-        } else if wantsToPlay {
+        let airFlip = airPlay != lastAirPlayActive
+        let btFlip = bluetooth != lastBluetoothRoute
+        guard airFlip || btFlip || reassertPlay else { return }
+
+        if airFlip {
+            DromeDiagnostics.logPlayer(
+                "airPlay route stable → \(airPlay) outputs=\(Self.routeSummary)")
+            lastAirPlayActive = airPlay
+        }
+        if btFlip {
+            DromeDiagnostics.logIncident(
+                "bluetooth route stable → \(bluetooth) outputs=\(Self.routeSummary)",
+                player: self)
+            lastBluetoothRoute = bluetooth
+            configureAudioSession()
+        }
+
+        if airFlip || btFlip {
+            if currentStreamNeedsFormatRebuild() {
+                let pending: ReferenceWritableKeyPath<PlayerEngine, Bool> =
+                    airFlip ? \.pendingAirPlayRebuild : \.pendingBluetoothRebuild
+                scheduleStreamFormatRebuild(pending: pending)
+                return
+            }
+            DromeDiagnostics.logPlayer(
+                "route flipped but stream format already matches — skip rebuild")
+        }
+
+        // Soft re-seat after a handoff that didn't need a new URL.
+        if wantsToPlay, !isRebuilding, reassertPlay || btFlip || airFlip {
+            activateAudioSession()
             playCurrentWhenReady()
         }
         #endif
+    }
+
+    /// True when the live item's format class differs from what `playbackURL`
+    /// would pick for the current route (skip no-op AirPlay↔BT rebuilds).
+    private func currentStreamNeedsFormatRebuild() -> Bool {
+        guard let song = current?.song else { return false }
+        let desired = desiredStreamFormatSignature(for: song)
+        guard let current = currentStreamFormatSignature() else { return true }
+        return current != desired
+    }
+
+    private func desiredStreamFormatSignature(for song: Song) -> String {
+        #if os(tvOS)
+        return "tv"
+        #else
+        let airPlay = isAirPlayRouteActive
+        let bluetooth = isBluetoothRouteActive
+        if !airPlay, !sharePlayActive, downloads.localURL(songId: song.id) != nil {
+            return "local"
+        }
+        let wantCompressed = shouldUseResilientStream || bluetooth
+        if !airPlay, !sharePlayActive, wantCompressed,
+           streamCache.cachedURL(
+            for: song.id,
+            minimumBytes: Self.minimumStreamCacheBytes(for: song)) != nil {
+            return "cache-mp3"
+        }
+        if airPlay || bluetooth || sharePlayActive {
+            return "server-mp3-320"
+        }
+        if shouldUseResilientStream {
+            return "server-mp3-\(resilientMaxBitRate)"
+        }
+        return "server-raw"
+        #endif
+    }
+
+    private func currentStreamFormatSignature() -> String? {
+        guard let song = current?.song,
+              let url = (player.currentItem?.asset as? AVURLAsset)?.url else {
+            return nil
+        }
+        if url.isFileURL {
+            if downloads.localURL(songId: song.id) == url { return "local" }
+            return "cache-mp3"
+        }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let format = items.first(where: { $0.name == "format" })?.value ?? "raw"
+        if format == "mp3" {
+            let br = items.first(where: { $0.name == "maxBitRate" })?.value ?? "?"
+            return "server-mp3-\(br)"
+        }
+        if format == "raw" { return "server-raw" }
+        return "server-\(format)"
     }
 
     private func handlePossibleCellularStreamChange(regained: Bool = false) {
@@ -472,8 +561,8 @@ final class PlayerEngine: ObservableObject {
             self[keyPath: pending] = true
             return
         }
-        // Debounce flaky A2DP / AirPlay route flaps that fire several
-        // configuration changes in under a second.
+        // Hold off while a prior rebuild's quiet period is still cooling —
+        // route sampling already debounce flaps before we get here.
         #if !os(tvOS)
         if isInRecoveryQuietPeriod {
             self[keyPath: pending] = true
@@ -488,12 +577,19 @@ final class PlayerEngine: ObservableObject {
         pendingNetworkRebuild = false
         pendingBluetoothRebuild = false
         guard current != nil else { return }
+        // Align last* with the live route so a flap mid-rebuild doesn't
+        // immediately queue the opposite format.
+        lastAirPlayActive = isAirPlayRouteActive
+        #if !os(tvOS)
+        lastBluetoothRoute = isBluetoothRouteActive
+        #endif
         DromeDiagnostics.logPlayer("stream format rebuild \(diagnosticStateLine())")
         configureAudioSession(force: true)
         let resume = wantsToPlay
         #if !os(tvOS)
         let position = recoveryElapsed()
-        beginRecoveryQuietPeriod(3.0)
+        // Shorter quiet than stall recovery — format swaps should feel snappy.
+        beginRecoveryQuietPeriod(2.0)
         // Seek before audible play so we don't start at 0 then jump.
         rebuildWindow(startPlaying: false)
         if resume { setPlaybackIntent(true) }
@@ -543,7 +639,25 @@ final class PlayerEngine: ObservableObject {
         }
         if pendingAirPlayRebuild || pendingNetworkRebuild || pendingBluetoothRebuild {
             DispatchQueue.main.async { [weak self] in
-                self?.performStreamFormatRebuild()
+                guard let self else { return }
+                let networkPending = self.pendingNetworkRebuild
+                self.pendingAirPlayRebuild = false
+                self.pendingBluetoothRebuild = false
+                self.pendingNetworkRebuild = false
+                // Re-read the live route after quiet — drop no-op flip-flops.
+                self.lastAirPlayActive = self.isAirPlayRouteActive
+                #if !os(tvOS)
+                self.lastBluetoothRoute = self.isBluetoothRouteActive
+                #endif
+                if networkPending || self.currentStreamNeedsFormatRebuild() {
+                    self.performStreamFormatRebuild()
+                } else {
+                    DromeDiagnostics.logPlayer(
+                        "coalesced route rebuild skipped — format matches")
+                    if self.wantsToPlay {
+                        self.playCurrentWhenReady()
+                    }
+                }
             }
             return true
         }
@@ -684,6 +798,8 @@ final class PlayerEngine: ObservableObject {
         deferredRecoverySeekTask = nil
         healthProbeCancellable?.cancel()
         healthProbeCancellable = nil
+        routeSampleTask?.cancel()
+        routeSampleTask = nil
         #endif
         silenceAndClearPlayerQueue(reason: "shutdown")
         restorePlayerOutputVolume()
@@ -2651,6 +2767,8 @@ final class PlayerEngine: ObservableObject {
                 guard let self else { return }
                 let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
                     .flatMap(AVAudioSession.RouteChangeReason.init)
+                DromeDiagnostics.logPlayer(
+                    "routeChange reason=\(String(describing: reason)) outputs=\(Self.routeSummary)")
                 if reason == .oldDeviceUnavailable {
                     // Only pause when we lost the *output* route entirely (e.g.
                     // headphones unplugged with no fallback speaker yet). Bluetooth
@@ -2659,36 +2777,35 @@ final class PlayerEngine: ObservableObject {
                     let stillHasOutput = !AVAudioSession.sharedInstance()
                         .currentRoute.outputs.isEmpty
                     if stillHasOutput {
-                        self.configureAudioSession()
-                        self.handlePossibleAirPlayRouteChange()
-                        self.handlePossibleBluetoothRouteChange()
-                        if self.wantsToPlay {
-                            self.playCurrentWhenReady()
-                        }
+                        // Debounced sample + soft play reassert — avoid immediate
+                        // configure/play kicks that fight AirPlay negotiation.
+                        self.scheduleRouteFormatSample(reassertPlay: self.wantsToPlay)
                     } else {
                         self.resumeAfterInterruption = false
                         self.pause()
                     }
                     return
                 }
-                // Rebuild when entering/leaving AirPlay or Bluetooth so we
-                // switch between lossless raw and A2DP/AirPlay-compatible MP3.
+                // Entering/leaving AirPlay or Bluetooth may need FLAC ↔ MP3.
+                // Do NOT reconfigure the session or force-play on every
+                // routeConfigurationChange — AirPlay storms were pausing/playing
+                // mid-buffer and looking like the route "moved" on its own.
                 if reason == .newDeviceAvailable || reason == .routeConfigurationChange {
-                    self.configureAudioSession()
-                    self.handlePossibleAirPlayRouteChange()
-                    self.handlePossibleBluetoothRouteChange()
                     #if os(iOS)
                     _ = HeadphoneEQProfiles.applyForCurrentRouteIfNeeded()
                     #endif
+                    #if os(tvOS)
+                    // Keep a light session re-seat on TV; no format debounce path.
+                    self.configureAudioSession()
                     if self.wantsToPlay {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-                            guard let self, self.wantsToPlay else { return }
-                            self.activateAudioSession()
-                            if self.player.timeControlStatus != .playing {
-                                self.playCurrentWhenReady()
-                            }
+                        self.activateAudioSession()
+                        if self.player.timeControlStatus != .playing {
+                            self.playCurrentWhenReady()
                         }
                     }
+                    #else
+                    self.scheduleRouteFormatSample()
+                    #endif
                 }
             }
             .store(in: &cancellables)
