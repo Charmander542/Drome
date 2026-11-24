@@ -57,7 +57,20 @@ func titlesMatch(a, b string) bool {
 	if a == "" || b == "" {
 		return false
 	}
-	return a == b || strings.Contains(a, b) || strings.Contains(b, a)
+	if a == b {
+		return true
+	}
+	// Containment only for longer phrases. Short keys like "i", "u", "as",
+	// "yo", "one", "home" otherwise match half the library and mark Christmas
+	// / playlist imports as already owned.
+	short, long := a, b
+	if len(b) < len(a) {
+		short, long = b, a
+	}
+	if len(short) < 8 {
+		return false
+	}
+	return strings.Contains(long, short)
 }
 
 // libraryOwns reports whether the user's Navidrome library already has a close
@@ -212,7 +225,7 @@ type diskTrackHit struct {
 }
 
 func matchIndexedTrack(index []diskTrackHit, title, artist string) *diskTrackHit {
-	var artistHit, compilationHit, titleOnly *diskTrackHit
+	var artistHit, compilationHit *diskTrackHit
 	for i := range index {
 		hit := &index[i]
 		if !titlesMatch(hit.Stem, title) {
@@ -221,24 +234,25 @@ func matchIndexedTrack(index []diskTrackHit, title, artist string) *diskTrackHit
 		switch {
 		case isCompilationArtist(hit.DirArtist):
 			// Playlist downloads are retagged under Various Artists — prefer that copy.
+			// Still require a real title match (exact / long-phrase), never a
+			// bare short substring like "one" or "home".
 			compilationHit = hit
 		case artist == "" || hit.DirArtist == "" || artistsMatch(hit.DirArtist, artist):
 			if artistHit == nil {
 				artistHit = hit
 			}
-		default:
-			if titleOnly == nil {
-				titleOnly = hit
+			// Prefer exact title when available.
+			if normalizeMatchKey(hit.Stem) == normalizeMatchKey(title) {
+				artistHit = hit
 			}
 		}
+		// Deliberately ignore title-only hits (wrong artist). Those caused
+		// "Christmas Hits" to look fully owned via tracks like "i" / "yo!".
 	}
 	if compilationHit != nil {
 		return compilationHit
 	}
-	if artistHit != nil {
-		return artistHit
-	}
-	return titleOnly
+	return artistHit
 }
 
 func diskHasTrack(musicDir, title, artist string) bool {
