@@ -283,8 +283,7 @@ struct PlaylistCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            RemoteImage(url: session?.artworkURL(id: playlist.coverArt ?? playlist.id, size: 300),
-                        placeholderSymbol: "music.note.list")
+            cover
                 .aspectRatio(1, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: DromeTheme.Radius.md, style: .continuous))
                 .contentShape(RoundedRectangle(cornerRadius: DromeTheme.Radius.md, style: .continuous))
@@ -309,6 +308,85 @@ struct PlaylistCard: View {
         }
         .hoverEffectDisabled()
         .transaction { $0.animation = nil }
+    }
+
+    @ViewBuilder
+    private var cover: some View {
+        if let session {
+            let userKey = session.account.userKey
+            if PlaylistCoverStore.hasCustom(playlist.id, userKey: userKey) {
+                RemoteImage(
+                    url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 300),
+                    placeholderSymbol: "music.note.list")
+            } else {
+                let ids = PlaylistCoverStore.rememberedCoverIDs(
+                    playlistID: playlist.id, userKey: userKey)
+                if ids.isEmpty {
+                    Color(white: 0.16)
+                        .overlay {
+                            Image(systemName: "music.note.list")
+                                .foregroundStyle(.secondary)
+                        }
+                } else {
+                    PlaylistCoverCollage(coverIDs: ids, session: session)
+                }
+            }
+        } else {
+            Color(white: 0.16)
+        }
+    }
+}
+
+/// Fills a square from 1–4 album covers with no empty mosaic tiles.
+struct PlaylistCoverCollage: View {
+    let coverIDs: [String]
+    let session: AppSession
+
+    var body: some View {
+        let ids = Array(coverIDs.prefix(4))
+        GeometryReader { geo in
+            let side = geo.size.width
+            let half = side / 2
+            switch ids.count {
+            case 0:
+                Color(white: 0.16)
+            case 1:
+                tile(ids[0], width: side, height: side)
+            case 2:
+                HStack(spacing: 0) {
+                    tile(ids[0], width: half, height: side)
+                    tile(ids[1], width: half, height: side)
+                }
+            case 3:
+                HStack(spacing: 0) {
+                    tile(ids[0], width: half, height: side)
+                    VStack(spacing: 0) {
+                        tile(ids[1], width: half, height: half)
+                        tile(ids[2], width: half, height: half)
+                    }
+                }
+            default:
+                VStack(spacing: 0) {
+                    HStack(spacing: 0) {
+                        tile(ids[0], width: half, height: half)
+                        tile(ids[1], width: half, height: half)
+                    }
+                    HStack(spacing: 0) {
+                        tile(ids[2], width: half, height: half)
+                        tile(ids[3], width: half, height: half)
+                    }
+                }
+            }
+        }
+        .aspectRatio(1, contentMode: .fit)
+    }
+
+    private func tile(_ id: String, width: CGFloat, height: CGFloat) -> some View {
+        RemoteImage(
+            url: session.artworkURL(id: id, size: 300),
+            placeholderSymbol: "music.note")
+            .frame(width: width, height: height)
+            .clipped()
     }
 }
 

@@ -345,6 +345,7 @@ struct PlaylistDetailView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .scrollIndicators(.hidden)
         .environment(\.editMode, .constant(isEditing ? .active : .inactive))
         .task(id: "\(playlistID)-\(allSongs.count)-\(suggestionRefreshToken)") {
             await loadSuggestions()
@@ -463,10 +464,7 @@ struct PlaylistDetailView: View {
     private func playlistHeader(_ playlist: PlaylistWithSongs) -> some View {
         VStack(spacing: 14) {
             ZStack {
-                RemoteImage(
-                    url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 600),
-                    placeholderSymbol: "music.note.list"
-                )
+                playlistHeroArtwork(playlist)
                 .id("\(playlist.id)-\(coverBump)")
                 .frame(width: 180, height: 180)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -545,6 +543,12 @@ struct PlaylistDetailView: View {
             playlist = loaded
             LibraryDetailCache.store(playlist: loaded)
             let songs = loaded.songs
+            let coverIDs = PlaylistCoverStore.coverIDs(from: songs)
+            if !coverIDs.isEmpty,
+               !PlaylistCoverStore.hasCustom(playlistID, userKey: session.account.userKey) {
+                PlaylistCoverStore.rememberCoverIDs(
+                    coverIDs, playlistID: playlistID, userKey: session.account.userKey)
+            }
             Task {
                 await Task.yield()
                 ratings.ingest(songs)
@@ -582,10 +586,39 @@ struct PlaylistDetailView: View {
                 ImageLoader.shared.removeCached(for: url)
             }
             coverBump = Date().timeIntervalSince1970
+            PlaylistCoverStore.markCustom(playlistID, userKey: session.account.userKey)
             await load()
             flash("Cover updated")
         } catch {
             flash(error.localizedDescription)
+        }
+    }
+
+    /// Custom upload → server image. Otherwise a stable first-4-albums collage
+    /// (never Navidrome’s shuffled mosaic, which jumps between visits).
+    @ViewBuilder
+    private func playlistHeroArtwork(_ playlist: PlaylistWithSongs) -> some View {
+        let userKey = session.account.userKey
+        let useCustom = PlaylistCoverStore.hasCustom(playlist.id, userKey: userKey) || coverBump > 0
+        if useCustom {
+            RemoteImage(
+                url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 600),
+                placeholderSymbol: "music.note.list")
+        } else {
+            let fromSongs = PlaylistCoverStore.coverIDs(from: playlist.songs)
+            let coverIDs = fromSongs.isEmpty
+                ? PlaylistCoverStore.rememberedCoverIDs(playlistID: playlist.id, userKey: userKey)
+                : fromSongs
+            if coverIDs.isEmpty {
+                ZStack {
+                    Color(white: 0.16)
+                    Image(systemName: "music.note.list")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                PlaylistCoverCollage(coverIDs: coverIDs, session: session)
+            }
         }
     }
 
@@ -1020,11 +1053,29 @@ struct AddToPlaylistView: View {
         }
     }
 
+    @ViewBuilder
     private func playlistCoverThumb(_ playlist: Playlist) -> some View {
-        RemoteImage(
-            url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 96),
-            placeholderSymbol: "music.note.list"
-        )
+        let userKey = session.account.userKey
+        Group {
+            if PlaylistCoverStore.hasCustom(playlist.id, userKey: userKey) {
+                RemoteImage(
+                    url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 96),
+                    placeholderSymbol: "music.note.list")
+            } else {
+                let ids = PlaylistCoverStore.rememberedCoverIDs(
+                    playlistID: playlist.id, userKey: userKey)
+                if ids.isEmpty {
+                    Color(white: 0.16)
+                        .overlay {
+                            Image(systemName: "music.note.list")
+                                .font(.caption2)
+                                .foregroundStyle(DromeTheme.muted)
+                        }
+                } else {
+                    PlaylistCoverCollage(coverIDs: ids, session: session)
+                }
+            }
+        }
         .frame(width: 44, height: 44)
         .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
         .accessibilityHidden(true)

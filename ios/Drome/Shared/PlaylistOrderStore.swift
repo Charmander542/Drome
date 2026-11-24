@@ -1,5 +1,68 @@
 import Foundation
 
+/// Stable playlist cover policy.
+///
+/// Navidrome’s auto mosaic shuffles album tiles on every regenerate — that made
+/// playlist art jump around. We instead pin the first unique album covers in
+/// playlist order (and remember them for list thumbs). Uploaded covers win.
+enum PlaylistCoverStore {
+    private static func customKey(userKey: String) -> String {
+        "drome.playlistCustomCover.\(userKey)"
+    }
+
+    private static func collageKey(userKey: String, playlistID: String) -> String {
+        "drome.playlistCollage.\(userKey).\(playlistID)"
+    }
+
+    static func hasCustom(_ playlistID: String, userKey: String) -> Bool {
+        customIDs(userKey: userKey).contains(playlistID)
+    }
+
+    static func markCustom(_ playlistID: String, userKey: String) {
+        var ids = customIDs(userKey: userKey)
+        ids.insert(playlistID)
+        UserDefaults.standard.set(Array(ids).sorted(), forKey: customKey(userKey: userKey))
+    }
+
+    static func clearCustom(_ playlistID: String, userKey: String) {
+        var ids = customIDs(userKey: userKey)
+        ids.remove(playlistID)
+        UserDefaults.standard.set(Array(ids).sorted(), forKey: customKey(userKey: userKey))
+    }
+
+    /// First unique album/cover ids in playlist track order — same every time.
+    static func coverIDs(from songs: [Song], limit: Int = 4) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for song in songs {
+            let id = song.coverArt ?? song.albumId
+            guard let id, !id.isEmpty, seen.insert(id).inserted else { continue }
+            out.append(id)
+            if out.count >= limit { break }
+        }
+        return out
+    }
+
+    static func rememberedCoverIDs(playlistID: String, userKey: String) -> [String] {
+        UserDefaults.standard.stringArray(
+            forKey: collageKey(userKey: userKey, playlistID: playlistID)) ?? []
+    }
+
+    /// Persist the deterministic collage so Library rows match the detail hero.
+    static func rememberCoverIDs(_ coverIDs: [String], playlistID: String, userKey: String) {
+        guard !coverIDs.isEmpty else { return }
+        UserDefaults.standard.set(
+            coverIDs, forKey: collageKey(userKey: userKey, playlistID: playlistID))
+    }
+
+    private static func customIDs(userKey: String) -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: customKey(userKey: userKey)) ?? [])
+    }
+}
+
+/// Back-compat alias used by earlier call sites.
+typealias PlaylistCustomCoverStore = PlaylistCoverStore
+
 /// Per-user playlist order + hidden set in the Library tab.
 ///
 /// Hidden is local to this account — it never deletes a Navidrome playlist, so
