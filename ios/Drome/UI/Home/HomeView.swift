@@ -16,8 +16,6 @@ struct HomeView: View {
     /// copy before `.task` assigns a real `mixesError`.
     @State private var mixesLoading = true
     @State private var mixesError: String?
-    @State private var madeForYou: [DailyMix] = []
-    @State private var madeForYouLoading = true
     /// Start true so rails reserve space instead of popping in after network.
     @State private var isLoading = true
     @State private var error: String?
@@ -41,20 +39,6 @@ struct HomeView: View {
                     }
 
                     VibeTuner()
-
-                    // On-device Made for you — works without a companion server.
-                    if !madeForYou.isEmpty || madeForYouLoading || MadeForYouPreferences.anyShelfEnabled {
-                        DailyMixRail(
-                            mixes: madeForYou,
-                            title: "Made for you",
-                            subtitle: "Daypart, vibes, genres, Nonstop, and fresh finds — rebuilds through the day.",
-                            isLoading: madeForYouLoading,
-                            loadError: madeForYou.isEmpty && !madeForYouLoading
-                                ? "Couldn’t build mixes yet."
-                                : nil,
-                            onRetry: { Task { await loadMadeForYou(force: true) } }
-                        )
-                    }
 
                     // Companion taste clusters — ratings / similar artists on the wishlist server.
                     if hasCompanion {
@@ -120,7 +104,6 @@ struct HomeView: View {
                 .animation(nil, value: homePlaylists.count)
                 .animation(nil, value: newest.count)
                 .animation(nil, value: dailyMixes.count)
-                .animation(nil, value: madeForYou.count)
             }
             .onChange(of: scrollToTopToken) { _, _ in
                 withAnimation(.easeOut(duration: 0.25)) {
@@ -200,7 +183,7 @@ struct HomeView: View {
         HStack(spacing: 10) {
             Image(systemName: "antenna.radiowaves.left.and.right")
                 .foregroundStyle(DromeTheme.accent)
-            Text("Demo mode — streaming only. Wishlist and Spotify search stay off without a companion. Made for you still works from the library.")
+            Text("Demo mode — streaming only. Wishlist and Spotify search stay off without a companion.")
                 .font(.caption)
                 .foregroundStyle(DromeTheme.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -221,31 +204,8 @@ struct HomeView: View {
         // first failure always lands in `mixesError` before the rail paints
         // its generic empty fallback.
         async let home: Void = loadHome()
-        async let mfy: Void = loadMadeForYou(force: false)
         await loadMixes()
         await home
-        await mfy
-    }
-
-    private func loadMadeForYou(force: Bool) async {
-        let userKey = session.account.userKey
-        if madeForYou.isEmpty {
-            madeForYou = MadeForYouStore.cached(userKey: userKey)
-        }
-        if madeForYou.isEmpty { madeForYouLoading = true }
-        defer { madeForYouLoading = false }
-        guard MadeForYouPreferences.anyShelfEnabled else {
-            madeForYou = []
-            return
-        }
-        if force {
-            madeForYou = await MadeForYouStore.regenerate(session: session)
-        } else {
-            madeForYou = await MadeForYouStore.refreshIfNeeded(session: session)
-        }
-        let urls = madeForYou.prefix(8).flatMap { $0.coverArtIds.prefix(4) }
-            .compactMap { session.artworkURL(id: $0, size: 300) }
-        ImageLoader.shared.prefetch(urls, limit: 24, priority: .userInitiated)
     }
 
     private func loadHome() async {
