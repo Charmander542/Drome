@@ -16,7 +16,8 @@ struct HomeView: View {
     /// copy before `.task` assigns a real `mixesError`.
     @State private var mixesLoading = true
     @State private var mixesError: String?
-    @State private var isLoading = false
+    /// Start true so rails reserve space instead of popping in after network.
+    @State private var isLoading = true
     @State private var error: String?
     @State private var showSettings = false
     @State private var scrollToTopToken = 0
@@ -55,12 +56,20 @@ struct HomeView: View {
                             title: "Continue",
                             entries: recentEntries,
                             dailyMixes: hasCompanion ? dailyMixes : [])
+                    } else if isLoading {
+                        HomeRailPlaceholder(title: "Continue")
                     }
+
                     if !homePlaylists.isEmpty {
                         HorizontalPlaylistRail(title: "Playlists", playlists: homePlaylists)
+                    } else if isLoading {
+                        HomeRailPlaceholder(title: "Playlists")
                     }
+
                     if !newest.isEmpty {
                         HorizontalAlbumRail(title: "New in your library", albums: newest)
+                    } else if isLoading {
+                        HomeRailPlaceholder(title: "New in your library")
                     }
 
                     if let error, recentEntries.isEmpty && newest.isEmpty {
@@ -86,6 +95,12 @@ struct HomeView: View {
                 }
                 .padding(.top, 0)
                 .padding(.bottom, 12)
+                // Cross-fade content into reserved rails — avoid layout animation jumps.
+                .animation(nil, value: isLoading)
+                .animation(nil, value: recentEntries.count)
+                .animation(nil, value: homePlaylists.count)
+                .animation(nil, value: newest.count)
+                .animation(nil, value: dailyMixes.count)
             }
             .onChange(of: scrollToTopToken) { _, _ in
                 withAnimation(.easeOut(duration: 0.25)) {
@@ -194,16 +209,19 @@ struct HomeView: View {
         isLoading = true
         error = nil
         defer { isLoading = false }
+        let userKey = session.account.userKey
+        let db = AppEnvironment.shared.database
+
+        // Paint Continue from disk first so the rail doesn’t wait on network.
+        let recent = await Task.detached(priority: .utility) {
+            (try? db.recentPlayEntries(userKey: userKey, limit: 40)) ?? []
+        }.value
+        recentEntries = recent
+
         do {
-            let userKey = session.account.userKey
-            let db = AppEnvironment.shared.database
-            async let recentTask = Task.detached(priority: .utility) {
-                (try? db.recentPlayEntries(userKey: userKey, limit: 40)) ?? []
-            }.value
             async let n = session.client.albumList(type: .newest, size: 20)
             async let p = session.client.playlists()
-            let (recent, neu, lists) = try await (recentTask, n, p)
-            recentEntries = recent
+            let (neu, lists) = try await (n, p)
             newest = neu
             let visible = lists.filter {
                 !PlaylistOrderStore.isHidden($0.id, userKey: userKey)
@@ -302,6 +320,40 @@ struct HomeView: View {
     }
 }
 
+/// Horizontal rail skeleton — same footprint as album/playlist/continue cards.
+struct HomeRailPlaceholder: View {
+    let title: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(DromeTheme.headlineFont)
+                .padding(.horizontal, 16)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 14) {
+                    ForEach(0..<4, id: \.self) { _ in
+                        VStack(alignment: .leading, spacing: 8) {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(DromeTheme.elevated2)
+                                .aspectRatio(1, contentMode: .fit)
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(DromeTheme.elevated2)
+                                .frame(width: 100, height: 12)
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(DromeTheme.elevated2)
+                                .frame(width: 80, height: 10)
+                        }
+                        .frame(width: 148, alignment: .topLeading)
+                        .redacted(reason: .placeholder)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 /// Songs the companion found that are not in Navidrome yet.
 /// Get posts the Spotify link to the wishlist, which is what downloads them.
 struct OutsidePicksRail: View {
@@ -310,10 +362,14 @@ struct OutsidePicksRail: View {
     @State private var picks: [OutsidePick] = []
     @State private var added: Set<String> = []
     @State private var failed: Set<String> = []
+    @State private var isLoading = true
+    @State private var didLoad = false
 
     var body: some View {
         Group {
-            if !picks.isEmpty {
+            if isLoading && !didLoad {
+                outsidePlaceholder
+            } else if !picks.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Get these")
@@ -361,6 +417,41 @@ struct OutsidePicksRail: View {
         .task(id: session.id) { await load() }
     }
 
+    private var outsidePlaceholder: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Get these")
+                    .font(DromeTheme.headlineFont)
+                Text("Not in your library yet. From artists you already play.")
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.muted)
+            }
+            .padding(.horizontal, 16)
+            VStack(spacing: 0) {
+                ForEach(0..<3, id: \.self) { _ in
+                    HStack(spacing: 12) {
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(DromeTheme.elevated2)
+                            .frame(width: 48, height: 48)
+                        VStack(alignment: .leading, spacing: 6) {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(DromeTheme.elevated2)
+                                .frame(width: 140, height: 12)
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(DromeTheme.elevated2)
+                                .frame(width: 90, height: 10)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                }
+            }
+            .redacted(reason: .placeholder)
+        }
+        .accessibilityHidden(true)
+    }
+
     private func buttonTitle(for pick: OutsidePick) -> String {
         if added.contains(pick.id) { return "Added" }
         if failed.contains(pick.id) { return "Retry" }
@@ -368,7 +459,15 @@ struct OutsidePicksRail: View {
     }
 
     private func load() async {
-        guard let client = session.wishlist else { return }
+        defer {
+            isLoading = false
+            didLoad = true
+        }
+        guard let client = session.wishlist else {
+            picks = []
+            return
+        }
+        isLoading = true
         if session.ratings.memory.topPlayedArtists(limit: 1).isEmpty {
             await session.ratings.rebuildMemory()
         }
