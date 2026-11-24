@@ -70,6 +70,14 @@ final class AppEnvironment: ObservableObject {
                     $0.title == episode.title && $0.pubDate == episode.pubDate
                 })
         }
+
+        // Quiet RSS refresh after first paint (account-independent).
+        let podcasts = podcastManager
+        Task { @MainActor in
+            await Task.yield()
+            PodcastFeedSync.refreshIfNeeded(manager: podcasts)
+        }
+
         NotificationCenter.default.addObserver(
             forName: .podcastPlayerSeek, object: nil, queue: .main
         ) { [weak self] note in

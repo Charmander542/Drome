@@ -131,6 +131,21 @@ final class PodcastManager: ObservableObject {
         }
     }
 
+    /// Quiet background pass: only re-fetch feeds older than `maxAge`.
+    /// Does not flip `isRefreshing` so toolbar / UI stay idle.
+    func refreshStaleFeeds(olderThan maxAge: TimeInterval) async {
+        let cutoff = Date().addingTimeInterval(-maxAge)
+        let stale = subscribedShows.filter { show in
+            guard let updated = show.lastUpdated else { return true }
+            return updated < cutoff
+        }
+        guard !stale.isEmpty else { return }
+
+        for show in stale {
+            await refreshFeed(feedURL: show.feedURL)
+        }
+    }
+
     // MARK: - Playback Position
 
     func savePlaybackPosition(for episode: PodcastEpisode, position: TimeInterval, completed: Bool = false) {

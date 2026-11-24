@@ -87,6 +87,7 @@ struct PodcastsView: View {
             ImageLoader.shared.prefetch(
                 podcastManager.subscribedShows.compactMap(\.imageURL),
                 limit: 40)
+            PodcastFeedSync.refreshIfNeeded(manager: podcastManager)
         }
     }
 
