@@ -3034,6 +3034,18 @@ final class PlayerEngine: ObservableObject {
             ensureAutoplayBuffer()
             return
         }
+        // Out of Rotation listening: library Infinite Shuffle never returns
+        // these tracks, so reshuffle the same collection to keep the vibe.
+        if sticksToOutOfRotationPool, autoplayEnabled, repeatMode == .off,
+           !fullContextSongs.isEmpty, let context {
+            setPlaybackIntent(true)
+            if shuffleMode != .off {
+                playShuffled(fullContextSongs, context: context, clearUserQueue: false)
+            } else {
+                play(fullContextSongs, startAt: 0, context: context, clearUserQueue: false)
+            }
+            return
+        }
         // Infinite Shuffle must keep going — never silently stop at the end.
         if autoplayEnabled, repeatMode == .off {
             setPlaybackIntent(true)
@@ -3061,7 +3073,11 @@ final class PlayerEngine: ObservableObject {
         }
         resyncUpcomingWindow()
         cancelAutoplayWork()
-        maybeExtendWithAutoplay(force: true)
+        if sticksToOutOfRotationPool {
+            extendOutOfRotationContextIfNeeded(force: true)
+        } else {
+            maybeExtendWithAutoplay(force: true)
+        }
     }
 
     // MARK: - Shuffle
@@ -3109,6 +3125,16 @@ final class PlayerEngine: ObservableObject {
 
     // MARK: - Autoplay (Infinite Shuffle)
 
+    /// True when the active collection is Out of Rotation (system playlist, or
+    /// a playlist that is entirely OOR). Library Infinite Shuffle excludes
+    /// these tracks, so we must keep reshuffling this pool instead.
+    private var sticksToOutOfRotationPool: Bool {
+        ShuffleEngine.sticksToOutOfRotationPool(
+            allowsOutOfRotation: context?.allowsOutOfRotation == true,
+            contextSongIDs: fullContextSongs.map(\.id),
+            excludedIDs: rotation.excludedIDs)
+    }
+
     /// Keeps a healthy upcoming buffer whenever Infinite Shuffle is on.
     /// Call after jumps / play / advances so the last track never leaves an
     /// empty Up Next list.
@@ -3117,8 +3143,42 @@ final class PlayerEngine: ObservableObject {
         let upcoming = userQueue.count + contextQueue.count
         // Refill early — never wait until the queue is already empty.
         if upcoming < 8 {
-            maybeExtendWithAutoplay(force: upcoming < 3)
+            if sticksToOutOfRotationPool {
+                extendOutOfRotationContextIfNeeded(force: upcoming < 3)
+            } else {
+                maybeExtendWithAutoplay(force: upcoming < 3)
+            }
         }
+    }
+
+    /// Top up Up Next from the same Out of Rotation collection (smart/random
+    /// shuffle), never from library Infinite Shuffle.
+    ///
+    /// Only queues tracks not yet heard this lap. When the lap is done,
+    /// `handleQueueExhausted` reshuffles the whole collection.
+    private func extendOutOfRotationContextIfNeeded(force: Bool = false) {
+        guard !applyingSharePlay, autoplayEnabled, repeatMode == .off, current != nil else { return }
+        let upcoming = userQueue.count + contextQueue.count
+        if !force {
+            guard upcoming < 8 else { return }
+        }
+        guard !fullContextSongs.isEmpty else { return }
+
+        var excluding = Set(userQueue.map(\.song.id))
+        excluding.formUnion(contextQueue.map(\.song.id))
+        if let currentID = current?.song.id { excluding.insert(currentID) }
+        excluding.formUnion(history.map(\.song.id))
+
+        let unplayed = fullContextSongs.filter { !excluding.contains($0.id) }
+        guard !unplayed.isEmpty else { return }
+
+        let ordered = orderedForShuffle(unplayed)
+        let need = max(8 - upcoming, force ? 5 : 1)
+        let addition = ordered.prefix(need).map { QueueItem(song: $0) }
+        guard !addition.isEmpty else { return }
+        contextQueue.append(contentsOf: addition)
+        topUpWindow()
+        broadcastSharePlayIfNeeded()
     }
 
     private func cancelAutoplayWork() {
@@ -3147,6 +3207,20 @@ final class PlayerEngine: ObservableObject {
             return
         }
 
+        if sticksToOutOfRotationPool, !fullContextSongs.isEmpty, let context {
+            if playImmediately {
+                setPlaybackIntent(true)
+                if shuffleMode != .off {
+                    playShuffled(fullContextSongs, context: context, clearUserQueue: false)
+                } else {
+                    play(fullContextSongs, startAt: 0, context: context, clearUserQueue: false)
+                }
+            } else {
+                extendOutOfRotationContextIfNeeded(force: true)
+            }
+            return
+        }
+
         guard autoplayProvider != nil else {
             if playImmediately {
                 player.pause()
@@ -3172,6 +3246,10 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func maybeExtendWithAutoplay(force: Bool = false) {
+        if sticksToOutOfRotationPool {
+            extendOutOfRotationContextIfNeeded(force: force)
+            return
+        }
         guard !applyingSharePlay, autoplayEnabled, repeatMode == .off, autoplayTask == nil,
               let provider = autoplayProvider, current != nil else { return }
         if !force {
@@ -3255,6 +3333,9 @@ final class PlayerEngine: ObservableObject {
 
     private func drainLowRatedFromQueues(resyncWindow: Bool = true) {
         guard PlaybackPreferences.skipLowRatedEverywhere else { return }
+        // Playing Out of Rotation on purpose — do not strip the queue down to
+        // empty and fall into library Infinite Shuffle after the first song.
+        if sticksToOutOfRotationPool { return }
         userQueue.removeAll { shouldSkipLowRated($0.song) }
         contextQueue.removeAll { shouldSkipLowRated($0.song) }
         // Skip resync when the caller is about to rebuild the window entirely
@@ -3266,6 +3347,8 @@ final class PlayerEngine: ObservableObject {
 
     private func shouldSkipLowRated(_ song: Song) -> Bool {
         guard PlaybackPreferences.skipLowRatedEverywhere else { return false }
+        // Explicit OOR listening: 1–2★ tracks are the collection, not skips.
+        if sticksToOutOfRotationPool { return false }
         let r = ratings.rating(for: song)
         return (1...2).contains(r)
     }
