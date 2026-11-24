@@ -232,7 +232,7 @@ struct LoginView: View {
                 .tracking(2)
                 .foregroundStyle(.white)
 
-            Text("Connect your Navidrome server, or try the public demo.")
+            Text("Connect your Navidrome server, or tap Try the public demo below (demo.navidrome.org).")
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.55))
                 .multilineTextAlignment(.center)
@@ -255,7 +255,7 @@ struct LoginView: View {
                     Text("Try the public demo")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
-                    Text("demo.navidrome.org · streaming only")
+                    Text("One tap · demo / demo · full library streaming")
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.45))
                 }
