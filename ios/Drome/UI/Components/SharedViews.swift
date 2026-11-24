@@ -327,6 +327,9 @@ struct PlaylistCard: View {
 /// Playlist cover from Navidrome (`getCoverArt` on the playlist id / coverArt).
 /// Always hits the server image so custom uploads and mosaics load; never gates
 /// on a local “remembered collage” flag that left Library/Home blank.
+///
+/// Hero sizes (≥600) start at the list thumb size so a warm 96px cache paints on
+/// the first frame, then promote to full size while holding the thumb bitmap.
 struct PlaylistArtwork: View {
     let playlistID: String
     var coverArt: String?
@@ -335,22 +338,71 @@ struct PlaylistArtwork: View {
     var cacheBust: TimeInterval = 0
     var placeholderSymbol: String = "music.note.list"
 
+    /// Displayed getCoverArt size — heroes begin at the thumb size for instant paint.
+    @State private var displaySize: Int
+
+    init(
+        playlistID: String,
+        coverArt: String? = nil,
+        session: AppSession,
+        size: Int = 300,
+        cacheBust: TimeInterval = 0,
+        placeholderSymbol: String = "music.note.list"
+    ) {
+        self.playlistID = playlistID
+        self.coverArt = coverArt
+        self.session = session
+        self.size = size
+        self.cacheBust = cacheBust
+        self.placeholderSymbol = placeholderSymbol
+        _displaySize = State(initialValue: Self.initialDisplaySize(for: size))
+    }
+
     private var coverID: String {
         PlaylistCoverStore.serverCoverID(coverArt: coverArt, playlistID: playlistID)
     }
 
     private var url: URL? {
-        session.artworkURL(id: coverID, size: size)
+        session.artworkURL(id: coverID, size: displaySize)
     }
 
     var body: some View {
-        RemoteImage(url: url, placeholderSymbol: placeholderSymbol)
-            .id("\(playlistID)-\(coverID)-\(Int(cacheBust))-\(size)")
+        RemoteImage(
+            url: url,
+            placeholderSymbol: placeholderSymbol,
+            holdImageWhileLoading: true)
+            // Omit `displaySize` from id so 96→hero promotion keeps the thumb on screen.
+            .id("\(playlistID)-\(coverID)-\(Int(cacheBust))")
             .onAppear {
                 if let url {
                     ImageLoader.shared.clearFailed(for: url)
                 }
             }
+            .task(id: "\(coverID)-\(size)-\(Int(cacheBust))") {
+                await promoteToFullSizeIfNeeded()
+            }
+            .onChange(of: cacheBust) { _, _ in
+                displaySize = Self.initialDisplaySize(for: size)
+            }
+    }
+
+    private static func initialDisplaySize(for size: Int) -> Int {
+        size >= 600 ? 96 : size
+    }
+
+    @MainActor
+    private func promoteToFullSizeIfNeeded() async {
+        guard size > displaySize else { return }
+        // Warm / reuse the list thumb before flipping the request to hero size.
+        if let thumb = session.artworkURL(id: coverID, size: 96) {
+            ImageLoader.shared.clearFailed(for: thumb)
+            _ = await ImageLoader.shared.image(for: thumb, priority: .userInitiated)
+        }
+        displaySize = size
+        if let full = session.artworkURL(id: coverID, size: size) {
+            ImageLoader.shared.clearFailed(for: full)
+            ImageLoader.shared.prefetch([full], limit: 1, priority: .userInitiated)
+        }
     }
 }
 
