@@ -289,6 +289,8 @@ final class ImageLoader: @unchecked Sendable {
     /// flashes a placeholder while a larger fetch is in flight.
     /// Oversized hero bitmaps are withheld from list-sized requests so scroll
     /// cells don't composite 1200px textures.
+    /// Smaller list thumbs are always allowed for hero-sized requests so playlist
+    /// detail can paint immediately then sharpen.
     func previewImage(for url: URL) -> UIImage? {
         if let exact = cachedImage(for: url) { return exact }
         let parsed = parsedArtwork(for: url)

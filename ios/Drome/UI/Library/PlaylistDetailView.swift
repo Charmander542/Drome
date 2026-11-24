@@ -73,7 +73,12 @@ struct PlaylistDetailView: View {
                          ? "Your Library"
                          : "")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
+        .task {
+            // Kick the hero cover before the playlist body returns — list thumbs
+            // are usually warm; start the large fetch in parallel with `load()`.
+            warmHeroArtwork()
+            await load()
+        }
         .toolbar { toolbarContent }
         .alert("Rename Playlist", isPresented: $showRename) {
             TextField("Name", text: $renameText)
@@ -553,8 +558,13 @@ struct PlaylistDetailView: View {
                 PlaylistCoverStore.rememberCoverIDs(
                     coverIDs, playlistID: playlistID, userKey: session.account.userKey)
             }
+            warmHeroArtwork(coverArt: loaded.coverArt)
             var coverURLs = songs.prefix(24).compactMap { session.artworkURL(for: $0, size: 96) }
-            if let hero = session.artworkURL(id: loaded.coverArt ?? loaded.id, size: 600) {
+            if let hero = session.artworkURL(
+                id: PlaylistCoverStore.serverCoverID(
+                    coverArt: loaded.coverArt, playlistID: loaded.id),
+                size: 600)
+            {
                 coverURLs.insert(hero, at: 0)
             }
             ImageLoader.shared.prefetch(coverURLs, limit: 25, priority: .userInitiated)
@@ -567,6 +577,22 @@ struct PlaylistDetailView: View {
                 self.error = error.localizedDescription
             }
         }
+    }
+
+    /// Prefetch the detail hero using whatever cover id we already know (placeholder
+    /// or loaded playlist) so promotion doesn’t wait on the full track list.
+    private func warmHeroArtwork(coverArt: String? = nil) {
+        let art = coverArt ?? playlist?.coverArt ?? placeholder?.coverArt
+        let coverID = PlaylistCoverStore.serverCoverID(coverArt: art, playlistID: playlistID)
+        var urls: [URL] = []
+        if let thumb = session.artworkURL(id: coverID, size: 96) {
+            urls.append(thumb)
+        }
+        if let hero = session.artworkURL(id: coverID, size: 600) {
+            urls.append(hero)
+        }
+        guard !urls.isEmpty else { return }
+        ImageLoader.shared.prefetch(urls, limit: 2, priority: .userInitiated)
     }
 
     private func uploadCover(from item: PhotosPickerItem) async {
