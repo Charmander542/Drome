@@ -33,7 +33,8 @@ struct PlaybackContext: Equatable {
 
     /// When the user explicitly plays the Out of Rotation playlist, its songs
     /// are obviously allowed to play (they are only excluded from algorithmic
-    /// selection everywhere else).
+    /// selection everywhere else). Keep Playing also stays inside that pool
+    /// instead of jumping to library Infinite Shuffle.
     var allowsOutOfRotation: Bool {
         kind == .outOfRotation
     }

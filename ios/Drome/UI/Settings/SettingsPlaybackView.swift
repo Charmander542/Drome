@@ -162,6 +162,8 @@ struct SettingsPlaybackView: View {
                 }
             } header: {
                 Text("Queue")
+            } footer: {
+                Text("Skip low-rated does not apply while playing Out of Rotation — Shuffle and Keep Playing stay in that playlist.")
             }
             .listRowBackground(DromeTheme.elevated)
         }

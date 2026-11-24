@@ -1,6 +1,19 @@
 import Foundation
 
 enum ShuffleEngine {
+    /// Whether playback should stay inside an Out of Rotation collection
+    /// (system OOR playlist, or a playlist that is entirely OOR) instead of
+    /// falling through to library Infinite Shuffle / low-rated skip.
+    static func sticksToOutOfRotationPool(
+        allowsOutOfRotation: Bool,
+        contextSongIDs: [String],
+        excludedIDs: Set<String>
+    ) -> Bool {
+        if allowsOutOfRotation { return true }
+        guard !contextSongIDs.isEmpty, !excludedIDs.isEmpty else { return false }
+        return contextSongIDs.allSatisfy { excludedIDs.contains($0) }
+    }
+
     /// Weighted shuffle (sampling without replacement) favoring higher-rated
     /// tracks: weight ∝ (effectiveRating + 1)². Unrated tracks are neutral 3★
     /// until `TasteAffinity` is established, then off-taste unrated songs drop
