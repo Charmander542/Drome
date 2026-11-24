@@ -107,13 +107,7 @@ struct LyricsView: View {
                         .padding(.vertical, 10)
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            if let start = line.startMs {
-                                userScrolling = false
-                                lastScrolledIndex = index
-                                let seekTo = max(0, Double(start - userOffsetMs) / 1000.0)
-                                player.seek(to: seekTo)
-                                activeIndex = index
-                            }
+                            seekToLine(line, index: index)
                         }
                     }
                 }
@@ -251,6 +245,25 @@ struct LyricsView: View {
         if index < active { return .past }
         if index == active { return .active }
         return .upcoming
+    }
+
+    /// Jump playback to the tapped line's stamp. Uses `seekExact` so streaming
+    /// buffers can't clamp a mid-song lyric into a random early second.
+    private func seekToLine(_ line: LRCParser.Line, index: Int) {
+        let start = line.startMs ?? line.words.first?.startMs
+        guard let start else { return }
+        userScrolling = false
+        lastScrolledIndex = index
+        activeIndex = index
+        // Undo the sync nudge so audio lands where this stamp was authored.
+        let seekTo = max(0, Double(start - userOffsetMs) / 1000.0)
+        if session.connect?.isRemote == true {
+            Task {
+                await session.connect?.sendRemote(ConnectCommandType.seek, seekTo: seekTo)
+            }
+        } else {
+            player.seekExact(to: seekTo)
+        }
     }
 
     private func activeLineIndex(at elapsedMs: Int, in document: LyricsDocument) -> Int {

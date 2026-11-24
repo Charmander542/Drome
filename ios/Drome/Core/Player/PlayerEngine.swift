@@ -1688,6 +1688,15 @@ final class PlayerEngine: ObservableObject {
         seek(to: time, clampToPartialSeekable: true)
     }
 
+    /// Jump to an exact timestamp (lyric tap, chapter marker, etc.).
+    ///
+    /// Unlike scrubbing, this must not clamp into a partial buffered window —
+    /// that clamp is what made mid-track lyric taps land on a random early
+    /// second while karaoke stamps themselves were fine.
+    func seekExact(to time: TimeInterval) {
+        seek(to: time, clampToPartialSeekable: false)
+    }
+
     /// - Parameter clampToPartialSeekable: User scrubbing should stay inside the
     ///   currently buffered window. Stall-recovery seeks must NOT — clamping a
     ///   mid/late-track resume to a 5s seekable window is what made songs jump
