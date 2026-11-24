@@ -120,6 +120,12 @@ type downloadWorker struct {
 	// don't 429 mid-queue and make every subsequent provider look "not found".
 	jobGap time.Duration
 
+	// Last verified Subsonic creds from an authenticated app request. Used to
+	// update Navidrome playlists after downloads when SCAN_USER is unset.
+	operatorCredsMu sync.RWMutex
+	operatorCreds   subsonicCreds
+	operatorOK      bool
+
 	// Live progress for GET /wishlist/downloads (and status_msg on the active row).
 	progress progressState
 }
@@ -173,6 +179,9 @@ func (w *downloadWorker) Run(ctx context.Context) {
 	} else if n > 0 {
 		logf("re-queued %d failed download(s) ready for retry", n)
 	}
+	// Rebuild managed playlist .m3u8s (and Navidrome mirrors when possible)
+	// so newly downloaded tracks aren't stuck behind the import-time snapshot.
+	go w.refreshAllMirroredPlaylists(ctx)
 	w.kick()
 
 	ticker := time.NewTicker(45 * time.Second)
@@ -269,8 +278,7 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 	if e.Kind == "track" && w.alreadyHave(ctx, e.Title, e.Artist) {
 		logf("skip download id=%d already have %q — %q", e.ID, e.Artist, e.Title)
 		w.setPhase("skipped", "already in library")
-		w.addEntryToNavidromePlaylist(ctx, e, false)
-		w.syncSourcePlaylistArtifacts(ctx, e)
+		w.syncSourcePlaylist(ctx, e, e, false)
 		if err := w.store.delete(e.ID); err != nil {
 			_ = w.store.setStatus(e.ID, statusSkipped, "already in library")
 		}
@@ -338,9 +346,10 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 	if e.Kind == "playlist" {
 		w.syncWholePlaylist(parent, e)
 	} else {
-		w.addEntryToNavidromePlaylist(parent, e, true)
+		// Use retagEntry (may be a Spotify Singles alternate) so findSongID
+		// matches the file we actually wrote; still refresh the source playlist.
+		w.syncSourcePlaylist(parent, e, &retagEntry, true)
 	}
-	w.syncSourcePlaylistArtifacts(parent, e)
 	if err := w.store.delete(e.ID); err != nil {
 		logf("delete completed wishlist entry id=%d: %v", e.ID, err)
 		_ = w.store.setAcquired(e.ID, true)
@@ -937,23 +946,45 @@ func (w *downloadWorker) alreadyHave(ctx context.Context, title, artist string) 
 	if w.navidrome == nil {
 		return false
 	}
-	user := os.Getenv("DROME_NAVIDROME_SCAN_USER")
-	pass := os.Getenv("DROME_NAVIDROME_SCAN_PASSWORD")
-	if user == "" || pass == "" {
+	creds, ok := w.scanCreds()
+	if !ok {
 		return false
 	}
-	salt := "drome-owns"
-	return w.navidrome.libraryOwns(ctx, user, md5Hex(pass+salt), salt, title, artist)
+	return w.navidrome.libraryOwns(ctx, creds.user, creds.token, creds.salt, title, artist)
+}
+
+func (w *downloadWorker) rememberOperatorCreds(creds subsonicCreds) {
+	if w == nil || creds.user == "" || creds.token == "" || creds.salt == "" {
+		return
+	}
+	w.operatorCredsMu.Lock()
+	first := !w.operatorOK
+	w.operatorCreds = creds
+	w.operatorOK = true
+	w.operatorCredsMu.Unlock()
+	// First authenticated app session after boot: catch Navidrome playlists up
+	// with files downloaded while SCAN_* / cached creds were unavailable.
+	if first {
+		go w.refreshAllMirroredPlaylists(context.Background())
+	}
 }
 
 func (w *downloadWorker) scanCreds() (subsonicCreds, bool) {
 	user := os.Getenv("DROME_NAVIDROME_SCAN_USER")
 	pass := os.Getenv("DROME_NAVIDROME_SCAN_PASSWORD")
-	if user == "" || pass == "" {
+	if user != "" && pass != "" {
+		salt := "drome-playlist"
+		return subsonicCreds{user: user, token: md5Hex(pass + salt), salt: salt}, true
+	}
+	if w == nil {
 		return subsonicCreds{}, false
 	}
-	salt := "drome-playlist"
-	return subsonicCreds{user: user, token: md5Hex(pass + salt), salt: salt}, true
+	w.operatorCredsMu.RLock()
+	defer w.operatorCredsMu.RUnlock()
+	if !w.operatorOK {
+		return subsonicCreds{}, false
+	}
+	return w.operatorCreds, true
 }
 
 // ensurePlaylistMirror creates a public Navidrome playlist for the Spotify
@@ -1023,76 +1054,89 @@ func (w *downloadWorker) writePlaylistFileNow(ctx context.Context, owner, spotif
 	return path, nil
 }
 
-// syncSourcePlaylistArtifacts refreshes the on-disk .m3u8 (always) and ensures
-// a Navidrome mirror exists when scan credentials are configured.
+// syncSourcePlaylist refreshes the managed .m3u8 and Navidrome API playlist
+// after a track download (or "already have" skip) so new files show up
+// immediately — not only the tracks that were owned at import time.
 //
-// Always rebuild from the Spotify playlist order matched to files on disk.
-// Compilation-style imports (Chill Mix, "100 Greatest …") store tracks under
-// many artist folders, so an album-folder-only refresh would leave the .m3u8
-// stuck at whatever was owned at import time.
-func (w *downloadWorker) syncSourcePlaylistArtifacts(ctx context.Context, e *entry) {
-	if w == nil || e == nil || e.SourcePlaylistID == "" {
+// source carries source_playlist_* / owner; library carries the title/artist
+// to look up in Navidrome (often the same row, or a Spotify Singles alternate).
+func (w *downloadWorker) syncSourcePlaylist(ctx context.Context, source, library *entry, waitForScan bool) {
+	if w == nil || source == nil || source.SourcePlaylistID == "" {
 		return
 	}
-	name := e.SourcePlaylistName
+	if library == nil {
+		library = source
+	}
+	name := source.SourcePlaylistName
 	if strings.TrimSpace(name) == "" {
 		name = "Spotify playlist"
 	}
-	w.ensurePlaylistMirror(ctx, e.Owner, e.SourcePlaylistID, name)
-	path, werr := w.writePlaylistFileNow(ctx, e.Owner, e.SourcePlaylistID, name)
+	w.ensurePlaylistMirror(ctx, source.Owner, source.SourcePlaylistID, name)
+	path, werr := w.writePlaylistFileNow(ctx, source.Owner, source.SourcePlaylistID, name)
 	if werr != nil {
 		logf("write playlist file %q: %v", name, werr)
-		return
+	} else if path != "" {
+		remaining, _ := w.store.countActiveBySourcePlaylist(source.Owner, source.SourcePlaylistID)
+		if remaining > 1 {
+			logf("playlist file updated %q → %s (%d still queued)", name, path, remaining-1)
+		} else {
+			logf("playlist file updated %q → %s", name, path)
+		}
 	}
-	if path == "" {
-		return
-	}
-	remaining, err := w.store.countActiveBySourcePlaylist(e.Owner, e.SourcePlaylistID)
-	if err != nil {
-		logf("count active playlist downloads: %v", err)
-		return
-	}
-	if remaining > 1 {
-		logf("playlist file updated %q → %s (%d still queued)", name, path, remaining-1)
-	}
+	w.addEntryToNavidromePlaylist(ctx, source, library, waitForScan)
+	w.syncNavidromePlaylistFromSpotify(ctx, source.Owner, source.SourcePlaylistID, name, waitForScan)
 }
 
-func (w *downloadWorker) addEntryToNavidromePlaylist(ctx context.Context, e *entry, waitForScan bool) {
-	if w.navidrome == nil || e == nil || e.SourcePlaylistID == "" || strings.TrimSpace(e.Title) == "" {
+// syncSourcePlaylistArtifacts is kept as a thin alias for older call sites.
+func (w *downloadWorker) syncSourcePlaylistArtifacts(ctx context.Context, e *entry) {
+	w.syncSourcePlaylist(ctx, e, e, false)
+}
+
+func (w *downloadWorker) addEntryToNavidromePlaylist(ctx context.Context, source, library *entry, waitForScan bool) {
+	if w.navidrome == nil || source == nil || library == nil || source.SourcePlaylistID == "" || strings.TrimSpace(library.Title) == "" {
 		return
 	}
 	creds, ok := w.scanCreds()
 	if !ok {
-		// Still write the .m3u8 so the playlist appears after Navidrome's next scan.
+		logf("playlist API sync skipped for %q (no DROME_NAVIDROME_SCAN_* and no cached app credentials yet)", source.SourcePlaylistName)
 		return
 	}
-	plID, name, err := w.store.playlistMirror(e.Owner, e.SourcePlaylistID)
+	plID, name, err := w.store.playlistMirror(source.Owner, source.SourcePlaylistID)
 	if err != nil {
 		logf("playlist mirror lookup: %v", err)
 		return
 	}
 	if plID == "" {
-		name = e.SourcePlaylistName
+		name = source.SourcePlaylistName
 		if strings.TrimSpace(name) == "" {
 			name = "Spotify playlist"
 		}
-		id, _, perr := w.navidrome.ensureNamedPlaylist(ctx, creds, name, e.Owner, true)
+		id, _, perr := w.navidrome.ensureNamedPlaylist(ctx, creds, name, source.Owner, true)
 		if perr != nil {
 			logf("ensure navidrome playlist %q: %v", name, perr)
 			return
 		}
 		plID = id
-		_ = w.store.upsertPlaylistMirror(e.Owner, e.SourcePlaylistID, plID, name)
+		_ = w.store.upsertPlaylistMirror(source.Owner, source.SourcePlaylistID, plID, name)
 	}
 	attempts := 1
 	if waitForScan {
-		attempts = 8
+		attempts = 30 // ~60s — Navidrome scans can lag behind startScan
+	}
+	titles := []string{library.Title}
+	artists := []string{library.Artist}
+	if source.Title != library.Title || source.Artist != library.Artist {
+		titles = append(titles, source.Title)
+		artists = append(artists, source.Artist)
 	}
 	var last error
 	for i := 0; i < attempts; i++ {
-		last = w.navidrome.addTrackToNamedPlaylist(ctx, creds, plID, e.Title, e.Artist)
-		if last == nil {
-			return
+		for j := range titles {
+			last = w.navidrome.addTrackToNamedPlaylist(ctx, creds, plID, titles[j], artists[j])
+			if last == nil {
+				logf("added %q — %q to navidrome playlist %q", artists[j], titles[j], name)
+				return
+			}
 		}
 		if i+1 == attempts {
 			break
@@ -1103,7 +1147,115 @@ func (w *downloadWorker) addEntryToNavidromePlaylist(ctx context.Context, e *ent
 		case <-time.After(2 * time.Second):
 		}
 	}
-	logf("add %q to playlist: %v", e.Title, last)
+	logf("add %q to playlist: %v", library.Title, last)
+}
+
+// syncNavidromePlaylistFromSpotify appends every Spotify playlist track that
+// is already findable in Navidrome, so the API playlist catches up with the
+// .m3u8 after each download — not only the single track that just finished.
+func (w *downloadWorker) syncNavidromePlaylistFromSpotify(ctx context.Context, owner, spotifyID, name string, waitForScan bool) {
+	if w == nil || w.navidrome == nil || w.spotify == nil || spotifyID == "" {
+		return
+	}
+	creds, ok := w.scanCreds()
+	if !ok {
+		return
+	}
+	plID, mirroredName, err := w.store.playlistMirror(owner, spotifyID)
+	if err != nil {
+		return
+	}
+	if strings.TrimSpace(name) == "" {
+		name = mirroredName
+	}
+	if name == "" {
+		name = "Spotify playlist"
+	}
+	if plID == "" {
+		id, _, perr := w.navidrome.ensureNamedPlaylist(ctx, creds, name, owner, true)
+		if perr != nil {
+			logf("ensure navidrome playlist %q: %v", name, perr)
+			return
+		}
+		plID = id
+		_ = w.store.upsertPlaylistMirror(owner, spotifyID, plID, name)
+	}
+	_, tracks, err := w.spotify.playlistTracks(ctx, spotifyID)
+	if err != nil || len(tracks) == 0 {
+		return
+	}
+	have, _ := w.navidrome.playlistSongIDs(ctx, creds, plID)
+	if have == nil {
+		have = map[string]struct{}{}
+	}
+	rounds := 1
+	if waitForScan {
+		rounds = 8
+	}
+	var added int
+	for round := 0; round < rounds; round++ {
+		var toAdd []string
+		for _, t := range tracks {
+			sid := w.navidrome.findSongID(ctx, creds.user, creds.token, creds.salt, t.Title, t.Artist)
+			if sid == "" {
+				continue
+			}
+			if _, ok := have[sid]; ok {
+				continue
+			}
+			toAdd = append(toAdd, sid)
+			have[sid] = struct{}{}
+		}
+		if len(toAdd) > 0 {
+			if err := w.navidrome.addSongsToPlaylist(ctx, creds, plID, toAdd); err != nil {
+				logf("sync navidrome playlist %q: %v", name, err)
+				return
+			}
+			added += len(toAdd)
+		}
+		if round+1 == rounds {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+	if added > 0 {
+		logf("synced %d new track(s) into navidrome playlist %q (now %d known)", added, name, len(have))
+	}
+}
+
+func (w *downloadWorker) refreshAllMirroredPlaylists(ctx context.Context) {
+	if w == nil || w.store == nil {
+		return
+	}
+	mirrors, err := w.store.listPlaylistMirrors()
+	if err != nil {
+		logf("list playlist mirrors: %v", err)
+		return
+	}
+	for _, m := range mirrors {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		name := m.Name
+		if strings.TrimSpace(name) == "" {
+			name = "Spotify playlist"
+		}
+		path, werr := w.writePlaylistFileNow(ctx, m.Owner, m.SpotifyID, name)
+		if werr != nil {
+			logf("refresh playlist file %q: %v", name, werr)
+			continue
+		}
+		if path != "" {
+			logf("refreshed playlist file %q → %s", name, path)
+		}
+		w.syncNavidromePlaylistFromSpotify(ctx, m.Owner, m.SpotifyID, name, false)
+	}
 }
 
 func (w *downloadWorker) syncWholePlaylist(ctx context.Context, e *entry) {
