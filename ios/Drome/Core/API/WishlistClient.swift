@@ -330,17 +330,23 @@ struct DromeWishlistClient {
         }
     }
 
-    /// Songs Spotify has for this listener's favorite artists that are not in
-    /// Navidrome. `spotifyUrl` is what `add(spotifyLink:)` downloads.
-    func outsidePicks() async throws -> [OutsidePick] {
+    /// Songs Spotify has for artists this listener plays that are not in
+    /// Navidrome. `artists` comes from local play history — stars are optional.
+    /// `spotifyUrl` is what `add(spotifyLink:)` downloads.
+    func outsidePicks(artists: [String]) async throws -> [OutsidePick] {
         struct Response: Decodable {
             var picks: [OutsidePick]
             var note: String?
         }
+        let seeds = artists
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(6)
         let response = try await send(
             Response.self,
             path: "/recommendations/outside",
             method: "GET",
+            extraQuery: seeds.map { URLQueryItem(name: "artists", value: $0) },
             timeout: 30)
         return response.picks
     }

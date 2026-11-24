@@ -51,6 +51,7 @@ final class RatingsStore: ObservableObject {
             next.observe(
                 genre: genre,
                 artist: row.song.artistId,
+                artistName: row.song.artist,
                 amount: ListenerMemory.playAmount(row.plays),
                 at: row.lastPlayed)
         }
@@ -63,6 +64,7 @@ final class RatingsStore: ObservableObject {
         memory.observe(
             genre: genre,
             artist: song.artistId,
+            artistName: song.artist,
             amount: 1,
             at: at.timeIntervalSince1970)
     }
@@ -156,6 +158,7 @@ final class RatingsStore: ObservableObject {
         memory.observe(
             genre: GenreNormalizer.shared.normalize(song.genre ?? ""),
             artist: song.artistId,
+            artistName: song.artist,
             amount: ListenerMemory.ratingAmount(clamped),
             at: Date().timeIntervalSince1970)
 

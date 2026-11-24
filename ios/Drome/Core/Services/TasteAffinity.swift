@@ -120,27 +120,64 @@ struct TasteAffinity: Sendable {
 struct ListenerMemory: Sendable {
     var genre: [String: Double]
     var artist: [String: Double]
+    /// Display name keyed by a lowercased name. Plays land here even when
+    /// the song was never starred — this is what outside-library search uses.
+    var artistNameWeight: [String: Double]
+    var artistNameDisplay: [String: String]
     /// Decayed mass of positive observations. Cold start stays neutral below ~6.
     var mass: Double
     var updatedAt: TimeInterval
 
     static let halfLife: TimeInterval = 21 * 24 * 3600
-    static let empty = ListenerMemory(genre: [:], artist: [:], mass: 0, updatedAt: 0)
+    static let empty = ListenerMemory(
+        genre: [:], artist: [:], artistNameWeight: [:], artistNameDisplay: [:],
+        mass: 0, updatedAt: 0)
 
     var hasSignal: Bool { mass >= 6 }
 
-    mutating func observe(genre name: String?, artist artistID: String?, amount: Double, at: TimeInterval) {
+    /// Artists this listener actually returns to, strongest first.
+    /// Stars are not required — repeat plays are enough.
+    func topPlayedArtists(limit: Int = 6) -> [String] {
+        guard limit > 0 else { return [] }
+        return artistNameWeight
+            .sorted { $0.value > $1.value }
+            .prefix(limit)
+            .compactMap { artistNameDisplay[$0.key] }
+    }
+
+    mutating func observe(
+        genre name: String?,
+        artist artistID: String?,
+        artistName: String? = nil,
+        amount: Double,
+        at: TimeInterval
+    ) {
         decay(to: at)
         if amount >= 0 {
             if let name, !name.isEmpty { genre[name, default: 0] += amount }
             if let artistID, !artistID.isEmpty { artist[artistID, default: 0] += amount }
+            addArtistName(artistName, amount: amount)
             mass += amount
         } else {
             let cut = -amount
             if let name, !name.isEmpty { genre[name] = max(0, (genre[name] ?? 0) - cut) }
             if let artistID, !artistID.isEmpty { artist[artistID] = max(0, (artist[artistID] ?? 0) - cut) }
+            addArtistName(artistName, amount: amount)
         }
         prune()
+    }
+
+    private mutating func addArtistName(_ raw: String?, amount: Double) {
+        guard let raw else { return }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let key = trimmed.lowercased()
+        if amount >= 0 {
+            artistNameWeight[key, default: 0] += amount
+            if artistNameDisplay[key] == nil { artistNameDisplay[key] = trimmed }
+        } else {
+            artistNameWeight[key] = max(0, (artistNameWeight[key] ?? 0) + amount)
+        }
     }
 
     /// 0 when we have never heard this corner of the library, 1 at the peak.
@@ -184,6 +221,7 @@ struct ListenerMemory: Sendable {
         if factor < 0.999 {
             for key in genre.keys { genre[key]! *= factor }
             for key in artist.keys { artist[key]! *= factor }
+            for key in artistNameWeight.keys { artistNameWeight[key]! *= factor }
             mass *= factor
         }
         updatedAt = now
@@ -192,6 +230,8 @@ struct ListenerMemory: Sendable {
     private mutating func prune() {
         genre = genre.filter { $0.value > 0.05 }
         artist = artist.filter { $0.value > 0.05 }
+        artistNameWeight = artistNameWeight.filter { $0.value > 0.05 }
+        artistNameDisplay = artistNameDisplay.filter { artistNameWeight[$0.key] != nil }
         if genre.count > 48 {
             let keep = genre.sorted { $0.value > $1.value }.prefix(48)
             genre = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })

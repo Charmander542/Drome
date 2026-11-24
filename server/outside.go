@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -106,18 +107,15 @@ func chooseOutsidePicks(
 	return out
 }
 
-// tasteArtistNames is who to look outside the library for: the artists this
-// listener has already starred, strongest first.
-func tasteArtistNames(tracks []mixTrack, n int) []string {
-	if n < 1 {
-		return nil
-	}
-	stats := topArtists(tracks, n)
+// requestArtistSeeds reads repeated ?artists= query values. These are the
+// names this phone has learned from play history. Stars are not required.
+func requestArtistSeeds(r *http.Request) []string {
+	raw := r.URL.Query()["artists"]
 	seen := map[string]struct{}{}
-	names := make([]string, 0, len(stats))
-	for _, a := range stats {
-		name := strings.TrimSpace(a.name)
-		if name == "" {
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		name := strings.TrimSpace(item)
+		if name == "" || len(name) > 80 {
 			continue
 		}
 		key := strings.ToLower(name)
@@ -125,10 +123,71 @@ func tasteArtistNames(tracks []mixTrack, n int) []string {
 			continue
 		}
 		seen[key] = struct{}{}
-		names = append(names, name)
-		if len(names) >= n {
+		out = append(out, name)
+		if len(out) >= 6 {
 			break
 		}
+	}
+	return out
+}
+
+// listeningArtistNames ranks artists by how much they are played. A star or
+// a high rating adds to the score. It does not gate it — an unstarred artist
+// played a lot outranks a one-off star.
+func listeningArtistNames(tracks []mixTrack, n int) []string {
+	if n < 1 {
+		return nil
+	}
+	type acc struct {
+		name  string
+		score float64
+	}
+	by := map[string]*acc{}
+	for _, t := range tracks {
+		name := strings.TrimSpace(t.Artist)
+		if name == "" {
+			continue
+		}
+		score := 0.0
+		if t.PlayCount > 0 {
+			score += 1.5 * math.Log2(1+float64(t.PlayCount))
+		}
+		if t.UserRating > 0 {
+			score += float64(t.UserRating) * 0.6
+		}
+		if t.isStarred() {
+			score += 2
+		}
+		if score <= 0 {
+			continue
+		}
+		key := strings.ToLower(name)
+		row := by[key]
+		if row == nil {
+			row = &acc{name: name}
+			by[key] = row
+		}
+		row.score += score
+	}
+	type scored struct {
+		name  string
+		score float64
+	}
+	ranked := make([]scored, 0, len(by))
+	for _, row := range by {
+		ranked = append(ranked, scored{name: row.name, score: row.score})
+	}
+	for i := 1; i < len(ranked); i++ {
+		for j := i; j > 0 && ranked[j].score > ranked[j-1].score; j-- {
+			ranked[j], ranked[j-1] = ranked[j-1], ranked[j]
+		}
+	}
+	if len(ranked) > n {
+		ranked = ranked[:n]
+	}
+	names := make([]string, 0, len(ranked))
+	for _, row := range ranked {
+		names = append(names, row.name)
 	}
 	return names
 }
@@ -155,21 +214,31 @@ func (s *server) handleOutsidePicks(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
 
-	starred := s.navidrome.getStarredSongs(ctx, creds)
-	tracks := make([]mixTrack, 0, len(starred))
-	for _, song := range starred {
-		t := song.asMix()
-		if t.ID == "" {
-			continue
+	// The phone sends artists learned from its own play history. Stars are
+	// optional. If that list is short, fill from library play counts too.
+	names := requestArtistSeeds(r)
+	if len(names) < 4 {
+		seen := map[string]struct{}{}
+		for _, name := range names {
+			seen[strings.ToLower(name)] = struct{}{}
 		}
-		t.Starred = "true"
-		tracks = append(tracks, t)
+		snapshot := s.navidrome.mixSnapshot(ctx, creds)
+		for _, name := range listeningArtistNames(snapshot, 4) {
+			key := strings.ToLower(name)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			names = append(names, name)
+			if len(names) >= 4 {
+				break
+			}
+		}
 	}
-	names := tasteArtistNames(tracks, 4)
 	if len(names) == 0 {
 		writeJSON(w, http.StatusOK, outsideResponse{
 			Picks: []outsidePick{},
-			Note:  "Star a few songs and Drome can look for more you don't have yet.",
+			Note:  "Play a few songs and Drome can look for more you don't have yet.",
 		})
 		return
 	}
