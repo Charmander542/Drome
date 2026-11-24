@@ -395,6 +395,7 @@ struct ArtistDetailView: View {
                 bio: biography,
                 hero: heroImageURL)
             isLoading = false
+            warmImages(artist: cached.artist, songs: cached.topSongs + cached.owned)
         } else {
             isLoading = true
         }
@@ -402,19 +403,26 @@ struct ArtistDetailView: View {
         defer { isLoading = false }
 
         do {
-            // Fetch everything in parallel, then paint once — no chunked section reveals.
+            // Albums + cover art are enough to paint. Biography, top songs, and
+            // search used to block the hero and every album thumbnail.
             let loaded = try await session.client.artist(id: artistID)
+            apply(
+                artist: loaded,
+                topSongs: topSongs,
+                owned: ownedSongs,
+                related: relatedArtists,
+                bio: biography,
+                hero: immediateHero(for: loaded))
+            isLoading = false
+            warmImages(artist: loaded, songs: topSongs + ownedSongs)
 
             async let topTask = session.client.topSongs(artistName: loaded.name, count: 10)
             async let searchTask = session.client.search(
                 loaded.name, artistCount: 0, albumCount: 0, songCount: 40)
             async let infoTask = session.client.artistInfo2(id: loaded.id, count: 12)
-            // Prefetch similar in parallel; only used if artistInfo has no peers.
-            async let similarTask = session.client.similarSongs(artistId: loaded.id, count: 40)
 
             let fetchedTop = (try? await topTask) ?? []
             let search = try? await searchTask
-            let info = try? await infoTask
 
             var byID: [String: Song] = [:]
             for song in fetchedTop { byID[song.id] = song }
@@ -427,29 +435,37 @@ struct ArtistDetailView: View {
                 }
             }
             let owned = Array(byID.values)
-
-            var related = (info?.similarArtists ?? []).filter { $0.id != loaded.id && !$0.id.isEmpty }
-            if related.isEmpty {
-                let similar = (try? await similarTask) ?? []
-                related = Self.relatedArtists(from: similar, excluding: loaded.id)
-            }
-            let relatedFinal = Array(related.prefix(12))
-            let bio = info?.plainBiography.flatMap { $0.isEmpty ? nil : $0 }
-
             session.ratings.ingest(fetchedTop)
             session.ratings.ingest(owned)
             LibraryDetailCache.store(artist: loaded, topSongs: fetchedTop, owned: owned)
+            apply(
+                artist: loaded,
+                topSongs: fetchedTop,
+                owned: owned,
+                related: relatedArtists,
+                bio: biography,
+                hero: heroImageURL)
+            warmImages(artist: loaded, songs: fetchedTop + owned)
 
-            // Paint once with cover-art fallback; upgrade hero in the background.
+            let info = try? await infoTask
+            var related = (info?.similarArtists ?? []).filter { $0.id != loaded.id && !$0.id.isEmpty }
+            if related.isEmpty {
+                let similar = (try? await session.client.similarSongs(artistId: loaded.id, count: 24)) ?? []
+                related = Self.relatedArtists(from: similar, excluding: loaded.id)
+            }
+            let bio = info?.plainBiography.flatMap { $0.isEmpty ? nil : $0 }
+            let relatedFinal = Array(related.prefix(12))
+            let relatedCovers = relatedFinal.compactMap {
+                session.artworkURL(id: $0.coverArt ?? $0.id, size: 192)
+            }
+            ImageLoader.shared.prefetch(relatedCovers, limit: 12, priority: .utility)
             apply(
                 artist: loaded,
                 topSongs: fetchedTop,
                 owned: owned,
                 related: relatedFinal,
                 bio: bio,
-                hero: session.artistImages.memoryURL(artistId: loaded.id)
-                    ?? loaded.artistImageUrl.flatMap(URL.init(string:)))
-            isLoading = false
+                hero: heroImageURL)
 
             if let upgraded = await resolveHeroImage(loaded) {
                 heroImageURL = upgraded
@@ -459,6 +475,30 @@ struct ArtistDetailView: View {
                 self.error = error.localizedDescription
             }
         }
+    }
+
+    private func immediateHero(for artist: ArtistWithAlbums) -> URL? {
+        session.artistImages.memoryURL(artistId: artist.id)
+            ?? artist.artistImageUrl.flatMap(URL.init(string:))
+    }
+
+    /// Start cover fetches before the song lists return so the rail isn't blank.
+    private func warmImages(artist: ArtistWithAlbums, songs: [Song]) {
+        var urls: [URL] = []
+        if let hero = session.artworkURL(id: artist.coverArt ?? artist.id, size: 800) {
+            urls.append(hero)
+        }
+        for album in artist.albums.prefix(16) {
+            if let url = session.artworkURL(id: album.coverArt ?? album.id, size: 300) {
+                urls.append(url)
+            }
+        }
+        for song in songs.prefix(12) {
+            if let url = session.artworkURL(for: song, size: 96) {
+                urls.append(url)
+            }
+        }
+        ImageLoader.shared.prefetch(urls, limit: 28, priority: .userInitiated)
     }
 
     private func apply(

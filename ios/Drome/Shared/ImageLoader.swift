@@ -67,9 +67,13 @@ final class ImageLoader: @unchecked Sendable {
         }
         let task = Task<UIImage?, Never> { [weak self] in
             guard let self else { return nil }
+            // Disk hits must not wait behind in-flight network covers.
+            if let decoded = await self.decodeCachedCover(url: url, key: key, priority: priority) {
+                return decoded
+            }
             await self.acquireFetchSlot()
             defer { self.releaseFetchSlot() }
-            return await self.fetchAndDecode(url: url, key: key, priority: priority)
+            return await self.fetchAndDecode(url: url, key: key, priority: priority, allowDisk: false)
         }
         inflight[key] = task
         lock.unlock()
@@ -82,7 +86,7 @@ final class ImageLoader: @unchecked Sendable {
     }
 
     /// Warm the cache for nearby list cells so fast flings paint like a back-nav.
-    func prefetch(_ urls: [URL], limit: Int = 24) {
+    func prefetch(_ urls: [URL], limit: Int = 24, priority: TaskPriority = .utility) {
         var started = 0
         for url in urls {
             guard started < limit else { break }
@@ -97,7 +101,7 @@ final class ImageLoader: @unchecked Sendable {
             lock.unlock()
             guard !skip else { continue }
             started += 1
-            Task(priority: .utility) { _ = await image(for: url, priority: .utility) }
+            Task(priority: priority) { _ = await image(for: url, priority: priority) }
         }
     }
 
@@ -152,6 +156,32 @@ final class ImageLoader: @unchecked Sendable {
     }
 
     // MARK: - Fetch
+
+    /// Decode a local file or a previously saved cover without taking a network slot.
+    private func decodeCachedCover(url: URL, key: NSString, priority: TaskPriority) async -> UIImage? {
+        let parsed = parsedArtwork(for: url)
+        let data: Data? = await Task.detached(priority: priority) { [parsed] in
+            if parsed.isFile {
+                return try? Data(contentsOf: parsed.resource)
+            }
+            return self.readDiskCover(parsed)
+        }.value
+        guard let data else { return nil }
+        let maxPixel = parsed.maxPixel
+        let image = await Task.detached(priority: priority) {
+            Self.downsampledImage(data: data, maxPixel: maxPixel)
+        }.value
+        guard let image else {
+            if !parsed.isFile, let file = diskFileURL(parsed) {
+                diskQueue.async { try? FileManager.default.removeItem(at: file) }
+            }
+            return nil
+        }
+        let cost = Self.approximateCost(of: image)
+        cache.setObject(image, forKey: key, cost: cost)
+        rememberCover(image, for: url)
+        return image
+    }
 
     private func fetchAndDecode(
         url: URL,
