@@ -474,7 +474,6 @@ struct PlaylistDetailView: View {
         VStack(spacing: 14) {
             ZStack {
                 playlistHeroArtwork(playlist)
-                .id("\(playlist.id)-\(coverBump)")
                 .frame(width: 180, height: 180)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .shadow(color: .black.opacity(0.4), radius: 18, y: 10)
@@ -558,16 +557,10 @@ struct PlaylistDetailView: View {
                 PlaylistCoverStore.rememberCoverIDs(
                     coverIDs, playlistID: playlistID, userKey: session.account.userKey)
             }
-            warmHeroArtwork(coverArt: loaded.coverArt)
-            var coverURLs = songs.prefix(24).compactMap { session.artworkURL(for: $0, size: 96) }
-            if let hero = session.artworkURL(
-                id: PlaylistCoverStore.serverCoverID(
-                    coverArt: loaded.coverArt, playlistID: loaded.id),
-                size: 600)
-            {
-                coverURLs.insert(hero, at: 0)
-            }
-            ImageLoader.shared.prefetch(coverURLs, limit: 25, priority: .userInitiated)
+            warmHeroArtwork()
+            // Song rows are secondary — don't steal slots from the hero cover.
+            let songURLs = songs.prefix(24).compactMap { session.artworkURL(for: $0, size: 96) }
+            ImageLoader.shared.prefetch(songURLs, limit: 24, priority: .utility)
             Task {
                 await Task.yield()
                 ratings.ingest(songs)
@@ -579,21 +572,18 @@ struct PlaylistDetailView: View {
         }
     }
 
-    /// Prefetch the detail hero using whatever cover id we already know (placeholder
-    /// or loaded playlist) so promotion doesn’t wait on the full track list.
-    private func warmHeroArtwork(coverArt: String? = nil) {
-        let art = coverArt ?? playlist?.coverArt ?? placeholder?.coverArt
-        let coverID = PlaylistCoverStore.serverCoverID(coverArt: art, playlistID: playlistID)
-        var urls: [URL] = []
-        if let thumb = session.artworkURL(id: coverID, size: 96) {
-            urls.append(thumb)
-        }
-        if let hero = session.artworkURL(id: coverID, size: 600) {
-            urls.append(hero)
-        }
-        guard !urls.isEmpty else { return }
-        ImageLoader.shared.prefetch(urls, limit: 2, priority: .userInitiated)
+    /// Prefetch the same cover size Home/Library cards use so open paints from
+    /// a warm cache instead of kicking a second mosaic at 600.
+    private func warmHeroArtwork() {
+        let coverID = PlaylistCoverStore.serverCoverID(
+            coverArt: playlist?.coverArt ?? placeholder?.coverArt,
+            playlistID: playlistID)
+        guard let hero = session.artworkURL(id: coverID, size: Self.heroArtSize) else { return }
+        ImageLoader.shared.prefetch([hero], limit: 1, priority: .userInitiated)
     }
+
+    /// Matches `PlaylistCard` / home rails — sharp enough for the 180pt hero.
+    private static let heroArtSize = 300
 
     private func uploadCover(from item: PhotosPickerItem) async {
         coverPickerItem = nil
@@ -626,14 +616,14 @@ struct PlaylistDetailView: View {
         }
     }
 
-    /// Always the playlist’s Navidrome cover (custom upload or server mosaic).
+    /// Same cover id + size family as list/home cards so open matches the row.
     @ViewBuilder
     private func playlistHeroArtwork(_ playlist: PlaylistWithSongs) -> some View {
         PlaylistArtwork(
             playlistID: playlist.id,
             coverArt: playlist.coverArt,
             session: session,
-            size: 600,
+            size: Self.heroArtSize,
             cacheBust: coverBump)
     }
 

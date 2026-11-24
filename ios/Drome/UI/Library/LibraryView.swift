@@ -1045,12 +1045,23 @@ struct LibraryView: View {
     }
 
     private func warmPlaylistCovers(_ playlists: [Playlist]) {
-        let urls = playlists.prefix(40).compactMap {
-            session.artworkURL(
-                id: PlaylistCoverStore.serverCoverID(coverArt: $0.coverArt, playlistID: $0.id),
-                size: Self.listArtSize)
+        var urls: [URL] = []
+        for playlist in playlists.prefix(40) {
+            let coverID = PlaylistCoverStore.serverCoverID(
+                coverArt: playlist.coverArt, playlistID: playlist.id)
+            if let thumb = session.artworkURL(id: coverID, size: Self.listArtSize) {
+                urls.append(thumb)
+            }
         }
-        ImageLoader.shared.prefetch(urls, limit: 40, priority: .userInitiated)
+        // Also warm the hero/card size for the first screenful so open matches.
+        for playlist in playlists.prefix(12) {
+            let coverID = PlaylistCoverStore.serverCoverID(
+                coverArt: playlist.coverArt, playlistID: playlist.id)
+            if let card = session.artworkURL(id: coverID, size: 300) {
+                urls.append(card)
+            }
+        }
+        ImageLoader.shared.prefetch(urls, limit: 52, priority: .userInitiated)
     }
 
     /// Full playlist set for disk cache — visible + hidden.

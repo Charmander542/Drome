@@ -90,7 +90,7 @@ struct HorizontalRecentRail: View {
                 resumeOrPlayPlaylist(id: id, name: name, coverSong: coverSong)
             } label: {
                 coverCard(
-                    coverID: id,
+                    coverID: PlaylistCoverStore.serverCoverID(coverArt: nil, playlistID: id),
                     title: name,
                     subtitle: "Playlist",
                     badge: nil
@@ -191,7 +191,9 @@ struct HorizontalRecentRail: View {
                 Task { await playPlaylist(id: playlistID, name: name) }
             } label: {
                 coverCard(
-                    coverID: rotation.playlist?.coverArt ?? playlistID,
+                    coverID: PlaylistCoverStore.serverCoverID(
+                        coverArt: rotation.playlist?.coverArt,
+                        playlistID: playlistID),
                     title: name,
                     subtitle: "Playlist",
                     badge: nil

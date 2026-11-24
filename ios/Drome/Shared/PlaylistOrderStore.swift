@@ -14,10 +14,15 @@ enum PlaylistCoverStore {
         "drome.playlistCollage.\(userKey).\(playlistID)"
     }
 
-    /// Cover art id for `getCoverArt` — always resolvable from a playlist id.
+    /// Cover art id for `getCoverArt`.
+    ///
+    /// Always the playlist id so Library, Home, Recent, and Detail share one
+    /// image identity. Navidrome serves custom uploads and mosaics from this
+    /// id; using `coverArt` when it pointed at a track/album made the open
+    /// view disagree with the list.
     static func serverCoverID(coverArt: String?, playlistID: String) -> String {
-        let trimmed = coverArt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? playlistID : trimmed
+        _ = coverArt
+        return playlistID
     }
 
     static func hasCustom(_ playlistID: String, userKey: String) -> Bool {
