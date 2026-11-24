@@ -8,6 +8,10 @@ import UIKit
 /// system template (artwork via `MPNowPlayingInfoCenter`; rate toggle /
 /// shuffle / repeat / autoplay; Queue + system album/artist actions).
 ///
+/// Home / Library layout is Aura-inspired: section-headered cover rails
+/// (Made For You, Recently Played, Jump Back In / Recently Added), Shuffle
+/// All on Library, playlists on Library — not stacked on Home.
+///
 /// Search prefers `CPSearchTemplate` (native keyboard / voice) when the OS
 /// allows it for audio apps. Fallback chooser: Voice search · Keyboard.
 ///
@@ -555,8 +559,10 @@ final class CarPlaySceneDelegate: UIResponder,
                 userKey: session.account.userKey, limit: 30)) ?? []
 
             // Kick network work in parallel; apply once when everything settles.
-            // (No unused “newest” rail — Jump Back In covers frequent albums.)
+            // Newest feeds Library’s Recently Added grid (Aura-style).
             async let frequentTask = session.client.albumList(type: .frequent, size: 16)
+            async let newestTask = session.client.albumList(
+                type: .newest, size: CarPlayListPolicy.libraryNewestTiles)
             async let mixesTask = self.fetchDailyMixes(session: session)
             async let playlistsTask = self.fetchPlaylists(session: session)
 
@@ -570,6 +576,13 @@ final class CarPlaySceneDelegate: UIResponder,
                 frequentOK = false
             }
 
+            let newest: [Album]
+            do {
+                newest = try await newestTask
+            } catch {
+                newest = CarPlayHomeCache.cachedNewest
+            }
+
             let playlistsOutcome = await playlistsTask
             let mixes = await mixesTask
             guard !Task.isCancelled else { return }
@@ -578,7 +591,7 @@ final class CarPlaySceneDelegate: UIResponder,
             if playlistsOutcome.ok {
                 CarPlayHomeCache.storePlaylists(playlists)
             }
-            CarPlayHomeCache.storeRails(frequent: frequent, newest: [])
+            CarPlayHomeCache.storeRails(frequent: frequent, newest: newest)
             CarPlayHomeCache.storeDailyMixes(mixes)
 
             let serverFailed = !frequentOK && !playlistsOutcome.ok
@@ -601,8 +614,17 @@ final class CarPlaySceneDelegate: UIResponder,
                 error: error,
                 homeTemplate: template)
             self.applySections(sections, to: template)
+            // Library may already be on screen — refresh Recently Added from cache.
+            if let library = self.libraryTabTemplate {
+                self.applySections(
+                    self.buildLibrarySections(
+                        session: session, lists: playlists, error: false,
+                        libraryTemplate: library),
+                    to: library)
+            }
             CarPlayArtwork.prefetch(
                 ids: frequent.map { $0.coverArt ?? $0.id }
+                    + newest.map { $0.coverArt ?? $0.id }
                     + mixes.prefix(8).flatMap(\.coverArtIds)
                     + playlists.prefix(8).map { $0.coverArt ?? $0.id },
                 session: session)
@@ -613,26 +635,25 @@ final class CarPlaySceneDelegate: UIResponder,
         session: AppSession,
         recent: [RecentPlayEntry],
         frequent: [Album],
-        playlists: [Playlist],
+        playlists _: [Playlist],
         mixes: [DailyMix],
         error: String?,
         homeTemplate: CPListTemplate
     ) -> [CPListSection] {
-        let tileCap = min(CarPlayListPolicy.homeImageRowTiles, CPMaximumNumberOfGridImages)
-        let userKey = session.account.userKey
-        let visiblePlaylists = playlists.filter {
-            !PlaylistOrderStore.isHidden($0.id, userKey: userKey)
-        }
-        let ranked = rankedHomePlaylists(visiblePlaylists, recent: recent)
+        let perRow = max(1, Int(CPMaximumNumberOfGridImages))
+        let tileCap = min(CarPlayListPolicy.homeImageRowTiles, perRow)
+        let gridCap = min(CarPlayListPolicy.homeAlbumGridTiles, perRow * 2)
         // Same blueprint XCTest dumps — handlers attach to the live CP items below.
+        // Playlists stay on Library (Aura-style Home has no playlist rail).
         let input = CarPlayListPolicy.HomeInput(
             serverError: error != nil,
             recentTitles: recent.map(recentTitle),
             frequentTitles: frequent.map(\.name),
-            playlistTitles: ranked.map(\.name),
+            playlistTitles: [],
             mixTitles: mixes.map(\.title),
             vibeTitles: MoodVibe.spectrum.map(\.title))
-        let spec = CarPlayListPolicy.buildHomeSpec(input, tileCap: tileCap)
+        let spec = CarPlayListPolicy.buildHomeSpec(
+            input, tileCap: tileCap, albumGridCap: gridCap)
         let clamped = CarPlayListPolicy.clamp(spec.sections, limits: listLimits)
 
         if error != nil {
@@ -643,23 +664,13 @@ final class CarPlaySceneDelegate: UIResponder,
 
         var sections: [CPListSection] = []
         for section in clamped {
+            // Section header carries the rail name — omit duplicate row text.
+            let hideRowText = section.header != nil
             var items: [CPListTemplateItem] = []
             for item in section.items {
                 switch item.title {
                 case "Nothing here yet":
                     items.append(CPListItem(text: item.title, detailText: item.subtitle))
-                case "Shuffle All":
-                    let shuffleAll = actionItem(
-                        title: item.title,
-                        detail: item.subtitle,
-                        systemImage: "shuffle")
-                    shuffleAll.handler = { [weak self] _, completion in
-                        Task {
-                            await self?.playShuffleAll(session: session)
-                            completion()
-                        }
-                    }
-                    items.append(shuffleAll)
                 case "Song Radio":
                     let radio = actionItem(
                         title: item.title,
@@ -674,130 +685,79 @@ final class CarPlaySceneDelegate: UIResponder,
                     items.append(radio)
                 case "Daily Mixes":
                     let tiles = Array(mixes.prefix(tileCap))
-                    let images = tiles.map {
-                        CarPlayArtwork.placeholder(style: .playlist, title: $0.title)
-                    }
-                    let row = CPListImageRowItem(text: item.title, images: images)
-                    row.listImageRowHandler = { [weak self] _, index, completion in
-                        guard tiles.indices.contains(index) else { completion(); return }
-                        self?.playDailyMix(tiles[index], session: session)
-                        completion()
-                    }
-                    row.handler = { [weak self] _, completion in
-                        self?.showDailyMixList(mixes, session: session)
-                        completion()
-                    }
-                    Task { @MainActor [weak self] in
-                        await self?.refreshImageRow(
-                            row,
-                            covers: tiles.map {
-                                ($0.title, $0.coverArtIds.first, $0.songs.first?.coverArt)
-                            },
-                            session: session, style: .playlist)
-                    }
-                    items.append(row)
+                    items.append(contentsOf: coverGridRows(
+                        titles: tiles.map(\.title),
+                        style: .playlist,
+                        rowText: hideRowText ? nil : item.title,
+                        perRow: perRow,
+                        session: session,
+                        covers: { tiles.map {
+                            ($0.title, $0.coverArtIds.first, $0.songs.first?.coverArt)
+                        }},
+                        onTile: { [weak self] index in
+                            guard tiles.indices.contains(index) else { return }
+                            self?.playDailyMix(tiles[index], session: session)
+                        },
+                        onRow: { [weak self] in
+                            self?.showDailyMixList(mixes, session: session)
+                        }))
                 case "Vibe Tuner":
                     let vibes = Array(MoodVibe.spectrum.prefix(tileCap))
-                    let vibeImages = vibes.map {
-                        CarPlayArtwork.placeholder(style: .song, title: $0.title)
-                    }
-                    let vibeRow = CPListImageRowItem(text: item.title, images: vibeImages)
-                    vibeRow.listImageRowHandler = { [weak self] _, index, completion in
-                        guard vibes.indices.contains(index) else { completion(); return }
-                        Task {
-                            await MoodPlayer.play(vibes[index], session: session)
-                            self?.pushNowPlaying()
-                            completion()
-                        }
-                    }
-                    vibeRow.handler = { [weak self] _, completion in
-                        self?.showVibeList(session: session)
-                        completion()
-                    }
-                    items.append(vibeRow)
+                    items.append(contentsOf: coverGridRows(
+                        titles: vibes.map(\.title),
+                        style: .song,
+                        rowText: hideRowText ? nil : item.title,
+                        perRow: perRow,
+                        session: session,
+                        covers: { vibes.map { ($0.title, nil as String?, nil as String?) } },
+                        onTile: { [weak self] index in
+                            guard vibes.indices.contains(index) else { return }
+                            Task {
+                                await MoodPlayer.play(vibes[index], session: session)
+                                self?.pushNowPlaying()
+                            }
+                        },
+                        onRow: { [weak self] in
+                            self?.showVibeList(session: session)
+                        }))
                 case "Recently Played":
-                    let recentEntries = Array(recent.prefix(tileCap))
-                    let images = recentEntries.map {
-                        CarPlayArtwork.placeholder(style: .album, title: recentTitle($0))
-                    }
-                    let row = CPListImageRowItem(text: item.title, images: images)
-                    row.listImageRowHandler = { [weak self] _, index, completion in
-                        guard let self, recentEntries.indices.contains(index) else {
-                            completion(); return
-                        }
-                        self.activateRecent(recentEntries[index], session: session)
-                        completion()
-                    }
-                    row.handler = { [weak self] _, completion in
-                        self?.showRecentList(recent, session: session)
-                        completion()
-                    }
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        await self.refreshImageRow(
-                            row,
-                            covers: recentEntries.map { self.recentCover($0) },
-                            session: session,
-                            style: .album)
-                    }
-                    items.append(row)
+                    let recentEntries = Array(recent.prefix(gridCap))
+                    items.append(contentsOf: coverGridRows(
+                        titles: recentEntries.map(recentTitle),
+                        style: .album,
+                        rowText: hideRowText ? nil : item.title,
+                        perRow: perRow,
+                        session: session,
+                        covers: { recentEntries.map { self.recentCover($0) } },
+                        onTile: { [weak self] index in
+                            guard let self, recentEntries.indices.contains(index) else { return }
+                            self.activateRecent(recentEntries[index], session: session)
+                        },
+                        onRow: { [weak self] in
+                            self?.showRecentList(recent, session: session)
+                        }))
                 case "Jump Back In":
-                    let albums = Array(frequent.prefix(tileCap))
-                    let images = albums.map {
-                        CarPlayArtwork.placeholder(style: .album, title: $0.name)
-                    }
-                    let row = CPListImageRowItem(text: item.title, images: images)
-                    row.listImageRowHandler = { [weak self] _, index, completion in
-                        guard albums.indices.contains(index) else { completion(); return }
-                        let album = albums[index]
-                        Task {
-                            await self?.showAlbum(
-                                id: album.id, name: album.name, session: session,
-                                coverArt: album.coverArt, artist: album.artist,
-                                year: album.year, songCount: album.songCount)
-                            completion()
-                        }
-                    }
-                    row.handler = { [weak self] _, completion in
-                        self?.showAlbumList(frequent, title: "Jump Back In", session: session)
-                        completion()
-                    }
-                    Task { @MainActor [weak self] in
-                        await self?.refreshImageRow(
-                            row,
-                            covers: albums.map { ($0.name, $0.coverArt, $0.id) },
-                            session: session,
-                            style: .album)
-                    }
-                    items.append(row)
-                case "Playlists":
-                    let lists = Array(ranked.prefix(tileCap))
-                    let images = lists.map {
-                        CarPlayArtwork.placeholder(style: .playlist, title: $0.name)
-                    }
-                    let row = CPListImageRowItem(text: item.title, images: images)
-                    row.listImageRowHandler = { [weak self] _, index, completion in
-                        guard lists.indices.contains(index) else { completion(); return }
-                        let playlist = lists[index]
-                        Task {
-                            await self?.showPlaylist(
-                                id: playlist.id, name: playlist.name,
-                                coverArt: playlist.coverArt, session: session)
-                            completion()
-                        }
-                    }
-                    row.handler = { [weak self] _, completion in
-                        self?.showPlaylistList(ranked, session: session)
-                        completion()
-                    }
-                    Task { @MainActor [weak self] in
-                        await self?.refreshImageRow(
-                            row,
-                            covers: lists.map { ($0.name, $0.coverArt, $0.id) },
-                            session: session,
-                            style: .playlist)
-                    }
-                    items.append(row)
+                    let albums = Array(frequent.prefix(gridCap))
+                    items.append(contentsOf: coverGridRows(
+                        titles: albums.map(\.name),
+                        style: .album,
+                        rowText: hideRowText ? nil : item.title,
+                        perRow: perRow,
+                        session: session,
+                        covers: { albums.map { ($0.name, $0.coverArt, $0.id) } },
+                        onTile: { [weak self] index in
+                            guard albums.indices.contains(index) else { return }
+                            let album = albums[index]
+                            Task {
+                                await self?.showAlbum(
+                                    id: album.id, name: album.name, session: session,
+                                    coverArt: album.coverArt, artist: album.artist,
+                                    year: album.year, songCount: album.songCount)
+                            }
+                        },
+                        onRow: { [weak self] in
+                            self?.showAlbumList(frequent, title: "Jump Back In", session: session)
+                        }))
                 default:
                     items.append(CPListItem(text: item.title, detailText: item.subtitle))
                 }
@@ -808,6 +768,53 @@ final class CarPlaySceneDelegate: UIResponder,
             }
         }
         return sections
+    }
+
+    /// Chunks covers into one or more `CPListImageRowItem`s (Aura-style multi-row
+    /// grids under a section header). `rowText` is nil when the section header
+    /// already names the rail.
+    private func coverGridRows(
+        titles: [String],
+        style: CarPlayArtwork.Style,
+        rowText: String?,
+        perRow: Int,
+        session: AppSession,
+        covers: () -> [(String, String?, String?)],
+        onTile: @escaping (Int) -> Void,
+        onRow: @escaping () -> Void
+    ) -> [CPListImageRowItem] {
+        let allCovers = covers()
+        guard !titles.isEmpty else { return [] }
+        let strideSize = max(1, perRow)
+        var rows: [CPListImageRowItem] = []
+        var offset = 0
+        while offset < titles.count {
+            let end = min(offset + strideSize, titles.count)
+            let sliceTitles = Array(titles[offset..<end])
+            let base = offset
+            let images = sliceTitles.map {
+                CarPlayArtwork.placeholder(style: style, title: $0)
+            }
+            let row = CPListImageRowItem(text: rowText, images: images)
+            row.listImageRowHandler = { _, index, completion in
+                let absolute = base + index
+                guard sliceTitles.indices.contains(index) else { completion(); return }
+                onTile(absolute)
+                completion()
+            }
+            row.handler = { _, completion in
+                onRow()
+                completion()
+            }
+            let sliceCovers = Array(allCovers[offset..<min(end, allCovers.count)])
+            Task { @MainActor [weak self] in
+                await self?.refreshImageRow(
+                    row, covers: sliceCovers, session: session, style: style)
+            }
+            rows.append(row)
+            offset = end
+        }
+        return rows
     }
 
     private func activateRecent(_ entry: RecentPlayEntry, session: AppSession) {
@@ -1016,17 +1023,6 @@ final class CarPlaySceneDelegate: UIResponder,
         pushTemplate(list, kind: .browse)
     }
 
-    private func showPlaylistList(_ playlists: [Playlist], session: AppSession) {
-        guard interfaceController != nil else { return }
-        let capped = Array(playlists.prefix(listLimits.maxItems))
-        let list = CPListTemplate(
-            title: "Playlists",
-            sections: clampSections([
-                CPListSection(items: playlistItems(capped, session: session))
-            ]))
-        pushTemplate(list, kind: .browse)
-    }
-
     private func recentItem(_ entry: RecentPlayEntry, session: AppSession) -> CPListItem? {
         switch entry {
         case .song(let song):
@@ -1097,24 +1093,6 @@ final class CarPlaySceneDelegate: UIResponder,
             }
             return item
         }
-    }
-
-    private func rankedHomePlaylists(_ playlists: [Playlist],
-                                     recent: [RecentPlayEntry]) -> [Playlist] {
-        var recentIDs: [String] = []
-        var seen = Set<String>()
-        for entry in recent {
-            if case .playlist(let id, _, _) = entry, seen.insert(id).inserted {
-                recentIDs.append(id)
-            }
-        }
-        let byID = Dictionary(uniqueKeysWithValues: playlists.map { ($0.id, $0) })
-        var ordered: [Playlist] = recentIDs.compactMap { byID[$0] }
-        let rest = playlists
-            .filter { !seen.contains($0.id) && $0.name != RotationManager.playlistName }
-            .sorted { ($0.songCount ?? 0) > ($1.songCount ?? 0) }
-        ordered.append(contentsOf: rest)
-        return Array(ordered.prefix(16))
     }
 
     // MARK: - Search
@@ -1725,14 +1703,18 @@ final class CarPlaySceneDelegate: UIResponder,
         let visibleLists = lists.filter {
             !PlaylistOrderStore.isHidden($0.id, userKey: userKey)
         }
+        let newest = CarPlayHomeCache.cachedNewest
+        // Browse actions + optional Recently Added image row take slots first.
+        let reserved = 7 + (newest.isEmpty ? 0 : 1)
         let playlistCap = min(
-            listLimits.maxItems - 6,
+            max(0, listLimits.maxItems - reserved),
             listsLimited ? CarPlayListPolicy.limitedListItemCap : CarPlayListPolicy.libraryBrowseCap)
         let input = CarPlayListPolicy.LibraryInput(
             serverError: error,
             playlists: visibleLists.map { CarPlayListPolicy.PlaylistRef(id: $0.id, title: $0.name) },
-            downloadedCount: session.downloads.downloadedCount)
-        let spec = CarPlayListPolicy.buildLibrarySpec(input, playlistCap: max(0, playlistCap))
+            downloadedCount: session.downloads.downloadedCount,
+            newestTitles: newest.map(\.name))
+        let spec = CarPlayListPolicy.buildLibrarySpec(input, playlistCap: playlistCap)
         let clamped = CarPlayListPolicy.clamp(spec.sections, limits: listLimits)
 
         if error {
@@ -1746,11 +1728,25 @@ final class CarPlaySceneDelegate: UIResponder,
         // Match by stable id / role — never by display title (Navidrome allows
         // duplicate playlist names; a playlist can also be named "Albums").
         let byID = Dictionary(uniqueKeysWithValues: visibleLists.map { ($0.id, $0) })
+        let perRow = max(1, Int(CPMaximumNumberOfGridImages))
         var sections: [CPListSection] = []
         for section in clamped {
-            var items: [CPListItem] = []
+            let hideRowText = section.header != nil
+            var items: [CPListTemplateItem] = []
             for item in section.items {
                 switch item.role {
+                case .shuffleLibrary:
+                    let row = actionItem(
+                        title: item.title,
+                        detail: item.subtitle,
+                        systemImage: "shuffle")
+                    row.handler = { [weak self] _, completion in
+                        Task {
+                            await self?.playShuffleAll(session: session)
+                            completion()
+                        }
+                    }
+                    items.append(row)
                 case .browseDownloaded:
                     let row = libraryShortcut(
                         title: item.title,
@@ -1814,6 +1810,29 @@ final class CarPlaySceneDelegate: UIResponder,
                         }
                     }
                     items.append(row)
+                case .recentlyAdded:
+                    let albums = Array(newest.prefix(CarPlayListPolicy.libraryNewestTiles))
+                    items.append(contentsOf: coverGridRows(
+                        titles: albums.map(\.name),
+                        style: .album,
+                        rowText: hideRowText ? nil : item.title,
+                        perRow: perRow,
+                        session: session,
+                        covers: { albums.map { ($0.name, $0.coverArt, $0.id) } },
+                        onTile: { [weak self] index in
+                            guard albums.indices.contains(index) else { return }
+                            let album = albums[index]
+                            Task {
+                                await self?.showAlbum(
+                                    id: album.id, name: album.name, session: session,
+                                    coverArt: album.coverArt, artist: album.artist,
+                                    year: album.year, songCount: album.songCount)
+                            }
+                        },
+                        onRow: { [weak self] in
+                            self?.showAlbumList(
+                                albums, title: "Recently Added", session: session)
+                        }))
                 case .emptyPlaylists, .message:
                     items.append(CPListItem(text: item.title, detailText: item.subtitle))
                 case .playlist:
@@ -1826,8 +1845,10 @@ final class CarPlaySceneDelegate: UIResponder,
                     items.append(CPListItem(text: item.title, detailText: item.subtitle))
                 }
             }
-            sections.append(CPListSection(
-                items: items, header: section.header, sectionIndexTitle: nil))
+            if !items.isEmpty {
+                sections.append(CPListSection(
+                    items: items, header: section.header, sectionIndexTitle: nil))
+            }
         }
         return sections
     }

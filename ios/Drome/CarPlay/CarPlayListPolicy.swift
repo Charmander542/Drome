@@ -15,9 +15,14 @@ enum CarPlayListPolicy: Sendable {
     static let limitedListItemCap = 12
     /// Comfortable home image-row tile count (system may show fewer).
     static let homeImageRowTiles = 8
+    /// Album cover grids under section headers (Recently Played / Jump Back In /
+    /// Recently Added) — enough for two CarPlay image rows when the vehicle allows.
+    static let homeAlbumGridTiles = 12
     /// Library playlist / browse caps when not in limited UI.
     static let libraryBrowseCap = 40
     static let detailTrackCap = 80
+    /// Recently Added cover tiles on the Library tab.
+    static let libraryNewestTiles = 12
     /// Page size inside a letter list (More… pushes one extra level).
     static let letterPageSize = 20
     static let letterPageSizeLimited = 8
@@ -64,6 +69,8 @@ enum CarPlayListPolicy: Sendable {
         case browseTopRated
         case browseSmartPlaylists
         case browseGenres
+        case shuffleLibrary
+        case recentlyAdded
         case playlist
         case emptyPlaylists
         case message
@@ -137,6 +144,20 @@ enum CarPlayListPolicy: Sendable {
         var serverError: Bool
         var playlists: [PlaylistRef]
         var downloadedCount: Int
+        /// Album titles for the Recently Added cover grid (Aura-style Library).
+        var newestTitles: [String]
+
+        init(
+            serverError: Bool,
+            playlists: [PlaylistRef],
+            downloadedCount: Int,
+            newestTitles: [String] = []
+        ) {
+            self.serverError = serverError
+            self.playlists = playlists
+            self.downloadedCount = downloadedCount
+            self.newestTitles = newestTitles
+        }
     }
 
     /// Clamp section/item counts to CarPlay maxima. Preserves leading sections
@@ -310,9 +331,15 @@ enum CarPlayListPolicy: Sendable {
 
     // MARK: - Shared template blueprints (scene delegate + XCTest)
 
-    /// Structure the CarPlay Home tab follows. Image-row sections use the row
-    /// title only (no duplicate section header).
-    static func buildHomeSpec(_ input: HomeInput, tileCap: Int = homeImageRowTiles) -> TemplateSpec {
+    /// Structure the CarPlay Home tab follows — Aura-inspired layout:
+    /// thin quick actions, then **Made For You** / **Recently Played** /
+    /// **Jump Back In** as section-headered cover rails (row text omitted so
+    /// the header carries the name). Playlists live on Library, not Home.
+    static func buildHomeSpec(
+        _ input: HomeInput,
+        tileCap: Int = homeImageRowTiles,
+        albumGridCap: Int = homeAlbumGridTiles
+    ) -> TemplateSpec {
         if input.serverError {
             return TemplateSpec(
                 title: "Home",
@@ -329,51 +356,51 @@ enum CarPlayListPolicy: Sendable {
         }
 
         var sections: [SectionSpec] = []
-        var quick: [ItemSpec] = [
-            ItemSpec(title: "Shuffle All", subtitle: "Random from your library",
-                     hasImage: true, role: .action),
+        let shelfCap = max(1, tileCap)
+        let gridCap = max(1, albumGridCap)
+
+        // Compact actions — Song Radio stays on Home; Shuffle All is on Library.
+        sections.append(SectionSpec(items: [
             ItemSpec(title: "Song Radio", subtitle: "Instant Mix from what’s playing",
                      hasImage: true, role: .action)
-        ]
-        let cap = max(1, tileCap)
+        ]))
+
+        var madeForYou: [ItemSpec] = []
         if !input.mixTitles.isEmpty {
-            quick.append(ItemSpec(
+            madeForYou.append(ItemSpec(
                 title: "Daily Mixes", hasImage: true,
-                imageRowTitles: Array(input.mixTitles.prefix(cap)),
+                imageRowTitles: Array(input.mixTitles.prefix(shelfCap)),
                 role: .imageRow))
         }
         if !input.vibeTitles.isEmpty {
-            quick.append(ItemSpec(
+            madeForYou.append(ItemSpec(
                 title: "Vibe Tuner", hasImage: true,
-                imageRowTitles: Array(input.vibeTitles.prefix(cap)),
+                imageRowTitles: Array(input.vibeTitles.prefix(shelfCap)),
                 role: .imageRow))
         }
-        sections.append(SectionSpec(header: "Quick Play", items: quick))
+        if !madeForYou.isEmpty {
+            sections.append(SectionSpec(header: "Made For You", items: madeForYou))
+        }
 
         if !input.recentTitles.isEmpty {
-            sections.append(SectionSpec(items: [
+            sections.append(SectionSpec(header: "Recently Played", items: [
                 ItemSpec(title: "Recently Played", hasImage: true,
-                         imageRowTitles: Array(input.recentTitles.prefix(cap)),
+                         imageRowTitles: Array(input.recentTitles.prefix(gridCap)),
                          role: .imageRow)
             ]))
         }
         if !input.frequentTitles.isEmpty {
-            sections.append(SectionSpec(items: [
+            sections.append(SectionSpec(header: "Jump Back In", items: [
                 ItemSpec(title: "Jump Back In", hasImage: true,
-                         imageRowTitles: Array(input.frequentTitles.prefix(cap)),
-                         role: .imageRow)
-            ]))
-        }
-        if !input.playlistTitles.isEmpty {
-            sections.append(SectionSpec(items: [
-                ItemSpec(title: "Playlists", hasImage: true,
-                         imageRowTitles: Array(input.playlistTitles.prefix(cap)),
+                         imageRowTitles: Array(input.frequentTitles.prefix(gridCap)),
                          role: .imageRow)
             ]))
         }
 
-        let onlyQuick = sections.count == 1 && quick.count <= 1
-        if onlyQuick {
+        let hasRails = sections.contains { section in
+            section.items.contains { $0.isImageRow }
+        }
+        if !hasRails {
             return TemplateSpec(
                 title: "Home",
                 tabTitle: "Home",
@@ -388,6 +415,8 @@ enum CarPlayListPolicy: Sendable {
         return TemplateSpec(title: "Home", tabTitle: "Home", sections: sections)
     }
 
+    /// Library: Shuffle + browse shortcuts, then **Recently Added** cover grid,
+    /// then playlists — mirrors Aura’s Library-first shuffle / newest albums feel.
     static func buildLibrarySpec(_ input: LibraryInput, playlistCap: Int) -> TemplateSpec {
         if input.serverError {
             return TemplateSpec(
@@ -402,7 +431,9 @@ enum CarPlayListPolicy: Sendable {
                     ])
                 ])
         }
-        let browse = [
+        let actions = [
+            ItemSpec(title: "Shuffle All", subtitle: "Random from your library",
+                     hasImage: true, role: .shuffleLibrary),
             ItemSpec(
                 title: "Downloaded",
                 subtitle: input.downloadedCount == 0
@@ -425,22 +456,32 @@ enum CarPlayListPolicy: Sendable {
                      hasImage: true, accessory: "disclosure",
                      role: .browseGenres)
         ]
+        var sections: [SectionSpec] = [
+            SectionSpec(header: "Browse", items: actions)
+        ]
+        let newestCap = max(1, libraryNewestTiles)
+        if !input.newestTitles.isEmpty {
+            sections.append(SectionSpec(header: "Recently Added", items: [
+                ItemSpec(
+                    title: "Recently Added", hasImage: true,
+                    imageRowTitles: Array(input.newestTitles.prefix(newestCap)),
+                    role: .recentlyAdded)
+            ]))
+        }
         let playlists = Array(input.playlists.prefix(max(0, playlistCap))).map {
             ItemSpec(
                 title: $0.title, hasImage: true, accessory: "disclosure",
                 role: .playlist, id: $0.id)
         }
+        sections.append(SectionSpec(header: "Playlists", items: playlists.isEmpty
+                                    ? [ItemSpec(title: "No playlists",
+                                                subtitle: "Create one on your iPhone",
+                                                role: .emptyPlaylists)]
+                                    : playlists))
         return TemplateSpec(
             title: "Your Library",
             tabTitle: "Your Library",
-            sections: [
-                SectionSpec(header: "Browse", items: browse),
-                SectionSpec(header: "Playlists", items: playlists.isEmpty
-                            ? [ItemSpec(title: "No playlists",
-                                        subtitle: "Create one on your iPhone",
-                                        role: .emptyPlaylists)]
-                            : playlists)
-            ])
+            sections: sections)
     }
 
     static func buildSearchChooserSpec() -> TemplateSpec {
