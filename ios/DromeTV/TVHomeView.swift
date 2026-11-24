@@ -1,47 +1,66 @@
 import SwiftUI
 
+/// Home on the TV — Aura-inspired shelves: Made For You first, then listening
+/// rails as horizontal cover rows (no hero poster clutter).
 struct TVHomeView: View {
     @EnvironmentObject private var session: AppSession
-    @EnvironmentObject private var env: AppEnvironment
     @EnvironmentObject private var player: PlayerEngine
 
     @State private var recent: [RecentPlayEntry] = []
     @State private var playlists: [Playlist] = []
     @State private var frequent: [Album] = []
     @State private var newest: [Album] = []
+    @State private var dailyMixes: [DailyMix] = []
     @State private var error: String?
+
+    private var hasCompanion: Bool { session.wishlist != nil }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 42) {
-                HStack(alignment: .firstTextBaseline) {
-                    TVScreenTitle(title: greeting, subtitle: "Pick something up, or browse what’s new")
-                    Spacer()
-                    Button("Sign Out", role: .destructive) { env.signOut() }
-                        .buttonStyle(.plain)
-                }
-                .padding(.horizontal, TVTheme.gutter)
-                .padding(.top, 12)
-
+            LazyVStack(alignment: .leading, spacing: 50) {
                 if let error {
-                    Text(error).foregroundStyle(.red).padding(.horizontal, TVTheme.gutter)
+                    Text(error)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, TVTheme.gutter)
                 }
 
-                if let featured = recent.first {
-                    TVPosterButton(
-                        title: recentTitle(featured),
-                        subtitle: recentSubtitle(featured),
-                        coverArt: recentCover(featured),
-                        fallbackId: featured.id,
-                        size: TVTheme.hero)
-                    {
-                        Task { await playRecent(featured) }
+                if hasCompanion, !dailyMixes.isEmpty {
+                    TVRail(title: "Made For You", items: dailyMixes) { mix in
+                        TVPosterButton(
+                            title: mix.title,
+                            subtitle: mix.subtitle,
+                            coverArt: mix.coverArtIds.first
+                                ?? mix.songs.first?.coverArt
+                                ?? mix.songs.first?.id,
+                            fallbackId: mix.id)
+                        {
+                            guard !mix.songs.isEmpty else { return }
+                            player.play(
+                                mix.songs,
+                                startAt: 0,
+                                context: PlaybackContext(label: mix.title, kind: .mix))
+                            NowPlayingPresenter.open()
+                        }
                     }
-                    .padding(.horizontal, TVTheme.gutter)
                 }
 
-                if recent.count > 1 {
-                    TVRail(title: "Recently played", items: Array(recent.dropFirst())) { entry in
+                TVRail(title: "Vibe Tuner", items: MoodVibe.spectrum) { vibe in
+                    TVPosterButton(
+                        title: vibe.title,
+                        subtitle: vibe.dialHint,
+                        coverArt: nil,
+                        fallbackId: "",
+                        placeholder: vibe.symbol)
+                    {
+                        Task {
+                            let ok = await MoodPlayer.play(vibe, session: session)
+                            if ok { NowPlayingPresenter.open() }
+                        }
+                    }
+                }
+
+                if !recent.isEmpty {
+                    TVRail(title: "Recently Played", items: recent) { entry in
                         TVPosterButton(
                             title: recentTitle(entry),
                             subtitle: recentSubtitle(entry),
@@ -53,8 +72,34 @@ struct TVHomeView: View {
                     }
                 }
 
+                if !newest.isEmpty {
+                    TVRail(title: "Recently Added", items: newest) { album in
+                        TVPosterLink(
+                            title: album.name,
+                            subtitle: album.artist,
+                            coverArt: album.coverArt,
+                            fallbackId: album.id)
+                        {
+                            TVAlbumDetailView(albumID: album.id, name: album.name)
+                        }
+                    }
+                }
+
+                if !frequent.isEmpty {
+                    TVRail(title: "On Repeat", items: frequent) { album in
+                        TVPosterLink(
+                            title: album.name,
+                            subtitle: album.artist,
+                            coverArt: album.coverArt,
+                            fallbackId: album.id)
+                        {
+                            TVAlbumDetailView(albumID: album.id, name: album.name)
+                        }
+                    }
+                }
+
                 if !playlists.isEmpty {
-                    TVRail(title: "Playlists", items: playlists) { playlist in
+                    TVRail(title: "Your Playlists", items: playlists) { playlist in
                         TVPosterLink(
                             title: playlist.name,
                             subtitle: playlist.songCountLabel,
@@ -65,44 +110,13 @@ struct TVHomeView: View {
                         }
                     }
                 }
-                if !frequent.isEmpty {
-                    TVRail(title: "Jump back in", items: frequent) { album in
-                        TVPosterLink(
-                            title: album.name,
-                            subtitle: album.artist,
-                            coverArt: album.coverArt,
-                            fallbackId: album.id)
-                        {
-                            TVAlbumDetailView(albumID: album.id, name: album.name)
-                        }
-                    }
-                }
-                if !newest.isEmpty {
-                    TVRail(title: "New in your library", items: newest) { album in
-                        TVPosterLink(
-                            title: album.name,
-                            subtitle: album.artist,
-                            coverArt: album.coverArt,
-                            fallbackId: album.id)
-                        {
-                            TVAlbumDetailView(albumID: album.id, name: album.name)
-                        }
-                    }
-                }
             }
-            .padding(.bottom, 60)
+            .padding(.vertical, 40)
+            .padding(.bottom, 40)
         }
+        .scrollClipDisabled()
         .background(TVTheme.canvas.ignoresSafeArea())
         .task(id: session.id) { await load() }
-    }
-
-    private var greeting: String {
-        let hour = Calendar.current.component(.hour, from: Date())
-        switch hour {
-        case 5..<12: return "Good morning"
-        case 12..<17: return "Good afternoon"
-        default: return "Good evening"
-        }
     }
 
     private func load() async {
@@ -111,16 +125,24 @@ struct TVHomeView: View {
             let userKey = session.account.userKey
             let db = AppEnvironment.shared.database
             async let recentTask = Task.detached(priority: .utility) {
-                (try? db.recentPlayEntries(userKey: userKey, limit: 20)) ?? []
+                (try? db.recentPlayEntries(userKey: userKey, limit: 24)) ?? []
             }.value
-            async let f = session.client.albumList(type: .frequent, size: 16)
-            async let n = session.client.albumList(type: .newest, size: 16)
+            async let f = session.client.albumList(type: .frequent, size: 24)
+            async let n = session.client.albumList(type: .newest, size: 24)
             async let p = session.client.playlists()
+            let mixes: [DailyMix]
+            if let wishlist = session.wishlist {
+                let exclude = Array(session.rotation.excludedIDs)
+                mixes = (try? await wishlist.dailyMixes(excludeSongIDs: exclude))?.mixes ?? []
+            } else {
+                mixes = []
+            }
             let (rec, freq, neu, lists) = try await (recentTask, f, n, p)
             recent = rec
             frequent = freq
             newest = neu
-            playlists = Array(lists.sorted { ($0.songCount ?? 0) > ($1.songCount ?? 0) }.prefix(16))
+            playlists = Array(lists.sorted { ($0.songCount ?? 0) > ($1.songCount ?? 0) }.prefix(24))
+            dailyMixes = mixes
         } catch {
             self.error = error.localizedDescription
         }
@@ -164,7 +186,11 @@ struct TVHomeView: View {
             guard let playlist = try? await session.client.playlist(id: id), !playlist.songs.isEmpty else { return }
             player.play(playlist.songs, startAt: 0, context: PlaybackContext(label: name, kind: .playlist(id: id)))
         case .mix(_, let name, let cover, _):
-            player.play([cover], startAt: 0, context: PlaybackContext(label: name, kind: .mix))
+            if let mix = dailyMixes.first(where: { $0.title == name }), !mix.songs.isEmpty {
+                player.play(mix.songs, startAt: 0, context: PlaybackContext(label: name, kind: .mix))
+            } else {
+                player.play([cover], startAt: 0, context: PlaybackContext(label: name, kind: .mix))
+            }
         }
         NowPlayingPresenter.open()
     }

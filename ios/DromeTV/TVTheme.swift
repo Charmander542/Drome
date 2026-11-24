@@ -8,13 +8,15 @@ enum TVTheme {
     static let accent = DromeTheme.accent
     static let surface = DromeTheme.elevated
     static let gutter: CGFloat = 80
-    /// Square art matches the tvOS focus highlight.
-    static let poster: CGFloat = 280
+    /// Square art matches the tvOS focus highlight (Aura uses ~300).
+    static let poster: CGFloat = 300
     static let hero: CGFloat = 400
     static let posterGap: CGFloat = 48
     static let posterPad: CGFloat = 28
     static var posterCell: CGFloat { poster + posterPad * 2 }
-    static let focusPad: CGFloat = 56
+    static let focusPad: CGFloat = 30
+    /// Shelf section titles — large enough to read across the room.
+    static let shelfTitleSize: CGFloat = 36
 }
 
 struct TVScreenTitle: View {
@@ -44,7 +46,9 @@ struct TVPosterArt: View {
 
     var body: some View {
         RemoteImage(
-            url: session.artworkURL(id: coverArt ?? fallbackId, size: Int(size * 2)),
+            url: coverArt == nil && fallbackId.isEmpty
+                ? nil
+                : session.artworkURL(id: coverArt ?? fallbackId, size: Int(size * 2)),
             placeholderSymbol: placeholder)
             .frame(width: size, height: size)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -59,12 +63,12 @@ struct TVPosterCaption: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.system(size: 22, weight: .semibold))
+                .font(.system(size: 26, weight: .semibold))
                 .foregroundStyle(Color.white)
                 .lineLimit(1)
             if let subtitle, !subtitle.isEmpty {
                 Text(subtitle)
-                    .font(.system(size: 17, weight: .regular))
+                    .font(.system(size: 22, weight: .regular))
                     .foregroundStyle(TVTheme.dim)
                     .lineLimit(1)
             }
@@ -80,13 +84,19 @@ struct TVPosterButton: View {
     var coverArt: String?
     var fallbackId: String
     var size: CGFloat = TVTheme.poster
+    var placeholder: String = "music.note"
     let action: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             Button(action: action) {
-                TVPosterArt(coverArt: coverArt, fallbackId: fallbackId, size: size)
+                TVPosterArt(
+                    coverArt: coverArt,
+                    fallbackId: fallbackId,
+                    size: size,
+                    placeholder: placeholder)
             }
+            .buttonStyle(.borderless)
             TVPosterCaption(title: title, subtitle: subtitle, width: size)
         }
         .frame(width: size, alignment: .leading)
@@ -103,10 +113,11 @@ struct TVPosterLink<Destination: View>: View {
     @ViewBuilder var destination: () -> Destination
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             NavigationLink(destination: destination) {
                 TVPosterArt(coverArt: coverArt, fallbackId: fallbackId, size: size)
             }
+            .buttonStyle(.borderless)
             TVPosterCaption(title: title, subtitle: subtitle, width: size)
         }
         .frame(width: size, alignment: .leading)
@@ -114,24 +125,28 @@ struct TVPosterLink<Destination: View>: View {
     }
 }
 
+/// Titled horizontal row of cards — draws nothing when empty (Aura-style shelf).
 struct TVRail<Item: Identifiable, Content: View>: View {
     let title: String
     let items: [Item]
     @ViewBuilder var content: (Item) -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 26, weight: .bold, design: .rounded))
-                .padding(.horizontal, TVTheme.gutter)
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(alignment: .top, spacing: TVTheme.posterGap) {
-                    ForEach(items) { item in
-                        content(item)
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 20) {
+                Text(title)
+                    .font(.system(size: TVTheme.shelfTitleSize, weight: .bold))
+                    .padding(.horizontal, TVTheme.gutter)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: TVTheme.posterGap) {
+                        ForEach(items) { item in
+                            content(item)
+                        }
                     }
+                    .padding(.horizontal, TVTheme.gutter - TVTheme.posterPad)
+                    .padding(.vertical, TVTheme.focusPad)
                 }
-                .padding(.horizontal, TVTheme.gutter - TVTheme.posterPad)
-                .padding(.vertical, TVTheme.focusPad)
+                .scrollClipDisabled()
             }
         }
     }
