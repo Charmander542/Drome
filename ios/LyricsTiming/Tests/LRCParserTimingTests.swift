@@ -100,24 +100,43 @@ final class LRCParserTimingTests: XCTestCase {
         XCTAssertLessThanOrEqual(finish!, 10_000)
     }
 
-    func testWordWindowFillsShortGapToNextStamp() {
-        let lines = LRCParser.parse("""
-            [00:00.00]hello world
-            [00:03.00]next
-            """)
-        let end = LRCParser.lineEndMs(lines: lines, index: 0)
-        XCTAssertEqual(end, 3_000)
-        XCTAssertEqual(lines[0].words.last?.endMs, 3_000)
+    /// Aura: ordinary gaps (near song pace) run word windows to the next stamp.
+    func testOrdinaryLineWordWindowRunsToNextStamp() {
+        // Eight ~40-char lines every 3s → pace ≈ 75ms/char; sung ≈ 3.6s ≥ gap.
+        let lines = makeSong(timesMs: [0, 3_000, 6_000, 9_000, 12_000, 15_000, 18_000, 21_000])
+        XCTAssertEqual(LRCParser.lineEndMs(lines: lines, index: 1), 6_000)
+        XCTAssertEqual(lines[1].words.last?.endMs, 6_000)
     }
 
-    func testWordWindowStopsBeforeLongInstrumental() {
-        let lines = LRCParser.parse("""
-            [00:00.00]hello
-            [00:20.00]next
-            """)
-        let end = LRCParser.lineEndMs(lines: lines, index: 0)!
+    /// Aura: a long instrumental ends the sung window early so words don't crawl.
+    func testBreakEndsWordWindowBeforeNextStamp() {
+        let lines = makeSong(timesMs: [0, 3_000, 6_000, 9_000, 22_000, 25_000, 28_000, 31_000])
+        let end = LRCParser.lineEndMs(lines: lines, index: 3)!
+        XCTAssertGreaterThan(end, 9_000)
         XCTAssertLessThan(end, 20_000)
-        XCTAssertGreaterThanOrEqual(end, 1_500)
+    }
+
+    func testDistributedWordStartsAreMonotonicAcrossLine() {
+        let lines = makeSong(timesMs: [0, 3_000, 6_000, 9_000, 12_000, 15_000, 18_000, 21_000])
+        let words = lines[1].words
+        XCTAssertGreaterThanOrEqual(words.count, 2)
+        for i in 1..<words.count {
+            XCTAssertGreaterThan(words[i].startMs, words[i - 1].startMs)
+        }
+        XCTAssertEqual(words.first?.startMs, 3_000)
+        XCTAssertEqual(words.last?.endMs, 6_000)
+    }
+
+    /// ~40-character lines at the given starts (Aura LyricWordTimingTests helper).
+    private func makeSong(timesMs: [Int]) -> [LRCParser.Line] {
+        let chunk = String(repeating: "lala ", count: 10).trimmingCharacters(in: .whitespaces)
+        let body = timesMs.enumerated().map { idx, ms in
+            let m = ms / 60_000
+            let s = (ms % 60_000) / 1000
+            let cs = (ms % 1000) / 10
+            return String(format: "[%02d:%02d.%02d]%@", m, s, cs, chunk)
+        }.joined(separator: "\n")
+        return LRCParser.parse(body)
     }
 
     func testEnhancedLRCPreservesWordStarts() {

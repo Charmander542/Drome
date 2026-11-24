@@ -376,11 +376,10 @@ struct LyricsView: View {
             case .upcoming:
                 return Color.white.opacity(0.26)
             case .active:
+                // Light at word start and stay lit — dimming on endMs made words
+                // look early even when start timing was right.
                 if elapsedMs < word.startMs {
                     return Color.white.opacity(0.28)
-                }
-                if let end = word.endMs, elapsedMs >= end {
-                    return Color.white.opacity(0.7)
                 }
                 return .white
             }

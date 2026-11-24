@@ -343,9 +343,9 @@ enum LRCParser {
 
     /// When the line at `index` stops being sung (word karaoke window end).
     ///
-    /// Normal gaps (≤6s) fill through to the next stamp so words track the vocal.
-    /// Long instrumentals stop at the paced sung window so karaoke doesn’t crawl
-    /// across dead air — without advancing the *active line* early.
+    /// Aura `LyricWordTiming.lineEnd`: paced sung length with 20% slack, capped by
+    /// the next stamp. Ordinary gaps (≈ song pace) run all the way to the next
+    /// line so words land with the vocal; only a real instrumental ends early.
     static func lineEndMs(lines: [Line], index: Int, paceMs: Int? = nil) -> Int? {
         guard lines.indices.contains(index), let start = lines[index].startMs else { return nil }
         let pace = paceMs ?? paceMsPerChar(of: lines)
@@ -357,8 +357,6 @@ enum LRCParser {
 
         let sung = start + max(1_500, sungLength(lines[index].text) * pace * 12 / 10)
         if let next = nextStartMs(after: index, in: lines), next > start {
-            let gap = next - start
-            if gap <= 6_000 { return next }
             return min(next, sung)
         }
         return sung
