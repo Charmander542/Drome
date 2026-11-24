@@ -179,7 +179,6 @@
 				UI/Library/LibraryView.swift,
 				UI/Library/PlaylistDetailView.swift,
 				UI/Library/RatedLibraryView.swift,
-				UI/Library/SmartPlaylistsView.swift,
 				UI/Library/WishlistView.swift,
 				UI/MainTabView.swift,
 				UI/Onboarding/OnboardingAccentChooser.swift,

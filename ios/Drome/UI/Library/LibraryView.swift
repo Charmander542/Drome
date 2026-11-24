@@ -512,14 +512,6 @@ struct LibraryView: View {
                 .listRowBackground(DromeTheme.elevated)
 
                 NavigationLink {
-                    SmartPlaylistsView()
-                } label: {
-                    Label("Smart Playlists", systemImage: "wand.and.stars")
-                        .font(.body.weight(.semibold))
-                }
-                .listRowBackground(DromeTheme.elevated)
-
-                NavigationLink {
                     outOfRotationContent
                 } label: {
                     Label("Out of Rotation", systemImage: "lock.fill")
