@@ -47,17 +47,25 @@ final class CarPlayListPolicyTests: XCTestCase {
         XCTAssertLessThanOrEqual(clamped.count, limitedLimits.maxSections)
         XCTAssertLessThanOrEqual(
             clamped.reduce(0) { $0 + $1.items.count }, limitedLimits.maxItems)
-        XCTAssertEqual(clamped.first?.header, "Quick Play")
-        XCTAssertTrue(clamped.flatMap(\.items).contains { $0.title == "Shuffle All" })
+        // Aura-inspired: Song Radio up top, then Made For You / Recently Played
+        // / Jump Back In as section-headered cover rails (no Home playlists).
+        XCTAssertNil(clamped.first?.header)
+        XCTAssertTrue(clamped.flatMap(\.items).contains { $0.title == "Song Radio" })
+        XCTAssertFalse(clamped.flatMap(\.items).contains { $0.title == "Shuffle All" })
+        XCTAssertFalse(clamped.flatMap(\.items).contains { $0.title == "Playlists" })
         XCTAssertTrue(clamped.flatMap(\.items).contains { $0.isImageRow })
-        for section in clamped where section.items.contains(where: \.isImageRow)
-            && section.header != "Quick Play" {
-            XCTAssertNil(section.header)
+        let headers = clamped.compactMap(\.header)
+        XCTAssertTrue(headers.contains("Made For You"))
+        XCTAssertTrue(headers.contains("Recently Played"))
+        XCTAssertTrue(headers.contains("Jump Back In"))
+        for section in clamped where section.items.contains(where: \.isImageRow) {
+            XCTAssertNotNil(section.header, "Cover rails use section headers, not row titles")
         }
 
         let dump = CarPlayListPolicy.dumpSpec(home, limits: limitedLimits)
         print("--- CarPlay Home dump (online) ---\n\(dump)")
-        XCTAssertTrue(dump.contains("Shuffle All"))
+        XCTAssertTrue(dump.contains("Song Radio"))
+        XCTAssertTrue(dump.contains("Made For You"))
         XCTAssertTrue(dump.contains("Daily Mixes") || dump.contains("Vibe Tuner"))
     }
 
@@ -101,7 +109,8 @@ final class CarPlayListPolicyTests: XCTestCase {
                 playlists: (0..<40).map {
                     CarPlayListPolicy.PlaylistRef(id: "id-\($0)", title: "Playlist \($0)")
                 },
-                downloadedCount: 3),
+                downloadedCount: 3,
+                newestTitles: ["New Album 1", "New Album 2", "New Album 3"]),
             playlistCap: 7)
         XCTAssertEqual(library.tabTitle, "Your Library")
         let clamped = CarPlayListPolicy.clamp(library.sections, limits: limitedLimits)
@@ -110,6 +119,11 @@ final class CarPlayListPolicyTests: XCTestCase {
         let dump = CarPlayListPolicy.dumpSpec(library, limits: limitedLimits)
         print("--- CarPlay Library dump ---\n\(dump)")
         XCTAssertTrue(dump.contains("Your Library"))
+        XCTAssertTrue(dump.contains("Shuffle All"))
+        XCTAssertTrue(dump.contains("Recently Added"))
+        XCTAssertEqual(
+            library.sections.first?.items.first?.role,
+            .shuffleLibrary)
     }
 
     /// Duplicate playlist titles + a playlist named like a browse shortcut must
@@ -129,9 +143,11 @@ final class CarPlayListPolicyTests: XCTestCase {
         let playlistSection = spec.sections.first { $0.header == "Playlists" }?.items ?? []
 
         XCTAssertEqual(browse.map(\.role), [
-            .browseDownloaded, .browseArtists, .browseAlbums, .browseTopRated, .browseGenres
+            .shuffleLibrary, .browseDownloaded, .browseArtists, .browseAlbums,
+            .browseTopRated, .browseSmartPlaylists, .browseGenres
         ])
         XCTAssertEqual(browse.first { $0.role == .browseAlbums }?.title, "Albums")
+        XCTAssertEqual(browse.first?.role, .shuffleLibrary)
 
         XCTAssertEqual(playlistSection.count, 4)
         XCTAssertEqual(playlistSection.map(\.role), Array(repeating: .playlist, count: 4))
