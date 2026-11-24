@@ -254,9 +254,9 @@ struct LyricsView: View {
     }
 
     private func activeLineIndex(at elapsedMs: Int, in document: LyricsDocument) -> Int {
-        // Strict LRC stamps only — do not advance during instrumentals before
-        // the next line’s startMs (Aura mid-break focus made lines fire early).
-        LRCParser.activeLineIndex(lines: document.lines, atMs: elapsedMs)
+        // Aura current line: last started stamp, then mid-break focus so long
+        // instrumentals preview the coming line (words stay unlit until starts).
+        LRCParser.currentLineIndex(lines: document.lines, atMs: elapsedMs)
     }
 
     private func sourceLabel(_ source: String) -> String {
@@ -403,12 +403,12 @@ struct LyricsView: View {
             case .upcoming:
                 return Color.white.opacity(0.26)
             case .active:
-                // Light at word start and stay lit — dimming on endMs made words
-                // look early even when start timing was right.
-                if elapsedMs < word.startMs {
-                    return Color.white.opacity(0.28)
+                // Aura elapsed-at-time (incl. x4 cycle restarts). Stay lit once
+                // reached this pass — no endMs dim.
+                if word.isLit(atMs: elapsedMs) {
+                    return .white
                 }
-                return .white
+                return Color.white.opacity(0.28)
             }
         }
     }

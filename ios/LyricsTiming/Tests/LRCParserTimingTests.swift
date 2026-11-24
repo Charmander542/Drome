@@ -65,43 +65,82 @@ final class LRCParserTimingTests: XCTestCase {
         XCTAssertEqual(LRCParser.activeLineIndex(lines: lines, atMs: 10_000), 2)
     }
 
-    /// Long instrumental after a short line: highlight must stay on the current
-    /// stamp until the next line starts (Aura mid-break used to jump early).
-    func testActiveLineDoesNotJumpDuringInstrumental() {
+    /// Heard stamp stays put; focus may preview the next line mid-break.
+    func testActiveLineStampStaysUntilNextStarts() {
         let lines = LRCParser.parse("""
             [00:00.00]short
             [00:20.00]after break
             """)
-        // Halfway through a 20s gap — still on line 0.
         XCTAssertEqual(LRCParser.activeLineIndex(lines: lines, atMs: 10_000), 0)
         XCTAssertEqual(LRCParser.activeLineIndex(lines: lines, atMs: 19_999), 0)
         XCTAssertEqual(LRCParser.activeLineIndex(lines: lines, atMs: 20_000), 1)
     }
 
-    func testFocusIndexDoesNotActivateNextLineBeforeStamp() {
-        let lines = LRCParser.parse("""
-            [00:00.00]short line
-            [00:20.00]after break
-            """)
-        let last = LRCParser.activeLineIndex(lines: lines, atMs: 10_000)
-        let focus = LRCParser.focusIndex(lines: lines, after: last, atMs: 10_000)
-        XCTAssertEqual(focus, 0)
-        XCTAssertEqual(
-            LRCParser.focusIndex(lines: lines, after: last, atMs: 20_000),
-            1)
+    /// Aura: across a break, focus moves halfway between finish and next stamp.
+    func testFocusMovesHalfwayAcrossBreak() {
+        let lines = makeSong(timesMs: [0, 3_000, 6_000, 9_000, 22_000, 25_000, 28_000, 31_000])
+        let finished = LRCParser.lineFinishMs(lines: lines, index: 3)!
+        let halfway = finished + (22_000 - finished) / 2
+        XCTAssertEqual(LRCParser.focusIndex(lines: lines, after: 3, atMs: halfway - 100), 3)
+        XCTAssertEqual(LRCParser.focusIndex(lines: lines, after: 3, atMs: halfway + 100), 4)
     }
 
-    func testLineFinishUsesWordEndNotStartPlusBeat() {
+    /// Aura: focus never leaves a line before its last interpolated word has lit.
+    func testFocusNeverLeavesBeforeLastWord() {
+        let lines = makeSong(timesMs: [0, 3_000, 6_000, 9_000, 22_000, 25_000, 28_000, 31_000])
+        let lastWord = lines[3].words.last!.startMs
+        for step in 0..<260 {
+            let time = 9_000 + step * 50
+            if LRCParser.focusIndex(lines: lines, after: 3, atMs: time) == 4 {
+                XCTAssertGreaterThanOrEqual(time, lastWord)
+            }
+        }
+    }
+
+    /// Aura: ordinary line keeps focus until the next stamp.
+    func testOrdinaryLineKeepsFocus() {
+        let lines = makeSong(timesMs: [0, 3_000, 6_000, 9_000, 12_000, 15_000, 18_000, 21_000])
+        for step in 0..<60 {
+            let time = 3_000 + step * 50
+            XCTAssertEqual(LRCParser.focusIndex(lines: lines, after: 1, atMs: time), 1)
+        }
+    }
+
+    func testInterpolatedLineFinishUsesLineEndNotStartPlusBeat() {
         let lines = LRCParser.parse("""
             [00:00.00]hello world today
             [00:10.00]next
             """)
         let finish = LRCParser.lineFinishMs(lines: lines, index: 0)
         XCTAssertNotNil(finish)
-        // Pace-synthesized window should end near/before next stamp — not at
-        // first-word-start + 600ms (~600) which was the old Enhanced false positive.
         XCTAssertGreaterThan(finish!, 1_500)
         XCTAssertLessThanOrEqual(finish!, 10_000)
+        XCTAssertFalse(lines[0].words.contains(where: \.measured))
+    }
+
+    func testMeasuredLineFinishIsLastCuePlusBeat() {
+        let lines = LRCParser.parse("""
+            [00:09.00] <00:09.00>hold <00:10.00>on
+            [00:22.00]next
+            """)
+        XCTAssertTrue(lines[0].words.allSatisfy(\.measured))
+        XCTAssertEqual(LRCParser.lineFinishMs(lines: lines, index: 0), 10_600)
+    }
+
+    func testRepeatMarkerCyclesWordHighlight() {
+        let lines = LRCParser.parse("""
+            [00:00.00]hey ya friend x4
+            [00:08.00]next
+            """)
+        let words = lines[0].words
+        XCTAssertTrue(words.dropLast().allSatisfy { $0.cycle != nil })
+        XCTAssertEqual(words.last?.marker, true)
+        let second = words[1]
+        let period = second.cycle!.periodMs
+        XCTAssertTrue(second.isLit(atMs: second.startMs))
+        // Next pass: not yet at this word’s offset into the pass, then lit again.
+        XCTAssertFalse(second.isLit(atMs: second.startMs + period - 40))
+        XCTAssertTrue(second.isLit(atMs: second.startMs + period))
     }
 
     /// Aura: ordinary gaps (near song pace) run word windows to the next stamp.
