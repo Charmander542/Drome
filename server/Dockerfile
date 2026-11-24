@@ -60,7 +60,7 @@ ENV DROME_DB_PATH=/data/drome.db \
     MORNYE_EXT_ALLOW_ANY_WRITE=1 \
     MORNYE_DATA_DIR=/home/drome/.mornye \
     MORNYE_REGISTRIES=https://raw.githubusercontent.com/mornyeapp/Mornye-Extension/main/registry.json,https://raw.githubusercontent.com/mornyeapp/Mornye-Extension/main/registry-python.json \
-    DROME_SPOTIFLAC_EXTENSIONS=utilities,tidal-web,qobuz-web,amazon,deezer \
+    DROME_SPOTIFLAC_EXTENSIONS=utilities,tidal-web,qobuz-web,amazon,deezer,ytmusic-spotiflac \
     HOME=/home/drome
 EXPOSE 4534
 VOLUME ["/data", "/music"]

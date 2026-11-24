@@ -20,10 +20,11 @@ services:
       DROME_LISTEN_ADDR: :4534
       DROME_MUSIC_DIR: /music
       DROME_AUTO_DOWNLOAD: ${DROME_AUTO_DOWNLOAD:-true}
-      DROME_SPOTIFLAC_SERVICES: ${DROME_SPOTIFLAC_SERVICES:-tidal,qobuz,amazon,deezer}
+      # youtube is last-resort (lossy) for Spotify exclusives missing from FLAC stores.
+      DROME_SPOTIFLAC_SERVICES: ${DROME_SPOTIFLAC_SERVICES:-tidal,qobuz,amazon,deezer,youtube}
       # Mornye needs an extension registry (no built-in providers).
       MORNYE_REGISTRIES: ${MORNYE_REGISTRIES:-https://raw.githubusercontent.com/mornyeapp/Mornye-Extension/main/registry.json,https://raw.githubusercontent.com/mornyeapp/Mornye-Extension/main/registry-python.json}
-      DROME_SPOTIFLAC_EXTENSIONS: ${DROME_SPOTIFLAC_EXTENSIONS:-utilities,tidal-web,qobuz-web,amazon,deezer}
+      DROME_SPOTIFLAC_EXTENSIONS: ${DROME_SPOTIFLAC_EXTENSIONS:-utilities,tidal-web,qobuz-web,amazon,deezer,ytmusic-spotiflac}
       DROME_PUBLIC_URL: ${DROME_PUBLIC_URL:-}
       # Optional: admin (or any user allowed to scan) so downloads appear immediately.
       DROME_NAVIDROME_SCAN_USER: ${DROME_NAVIDROME_SCAN_USER:-}
