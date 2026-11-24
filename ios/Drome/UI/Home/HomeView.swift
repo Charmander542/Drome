@@ -324,14 +324,18 @@ struct HomeView: View {
             add(album.coverArt ?? album.id)
         }
         for playlist in playlists.prefix(14) {
-            add(playlist.coverArt ?? playlist.id)
+            add(PlaylistCoverStore.serverCoverID(
+                coverArt: playlist.coverArt, playlistID: playlist.id))
         }
         for entry in recent.prefix(14) {
             switch entry {
             case .song(let song):
                 add(song.coverArt ?? song.albumId ?? song.id)
-            case .album(_, _, let song), .playlist(_, _, let song), .mix(_, _, let song, _):
+            case .album(_, _, let song), .mix(_, _, let song, _):
                 add(song.coverArt ?? song.albumId ?? song.id)
+            case .playlist(let id, _, _):
+                // Same id as the playlist card / detail hero — not the seed track.
+                add(PlaylistCoverStore.serverCoverID(coverArt: nil, playlistID: id))
             }
         }
         ImageLoader.shared.prefetch(urls, limit: 40, priority: .userInitiated)

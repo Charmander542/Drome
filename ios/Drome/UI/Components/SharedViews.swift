@@ -324,12 +324,13 @@ struct PlaylistCard: View {
     }
 }
 
-/// Playlist cover from Navidrome (`getCoverArt` on the playlist id / coverArt).
+/// Playlist cover from Navidrome (`getCoverArt` on the playlist id).
 /// Always hits the server image so custom uploads and mosaics load; never gates
 /// on a local “remembered collage” flag that left Library/Home blank.
 ///
-/// Hero sizes (≥600) start at the list thumb size so a warm 96px cache paints on
-/// the first frame, then promote to full size while holding the thumb bitmap.
+/// One stable cover id + one request size. `RemoteImage` paints any warm
+/// `coverCache` thumb on the first frame, then sharpens when this URL arrives —
+/// no progressive size flip (that swapped mosaics and felt like two covers).
 struct PlaylistArtwork: View {
     let playlistID: String
     var coverArt: String?
@@ -338,32 +339,12 @@ struct PlaylistArtwork: View {
     var cacheBust: TimeInterval = 0
     var placeholderSymbol: String = "music.note.list"
 
-    /// Displayed getCoverArt size — heroes begin at the thumb size for instant paint.
-    @State private var displaySize: Int
-
-    init(
-        playlistID: String,
-        coverArt: String? = nil,
-        session: AppSession,
-        size: Int = 300,
-        cacheBust: TimeInterval = 0,
-        placeholderSymbol: String = "music.note.list"
-    ) {
-        self.playlistID = playlistID
-        self.coverArt = coverArt
-        self.session = session
-        self.size = size
-        self.cacheBust = cacheBust
-        self.placeholderSymbol = placeholderSymbol
-        _displaySize = State(initialValue: Self.initialDisplaySize(for: size))
-    }
-
     private var coverID: String {
         PlaylistCoverStore.serverCoverID(coverArt: coverArt, playlistID: playlistID)
     }
 
     private var url: URL? {
-        session.artworkURL(id: coverID, size: displaySize)
+        session.artworkURL(id: coverID, size: size)
     }
 
     var body: some View {
@@ -371,38 +352,13 @@ struct PlaylistArtwork: View {
             url: url,
             placeholderSymbol: placeholderSymbol,
             holdImageWhileLoading: true)
-            // Omit `displaySize` from id so 96→hero promotion keeps the thumb on screen.
-            .id("\(playlistID)-\(coverID)-\(Int(cacheBust))")
+            .id("\(playlistID)-\(Int(cacheBust))")
             .onAppear {
-                if let url {
-                    ImageLoader.shared.clearFailed(for: url)
-                }
+                guard let url else { return }
+                ImageLoader.shared.clearFailed(for: url)
+                // Kick the exact size immediately; preview paints from coverCache.
+                ImageLoader.shared.prefetch([url], limit: 1, priority: .userInitiated)
             }
-            .task(id: "\(coverID)-\(size)-\(Int(cacheBust))") {
-                await promoteToFullSizeIfNeeded()
-            }
-            .onChange(of: cacheBust) { _, _ in
-                displaySize = Self.initialDisplaySize(for: size)
-            }
-    }
-
-    private static func initialDisplaySize(for size: Int) -> Int {
-        size >= 600 ? 96 : size
-    }
-
-    @MainActor
-    private func promoteToFullSizeIfNeeded() async {
-        guard size > displaySize else { return }
-        // Warm / reuse the list thumb before flipping the request to hero size.
-        if let thumb = session.artworkURL(id: coverID, size: 96) {
-            ImageLoader.shared.clearFailed(for: thumb)
-            _ = await ImageLoader.shared.image(for: thumb, priority: .userInitiated)
-        }
-        displaySize = size
-        if let full = session.artworkURL(id: coverID, size: size) {
-            ImageLoader.shared.clearFailed(for: full)
-            ImageLoader.shared.prefetch([full], limit: 1, priority: .userInitiated)
-        }
     }
 }
 
@@ -473,7 +429,7 @@ struct HorizontalPlaylistRail: View {
                 LazyHStack(spacing: 14) {
                     ForEach(playlists) { playlist in
                         NavigationLink {
-                            PlaylistDetailView(playlistID: playlist.id)
+                            PlaylistDetailView(playlistID: playlist.id, placeholder: playlist)
                         } label: {
                             PlaylistCard(playlist: playlist)
                                 .frame(width: 148)
