@@ -46,7 +46,7 @@ struct SettingsView: View {
     }
 
     private var listeningSubtitle: String {
-        if listeningPreview.isEmpty { return "Your year in music" }
+        if listeningPreview.isEmpty { return "Hours, plays, and your top five" }
         let hours = listeningPreview.hoursListened
         let hoursText = hours >= 10
             ? String(format: "%.0f h", hours.rounded())
@@ -210,8 +210,8 @@ struct SettingsView: View {
                 route: .librarySync,
                 accessibilityId: "drome.settings.tile.scan")
             settingsLink(
-                title: "Wrapped",
-                systemImage: "calendar",
+                title: "Your listening",
+                systemImage: "chart.bar",
                 route: .listeningStats,
                 subtitle: listeningSubtitle,
                 accessibilityId: "drome.settings.listening")

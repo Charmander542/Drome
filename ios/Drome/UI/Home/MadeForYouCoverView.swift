@@ -2,9 +2,8 @@ import SwiftUI
 
 /// Templated cover for on-device Made for you cards.
 ///
-/// Adapted from Aura’s `GeneratedCoverView` (GPL-3.0) — see NOTICE.
-/// Drome keeps song collages for discovery / companion Daily Mixes; daypart
-/// and vibe cards get a nature-keyed gradient so the shelf reads at a glance.
+/// Nature mapping adapted from Aura’s GeneratedCoverView (GPL-3.0) — see NOTICE.
+/// Visual language stays Drome: small radius, Listening Club type, quiet icon wash.
 struct MadeForYouCoverView: View {
     enum Nature: Hashable {
         case daypart(String) // morning | afternoon | evening | night
@@ -17,7 +16,7 @@ struct MadeForYouCoverView: View {
     }
 
     let nature: Nature
-    var cornerRadius: CGFloat = 6
+    var cornerRadius: CGFloat = DromeTheme.Radius.sm
 
     var body: some View {
         GeometryReader { geo in
@@ -29,32 +28,31 @@ struct MadeForYouCoverView: View {
                     endPoint: .bottomTrailing)
 
                 Image(systemName: icon)
-                    .font(.system(size: side * 0.58, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.20))
-                    .rotationEffect(.degrees(-12))
-                    .offset(x: side * 0.20, y: -side * 0.18)
+                    .font(.system(size: side * 0.42, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.14))
+                    .offset(x: side * 0.22, y: -side * 0.16)
                     .allowsHitTesting(false)
 
                 LinearGradient(
-                    colors: [.clear, .black.opacity(0.42)],
+                    colors: [.clear, .black.opacity(0.48)],
                     startPoint: .center,
                     endPoint: .bottom)
 
                 if side >= 72 {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 3) {
                         Spacer(minLength: 0)
-                        Text(kicker.uppercased())
-                            .font(.system(size: max(side * 0.065, 8), weight: .heavy))
-                            .foregroundStyle(.white.opacity(0.72))
-                            .tracking(1.1)
+                        Text(kicker)
+                            .font(DromeTheme.overlineFont)
+                            .foregroundStyle(.white.opacity(0.68))
+                            .textCase(.uppercase)
                         Text(label)
-                            .font(.system(size: max(side * 0.12, 13), weight: .bold, design: .rounded))
+                            .font(.system(size: max(side * 0.11, 13), weight: .bold, design: .default))
                             .foregroundStyle(.white)
                             .lineLimit(2)
                             .minimumScaleFactor(0.7)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                    .padding(side * 0.085)
+                    .padding(side * 0.09)
                 }
             }
         }
@@ -100,12 +98,12 @@ struct MadeForYouCoverView: View {
 
     private var kicker: String {
         switch nature {
-        case .daypart: return "Right now"
+        case .daypart: return "Now"
         case .vibe: return "Vibe"
         case .genre: return "Genre"
         case .discovery: return "Discover"
-        case .nonstop: return "Endless"
-        case .retrospective: return "Wrapped"
+        case .nonstop: return "Station"
+        case .retrospective: return "Listening"
         case .generic: return "Mix"
         }
     }
@@ -118,7 +116,7 @@ struct MadeForYouCoverView: View {
         case .genre: return "guitars.fill"
         case .discovery: return "sparkles"
         case .nonstop: return "infinity"
-        case .retrospective: return "calendar"
+        case .retrospective: return "chart.bar"
         case .generic: return "music.note.list"
         }
     }
@@ -129,15 +127,11 @@ struct MadeForYouCoverView: View {
         case .vibe(let raw): return vibePalette(raw)
         case .genre(let name): return hashedPalette(name)
         case .discovery:
-            return [
-                Color(hue: 0.48, saturation: 0.55, brightness: 0.72),
-                Color(hue: 0.58, saturation: 0.70, brightness: 0.38)
-            ]
+            // Matches MadeForYouStore Fresh Finds colors.
+            return [Color(hex: "#2A9D8F"), Color(hex: "#1D3557")]
         case .nonstop:
-            return [
-                Color(hue: 0.02, saturation: 0.72, brightness: 0.88),
-                Color(hue: 0.98, saturation: 0.80, brightness: 0.28)
-            ]
+            // Matches MadeForYouStore Nonstop — teal/slate, not Aura red.
+            return [Color(hex: "#2A9D8F"), Color(hex: "#0B132B")]
         case .retrospective(let seed): return hashedPalette(seed)
         case .generic(let seed): return hashedPalette(seed)
         }
@@ -166,25 +160,13 @@ struct MadeForYouCoverView: View {
     private func daypartPalette(_ d: String) -> [Color] {
         switch d {
         case "morning":
-            return [
-                Color(hue: 0.09, saturation: 0.55, brightness: 0.96),
-                Color(hue: 0.03, saturation: 0.72, brightness: 0.78)
-            ]
+            return [Color(hex: "#F4A261"), Color(hex: "#9B2226")]
         case "afternoon":
-            return [
-                Color(hue: 0.08, saturation: 0.70, brightness: 0.92),
-                Color(hue: 0.98, saturation: 0.75, brightness: 0.55)
-            ]
+            return [Color(hex: "#E76F51"), Color(hex: "#6D2E4B")]
         case "evening":
-            return [
-                Color(hue: 0.78, saturation: 0.55, brightness: 0.72),
-                Color(hue: 0.72, saturation: 0.70, brightness: 0.32)
-            ]
+            return [Color(hex: "#7B61FF"), Color(hex: "#1B1340")]
         default:
-            return [
-                Color(hue: 0.64, saturation: 0.55, brightness: 0.42),
-                Color(hue: 0.70, saturation: 0.80, brightness: 0.18)
-            ]
+            return [Color(hex: "#1D3557"), Color(hex: "#0B132B")]
         }
     }
 
@@ -193,35 +175,17 @@ struct MadeForYouCoverView: View {
     private func vibePalette(_ raw: String) -> [Color] {
         switch MoodVibe(rawValue: raw) {
         case .focus:
-            return [
-                Color(hue: 0.12, saturation: 0.22, brightness: 0.72),
-                Color(hue: 0.10, saturation: 0.35, brightness: 0.28)
-            ]
+            return [Color(hex: "#C4B896"), Color(hex: "#1E1C16")]
         case .chill:
-            return [
-                Color(hue: 0.36, saturation: 0.45, brightness: 0.62),
-                Color(hue: 0.40, saturation: 0.55, brightness: 0.28)
-            ]
+            return [Color(hex: "#40916C"), Color(hex: "#081C15")]
         case .feelGood:
-            return [
-                Color(hue: 0.12, saturation: 0.70, brightness: 0.95),
-                Color(hue: 0.05, saturation: 0.75, brightness: 0.62)
-            ]
+            return [Color(hex: "#F4A261"), Color(hex: "#9B2226")]
         case .hype:
-            return [
-                Color(hue: 0.04, saturation: 0.82, brightness: 0.92),
-                Color(hue: 0.98, saturation: 0.80, brightness: 0.42)
-            ]
+            return [Color(hex: "#E76F51"), Color(hex: "#370617")]
         case .lateNight:
-            return [
-                Color(hue: 0.62, saturation: 0.45, brightness: 0.72),
-                Color(hue: 0.68, saturation: 0.65, brightness: 0.28)
-            ]
+            return [Color(hex: "#6B8CFF"), Color(hex: "#0B132B")]
         case .heartbreak:
-            return [
-                Color(hue: 0.98, saturation: 0.55, brightness: 0.72),
-                Color(hue: 0.95, saturation: 0.70, brightness: 0.28)
-            ]
+            return [Color(hex: "#C9184A"), Color(hex: "#370617")]
         default:
             return hashedPalette(raw)
         }
@@ -237,12 +201,13 @@ struct MadeForYouCoverView: View {
 
     private func hashedPalette(_ seed: String) -> [Color] {
         let hue = Double(Self.stableHash(seed) % 360) / 360.0
+        // Keep saturation closer to Drome vibe cards (not neon Aura editorial).
         return [
-            Color(hue: hue, saturation: 0.70, brightness: 0.78),
+            Color(hue: hue, saturation: 0.48, brightness: 0.62),
             Color(
-                hue: (hue + 0.09).truncatingRemainder(dividingBy: 1),
-                saturation: 0.82,
-                brightness: 0.48)
+                hue: (hue + 0.07).truncatingRemainder(dividingBy: 1),
+                saturation: 0.55,
+                brightness: 0.28)
         ]
     }
 }

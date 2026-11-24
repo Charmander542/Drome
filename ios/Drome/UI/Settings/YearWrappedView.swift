@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// Year / period retrospective built from on-device play history.
+/// Year / period listening retrospective — same chrome as the rest of Settings.
 ///
-/// Adapted from Aura’s `WrappedView` ideas (GPL-3.0) — see NOTICE.
-/// Drome stays device-only for now (no Last.fm); save tops as a playlist.
+/// Features adapted from Aura Wrapped ideas (GPL-3.0); layout follows
+/// `ListeningStatsView` / DromeTheme, not Aura’s marketing hero page.
 struct YearWrappedView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
@@ -16,304 +16,296 @@ struct YearWrappedView: View {
     @State private var statusMessage: String?
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 22) {
-                hero
-                periodPicker
-                if isLoading {
-                    ProgressView()
-                        .tint(DromeTheme.accent)
-                        .padding(.top, 40)
-                } else if stats.isEmpty {
-                    emptyState
-                } else {
-                    saveButton
-                    statTiles
-                    if !stats.topSongs.isEmpty { topSongs }
-                    if !stats.topArtists.isEmpty { topArtists }
-                    if !stats.topAlbums.isEmpty { topAlbums }
-                    if !stats.topGenres.isEmpty { topGenres }
+        List {
+            periodPicker
+            if isLoading {
+                Section {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                    .listRowBackground(DromeTheme.elevated)
                 }
-                if let statusMessage {
-                    Text(statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(DromeTheme.muted)
+            } else if stats.isEmpty {
+                emptyState
+            } else {
+                summarySection
+                if !stats.personality.isEmpty {
+                    personalityRow
                 }
+                saveSection
+                rankedSection(title: "Top artists", items: stats.topArtists, placeholder: "person.fill")
+                rankedSection(title: "Top albums", items: stats.topAlbums, placeholder: "square.stack.fill")
+                topSongsSection
+                topGenresSection
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 40)
         }
+        .listStyle(.insetGrouped)
         .scrollIndicators(.hidden)
+        .scrollContentBackground(.hidden)
         .background(Color.black)
-        .navigationTitle("Wrapped")
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Your listening")
+        .navigationBarTitleDisplayMode(.large)
+        .accessibilityIdentifier("drome.listening.stats")
+        .preferredColorScheme(.dark)
         .onAppear { reload() }
         .onChange(of: period) { _, _ in
             saved = false
+            statusMessage = nil
             reload()
         }
     }
 
-    private var hero: some View {
-        VStack(spacing: 14) {
-            MadeForYouCoverView(
-                nature: .retrospective(period.wrappedLabel),
-                cornerRadius: 24)
-            .frame(width: 200, height: 200)
-            .shadow(color: .black.opacity(0.35), radius: 16, y: 8)
-
-            Text(period.title)
-                .font(.largeTitle.bold())
-                .foregroundStyle(.white)
-            Text(stats.isEmpty ? "Your year in music" : stats.personality)
-                .font(.headline)
-                .foregroundStyle(DromeTheme.accent)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 8)
-    }
-
     private var periodPicker: some View {
-        Picker("Period", selection: $period) {
-            Text(ListeningStatsPeriod.thisYear.title).tag(ListeningStatsPeriod.thisYear)
-            Text(ListeningStatsPeriod.days30.title).tag(ListeningStatsPeriod.days30)
-            Text(ListeningStatsPeriod.days7.title).tag(ListeningStatsPeriod.days7)
-            Text(ListeningStatsPeriod.allTime.title).tag(ListeningStatsPeriod.allTime)
+        Section {
+            Picker("Period", selection: $period) {
+                ForEach(ListeningStatsPeriod.allCases) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+            .listRowBackground(Color.clear)
+            .accessibilityIdentifier("drome.listening.period")
         }
-        .pickerStyle(.segmented)
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "hourglass")
-                .font(.system(size: 36, weight: .semibold))
-                .foregroundStyle(DromeTheme.muted)
-            Text("Your Wrapped is still being written")
+        Section {
+            VStack(spacing: 12) {
+                Image(systemName: "chart.bar.xaxis")
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundStyle(DromeTheme.muted)
+                Text("No plays yet")
+                    .font(DromeTheme.rowTitle)
+                    .foregroundStyle(.white)
+                Text("Start listening and your stats for \(period.title) will show up here.")
+                    .font(DromeTheme.captionFont)
+                    .foregroundStyle(DromeTheme.muted)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 28)
+            .listRowBackground(DromeTheme.elevated)
+        }
+    }
+
+    private var summarySection: some View {
+        Section {
+            HStack(spacing: 0) {
+                summaryCell(value: hoursLabel, label: "Hours")
+                Divider().frame(height: 36).overlay(DromeTheme.divider)
+                summaryCell(value: "\(stats.totalPlays)", label: "Plays")
+                Divider().frame(height: 36).overlay(DromeTheme.divider)
+                summaryCell(value: "\(stats.activeDays)", label: "Days")
+            }
+            .padding(.vertical, 8)
+            .listRowBackground(DromeTheme.elevated)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(hoursLabel) hours, \(stats.totalPlays) plays, \(stats.activeDays) days")
+        } header: {
+            Text("Summary")
+        }
+    }
+
+    private var personalityRow: some View {
+        Section {
+            Text(stats.personality)
                 .font(DromeTheme.rowTitle)
                 .foregroundStyle(.white)
-            Text("Keep listening — top songs, artists, and genres for \(period.title) show up here.")
-                .font(DromeTheme.captionFont)
-                .foregroundStyle(DromeTheme.muted)
-                .multilineTextAlignment(.center)
+                .listRowBackground(DromeTheme.elevated)
         }
-        .padding(28)
-        .frame(maxWidth: .infinity)
-        .background(DromeTheme.elevated, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    private var saveButton: some View {
-        Button {
-            Task { await saveAsPlaylist() }
-        } label: {
-            HStack(spacing: 10) {
-                ZStack {
-                    Circle()
-                        .fill(saved ? DromeTheme.accent : DromeTheme.accent.opacity(0.15))
-                        .frame(width: 34, height: 34)
+    private var saveSection: some View {
+        Section {
+            Button {
+                Task { await saveAsPlaylist() }
+            } label: {
+                HStack {
+                    Text(saved ? "Saved to Playlists" : "Save top songs as playlist")
+                        .foregroundStyle(saved ? DromeTheme.muted : DromeTheme.accent)
+                    Spacer()
                     if isSaving {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: saved ? "checkmark" : "plus")
-                            .font(.subheadline.bold())
-                            .foregroundStyle(saved ? .white : DromeTheme.accent)
+                        ProgressView()
+                    } else if saved {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(DromeTheme.muted)
                     }
                 }
-                Text(saved ? "Saved to Playlists" : "Save as Playlist")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(saved ? DromeTheme.muted : .white)
-                Spacer()
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(DromeTheme.elevated, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .disabled(isSaving || saved || stats.topSongs.isEmpty)
-    }
+            .disabled(isSaving || saved || stats.topSongs.isEmpty)
+            .listRowBackground(DromeTheme.elevated)
 
-    private var statTiles: some View {
-        LazyVGrid(
-            columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
-            spacing: 12
-        ) {
-            tile("Songs Played", "\(stats.totalPlays)", "play.circle.fill")
-            tile("Listening Time", hoursLabel, "clock.fill")
-            tile("Unique Songs", "\(stats.uniqueSongs)", "music.note")
-            tile("Artists", "\(stats.uniqueArtists)", "music.mic")
+            if let statusMessage {
+                Text(statusMessage)
+                    .font(DromeTheme.captionFont)
+                    .foregroundStyle(DromeTheme.muted)
+                    .listRowBackground(DromeTheme.elevated)
+            }
         }
     }
 
-    private func tile(_ title: String, _ value: String, _ icon: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: icon)
-                .font(.title3)
-                .foregroundStyle(DromeTheme.accent)
+    private func summaryCell(value: String, label: String) -> some View {
+        VStack(spacing: 4) {
             Text(value)
-                .font(.title.bold())
+                .font(.system(size: 22, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
+                .minimumScaleFactor(0.7)
                 .lineLimit(1)
-                .minimumScaleFactor(0.6)
-            Text(title)
-                .font(.caption)
+            Text(label)
+                .font(DromeTheme.captionFont)
                 .foregroundStyle(DromeTheme.muted)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(DromeTheme.elevated, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .frame(maxWidth: .infinity)
     }
 
     private var hoursLabel: String {
+        let hours = stats.hoursListened
+        if hours >= 10 {
+            return String(format: "%.0f", hours.rounded())
+        }
+        if hours >= 1 {
+            return String(format: "%.1f", hours)
+        }
         let minutes = max(0, stats.totalSeconds / 60)
-        if minutes <= 0 { return "—" }
-        if minutes < 60 { return "\(minutes) min" }
-        let hours = Double(minutes) / 60.0
-        return hours < 10
-            ? String(format: "%.1f hrs", hours)
-            : "\(Int(hours.rounded())) hrs"
+        if minutes > 0 { return "\(minutes)m" }
+        return "0"
     }
 
-    private var topSongs: some View {
-        card("Top Songs", icon: "star.fill") {
-            ForEach(Array(stats.topSongs.prefix(5).enumerated()), id: \.element.id) { index, entry in
-                Button {
-                    playSong(entry.song, in: stats.topSongs.map(\.song))
-                } label: {
-                    rankRow(
-                        rank: index + 1,
-                        title: entry.song.title,
-                        subtitle: entry.song.displayArtist,
-                        cover: entry.song.coverArt ?? entry.song.albumId,
-                        plays: entry.playCount)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    private var topArtists: some View {
-        card("Top Artists", icon: "music.mic") {
-            ForEach(Array(stats.topArtists.prefix(5).enumerated()), id: \.element.id) { index, item in
-                rankRow(
-                    rank: index + 1,
-                    title: item.name,
-                    subtitle: nil,
-                    cover: item.coverArt,
-                    plays: item.playCount,
-                    circle: true)
-            }
-        }
-    }
-
-    private var topAlbums: some View {
-        card("Top Albums", icon: "square.stack.fill") {
-            ForEach(Array(stats.topAlbums.prefix(5).enumerated()), id: \.element.id) { index, item in
-                rankRow(
-                    rank: index + 1,
-                    title: item.name,
-                    subtitle: item.subtitle,
-                    cover: item.coverArt,
-                    plays: item.playCount)
-            }
-        }
-    }
-
-    private var topGenres: some View {
-        let maxPlays = max(stats.topGenres.first?.playCount ?? 1, 1)
-        return card("Top Genres", icon: "guitars.fill") {
-            ForEach(stats.topGenres) { genre in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(genre.name)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.white)
-                        Spacer()
-                        Text("\(genre.playCount)×")
-                            .font(.caption)
+    private func rankedSection(
+        title: String,
+        items: [ListeningStats.RankedItem],
+        placeholder: String
+    ) -> some View {
+        Section {
+            if items.isEmpty {
+                Text("Nothing here yet")
+                    .foregroundStyle(DromeTheme.muted)
+                    .listRowBackground(DromeTheme.elevated)
+            } else {
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    HStack(spacing: 12) {
+                        Text("\(index + 1)")
+                            .font(.subheadline.weight(.bold).monospacedDigit())
+                            .foregroundStyle(DromeTheme.muted)
+                            .frame(width: 22, alignment: .trailing)
+                        RemoteImage(
+                            url: session.artworkURL(id: item.coverArt, size: 96),
+                            placeholderSymbol: placeholder
+                        )
+                        .frame(width: 44, height: 44)
+                        .clipShape(RoundedRectangle(cornerRadius: DromeTheme.Radius.sm, style: .continuous))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.name)
+                                .font(DromeTheme.rowTitle)
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            if let subtitle = item.subtitle, !subtitle.isEmpty {
+                                Text(subtitle)
+                                    .font(DromeTheme.captionFont)
+                                    .foregroundStyle(DromeTheme.muted)
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer(minLength: 8)
+                        Text("\(item.playCount)")
+                            .font(.subheadline.weight(.semibold).monospacedDigit())
                             .foregroundStyle(DromeTheme.muted)
                     }
-                    GeometryReader { geo in
-                        Capsule()
-                            .fill(DromeTheme.accent.opacity(0.25))
-                            .overlay(alignment: .leading) {
-                                Capsule()
-                                    .fill(DromeTheme.accent)
-                                    .frame(
-                                        width: geo.size.width
-                                            * CGFloat(genre.playCount)
-                                            / CGFloat(maxPlays))
+                    .listRowBackground(DromeTheme.elevated)
+                    .accessibilityLabel("\(item.name), \(item.playCount) plays")
+                }
+            }
+        } header: {
+            Text(title)
+        }
+    }
+
+    private var topSongsSection: some View {
+        Section {
+            if stats.topSongs.isEmpty {
+                Text("Nothing here yet")
+                    .foregroundStyle(DromeTheme.muted)
+                    .listRowBackground(DromeTheme.elevated)
+            } else {
+                ForEach(Array(stats.topSongs.enumerated()), id: \.element.id) { index, entry in
+                    Button {
+                        playSong(entry.song, in: stats.topSongs.map(\.song))
+                    } label: {
+                        HStack(spacing: 12) {
+                            Text("\(index + 1)")
+                                .font(.subheadline.weight(.bold).monospacedDigit())
+                                .foregroundStyle(DromeTheme.muted)
+                                .frame(width: 22, alignment: .trailing)
+                            RemoteImage(url: session.artworkURL(for: entry.song, size: 96))
+                                .frame(width: 44, height: 44)
+                                .clipShape(RoundedRectangle(cornerRadius: DromeTheme.Radius.sm, style: .continuous))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.song.title)
+                                    .font(DromeTheme.rowTitle)
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                Text(entry.song.displayArtist)
+                                    .font(DromeTheme.captionFont)
+                                    .foregroundStyle(DromeTheme.muted)
+                                    .lineLimit(1)
                             }
+                            Spacer(minLength: 8)
+                            Text("\(entry.playCount)")
+                                .font(.subheadline.weight(.semibold).monospacedDigit())
+                                .foregroundStyle(DromeTheme.muted)
+                        }
                     }
-                    .frame(height: 8)
+                    .buttonStyle(.plain)
+                    .listRowBackground(DromeTheme.elevated)
+                    .accessibilityLabel("\(entry.song.title), \(entry.playCount) plays")
                 }
             }
+        } header: {
+            Text("Top songs")
         }
     }
 
-    private func card<Content: View>(
-        _ title: String,
-        icon: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .foregroundStyle(DromeTheme.accent)
-                Text(title)
-                    .font(.title3.bold())
-                    .foregroundStyle(.white)
-            }
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(DromeTheme.elevated, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-
-    private func rankRow(
-        rank: Int,
-        title: String,
-        subtitle: String?,
-        cover: String?,
-        plays: Int,
-        circle: Bool = false
-    ) -> some View {
-        HStack(spacing: 12) {
-            Text("\(rank)")
-                .font(.subheadline.bold().monospacedDigit())
-                .foregroundStyle(rank == 1 ? .white : DromeTheme.muted)
-                .frame(width: 26, height: 26)
-                .background(
-                    rank == 1 ? DromeTheme.accent : DromeTheme.elevated2,
-                    in: Circle())
-            Group {
-                if circle {
-                    RemoteImage(url: session.artworkURL(id: cover, size: 96), placeholderSymbol: "person.fill")
-                        .frame(width: 44, height: 44)
-                        .clipShape(Circle())
-                } else {
-                    RemoteImage(url: session.artworkURL(id: cover, size: 96), placeholderSymbol: "music.note")
-                        .frame(width: 44, height: 44)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    private var topGenresSection: some View {
+        Section {
+            if stats.topGenres.isEmpty {
+                Text("Nothing here yet")
+                    .foregroundStyle(DromeTheme.muted)
+                    .listRowBackground(DromeTheme.elevated)
+            } else {
+                let maxPlays = max(stats.topGenres.first?.playCount ?? 1, 1)
+                ForEach(stats.topGenres) { genre in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(genre.name)
+                                .font(DromeTheme.rowTitle)
+                                .foregroundStyle(.white)
+                            Spacer()
+                            Text("\(genre.playCount)")
+                                .font(.subheadline.weight(.semibold).monospacedDigit())
+                                .foregroundStyle(DromeTheme.muted)
+                        }
+                        GeometryReader { geo in
+                            Capsule()
+                                .fill(DromeTheme.elevated2)
+                                .overlay(alignment: .leading) {
+                                    Capsule()
+                                        .fill(DromeTheme.accent)
+                                        .frame(
+                                            width: geo.size.width
+                                                * CGFloat(genre.playCount)
+                                                / CGFloat(maxPlays))
+                                }
+                        }
+                        .frame(height: 6)
+                    }
+                    .listRowBackground(DromeTheme.elevated)
                 }
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                if let subtitle, !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(DromeTheme.muted)
-                        .lineLimit(1)
-                }
-            }
-            Spacer()
-            Text("\(plays)×")
-                .font(.caption.weight(.semibold).monospacedDigit())
-                .foregroundStyle(DromeTheme.muted)
+        } header: {
+            Text("Top genres")
         }
     }
 
@@ -322,7 +314,7 @@ struct YearWrappedView: View {
         player.play(
             queue,
             startAt: index,
-            context: PlaybackContext(label: "Wrapped • \(period.title)", kind: .mix))
+            context: PlaybackContext(label: "Your listening · \(period.title)", kind: .mix))
     }
 
     private func saveAsPlaylist() async {
@@ -331,7 +323,7 @@ struct YearWrappedView: View {
         defer { isSaving = false }
         let ids = Array(stats.topSongs.map(\.song.id).prefix(50))
         guard !ids.isEmpty else { return }
-        let name = "Wrapped • \(period.title)"
+        let name = "Listening · \(period.title)"
         do {
             let existing = try await session.client.playlists()
             if let match = existing.first(where: { $0.name == name }) {
@@ -340,7 +332,7 @@ struct YearWrappedView: View {
                 _ = try await session.client.createPlaylist(name: name, songIds: ids)
             }
             saved = true
-            statusMessage = "Saved “\(name)” to your playlists"
+            statusMessage = "Saved “\(name)”"
         } catch {
             statusMessage = error.localizedDescription
         }

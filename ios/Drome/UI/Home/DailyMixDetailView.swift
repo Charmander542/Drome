@@ -78,28 +78,22 @@ struct DailyMixDetailView: View {
                     Button {
                         Task { await saveAsPlaylist(mix) }
                     } label: {
-                        HStack(spacing: 8) {
+                        HStack {
+                            Text(saved ? "Saved to Playlists" : "Save as Playlist")
+                            Spacer()
                             if isSaving {
-                                ProgressView().controlSize(.small)
-                                Text("Saving…")
+                                ProgressView()
                             } else if saved {
-                                Image(systemName: "checkmark.circle.fill")
-                                Text("Saved")
-                            } else {
-                                Image(systemName: "plus.circle")
-                                Text("Save as Playlist")
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(DromeTheme.muted)
                             }
                         }
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(DromeTheme.accent)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                        .background(DromeTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .font(DromeTheme.rowTitle)
+                        .foregroundStyle(saved ? DromeTheme.muted : DromeTheme.accent)
                     }
                     .buttonStyle(.plain)
                     .disabled(allSongs.isEmpty || isSaving || saved)
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+                    .listRowBackground(DromeTheme.elevated)
                 }
 
                 if let statusMessage {

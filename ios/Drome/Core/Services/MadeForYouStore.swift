@@ -178,7 +178,7 @@ enum MadeForYouStore {
                 id: "mfy.nonstop",
                 title: "Nonstop",
                 subtitle: "What you like, and more around it — without end",
-                colors: ["#EB534D", "#1A0A0A"],
+                colors: ["#2A9D8F", "#0B132B"],
                 songs: songs)
         }
 
