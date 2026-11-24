@@ -575,11 +575,27 @@ final class AppSession: ObservableObject, Identifiable {
 
         // Nested ObservableObject — bubble changes so alerts / UI bound to
         // `session.connect?.…` actually refresh (e.g. switch-device prompt).
-        connect?.objectWillChange
+        // Only the values views read through the session are forwarded: the
+        // Connect poll loop republishes devices / session every couple of
+        // seconds, and forwarding all of that re-rendered every screen.
+        if let connect {
+            Publishers.MergeMany([
+                connect.$isRemote.removeDuplicates().dropFirst()
+                    .map { _ in () }.eraseToAnyPublisher(),
+                connect.$showSwitchPrompt.removeDuplicates().dropFirst()
+                    .map { _ in () }.eraseToAnyPublisher(),
+                connect.$switchPromptDeviceName.removeDuplicates().dropFirst()
+                    .map { _ in () }.eraseToAnyPublisher(),
+                connect.$notice.removeDuplicates().dropFirst()
+                    .map { _ in () }.eraseToAnyPublisher(),
+                connect.$remoteSession.map { $0?.isPlaying }.removeDuplicates().dropFirst()
+                    .map { _ in () }.eraseToAnyPublisher(),
+            ])
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }
             .store(in: &playbackSideEffectCancellables)
+        }
 
         // History writes must never contend with the audio render path.
         player.onTrackStarted = { [weak self, player] song in
