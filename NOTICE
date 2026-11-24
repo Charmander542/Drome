@@ -17,5 +17,13 @@ licensed under the GNU General Public License v3.0.
 Adapted files include (non-exhaustive):
   - ios/Drome/UI/Home/MadeForYouCoverView.swift
     (from Aura GeneratedCoverView / MixCoverView ideas)
+  - ios/Drome/UI/Home/MixCollageView.swift
+    (from Aura MixCollageView)
+  - ios/Drome/Core/Services/Energy.swift
+    (from Aura Energy heuristic)
+  - ios/Drome/Core/Services/MadeForYouStore.swift
+    (genre mixes / Nonstop / served-rotation ideas from MixGenerator)
+  - ios/Drome/UI/Settings/YearWrappedView.swift
+    (from Aura WrappedView ideas)
 
 Aura remains a separate project; Drome is not affiliated with Aura.

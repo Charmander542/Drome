@@ -47,7 +47,7 @@ struct HomeView: View {
                         DailyMixRail(
                             mixes: madeForYou,
                             title: "Made for you",
-                            subtitle: "Daypart, vibes, and fresh finds from your library — rebuilds through the day.",
+                            subtitle: "Daypart, vibes, genres, Nonstop, and fresh finds — rebuilds through the day.",
                             isLoading: madeForYouLoading,
                             loadError: madeForYou.isEmpty && !madeForYouLoading
                                 ? "Couldn’t build mixes yet."

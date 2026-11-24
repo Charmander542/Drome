@@ -9,7 +9,10 @@ struct MadeForYouCoverView: View {
     enum Nature: Hashable {
         case daypart(String) // morning | afternoon | evening | night
         case vibe(String)    // MoodVibe.rawValue
+        case genre(String)   // genre display name
         case discovery
+        case nonstop
+        case retrospective(String) // year / period label
         case generic(String) // title seed
     }
 
@@ -68,8 +71,14 @@ struct MadeForYouCoverView: View {
         if id.hasPrefix("mfy.vibe.") {
             return .vibe(String(id.dropFirst("mfy.vibe.".count)))
         }
+        if id.hasPrefix("mfy.genre.") {
+            return .genre(String(id.dropFirst("mfy.genre.".count)))
+        }
         if id == "mfy.discovery" {
             return .discovery
+        }
+        if id == "mfy.nonstop" {
+            return .nonstop
         }
         return nil
     }
@@ -81,7 +90,10 @@ struct MadeForYouCoverView: View {
         case .daypart(let d): return daypartTitle(d)
         case .vibe(let raw):
             return MoodVibe(rawValue: raw)?.title ?? raw.capitalized
+        case .genre(let name): return name.capitalized
         case .discovery: return "Fresh Finds"
+        case .nonstop: return "Nonstop"
+        case .retrospective(let period): return period
         case .generic(let title): return title
         }
     }
@@ -90,7 +102,10 @@ struct MadeForYouCoverView: View {
         switch nature {
         case .daypart: return "Right now"
         case .vibe: return "Vibe"
+        case .genre: return "Genre"
         case .discovery: return "Discover"
+        case .nonstop: return "Endless"
+        case .retrospective: return "Wrapped"
         case .generic: return "Mix"
         }
     }
@@ -100,7 +115,10 @@ struct MadeForYouCoverView: View {
         case .daypart(let d): return daypartIcon(d)
         case .vibe(let raw):
             return MoodVibe(rawValue: raw)?.symbol ?? "music.note"
+        case .genre: return "guitars.fill"
         case .discovery: return "sparkles"
+        case .nonstop: return "infinity"
+        case .retrospective: return "calendar"
         case .generic: return "music.note.list"
         }
     }
@@ -109,11 +127,18 @@ struct MadeForYouCoverView: View {
         switch nature {
         case .daypart(let d): return daypartPalette(d)
         case .vibe(let raw): return vibePalette(raw)
+        case .genre(let name): return hashedPalette(name)
         case .discovery:
             return [
                 Color(hue: 0.48, saturation: 0.55, brightness: 0.72),
                 Color(hue: 0.58, saturation: 0.70, brightness: 0.38)
             ]
+        case .nonstop:
+            return [
+                Color(hue: 0.02, saturation: 0.72, brightness: 0.88),
+                Color(hue: 0.98, saturation: 0.80, brightness: 0.28)
+            ]
+        case .retrospective(let seed): return hashedPalette(seed)
         case .generic(let seed): return hashedPalette(seed)
         }
     }

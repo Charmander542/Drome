@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Playlist-style detail for a companion Daily Mix — browse tracks, then Play / Shuffle.
+/// Playlist-style detail for a Made for you / companion Daily Mix —
+/// browse tracks, Play / Shuffle, and optionally save as a server playlist.
 struct DailyMixDetailView: View {
     var mix: DailyMix?
     var title: String?
@@ -12,8 +13,12 @@ struct DailyMixDetailView: View {
     @State private var isLoading = false
     @State private var error: String?
     @State private var visibleSongCount = ProgressiveSongReveal.initial
+    @State private var isSaving = false
+    @State private var saved = false
+    @State private var statusMessage: String?
 
     private var display: DailyMix? { resolved ?? mix }
+    private var isNonstop: Bool { display?.id == "mfy.nonstop" }
 
     var body: some View {
         Group {
@@ -46,7 +51,7 @@ struct DailyMixDetailView: View {
                     Button {
                         play(mix, shuffled: false)
                     } label: {
-                        Label("Play", systemImage: "play.fill")
+                        Label(isNonstop ? "Start" : "Play", systemImage: isNonstop ? "infinity" : "play.fill")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
@@ -54,18 +59,55 @@ struct DailyMixDetailView: View {
                     .foregroundStyle(.white)
                     .disabled(allSongs.isEmpty)
 
-                    Button {
-                        play(mix, shuffled: true)
-                    } label: {
-                        Label("Shuffle", systemImage: "shuffle")
-                            .frame(maxWidth: .infinity)
+                    if !isNonstop {
+                        Button {
+                            play(mix, shuffled: true)
+                        } label: {
+                            Label("Shuffle", systemImage: "shuffle")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.white)
+                        .disabled(allSongs.isEmpty)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.white)
-                    .disabled(allSongs.isEmpty)
                 }
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+
+                if !isNonstop {
+                    Button {
+                        Task { await saveAsPlaylist(mix) }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if isSaving {
+                                ProgressView().controlSize(.small)
+                                Text("Saving…")
+                            } else if saved {
+                                Image(systemName: "checkmark.circle.fill")
+                                Text("Saved")
+                            } else {
+                                Image(systemName: "plus.circle")
+                                Text("Save as Playlist")
+                            }
+                        }
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(DromeTheme.accent)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 11)
+                        .background(DromeTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(allSongs.isEmpty || isSaving || saved)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+                }
+
+                if let statusMessage {
+                    Text(statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(DromeTheme.muted)
+                        .listRowBackground(Color.clear)
+                }
 
                 if !mix.subtitle.isEmpty {
                     Text(mix.subtitle)
@@ -84,10 +126,7 @@ struct DailyMixDetailView: View {
 
                 ForEach(Array(visible.enumerated()), id: \.element.id) { index, song in
                     SongRow(song: song, showAlbum: true) {
-                        player.shuffleMode = .off
-                        player.play(
-                            allSongs, startAt: index,
-                            context: PlaybackContext(label: mix.title, kind: .mix))
+                        play(mix, shuffled: false, startAt: index)
                     }
                     .listRowBackground(DromeTheme.background)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
@@ -125,16 +164,46 @@ struct DailyMixDetailView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private func play(_ mix: DailyMix, shuffled: Bool) {
+    private func play(_ mix: DailyMix, shuffled: Bool, startAt: Int = 0) {
         let songs = mix.songs.filter { !session.rotation.excludedIDs.contains($0.id) }
         guard !songs.isEmpty else { return }
+        if isNonstop {
+            // Nonstop = endless station: seed the queue and keep Infinite Shuffle on.
+            player.autoplayEnabled = true
+            player.play(
+                songs,
+                startAt: min(startAt, songs.count - 1),
+                context: PlaybackContext(label: "Nonstop", kind: .mix))
+            return
+        }
         if shuffled {
             player.playShuffled(songs, context: PlaybackContext(label: mix.title, kind: .mix))
         } else {
-            // Play = ordered from the first track (clears shuffle). Never resume
-            // a prior mid-mix / shuffled session.
-            player.play(songs, startAt: 0,
-                        context: PlaybackContext(label: mix.title, kind: .mix))
+            player.play(
+                songs,
+                startAt: min(startAt, songs.count - 1),
+                context: PlaybackContext(label: mix.title, kind: .mix))
+        }
+    }
+
+    private func saveAsPlaylist(_ mix: DailyMix) async {
+        guard !isSaving else { return }
+        isSaving = true
+        defer { isSaving = false }
+        let ids = mix.songs.map(\.id)
+        guard !ids.isEmpty else { return }
+        let name = mix.title
+        do {
+            let existing = try await session.client.playlists()
+            if let match = existing.first(where: { $0.name == name }) {
+                try await session.client.replacePlaylist(id: match.id, name: name, songIds: ids)
+            } else {
+                _ = try await session.client.createPlaylist(name: name, songIds: ids)
+            }
+            saved = true
+            statusMessage = "Saved “\(name)” to your playlists"
+        } catch {
+            statusMessage = error.localizedDescription
         }
     }
 

@@ -46,7 +46,7 @@ struct SettingsView: View {
     }
 
     private var listeningSubtitle: String {
-        if listeningPreview.isEmpty { return "Hours, plays, and your top five" }
+        if listeningPreview.isEmpty { return "Your year in music" }
         let hours = listeningPreview.hoursListened
         let hoursText = hours >= 10
             ? String(format: "%.0f h", hours.rounded())
@@ -210,8 +210,8 @@ struct SettingsView: View {
                 route: .librarySync,
                 accessibilityId: "drome.settings.tile.scan")
             settingsLink(
-                title: "Your listening",
-                systemImage: "chart.bar",
+                title: "Wrapped",
+                systemImage: "calendar",
                 route: .listeningStats,
                 subtitle: listeningSubtitle,
                 accessibilityId: "drome.settings.listening")
@@ -301,7 +301,7 @@ struct SettingsView: View {
             SettingsLibrarySyncView()
                 .settingsNavChrome()
         case .listeningStats:
-            ListeningStatsView()
+            YearWrappedView()
                 .settingsNavChrome()
                 .scrollIndicators(.hidden)
         case .appleWatch:
@@ -410,7 +410,7 @@ struct SettingsView: View {
         let database = session.database
         let userKey = session.account.userKey
         Task.detached(priority: .utility) {
-            let next = (try? database.listeningStats(userKey: userKey, period: .allTime)) ?? .empty
+            let next = (try? database.listeningStats(userKey: userKey, period: .thisYear)) ?? .empty
             await MainActor.run { listeningPreview = next }
         }
     }
