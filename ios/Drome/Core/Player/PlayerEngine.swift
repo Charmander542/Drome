@@ -67,6 +67,10 @@ final class PlayerEngine: ObservableObject {
     @Published private(set) var sharePlayParticipantCount = 0
     @Published private(set) var isEligibleForSharePlay = false
     @Published var sharePlayNotice: String?
+    /// Fraction of the track loaded ahead of the playhead (0…1) for the scrubber buffer.
+    @Published private(set) var bufferProgress: Double = 0
+    /// Waiting on the network / decoder — drives a quiet scrubber pulse.
+    @Published private(set) var isBuffering: Bool = false
 
     var autoplayProvider: AutoplayProvider?
     /// True while the active context is the Made for you / Nonstop endless station.
@@ -1085,6 +1089,41 @@ final class PlayerEngine: ObservableObject {
         wantsToPlay = playing
         if isPlaying != playing {
             isPlaying = playing
+        }
+    }
+
+    /// Publish loaded buffer + waiting state for Now Playing’s scrubber.
+    /// Adapted from Aura’s `bufferProgress` / `isBuffering` (GPL-3.0) — see NOTICE.
+    private func refreshBufferProgress() {
+        #if os(tvOS)
+        if tvUsingAudioPlayer {
+            if abs(bufferProgress - 1) > 0.02 { bufferProgress = 1 }
+            if isBuffering { isBuffering = false }
+            return
+        }
+        #endif
+        guard let item = player.currentItem else {
+            if bufferProgress != 0 { bufferProgress = 0 }
+            if isBuffering { isBuffering = false }
+            return
+        }
+        let length = max(duration, item.duration.seconds.isFinite ? item.duration.seconds : 0, 0.1)
+        var loadedEnd: Double = 0
+        for value in item.loadedTimeRanges {
+            let range = value.timeRangeValue
+            let start = CMTimeGetSeconds(range.start)
+            let dur = CMTimeGetSeconds(range.duration)
+            guard start.isFinite, dur.isFinite else { continue }
+            loadedEnd = max(loadedEnd, start + dur)
+        }
+        let nextBuffer = min(max(0, loadedEnd / length), 1)
+        if abs(nextBuffer - bufferProgress) >= 0.02 {
+            bufferProgress = nextBuffer
+        }
+        let waiting = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+            || (wantsToPlay && item.isPlaybackBufferEmpty && !item.isPlaybackLikelyToKeepUp)
+        if waiting != isBuffering {
+            isBuffering = waiting
         }
     }
 
@@ -2113,6 +2152,8 @@ final class PlayerEngine: ObservableObject {
             elapsed: 0,
             duration: TimeInterval(playItem.song.duration ?? 0),
             resetDuration: true)
+        bufferProgress = 0
+        isBuffering = startPlaying
         #if !os(tvOS)
         clearStallRecoveryState(resetForcedResilient: true)
         #endif
@@ -2796,6 +2837,7 @@ final class PlayerEngine: ObservableObject {
                 let reported = (itemDuration?.isFinite == true && (itemDuration ?? 0) > 0)
                     ? itemDuration : nil
                 self.setPlayhead(elapsed: seconds, duration: reported)
+                self.refreshBufferProgress()
                 self.applyMixTransitionFadeIfNeeded(elapsed: seconds)
             }
         }

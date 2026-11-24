@@ -29,5 +29,9 @@ Adapted files include (non-exhaustive):
     (from Aura Nonstop refill / skip-dislike session rules)
   - ios/Drome/Core/Services/LRCParser.swift
     (song-pace line ends + mid-break focus from Aura LyricWordTiming)
+  - ios/Drome/Core/Player/PlayerEngine.swift
+    (bufferProgress / isBuffering publish from Aura progress ideas)
+  - ios/Drome/UI/Player/NowPlayingView.swift
+    (scrubber buffer layer + load pulse + drag thumb from BufferedProgressBar)
 
 Aura remains a separate project; Drome is not affiliated with Aura.
