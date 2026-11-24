@@ -17,7 +17,8 @@ enum MoodPlayer {
         }
 
         var songs = await gather(vibe: vibe, session: session)
-        var picked = VibeEngine.pick(vibe: vibe, from: songs, excluded: excluded)
+        var picked = VibeEngine.pick(
+            vibe: vibe, from: songs, excluded: excluded, memory: session.ratings.memory)
 
         // Tiny libraries: if recent exclusions emptied the pool, refill without them.
         if picked.count < 8 {
@@ -26,7 +27,8 @@ enum MoodPlayer {
                 vibe: vibe,
                 from: songs,
                 excluded: session.rotation.excludedIDs.union(
-                    player.current.map { [$0.song.id] } ?? []))
+                    player.current.map { [$0.song.id] } ?? []),
+                memory: session.ratings.memory)
         }
         guard !picked.isEmpty else { return false }
 
@@ -154,7 +156,7 @@ struct MoodVibeRail: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("What's the vibe?")
                         .font(DromeTheme.headlineFont)
-                    Text("Tempo and genre — not your ratings.")
+                    Text("The mood stays put. Songs lean toward what you play.")
                         .font(.caption)
                         .foregroundStyle(DromeTheme.muted)
                 }

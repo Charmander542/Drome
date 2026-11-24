@@ -20,6 +20,19 @@ struct WishlistEntry: Codable, Identifiable, Hashable {
     var sharedBy: String?
 }
 
+/// A track the companion found outside the Navidrome library.
+struct OutsidePick: Codable, Identifiable, Hashable {
+    var title: String
+    var artist: String
+    var album: String?
+    var coverUrl: String?
+    var spotifyUrl: String
+    var spotifyId: String
+    var reason: String?
+
+    var id: String { spotifyId.isEmpty ? spotifyUrl : spotifyId }
+}
+
 struct SpotifySearchHit: Codable, Identifiable, Hashable {
     var kind: String
     var spotifyId: String
@@ -315,6 +328,27 @@ struct DromeWishlistClient {
                 source: "server"
             )
         }
+    }
+
+    /// Songs Spotify has for artists this listener plays that are not in
+    /// Navidrome. `artists` comes from local play history — stars are optional.
+    /// `spotifyUrl` is what `add(spotifyLink:)` downloads.
+    func outsidePicks(artists: [String]) async throws -> [OutsidePick] {
+        struct Response: Decodable {
+            var picks: [OutsidePick]
+            var note: String?
+        }
+        let seeds = artists
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(6)
+        let response = try await send(
+            Response.self,
+            path: "/recommendations/outside",
+            method: "GET",
+            extraQuery: seeds.map { URLQueryItem(name: "artists", value: $0) },
+            timeout: 30)
+        return response.picks
     }
 
     /// Track-focused search used by missing-track recommend UIs.

@@ -28,6 +28,8 @@ func newMixHub() *mixHub {
 func (s *server) registerMixRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /mixes/daily", s.requireAuth(s.handleDailyMixes))
 	mux.HandleFunc("GET /mixes/vibe/{id}", s.requireAuth(s.handleVibeMix))
+	// Songs that are not in Navidrome. spotifyUrl posts straight to /wishlist.
+	mux.HandleFunc("GET /recommendations/outside", s.requireAuth(s.handleOutsidePicks))
 }
 
 func radioDay(now time.Time, tzName string) string {

@@ -745,6 +745,41 @@ final class AppDatabase: @unchecked Sendable {
         }
     }
 
+    /// Plays per song, newest first. Repeats raise confidence; `lastPlayed` is
+    /// when that confidence should sit on the decay curve.
+    func playHistoryWeights(
+        userKey: String,
+        limit: Int = 800
+    ) throws -> [(song: Song, plays: Int, lastPlayed: TimeInterval)] {
+        try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT p.song_json AS song_json,
+                       c.plays AS plays,
+                       c.last_played AS last_played
+                FROM play_history p
+                JOIN (
+                    SELECT song_id, COUNT(*) AS plays, MAX(played_at) AS last_played
+                    FROM play_history
+                    WHERE user_key = ?
+                    GROUP BY song_id
+                    ORDER BY last_played DESC
+                    LIMIT ?
+                ) c ON c.song_id = p.song_id AND c.last_played = p.played_at
+                WHERE p.user_key = ?
+                GROUP BY p.song_id
+                ORDER BY c.last_played DESC
+                """, arguments: [userKey, limit, userKey])
+            return rows.compactMap { row -> (Song, Int, TimeInterval)? in
+                let json: String = row["song_json"]
+                let plays64: Int64 = row["plays"]
+                let lastPlayed: TimeInterval = row["last_played"]
+                guard let data = json.data(using: .utf8),
+                      let song = try? JSONDecoder().decode(Song.self, from: data) else { return nil }
+                return (song, Int(plays64), lastPlayed)
+            }
+        }
+    }
+
     /// Unique songs from play history with their most recent `played_at` (seconds since 1970).
     /// Used by Smart Playlists to apply recency rules against local listening history.
     func playHistorySongs(userKey: String, limit: Int = 2000) throws -> [(song: Song, playedAt: TimeInterval)] {
