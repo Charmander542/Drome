@@ -63,7 +63,11 @@ final class AutoplayProvider {
         let taste = TasteAffinity.build(
             ratings: ratings.ratings,
             seeds: seeds,
-            knownSongs: similar + broad)
+            knownSongs: similar + broad,
+            memory: ratings.memory)
+
+        let fresh = await freshFromFavorites(taste: taste)
+        broad += fresh.filter(isAllowed)
 
         // Prefer this user's genres when taste is established — shared libraries
         // otherwise flood Infinite Shuffle with other people's music.
@@ -95,60 +99,101 @@ final class AutoplayProvider {
         let similarRanked = ShuffleEngine.weightedShuffle(similar, rating: ratingOf, taste: taste)
 
         // Blend similar/broad by station steering (Sonora-style).
-        let (similarSlots, broadSlots) = Self.blendSlots(for: StationSteeringStore.current)
-        var result: [Song] = []
+        let steering = StationSteeringStore.current
+        let (similarSlots, broadSlots) = Self.blendSlots(for: steering)
+        var blended: [Song] = []
         var similarIterator = similarRanked.makeIterator()
         var broadIterator = broadRanked.makeIterator()
         var pickedIDs = Set<String>()
-        while result.count < count {
+        while blended.count < count {
             var advanced = false
             for _ in 0..<similarSlots {
                 if let s = similarIterator.next() {
                     advanced = true
-                    if pickedIDs.insert(s.id).inserted { result.append(s) }
+                    if pickedIDs.insert(s.id).inserted { blended.append(s) }
                 }
             }
             for _ in 0..<broadSlots {
                 if let b = broadIterator.next() {
                     advanced = true
-                    if pickedIDs.insert(b.id).inserted { result.append(b) }
+                    if pickedIDs.insert(b.id).inserted { blended.append(b) }
                 }
             }
             if !advanced { break }
         }
 
-        // Keep This Vibe: prefer seed genre / artist affinity after the blend.
-        if StationSteeringStore.current == .keepVibe {
-            let seedGenres = Set(seeds.compactMap { song -> String? in
-                guard let g = song.genre else { return nil }
-                return GenreNormalizer.shared.normalize(g) ?? g
-            })
-            let seedArtists = Set(seeds.compactMap(\.artistId))
-            result.sort { a, b in
-                let ascore = Self.vibeAffinity(a, genres: seedGenres, artists: seedArtists)
-                let bscore = Self.vibeAffinity(b, genres: seedGenres, artists: seedArtists)
-                return ascore > bscore
+        let seedGenres = Set(seeds.compactMap { song -> String? in
+            guard let g = song.genre else { return nil }
+            return GenreNormalizer.shared.normalize(g) ?? g
+        })
+        let seedArtists = Set(seeds.compactMap(\.artistId))
+        let freshIDs = Set(fresh.map(\.id))
+        let yearNow = Calendar.current.component(.year, from: Date())
+        let tracks: [FlowTrack] = blended.map { song in
+            let genre = GenreNormalizer.shared.normalize(song.genre ?? "") ?? ""
+            var weight = taste.effectiveRating(for: song, raw: ratingOf(song))
+            switch steering {
+            case .keepVibe:
+                weight *= 1 + Double(Self.vibeAffinity(song, genres: seedGenres, artists: seedArtists))
+            case .familiar:
+                weight *= 1 + Double(max(0, ratingOf(song))) * 0.2
+            case .discovery:
+                let plays = Double(song.playCount ?? 0)
+                weight *= 1 + 1.4 / (1 + plays)
+                if let year = song.year, year >= yearNow - 1 { weight *= 1.35 }
+                if freshIDs.contains(song.id) { weight *= 1.45 }
+            case .balanced:
+                if freshIDs.contains(song.id) { weight *= 1.25 }
             }
+            return FlowTrack(
+                id: song.id,
+                artist: song.artistId ?? song.artist ?? "",
+                album: song.albumId ?? "",
+                genre: genre,
+                energy: VibeEngine.estimatedEnergy(song, genre: genre.isEmpty ? nil : genre),
+                year: song.year ?? 0,
+                weight: weight)
         }
-
-        // More Familiar: prefer higher ratings / play counts.
-        if StationSteeringStore.current == .familiar {
-            result.sort { a, b in
-                ratingOf(a) > ratingOf(b)
-            }
+        let anchorSong = seeds.last
+        let anchor: FlowTrack? = anchorSong.map { song in
+            let genre = GenreNormalizer.shared.normalize(song.genre ?? "") ?? ""
+            return FlowTrack(
+                id: song.id,
+                artist: song.artistId ?? song.artist ?? "",
+                album: song.albumId ?? "",
+                genre: genre,
+                energy: VibeEngine.estimatedEnergy(song, genre: genre.isEmpty ? nil : genre),
+                year: song.year ?? 0,
+                weight: 1)
         }
-
-        // More Discovery: prefer low play count / unrated.
-        if StationSteeringStore.current == .discovery {
-            result.sort { a, b in
-                let ap = a.playCount ?? 0
-                let bp = b.playCount ?? 0
-                if ap != bp { return ap < bp }
-                return ratingOf(a) < ratingOf(b)
-            }
-        }
-
+        let ordered = SessionFlow.arrange(
+            tracks,
+            anchor: anchor,
+            strictGenre: steering == .keepVibe)
+        var byID = Dictionary(uniqueKeysWithValues: blended.map { ($0.id, $0) })
+        let result = ordered.compactMap { byID.removeValue(forKey: $0.id) }
         return Array(result.prefix(count))
+    }
+
+    /// New albums by artists and genres this listener already lives in.
+    /// Two album fetches at most, and only once taste exists — a cold profile
+    /// would just pull whoever the server thinks is new.
+    private func freshFromFavorites(taste: TasteAffinity) async -> [Song] {
+        guard taste.isEstablished else { return [] }
+        let albums = (try? await client.albumList(type: .newest, size: 12)) ?? []
+        let matched = albums.filter { album in
+            if let id = album.artistId, taste.preferredArtistIDs.contains(id) { return true }
+            if let name = GenreNormalizer.shared.normalize(album.genre ?? ""),
+               taste.preferredGenres.contains(name) { return true }
+            return false
+        }.prefix(2)
+        var songs: [Song] = []
+        for album in matched {
+            if let full = try? await client.album(id: album.id) {
+                songs.append(contentsOf: full.songs)
+            }
+        }
+        return songs.uniquedByID()
     }
 
     private static func blendSlots(for steering: StationSteering) -> (similar: Int, broad: Int) {
@@ -180,7 +225,20 @@ final class AutoplayProvider {
                     && !Self.isLowRatedExcluded(song, ratings: ratings)
             }
             .uniquedByID()
-        return Array(pool.shuffled().prefix(count))
+        let tracks = pool.map { song in
+            let genre = GenreNormalizer.shared.normalize(song.genre ?? "") ?? ""
+            return FlowTrack(
+                id: song.id,
+                artist: song.artistId ?? song.artist ?? "",
+                album: song.albumId ?? "",
+                genre: genre,
+                energy: VibeEngine.estimatedEnergy(song, genre: genre.isEmpty ? nil : genre),
+                year: song.year ?? 0,
+                weight: 1)
+        }
+        let ordered = SessionFlow.arrange(tracks, strictGenre: false)
+        var byID = Dictionary(uniqueKeysWithValues: pool.map { ($0.id, $0) })
+        return Array(ordered.compactMap { byID.removeValue(forKey: $0.id) }.prefix(count))
     }
 
     /// Low-rated tracks are always kept out of Infinite Shuffle pools.

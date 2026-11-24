@@ -9,10 +9,10 @@ import (
 )
 
 const (
-	maxDailyMixes   = 6
-	minDailyMixes   = 3
-	dailyMixLength  = 46
-	vibeMixLength   = 50
+	maxDailyMixes     = 6
+	minDailyMixes     = 3
+	dailyMixLength    = 46
+	vibeMixLength     = 50
 	maxSongsPerArtist = 4
 	minClusterSongs   = 8
 )
@@ -33,6 +33,8 @@ type mixTrack struct {
 	PlayCount  int    `json:"playCount,omitempty"`
 	UserRating int    `json:"userRating,omitempty"`
 	Starred    string `json:"starred,omitempty"`
+	// New release from an artist or style already in this listener's mix.
+	Fresh bool `json:"fresh,omitempty"`
 }
 
 func (t mixTrack) genreKey() string {
@@ -413,16 +415,21 @@ func artistFallbackClusters(tracks []mixTrack, usedSongs map[string]struct{}, ne
 }
 
 func fillCluster(c mixCluster, pool []mixTrack, similar map[string][]mixTrack, used map[string]struct{}, rng *rand.Rand, length int) []mixTrack {
-	var familiar, discover []mixTrack
+	var familiar, discover, fresh []mixTrack
 	for _, t := range pool {
 		if _, ok := used[t.ID]; ok {
 			continue
 		}
+		inArtists := false
 		if _, ok := c.artists[t.artistKey()]; ok {
-			familiar = append(familiar, t)
+			inArtists = true
+		}
+		inGenre := c.genre != "" && t.genreKey() == c.genre
+		if t.Fresh && (inArtists || inGenre) {
+			fresh = append(fresh, t)
 			continue
 		}
-		if c.genre != "" && t.genreKey() == c.genre {
+		if inArtists || inGenre {
 			familiar = append(familiar, t)
 		}
 	}
@@ -479,9 +486,14 @@ func fillCluster(c mixCluster, pool []mixTrack, similar map[string][]mixTrack, u
 		return false
 	}
 
-	// ~70% familiar / 30% adjacent discovery, interleaved so it doesn't
-	// dump all known tracks first. Cap per artist, then relax if the
-	// cluster is a handful of big names.
+	// Familiar, then a new release from the same artists when we have one,
+	// otherwise an adjacent discovery. Cap how many "new" songs land so the
+	// mix stays the listener's music with a few fresh arrivals.
+	freshBudget := length / 5
+	if freshBudget < 1 {
+		freshBudget = 1
+	}
+	freshUsed := 0
 	for len(out) < length {
 		progress := false
 		if take(&familiar, maxSongsPerArtist) {
@@ -490,7 +502,10 @@ func fillCluster(c mixCluster, pool []mixTrack, similar map[string][]mixTrack, u
 		if len(out) < length && take(&familiar, maxSongsPerArtist) {
 			progress = true
 		}
-		if len(out) < length && take(&discover, maxSongsPerArtist) {
+		if len(out) < length && freshUsed < freshBudget && take(&fresh, maxSongsPerArtist) {
+			freshUsed++
+			progress = true
+		} else if len(out) < length && take(&discover, maxSongsPerArtist) {
 			progress = true
 		}
 		if !progress {
@@ -499,9 +514,11 @@ func fillCluster(c mixCluster, pool []mixTrack, similar map[string][]mixTrack, u
 	}
 	for len(out) < length && take(&familiar, maxSongsPerArtist*2) {
 	}
+	for len(out) < length && take(&fresh, maxSongsPerArtist*2) {
+	}
 	for len(out) < length && take(&discover, maxSongsPerArtist*2) {
 	}
-	return out
+	return sequenceMix(out, rng)
 }
 
 func topArtists(tracks []mixTrack, n int) []artistStat {
@@ -599,6 +616,153 @@ func mixCovers(songs []mixTrack) []string {
 	return []string{id}
 }
 
+// sequenceMix walks a chosen set so the next song stays near the last one.
+// Same artist waits three slots when another artist is available. Genre
+// neighbors count as "near"; a jazz → metal jump only happens when the
+// current room has run out.
+func sequenceMix(tracks []mixTrack, rng *rand.Rand) []mixTrack {
+	pool := append([]mixTrack{}, tracks...)
+	out := make([]mixTrack, 0, len(pool))
+	var recent []string
+	prev := ""
+	for len(pool) > 0 {
+		var beam []int
+		var best float64
+		for gap := 3; gap >= 0; gap-- {
+			beam = beam[:0]
+			best = -1
+			for i, t := range pool {
+				key := t.artistKey()
+				if gap > 0 && key != "" && containsRecent(recent, key, gap) {
+					continue
+				}
+				score := t.tasteScore()
+				if prev != "" {
+					score *= genreFit(t.genreKey(), prev)
+				}
+				if score > best {
+					best = score
+				}
+				beam = append(beam, i)
+				_ = score
+			}
+			// Rescore into a real beam: keep indexes whose score is close to best.
+			if len(beam) == 0 {
+				continue
+			}
+			type pair struct {
+				i int
+				s float64
+			}
+			scored := make([]pair, 0, len(beam))
+			best = -1
+			for _, i := range beam {
+				t := pool[i]
+				score := t.tasteScore()
+				if prev != "" {
+					score *= genreFit(t.genreKey(), prev)
+				}
+				if score > best {
+					best = score
+				}
+				scored = append(scored, pair{i, score})
+			}
+			sort.Slice(scored, func(a, b int) bool { return scored[a].s > scored[b].s })
+			keep := scored[:0]
+			for _, p := range scored {
+				if p.s >= best*0.72 {
+					keep = append(keep, p)
+				}
+			}
+			total := 0.0
+			for _, p := range keep {
+				total += p.s
+			}
+			if total <= 0 {
+				total = float64(len(keep))
+			}
+			ticket := rng.Float64() * total
+			pick := keep[0].i
+			for _, p := range keep {
+				w := p.s
+				if w <= 0 {
+					w = 1
+				}
+				ticket -= w
+				if ticket <= 0 {
+					pick = p.i
+					break
+				}
+			}
+			chosen := pool[pick]
+			pool = append(pool[:pick], pool[pick+1:]...)
+			out = append(out, chosen)
+			recent = append(recent, chosen.artistKey())
+			prev = chosen.genreKey()
+			break
+		}
+	}
+	return out
+}
+
+func containsRecent(recent []string, key string, gap int) bool {
+	if gap <= 0 || key == "" {
+		return false
+	}
+	start := len(recent) - gap
+	if start < 0 {
+		start = 0
+	}
+	for _, id := range recent[start:] {
+		if id == key {
+			return true
+		}
+	}
+	return false
+}
+
+func genreFit(a, b string) float64 {
+	if a == "" || b == "" || a == b {
+		return 1
+	}
+	if genreNeighbors(a, b) {
+		return 0.78
+	}
+	return 0.22
+}
+
+func genreNeighbors(a, b string) bool {
+	_, ok := genreNeighborSet[a][b]
+	if ok {
+		return true
+	}
+	_, ok = genreNeighborSet[b][a]
+	return ok
+}
+
+var genreNeighborSet = map[string]map[string]struct{}{
+	"Jazz":        genreSet("Blues", "Soul", "Ambient", "Soundtrack"),
+	"Blues":       genreSet("Jazz", "Soul", "Rock", "Folk"),
+	"Soul":        genreSet("Jazz", "R&B", "Funk", "Blues", "Pop"),
+	"R&B":         genreSet("Soul", "Hip-Hop", "Pop", "Funk"),
+	"Funk":        genreSet("Soul", "R&B", "Pop"),
+	"Hip-Hop":     genreSet("R&B", "Dance", "Electronic"),
+	"Pop":         genreSet("Funk", "Soul", "Dance", "Indie", "R&B", "Reggae"),
+	"Dance":       genreSet("Pop", "Electronic", "Hip-Hop", "Funk"),
+	"Electronic":  genreSet("Dance", "Ambient", "Hip-Hop"),
+	"Ambient":     genreSet("Electronic", "Jazz", "Classical", "Soundtrack"),
+	"Classical":   genreSet("Ambient", "Soundtrack"),
+	"Soundtrack":  genreSet("Classical", "Ambient", "Jazz"),
+	"Folk":        genreSet("Country", "Indie", "Blues", "Alternative"),
+	"Country":     genreSet("Folk", "Rock", "Blues"),
+	"Indie":       genreSet("Folk", "Alternative", "Pop", "Rock"),
+	"Alternative": genreSet("Indie", "Rock", "Punk", "Folk"),
+	"Rock":        genreSet("Alternative", "Punk", "Country", "Blues", "Metal"),
+	"Punk":        genreSet("Rock", "Alternative", "Metal"),
+	"Metal":       genreSet("Rock", "Punk"),
+	"Reggae":      genreSet("Soul", "Pop", "Folk"),
+}
+
 func weightedShuffle(tracks []mixTrack, rng *rand.Rand) {
 	type pair struct {
 		t mixTrack
@@ -638,10 +802,10 @@ func itoa(n int) string {
 }
 
 type vibeSpec struct {
-	title    string
-	blurb    string
-	primary  string
-	genres   map[string]struct{}
+	title     string
+	blurb     string
+	primary   string
+	genres    map[string]struct{}
 	hypeBoost bool
 	calmBoost bool
 }
@@ -680,8 +844,8 @@ func genreSet(names ...string) map[string]struct{} {
 
 var vibeSpecs = map[string]vibeSpec{
 	"chill": {
-		title: "Chill", blurb: "Soft edges, low lights", primary: "Ambient",
-		genres:    genreSet("Ambient", "Indie", "Jazz", "R&B", "Folk", "Electronic", "Soul"),
+		title: "Chill", blurb: "Story-first and unhurried — country & folk", primary: "Folk",
+		genres:    genreSet("Country", "Folk", "Indie"),
 		calmBoost: true,
 	},
 	"hype": {
@@ -690,21 +854,21 @@ var vibeSpecs = map[string]vibeSpec{
 		hypeBoost: true,
 	},
 	"lateNight": {
-		title: "Late Night", blurb: "Headphones at 1am", primary: "Jazz",
-		genres: genreSet("Jazz", "Soul", "R&B", "Blues", "Electronic", "Ambient"),
+		title: "Late Night", blurb: "Quiet songs with words, for winding down", primary: "Jazz",
+		genres: genreSet("Jazz", "Soul", "R&B", "Blues", "Folk", "Ambient"),
 	},
 	"feelGood": {
-		title: "Feel-Good", blurb: "Windows-down energy", primary: "Pop",
-		genres:    genreSet("Pop", "Indie", "Funk", "Dance", "Reggae", "Soul"),
+		title: "Feel-Good", blurb: "Sun coming through the windows", primary: "Pop",
+		genres:    genreSet("Pop", "Funk", "Soul", "Reggae", "Indie", "Dance"),
 		hypeBoost: true,
 	},
 	"focus": {
-		title: "Focus", blurb: "Get in the zone", primary: "Classical",
-		genres:    genreSet("Classical", "Ambient", "Soundtrack", "Electronic", "Jazz"),
+		title: "Focus", blurb: "Slow instrumentals — jazz & classical", primary: "Jazz",
+		genres:    genreSet("Jazz", "Classical", "Ambient", "Soundtrack", "Blues"),
 		calmBoost: true,
 	},
 	"heartbreak": {
-		title: "Heartbreak", blurb: "Feel it fully", primary: "Indie",
+		title: "Heartbreak", blurb: "The sad ones, on purpose", primary: "Indie",
 		genres: genreSet("Indie", "Folk", "Alternative", "R&B", "Soul", "Pop"),
 	},
 	"lucky": {
