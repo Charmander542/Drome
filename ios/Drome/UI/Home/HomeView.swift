@@ -47,6 +47,7 @@ struct HomeView: View {
                             loadError: mixesError,
                             onRetry: { Task { await loadMixes() } }
                         )
+                        OutsidePicksRail()
                     }
 
                     if !recentEntries.isEmpty {
@@ -297,6 +298,91 @@ struct HomeView: View {
             var cleaned = mix
             cleaned.songs = songs
             return cleaned
+        }
+    }
+}
+
+/// Songs the companion found that are not in Navidrome yet.
+/// Get posts the Spotify link to the wishlist, which is what downloads them.
+struct OutsidePicksRail: View {
+    @EnvironmentObject private var session: AppSession
+
+    @State private var picks: [OutsidePick] = []
+    @State private var added: Set<String> = []
+    @State private var failed: Set<String> = []
+
+    var body: some View {
+        Group {
+            if !picks.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Get these")
+                            .font(DromeTheme.headlineFont)
+                        Text("Not in your library yet. From artists you already play.")
+                            .font(.caption)
+                            .foregroundStyle(DromeTheme.muted)
+                    }
+                    .padding(.horizontal, 16)
+
+                    VStack(spacing: 0) {
+                        ForEach(picks) { pick in
+                            HStack(spacing: 12) {
+                                RemoteImage(url: URL(string: pick.coverUrl ?? ""))
+                                    .frame(width: 48, height: 48)
+                                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(pick.title)
+                                        .font(DromeTheme.rowTitle)
+                                        .foregroundStyle(.white)
+                                        .lineLimit(1)
+                                    Text(pick.artist)
+                                        .font(.caption)
+                                        .foregroundStyle(DromeTheme.muted)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                                Button {
+                                    Task { await get(pick) }
+                                } label: {
+                                    Text(buttonTitle(for: pick))
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(DromeTheme.accent)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(added.contains(pick.id))
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                        }
+                    }
+                }
+            }
+        }
+        .task(id: session.id) { await load() }
+    }
+
+    private func buttonTitle(for pick: OutsidePick) -> String {
+        if added.contains(pick.id) { return "Added" }
+        if failed.contains(pick.id) { return "Retry" }
+        return "Get"
+    }
+
+    private func load() async {
+        guard let client = session.wishlist else { return }
+        picks = (try? await client.outsidePicks()) ?? []
+    }
+
+    private func get(_ pick: OutsidePick) async {
+        guard let client = session.wishlist else { return }
+        let link = pick.spotifyUrl.isEmpty
+            ? "https://open.spotify.com/track/\(pick.spotifyId)"
+            : pick.spotifyUrl
+        do {
+            _ = try await client.add(spotifyLink: link)
+            added.insert(pick.id)
+            failed.remove(pick.id)
+        } catch {
+            failed.insert(pick.id)
         }
     }
 }

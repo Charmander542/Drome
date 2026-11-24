@@ -229,27 +229,6 @@ func TestSequenceStaysInGenreAndSeparatesArtists(t *testing.T) {
 	}
 }
 
-func TestFreshReleaseFromLikedArtistIsKept(t *testing.T) {
-	lib := sampleLibrary()
-	fresh := mixTrack{
-		ID: "ind-new", Title: "New One", Artist: "The National", ArtistID: "a-nat",
-		Genre: "Indie", Year: time.Now().Year(), UserRating: 4, Fresh: true,
-	}
-	lib = append(lib, fresh)
-	mixes := buildDailyMixes(lib, nil, "fresh-seed", nil)
-	found := false
-	for _, m := range mixes {
-		for _, s := range m.Songs {
-			if s.ID == "ind-new" {
-				found = true
-			}
-		}
-	}
-	if !found {
-		t.Fatal("new release from a top artist was left out of daily mixes")
-	}
-}
-
 func TestLowRatedTracksExcluded(t *testing.T) {
 	lib := sampleLibrary()
 	lib = append(lib, mixTrack{ID: "skip-me", Title: "Nope", Artist: "X", ArtistID: "a-x", Genre: "Pop", UserRating: 1})

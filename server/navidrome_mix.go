@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/url"
 	"sync"
-	"time"
 )
 
 type ndSong struct {
@@ -117,38 +116,10 @@ func (v *navidromeVerifier) mixSnapshot(ctx context.Context, creds subsonicCreds
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		add(v.getStarredSongs(ctx, creds), true)
-	}()
-	go func() {
-		defer wg.Done()
-		fresh := v.newestAlbumSongs(ctx, creds, 6)
-		mu.Lock()
-		defer mu.Unlock()
-		year := time.Now().Year()
-		for _, s := range fresh {
-			t := s.asMix()
-			if t.ID == "" {
-				continue
-			}
-			t.Fresh = true
-			if t.Year >= year-1 && t.Year > 0 {
-				t.Fresh = true
-			}
-			if _, ok := seen[t.ID]; ok {
-				for i := range songs {
-					if songs[i].ID == t.ID {
-						songs[i].Fresh = true
-						break
-					}
-				}
-				continue
-			}
-			seen[t.ID] = struct{}{}
-			songs = append(songs, t)
-		}
 	}()
 	go func() {
 		defer wg.Done()
@@ -159,58 +130,7 @@ func (v *navidromeVerifier) mixSnapshot(ctx context.Context, creds subsonicCreds
 		add(v.frequentAlbumSongs(ctx, creds, 8), false)
 	}()
 	wg.Wait()
-	year := time.Now().Year()
-	for i := range songs {
-		if songs[i].Year >= year-1 && songs[i].Year > 0 {
-			songs[i].Fresh = true
-		}
-	}
 	return songs
-}
-
-func (v *navidromeVerifier) newestAlbumSongs(ctx context.Context, creds subsonicCreds, albumLimit int) []ndSong {
-	extra := url.Values{}
-	extra.Set("type", "newest")
-	extra.Set("size", itoa(albumLimit))
-	raw, err := v.subsonicGET(ctx, "getAlbumList2", creds, extra)
-	if err != nil {
-		return nil
-	}
-	var body struct {
-		AlbumList2 struct {
-			Album []struct {
-				ID flexString `json:"id"`
-			} `json:"album"`
-		} `json:"albumList2"`
-	}
-	if json.Unmarshal(raw, &body) != nil {
-		return nil
-	}
-	ids := body.AlbumList2.Album
-	if len(ids) > albumLimit {
-		ids = ids[:albumLimit]
-	}
-	var (
-		mu  sync.Mutex
-		out []ndSong
-		wg  sync.WaitGroup
-	)
-	for _, a := range ids {
-		id := a.ID.String()
-		if id == "" {
-			continue
-		}
-		wg.Add(1)
-		go func(albumID string) {
-			defer wg.Done()
-			songs := v.getAlbumSongs(ctx, creds, albumID)
-			mu.Lock()
-			out = append(out, songs...)
-			mu.Unlock()
-		}(id)
-	}
-	wg.Wait()
-	return out
 }
 
 func (v *navidromeVerifier) similarByArtists(ctx context.Context, creds subsonicCreds, artistIDs []string, per int) map[string][]mixTrack {
