@@ -2,6 +2,8 @@ import SwiftUI
 
 struct DailyMixRail: View {
     let mixes: [DailyMix]
+    var title: String = "Daily Mixes"
+    var subtitle: String = "Made for you from ratings, plays, and similar artists — refreshes daily."
     var isLoading: Bool = false
     var loadError: String? = nil
     var onRetry: (() -> Void)? = nil
@@ -9,9 +11,9 @@ struct DailyMixRail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Daily Mixes")
+                Text(title)
                     .font(DromeTheme.headlineFont)
-                Text("Made for you from ratings, plays, and similar artists — refreshes daily.")
+                Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(DromeTheme.muted)
             }
