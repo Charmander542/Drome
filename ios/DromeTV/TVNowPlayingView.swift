@@ -2,17 +2,15 @@ import SwiftUI
 import UIKit
 
 private enum NPFocus: Hashable {
-    case cinema, picker, scrubber, prev, play, next
-    case shuffle, repeatMode, autoplay, star(Int)
+    /// Whole-screen focus while ambient idle — any press brings controls back.
+    case surface
+    case scrubber, prev, play, next
+    case shuffle, repeatMode, autoplay, queue, lyricsToggle, star(Int)
 }
 
+/// Now Playing — Aura-inspired: blurred cover across the room, controls + lyrics
+/// side by side, ambient idle after a few seconds of no remote input.
 struct TVNowPlayingView: View {
-    private enum Pane: String, CaseIterable {
-        case song = "Song"
-        case lyrics = "Lyrics"
-        case queue = "Up Next"
-    }
-
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
     @EnvironmentObject private var ratings: RatingsStore
@@ -20,167 +18,224 @@ struct TVNowPlayingView: View {
 
     @Namespace private var playerFocus
     @FocusState private var focus: NPFocus?
-    @State private var pane: Pane = .song
-    @State private var cinemaMode = false
-    @State private var cinemaReturnFocus: NPFocus = .play
-    @State private var idleTick = 0
+    @State private var idle = false
+    @State private var lastInput = Date()
+    @State private var showLyrics = true
+    @State private var showQueue = false
     @State private var isScrubbing = false
     @State private var armedQueueID: UUID?
     @State private var showConnect = false
+    @State private var hasLyricsDocument = false
+
+    private static let idleDelay: TimeInterval = 5
+    private static let queueWidth: CGFloat = 720
 
     var body: some View {
         ZStack {
-            TVTheme.canvas.ignoresSafeArea()
             if let song = player.current?.song {
                 playerStage(song)
             } else {
+                TVTheme.canvas.ignoresSafeArea()
                 VStack(spacing: 14) {
                     Text("Nothing playing")
                         .font(.system(size: 48, weight: .bold, design: .rounded))
-                    Text("Choose a record from Home or Library.")
+                    Text("Choose something from Home or Library.")
                         .font(.title2)
                         .foregroundStyle(TVTheme.dim)
                 }
             }
         }
         .focusScope(playerFocus)
-        .onPlayPauseCommand { player.playPause() }
+        .onPlayPauseCommand {
+            poke()
+            player.playPause()
+        }
         .sheet(isPresented: $showConnect) {
             if let connect = session.connect {
                 ConnectDevicePicker(connect: connect)
             }
         }
         .onChange(of: focus) { _, new in
-            if new == .cinema {
-                cinemaMode = true
-            } else if new != nil {
-                idleTick += 1
-            }
+            if new != nil, new != .surface { poke() }
             syncTabBarChrome()
         }
         .onChange(of: player.isPlaying) { _, playing in
             if playing {
-                idleTick += 1
-            } else if cinemaMode {
-                leaveCinema()
+                poke()
+            } else if idle {
+                poke()
             }
         }
-        .task(id: idleTick) {
-            try? await Task.sleep(nanoseconds: 12_000_000_000)
-            guard !Task.isCancelled else { return }
-            guard player.isPlaying, pane == .song, !isScrubbing, !cinemaMode else { return }
-            enterCinema()
+        .onChange(of: showQueue) { _, open in
+            if !open {
+                poke()
+                focus = .queue
+            }
+            syncTabBarChrome()
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                if !idle, !showQueue, !isScrubbing,
+                   player.isPlaying,
+                   Date().timeIntervalSince(lastInput) > Self.idleDelay {
+                    idle = true
+                    focus = .surface
+                    syncTabBarChrome()
+                }
+            }
         }
         .onAppear {
-            if focus == nil { focus = .picker }
+            if focus == nil { focus = .play }
             syncTabBarChrome()
         }
         .onDisappear {
             chrome.hidesTabBar = false
         }
-        .onChange(of: cinemaMode) { _, _ in
-            syncTabBarChrome()
-        }
         .onChange(of: player.current?.id) { _, _ in
+            hasLyricsDocument = false
             syncTabBarChrome()
         }
+        .task(id: player.current?.song.id) {
+            guard let song = player.current?.song else {
+                hasLyricsDocument = false
+                return
+            }
+            let doc = await session.lyricsService.lyrics(for: song)
+            hasLyricsDocument = !(doc?.lines.isEmpty ?? true)
+        }
+        .animation(.easeInOut(duration: 0.55), value: idle)
+        .animation(.easeInOut(duration: 0.35), value: showQueue)
+        .animation(.easeInOut(duration: 0.35), value: showLyrics)
     }
 
     private func syncTabBarChrome() {
-        chrome.hidesTabBar = cinemaMode && player.current != nil
+        chrome.hidesTabBar = (idle || showQueue) && player.current != nil
     }
 
-    private func enterCinema(from source: NPFocus? = nil) {
-        if let source {
-            cinemaReturnFocus = source
-        } else if let focus, focus != .cinema {
-            cinemaReturnFocus = focus
-        }
-        cinemaMode = true
-        focus = .cinema
+    private func poke() {
+        lastInput = Date()
+        guard idle else { return }
+        idle = false
+        focus = .play
+        syncTabBarChrome()
     }
 
-    private func leaveCinema() {
-        let restore = cinemaReturnFocus
-        cinemaMode = false
-        Task { @MainActor in
-            focus = restore
-        }
+    private var lyricsVisible: Bool {
+        showLyrics && hasLyricsDocument && !showQueue
     }
 
     private func playerStage(_ song: Song) -> some View {
-        GeometryReader { geo in
-            let cinemaSide = min(geo.size.width - 120, geo.size.height - 220)
-            ZStack {
-                HStack(alignment: .center, spacing: 48) {
-                    cover(song, side: 460)
-                        .shadow(color: .black.opacity(0.45), radius: 20, y: 16)
-                    controlColumn(song)
-                }
-                .padding(.horizontal, TVTheme.gutter)
-                .padding(.vertical, 28)
-                .opacity(cinemaMode ? 0 : 1)
-                .allowsHitTesting(!cinemaMode)
+        ZStack {
+            TVArtworkBackdrop(url: session.artworkURL(for: song, size: 600))
 
-                if cinemaMode {
-                    VStack(spacing: 24) {
-                        Spacer(minLength: 0)
-                        cover(song, side: cinemaSide)
-                            .shadow(color: .black.opacity(0.45), radius: 36, y: 16)
-                        VStack(spacing: 8) {
-                            Text(song.title)
-                                .font(.system(size: 36, weight: .bold, design: .rounded))
-                                .lineLimit(2)
-                                .multilineTextAlignment(.center)
-                            Text(song.displayArtist)
-                                .font(.system(size: 24, weight: .medium))
-                                .foregroundStyle(TVTheme.dim)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 80)
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .contentShape(Rectangle())
-                    .focusable()
-                    .focused($focus, equals: .cinema)
-                    .focusEffectDisabled()
-                    .onMoveCommand { direction in
-                        if direction == .right { leaveCinema() }
-                    }
+            HStack(alignment: .center, spacing: 100) {
+                controls(song)
+                if lyricsVisible {
+                    TVLyricsStage(song: song)
+                        .frame(width: 820, height: 640)
                 }
             }
-            .frame(width: geo.size.width, height: geo.size.height)
-            .transaction { $0.animation = nil }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.trailing, showQueue ? Self.queueWidth : 0)
+            .disabled(showQueue)
+
+            if showQueue {
+                TVUpNextPanel(
+                    armedQueueID: $armedQueueID,
+                    onClose: { showQueue = false })
+                    .frame(width: Self.queueWidth)
+                    .frame(maxHeight: .infinity)
+                    .background(.black.opacity(0.55))
+                    .background(.ultraThinMaterial)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .transition(.move(edge: .trailing))
+                    .focusSection()
+                    .onExitCommand { showQueue = false }
+            }
         }
+        .focusable(idle)
+        .focused($focus, equals: .surface)
+        .focusEffectDisabled()
+        .onTapGesture { poke() }
+        .onMoveCommand { _ in poke() }
     }
 
-    private func controlColumn(_ song: Song) -> some View {
-        VStack(alignment: .leading, spacing: 22) {
-            panePicker
-                .focused($focus, equals: .picker)
-                .prefersDefaultFocus(true, in: playerFocus)
-            switch pane {
-            case .song:
-                songControls(song)
-            case .lyrics:
-                TVLyricsStage(song: song)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            case .queue:
-                queuePane
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    private func controls(_ song: Song) -> some View {
+        VStack(alignment: .leading, spacing: 28) {
+            cover(song, side: 520)
+                .shadow(color: .black.opacity(0.5), radius: 40, y: 20)
+                .id(song.id)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(song.title)
+                    .font(.system(size: 40, weight: .bold))
+                    .lineLimit(2)
+                Text(song.displayArtist)
+                    .font(.system(size: 28, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .lineLimit(1)
+            }
+            .frame(width: 520, alignment: .leading)
+
+            if !idle {
+                TVScrubBar(isScrubbing: $isScrubbing, interactive: true, itemFocus: $focus)
+                    .frame(width: 520)
+                    .transition(.opacity)
+
+                HStack(spacing: 8) {
+                    transport("quote.bubble", .lyricsToggle, on: showLyrics && hasLyricsDocument) {
+                        showLyrics.toggle()
+                    }
+                    transport("shuffle", .shuffle, on: player.shuffleMode != .off) {
+                        player.cycleShuffleMode()
+                    }
+                    transport("backward.fill", .prev) { player.previous() }
+                    playPauseButton
+                    transport("forward.fill", .next) { player.next() }
+                    transport(
+                        player.repeatMode == .one ? "repeat.1" : "repeat",
+                        .repeatMode,
+                        on: player.repeatMode != .off)
+                    {
+                        player.cycleRepeatMode()
+                    }
+                    transport("list.bullet", .queue) { showQueue = true }
+                }
+                .transition(.opacity)
+
+                HStack(spacing: 14) {
+                    TVModeControl(
+                        system: "infinity",
+                        label: AutoplayMode.label,
+                        active: player.autoplayEnabled)
+                    {
+                        poke()
+                        player.autoplayEnabled.toggle()
+                    }
+                    .focused($focus, equals: .autoplay)
+
+                    if session.connect != nil {
+                        TVTransportIcon(
+                            system: session.connect?.isRemote == true
+                                ? "speaker.wave.2.fill" : "hifispeaker",
+                            size: 22,
+                            hit: 64,
+                            tint: session.connect?.isRemote == true
+                                ? TVTheme.accent : .white.opacity(0.7))
+                        {
+                            poke()
+                            showConnect = true
+                        }
+                    }
+
+                    ratingRow(for: song)
+                }
+                .transition(.opacity)
             }
         }
         .focusSection()
-    }
-
-    private var panePicker: some View {
-        Picker("Page", selection: $pane) {
-            ForEach(Pane.allCases, id: \.self) { item in
-                Text(item.rawValue).tag(item)
-            }
-        }
-        .pickerStyle(.segmented)
-        .frame(maxWidth: 720)
+        .prefersDefaultFocus(!idle, in: playerFocus)
     }
 
     private func cover(_ song: Song, side: CGFloat) -> some View {
@@ -189,152 +244,41 @@ struct TVNowPlayingView: View {
             placeholderSymbol: "music.note",
             holdImageWhileLoading: true)
             .frame(width: side, height: side)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    private func songControls(_ song: Song) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
-            if let context = player.context?.label {
-                Text(context.uppercased())
-                    .font(.system(size: 14, weight: .semibold))
-                    .tracking(1.8)
-                    .foregroundStyle(Color.white.opacity(0.45))
-            }
-            Text(song.title)
-                .font(.system(size: 44, weight: .bold, design: .rounded))
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, minHeight: 56, alignment: .topLeading)
-            Text(song.displayArtist)
-                .font(.system(size: 26, weight: .medium))
-                .foregroundStyle(TVTheme.dim)
-                .lineLimit(1)
-
-            TVScrubBar(isScrubbing: $isScrubbing, interactive: true, itemFocus: $focus)
-
-            HStack(spacing: 18) {
-                TVTransportIcon(system: "backward.fill", size: 28, hit: 72) {
-                    player.previous()
-                }
-                .focused($focus, equals: .prev)
-                .onMoveCommand { direction in
-                    moveSongFocus(direction, from: .prev)
-                }
-
-                TVPlayButton(isPlaying: player.isPlaying) {
-                    player.playPause()
-                }
-                .focused($focus, equals: .play)
-                .onMoveCommand { direction in
-                    moveSongFocus(direction, from: .play)
-                }
-
-                TVTransportIcon(system: "forward.fill", size: 28, hit: 72) {
-                    player.next()
-                }
-                .focused($focus, equals: .next)
-                .onMoveCommand { direction in
-                    moveSongFocus(direction, from: .next)
-                }
-            }
-            .padding(.top, 4)
-
-            HStack(spacing: 14) {
-                TVModeControl(
-                    system: "shuffle",
-                    label: player.shuffleMode.userLabel,
-                    active: player.shuffleMode != .off,
-                    badge: player.shuffleMode == .smart ? "star.fill" : nil)
-                {
-                    player.cycleShuffleMode()
-                }
-                .focused($focus, equals: .shuffle)
-                .onMoveCommand { direction in
-                    moveSongFocus(direction, from: .shuffle)
-                }
-
-                TVModeControl(
-                    system: player.repeatMode == .one ? "repeat.1" : "repeat",
-                    label: repeatModeLabel,
-                    active: player.repeatMode != .off)
-                {
-                    player.cycleRepeatMode()
-                }
-                .focused($focus, equals: .repeatMode)
-                .onMoveCommand { direction in
-                    moveSongFocus(direction, from: .repeatMode)
-                }
-
-                TVModeControl(
-                    system: "infinity",
-                    label: AutoplayMode.label,
-                    active: player.autoplayEnabled)
-                {
-                    player.autoplayEnabled.toggle()
-                }
-                .focused($focus, equals: .autoplay)
-                .onMoveCommand { direction in
-                    moveSongFocus(direction, from: .autoplay)
-                }
-
-                if session.connect != nil {
-                    TVTransportIcon(
-                        system: session.connect?.isRemote == true
-                            ? "speaker.wave.2.fill" : "hifispeaker",
-                        size: 22,
-                        hit: 64,
-                        tint: session.connect?.isRemote == true ? TVTheme.accent : .white.opacity(0.7))
-                    {
-                        showConnect = true
-                    }
-                }
-            }
-
-            ratingRow(for: song)
+    private var playPauseButton: some View {
+        Button {
+            poke()
+            player.playPause()
+        } label: {
+            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                .font(.system(size: 34, weight: .semibold))
+                .frame(width: 80, height: 80)
+                .contentTransition(.symbolEffect(.replace))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .focusSection()
+        .buttonStyle(TVAmbientButtonStyle())
+        .focused($focus, equals: .play)
+        .prefersDefaultFocus(true, in: playerFocus)
     }
 
-    private var repeatModeLabel: String {
-        switch player.repeatMode {
-        case .off: return "Repeat off"
-        case .all: return "Repeat all"
-        case .one: return "Repeat one"
+    private func transport(
+        _ system: String,
+        _ item: NPFocus,
+        on: Bool? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            poke()
+            action()
+        } label: {
+            Image(systemName: system)
+                .font(.system(size: 24, weight: .semibold))
+                .frame(width: 60, height: 60)
+                .contentTransition(.symbolEffect(.replace))
         }
-    }
-
-    private func moveSongFocus(_ direction: MoveCommandDirection, from: NPFocus) {
-        switch (from, direction) {
-        case (.scrubber, .up): focus = .picker
-        case (.scrubber, .down): focus = .play
-        case (.prev, .left): enterCinema(from: .prev)
-        case (.prev, .right): focus = .play
-        case (.prev, .up): focus = .scrubber
-        case (.prev, .down): focus = .shuffle
-        case (.play, .left): focus = .prev
-        case (.play, .right): focus = .next
-        case (.play, .up): focus = .scrubber
-        case (.play, .down): focus = .repeatMode
-        case (.next, .left): focus = .play
-        case (.next, .up): focus = .scrubber
-        case (.next, .down): focus = .autoplay
-        case (.shuffle, .left): enterCinema(from: .shuffle)
-        case (.shuffle, .right): focus = .repeatMode
-        case (.shuffle, .up): focus = .prev
-        case (.shuffle, .down): focus = .star(1)
-        case (.repeatMode, .left): focus = .shuffle
-        case (.repeatMode, .right): focus = .autoplay
-        case (.repeatMode, .up): focus = .play
-        case (.repeatMode, .down): focus = .star(3)
-        case (.autoplay, .left): focus = .repeatMode
-        case (.autoplay, .up): focus = .next
-        case (.autoplay, .down): focus = .star(5)
-        case (.star(let n), .left) where n == 1: enterCinema(from: .star(1))
-        case (.star(let n), .left) where n > 1: focus = .star(n - 1)
-        case (.star(let n), .right) where n < 5: focus = .star(n + 1)
-        case (.star, .up): focus = .shuffle
-        default: break
-        }
+        .buttonStyle(TVAmbientButtonStyle(dimmed: on == false))
+        .focused($focus, equals: item)
     }
 
     private func ratingRow(for song: Song) -> some View {
@@ -347,50 +291,109 @@ struct TVNowPlayingView: View {
                     hit: 52,
                     tint: star <= current ? TVTheme.accent : .white.opacity(0.35))
                 {
+                    poke()
                     ratings.setRating(star == current ? 0 : star, for: song)
                 }
                 .focused($focus, equals: .star(star))
-                .onMoveCommand { direction in
-                    moveSongFocus(direction, from: .star(star))
-                }
             }
         }
     }
+}
 
-    private var queuePane: some View {
-        let upcoming = player.userQueue + player.contextQueue
-        return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
-                Text("Click to play  ·  Left, then click the trash to remove")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(TVTheme.dim)
-                    .padding(.bottom, 4)
-                if upcoming.isEmpty {
-                    Text("Queue is empty")
-                        .font(.title2)
-                        .foregroundStyle(TVTheme.dim)
-                        .padding(.top, 12)
-                }
-                ForEach(upcoming) { item in
-                    TVQueueRow(item: item, armed: armedQueueID == item.id) {
-                        if armedQueueID == item.id {
-                            player.removeFromQueue(item)
-                            armedQueueID = nil
-                        } else {
-                            player.jump(to: item)
+/// Blurred cover filling the TV — Aura-style room ambience behind the player.
+private struct TVArtworkBackdrop: View {
+    let url: URL?
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                TVTheme.canvas
+                RemoteImage(
+                    url: url,
+                    placeholderSymbol: "music.note",
+                    holdImageWhileLoading: true)
+                    .scaledToFill()
+                    .frame(width: geo.size.width * 1.35, height: geo.size.height * 1.35)
+                    .blur(radius: 90)
+                    .saturation(1.25)
+                    .id(url?.absoluteString)
+                Color.black.opacity(0.48)
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .clipped()
+        }
+        .ignoresSafeArea()
+    }
+}
+
+/// Bare glyph transport — circle only under focus so the cover and lyrics read first.
+private struct TVAmbientButtonStyle: ButtonStyle {
+    var dimmed = false
+    @Environment(\.isFocused) private var focused
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.white.opacity(focused ? 1 : dimmed ? 0.3 : 0.65))
+            .background(Circle().fill(.white.opacity(focused ? 0.18 : 0)))
+            .scaleEffect(configuration.isPressed ? 0.94 : focused ? 1.1 : 1)
+            .animation(.easeOut(duration: 0.2), value: focused)
+    }
+}
+
+/// Up Next slides in from the right over the lyrics.
+private struct TVUpNextPanel: View {
+    @Binding var armedQueueID: UUID?
+    let onClose: () -> Void
+
+    @EnvironmentObject private var player: PlayerEngine
+
+    private var upcoming: [QueueItem] {
+        player.userQueue + player.contextQueue
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            HStack {
+                Text("Up Next")
+                    .font(.system(size: 44, weight: .bold))
+                Spacer()
+                Button("Close", action: onClose)
+            }
+            Text("Click to play  ·  Left, then click trash to remove")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(TVTheme.dim)
+
+            if upcoming.isEmpty {
+                Text("Nothing queued")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(upcoming) { item in
+                            TVQueueRow(item: item, armed: armedQueueID == item.id) {
+                                if armedQueueID == item.id {
+                                    player.removeFromQueue(item)
+                                    armedQueueID = nil
+                                } else {
+                                    player.jump(to: item)
+                                    onClose()
+                                }
+                            } onArm: {
+                                armedQueueID = item.id
+                            } onDisarm: {
+                                if armedQueueID == item.id { armedQueueID = nil }
+                            }
                         }
-                    } onArm: {
-                        armedQueueID = item.id
-                    } onDisarm: {
-                        if armedQueueID == item.id { armedQueueID = nil }
                     }
+                    .padding(.vertical, 12)
                 }
             }
-            .padding(.trailing, 24)
         }
-        .onChange(of: pane) { _, _ in
-            armedQueueID = nil
-        }
+        .padding(.horizontal, 48)
+        .padding(.vertical, 56)
+        .onDisappear { armedQueueID = nil }
     }
 }
 
@@ -627,8 +630,6 @@ private struct TVScrubBar: View {
                         applySeek(max(0, current - step), throttle: false)
                     } else if direction == .right {
                         applySeek(min(duration, current + step), throttle: false)
-                    } else if direction == .up {
-                        itemFocus.wrappedValue = .picker
                     } else if direction == .down {
                         itemFocus.wrappedValue = .play
                     }
@@ -816,7 +817,7 @@ private struct TVTouchPadPan: UIViewRepresentable {
     }
 }
 
-/// Karaoke stays put: previous / current / next. Highlight follows `accurateElapsed()`.
+/// Karaoke beside the cover: sung line large and white, neighbors dim — scrolls with the song.
 struct TVLyricsStage: View {
     let song: Song
 
@@ -824,6 +825,7 @@ struct TVLyricsStage: View {
     @EnvironmentObject private var player: PlayerEngine
 
     @State private var document: LyricsDocument?
+    @State private var currentIndex: Int?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.2)) { _ in
@@ -831,6 +833,7 @@ struct TVLyricsStage: View {
             stage(elapsedMs: elapsedMs)
         }
         .task(id: song.id) {
+            currentIndex = nil
             document = await session.lyricsService.lyrics(for: song)
         }
     }
@@ -839,49 +842,66 @@ struct TVLyricsStage: View {
     private func stage(elapsedMs: Int) -> some View {
         if let document, !document.lines.isEmpty {
             let active = activeIndex(elapsedMs: elapsedMs, in: document)
-            VStack(spacing: 22) {
-                lineText(document, index: active - 1, elapsedMs: elapsedMs, role: .neighbor)
-                lineText(document, index: active, elapsedMs: elapsedMs, role: .current)
-                lineText(document, index: active + 1, elapsedMs: elapsedMs, role: .neighbor)
+            ScrollViewReader { proxy in
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 28) {
+                        Spacer().frame(height: 160)
+                        ForEach(Array(document.lines.enumerated()), id: \.offset) { index, line in
+                            lineText(document, index: index, line: line, elapsedMs: elapsedMs, focus: active)
+                                .id(index)
+                        }
+                        Spacer().frame(height: 200)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .scrollDisabled(true)
+                .mask(
+                    VStack(spacing: 0) {
+                        LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom)
+                            .frame(height: 100)
+                        Color.white
+                        LinearGradient(colors: [.white, .clear], startPoint: .top, endPoint: .bottom)
+                            .frame(height: 100)
+                    }
+                )
+                .onChange(of: active) { _, new in
+                    currentIndex = new
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.92)) {
+                        proxy.scrollTo(new, anchor: .center)
+                    }
+                }
             }
-            .frame(maxWidth: 1100)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            VStack(spacing: 12) {
-                Text("No lyrics yet")
-                    .font(.system(size: 40, weight: .bold, design: .rounded))
-                Text("Checked your library and LRCLIB.")
-                    .font(.title2)
-                    .foregroundStyle(TVTheme.dim)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Color.clear
         }
     }
 
-    private enum Role { case current, neighbor }
-
     @ViewBuilder
-    private func lineText(_ document: LyricsDocument, index: Int, elapsedMs: Int, role: Role) -> some View {
-        if document.lines.indices.contains(index) {
-            let line = document.lines[index]
-            Group {
-                if role == .current, document.synced, !line.words.isEmpty {
-                    WrappingWords(words: line.words, elapsedMs: elapsedMs)
-                } else {
-                    Text(line.text.isEmpty ? " " : line.text)
-                        .font(.system(
-                            size: role == .current ? 54 : 30,
-                            weight: role == .current ? .bold : .semibold,
-                            design: .rounded))
-                        .foregroundStyle(Color.white.opacity(role == .current ? 1 : 0.28))
-                        .multilineTextAlignment(.center)
-                }
+    private func lineText(
+        _ document: LyricsDocument,
+        index: Int,
+        line: LRCParser.Line,
+        elapsedMs: Int,
+        focus: Int
+    ) -> some View {
+        let distance = abs(index - focus)
+        let isCurrent = distance == 0
+        Group {
+            if isCurrent, document.synced, !line.words.isEmpty {
+                WrappingWords(words: line.words, elapsedMs: elapsedMs, leading: true)
+            } else {
+                Text(line.text.isEmpty ? " " : line.text)
+                    .font(.system(
+                        size: isCurrent ? 56 : 32,
+                        weight: isCurrent ? .bold : .semibold))
+                    .foregroundStyle(.white.opacity(
+                        isCurrent ? 1 : distance == 1 ? 0.32 : distance == 2 ? 0.12 : 0))
+                    .scaleEffect(isCurrent ? 1 : 0.72, anchor: .leading)
+                    .multilineTextAlignment(.leading)
             }
-            .frame(maxWidth: .infinity)
-        } else {
-            Text(" ")
-                .font(.system(size: role == .current ? 54 : 30, weight: .bold, design: .rounded))
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.spring(response: 0.45, dampingFraction: 0.92), value: distance)
     }
 
     private func activeIndex(elapsedMs: Int, in document: LyricsDocument) -> Int {
@@ -904,17 +924,18 @@ struct TVLyricsStage: View {
 private struct WrappingWords: View {
     let words: [LRCParser.Word]
     let elapsedMs: Int
+    var leading: Bool = false
 
     var body: some View {
         FlexibleWordRow(spacing: 14, lineSpacing: 10) {
             ForEach(words) { word in
                 Text(word.text)
-                    .font(.system(size: 54, weight: .bold, design: .rounded))
+                    .font(.system(size: 54, weight: .bold))
                     .foregroundStyle(color(for: word))
             }
         }
-        .frame(maxWidth: 1000)
-        .multilineTextAlignment(.center)
+        .frame(maxWidth: leading ? .infinity : 1000, alignment: leading ? .leading : .center)
+        .multilineTextAlignment(leading ? .leading : .center)
     }
 
     private func color(for word: LRCParser.Word) -> Color {
