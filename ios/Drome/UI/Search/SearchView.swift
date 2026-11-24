@@ -1427,7 +1427,7 @@ struct SearchView: View {
             let results = try await PodcastManager.searchPodcasts(query: q, limit: 8)
             guard !Task.isCancelled else { return }
             podcastHits = results
-            ImageLoader.shared.prefetch(results.compactMap(\.show.imageURL), limit: 8)
+            ImageLoader.shared.prefetch(results.compactMap(\.show.imageURL), limit: 8, priority: .userInitiated)
         } catch {
             guard !Task.isCancelled else { return }
             podcastHits = []
@@ -1450,7 +1450,7 @@ struct SearchView: View {
                 podcastFeedCandidate = show
                 podcastHits = []
                 if let art = show.imageURL {
-                    ImageLoader.shared.prefetch([art], limit: 1)
+                    ImageLoader.shared.prefetch([art], limit: 1, priority: .userInitiated)
                 }
             } catch {
                 podcastFeedCandidate = nil
@@ -1464,7 +1464,7 @@ struct SearchView: View {
             let results = try await PodcastManager.searchPodcasts(query: q)
             guard !Task.isCancelled else { return }
             podcastHits = results
-            ImageLoader.shared.prefetch(results.compactMap(\.show.imageURL), limit: 24)
+            ImageLoader.shared.prefetch(results.compactMap(\.show.imageURL), limit: 24, priority: .userInitiated)
         } catch {
             self.error = error.localizedDescription
             podcastHits = []

@@ -296,6 +296,11 @@ struct AlbumDetailView: View {
             album = loaded
             LibraryDetailCache.store(album: loaded)
             let songs = loaded.songs
+            var coverURLs = songs.prefix(24).compactMap { session.artworkURL(for: $0, size: 96) }
+            if let hero = session.artworkURL(id: loaded.coverArt ?? loaded.id, size: 600) {
+                coverURLs.insert(hero, at: 0)
+            }
+            ImageLoader.shared.prefetch(coverURLs, limit: 25, priority: .userInitiated)
             Task {
                 await Task.yield()
                 ratings.ingest(songs)

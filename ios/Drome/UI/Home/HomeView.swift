@@ -227,6 +227,7 @@ struct HomeView: View {
                 !PlaylistOrderStore.isHidden($0.id, userKey: userKey)
             }
             homePlaylists = Self.rankedHomePlaylists(visible, recent: recent)
+            warmHomeCovers(recent: recent, albums: neu, playlists: homePlaylists)
         } catch {
             self.error = error.localizedDescription
         }
@@ -269,6 +270,9 @@ struct HomeView: View {
             dailyMixes = cleaned
             dailyMixesDate = response.date
             mixesError = nil
+            let mixCovers = cleaned.flatMap { $0.coverArtIds.prefix(4) }
+            let mixURLs = mixCovers.compactMap { session.artworkURL(id: $0, size: 300) }
+            ImageLoader.shared.prefetch(mixURLs, limit: 24, priority: .userInitiated)
         } catch is CancellationError {
             return
         } catch {
@@ -304,6 +308,30 @@ struct HomeView: View {
             }
         ordered.append(contentsOf: rest)
         return Array(ordered.prefix(20))
+    }
+
+    /// Start the covers that are about to be on screen before the rails mount.
+    private func warmHomeCovers(recent: [RecentPlayEntry], albums: [Album], playlists: [Playlist]) {
+        var urls: [URL] = []
+        func add(_ id: String?) {
+            guard let url = session.artworkURL(id: id, size: 300) else { return }
+            urls.append(url)
+        }
+        for album in albums.prefix(14) {
+            add(album.coverArt ?? album.id)
+        }
+        for playlist in playlists.prefix(14) {
+            add(playlist.coverArt ?? playlist.id)
+        }
+        for entry in recent.prefix(14) {
+            switch entry {
+            case .song(let song):
+                add(song.coverArt ?? song.albumId ?? song.id)
+            case .album(_, _, let song), .playlist(_, _, let song), .mix(_, _, let song, _):
+                add(song.coverArt ?? song.albumId ?? song.id)
+            }
+        }
+        ImageLoader.shared.prefetch(urls, limit: 40, priority: .userInitiated)
     }
 
     /// Drop Out of Rotation tracks from mixes; keep the mix card even if short.
