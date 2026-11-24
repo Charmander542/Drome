@@ -581,15 +581,12 @@ struct PlaylistDetailView: View {
                 imageData: compressed,
                 filename: "cover.jpg"
             )
-            if let url = session.artworkURL(id: playlist?.coverArt ?? playlistID, size: 600) {
-                ImageLoader.shared.removeCached(for: url)
-            }
-            if let url = session.artworkURL(id: playlistID, size: 600) {
-                ImageLoader.shared.removeCached(for: url)
-            }
-            if let url = session.artworkURL(id: playlistID, size: 300) {
-                ImageLoader.shared.removeCached(for: url)
-            }
+            let coverID = PlaylistCoverStore.serverCoverID(
+                coverArt: playlist?.coverArt, playlistID: playlistID)
+            ImageLoader.shared.invalidateCover(
+                id: coverID, host: session.account.serverURL.host)
+            ImageLoader.shared.invalidateCover(
+                id: playlistID, host: session.account.serverURL.host)
             coverBump = Date().timeIntervalSince1970
             PlaylistCoverStore.markCustom(playlistID, userKey: session.account.userKey)
             await load()
@@ -599,32 +596,15 @@ struct PlaylistDetailView: View {
         }
     }
 
-    /// Custom upload → server image. Otherwise a stable first-4-albums collage
-    /// (never Navidrome’s shuffled mosaic, which jumps between visits).
+    /// Always the playlist’s Navidrome cover (custom upload or server mosaic).
     @ViewBuilder
     private func playlistHeroArtwork(_ playlist: PlaylistWithSongs) -> some View {
-        let userKey = session.account.userKey
-        let useCustom = PlaylistCoverStore.hasCustom(playlist.id, userKey: userKey) || coverBump > 0
-        if useCustom {
-            RemoteImage(
-                url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 600),
-                placeholderSymbol: "music.note.list")
-        } else {
-            let fromSongs = PlaylistCoverStore.coverIDs(from: playlist.songs)
-            let coverIDs = fromSongs.isEmpty
-                ? PlaylistCoverStore.rememberedCoverIDs(playlistID: playlist.id, userKey: userKey)
-                : fromSongs
-            if coverIDs.isEmpty {
-                ZStack {
-                    Color(white: 0.16)
-                    Image(systemName: "music.note.list")
-                        .font(.title2)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                PlaylistCoverCollage(coverIDs: coverIDs, session: session)
-            }
-        }
+        PlaylistArtwork(
+            playlistID: playlist.id,
+            coverArt: playlist.coverArt,
+            session: session,
+            size: 600,
+            cacheBust: coverBump)
     }
 
     private static func compressCover(_ data: Data) -> Data? {
@@ -1060,27 +1040,11 @@ struct AddToPlaylistView: View {
 
     @ViewBuilder
     private func playlistCoverThumb(_ playlist: Playlist) -> some View {
-        let userKey = session.account.userKey
-        Group {
-            if PlaylistCoverStore.hasCustom(playlist.id, userKey: userKey) {
-                RemoteImage(
-                    url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 96),
-                    placeholderSymbol: "music.note.list")
-            } else {
-                let ids = PlaylistCoverStore.rememberedCoverIDs(
-                    playlistID: playlist.id, userKey: userKey)
-                if ids.isEmpty {
-                    Color(white: 0.16)
-                        .overlay {
-                            Image(systemName: "music.note.list")
-                                .font(.caption2)
-                                .foregroundStyle(DromeTheme.muted)
-                        }
-                } else {
-                    PlaylistCoverCollage(coverIDs: ids, session: session)
-                }
-            }
-        }
+        PlaylistArtwork(
+            playlistID: playlist.id,
+            coverArt: playlist.coverArt,
+            session: session,
+            size: 96)
         .frame(width: 44, height: 44)
         .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
         .accessibilityHidden(true)

@@ -60,8 +60,14 @@ final class ImageLoader: @unchecked Sendable {
         }
         lock.lock()
         if failed.contains(key) {
-            lock.unlock()
-            return nil
+            // On-screen loads get one retry — a transient XML/empty cover response
+            // used to permanently blank playlist art for the rest of the session.
+            if priority >= .userInitiated {
+                failed.remove(key)
+            } else {
+                lock.unlock()
+                return nil
+            }
         }
         if let existing = inflight[key] {
             lock.unlock()
@@ -155,6 +161,43 @@ final class ImageLoader: @unchecked Sendable {
         failed.remove(key)
         parsedRequests.removeValue(forKey: url.absoluteString)
         lock.unlock()
+    }
+
+    /// Drop a sticky failure so the next visible load can refetch.
+    func clearFailed(for url: URL) {
+        lock.lock()
+        failed.remove(url.absoluteString as NSString)
+        lock.unlock()
+    }
+
+    /// Clear every cached size / failure for a cover id (playlist upload refresh).
+    func invalidateCover(id: String, host: String?) {
+        let hostKey = host ?? ""
+        lock.lock()
+        // NSCache has no key enumeration — walk failed + parsed URL maps instead.
+        let failedKeys = failed.filter {
+            ($0 as String).contains("id=\(id)") || ($0 as String).contains("id%3D\(id)")
+        }
+        for key in failedKeys { failed.remove(key) }
+        let parsedKeys = parsedRequests.keys.filter {
+            $0.contains("id=\(id)") || $0.contains("id%3D\(id)")
+        }
+        for key in parsedKeys {
+            parsedRequests.removeValue(forKey: key)
+            cache.removeObject(forKey: key as NSString)
+        }
+        coverCache.removeObject(forKey: id as NSString)
+        lock.unlock()
+        let prefix = Self.diskPrefix(coverID: id, host: hostKey)
+        let directory = diskDirectory
+        diskQueue.async {
+            guard let files = try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil)
+            else { return }
+            for file in files where file.lastPathComponent.hasPrefix(prefix) {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
     }
 
     // MARK: - Fetch

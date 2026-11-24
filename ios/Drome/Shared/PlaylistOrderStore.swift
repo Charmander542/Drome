@@ -1,10 +1,10 @@
 import Foundation
 
-/// Stable playlist cover policy.
+/// Playlist cover policy.
 ///
-/// Navidrome’s auto mosaic shuffles album tiles on every regenerate — that made
-/// playlist art jump around. We instead pin the first unique album covers in
-/// playlist order (and remember them for list thumbs). Uploaded covers win.
+/// Prefer Navidrome’s `getCoverArt` for the playlist itself — that serves both
+/// custom uploads and the server mosaic. Local collage ids are only a fallback
+/// when the playlist has no cover id yet (rare).
 enum PlaylistCoverStore {
     private static func customKey(userKey: String) -> String {
         "drome.playlistCustomCover.\(userKey)"
@@ -12,6 +12,12 @@ enum PlaylistCoverStore {
 
     private static func collageKey(userKey: String, playlistID: String) -> String {
         "drome.playlistCollage.\(userKey).\(playlistID)"
+    }
+
+    /// Cover art id for `getCoverArt` — always resolvable from a playlist id.
+    static func serverCoverID(coverArt: String?, playlistID: String) -> String {
+        let trimmed = coverArt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? playlistID : trimmed
     }
 
     static func hasCustom(_ playlistID: String, userKey: String) -> Bool {
@@ -48,7 +54,7 @@ enum PlaylistCoverStore {
             forKey: collageKey(userKey: userKey, playlistID: playlistID)) ?? []
     }
 
-    /// Persist the deterministic collage so Library rows match the detail hero.
+    /// Persist collage ids as a soft fallback for list rows.
     static func rememberCoverIDs(_ coverIDs: [String], playlistID: String, userKey: String) {
         guard !coverIDs.isEmpty else { return }
         UserDefaults.standard.set(

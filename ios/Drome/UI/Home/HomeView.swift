@@ -48,7 +48,8 @@ struct HomeView: View {
                             loadError: mixesError,
                             onRetry: { Task { await loadMixes() } }
                         )
-                        OutsidePicksRail()
+                        // Temporarily hidden — revisit OutsidePicksRail / "Get these".
+                        // OutsidePicksRail()
                     }
 
                     if !recentEntries.isEmpty {
