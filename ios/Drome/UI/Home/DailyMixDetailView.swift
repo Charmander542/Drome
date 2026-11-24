@@ -162,12 +162,13 @@ struct DailyMixDetailView: View {
         let songs = mix.songs.filter { !session.rotation.excludedIDs.contains($0.id) }
         guard !songs.isEmpty else { return }
         if isNonstop {
-            // Nonstop = endless station: seed the queue and keep Infinite Shuffle on.
-            player.autoplayEnabled = true
-            player.play(
-                songs,
-                startAt: min(startAt, songs.count - 1),
-                context: PlaybackContext(label: "Nonstop", kind: .mix))
+            // Real Nonstop station: liked/near/random refill + session skip bans.
+            if startAt > 0, startAt < songs.count {
+                let rotated = Array(songs[startAt...]) + Array(songs[..<startAt])
+                player.startNonstop(seeds: rotated)
+            } else {
+                player.startNonstop(seeds: songs)
+            }
             return
         }
         if shuffled {

@@ -25,5 +25,7 @@ Adapted files include (non-exhaustive):
     (genre mixes / Nonstop / served-rotation ideas from MixGenerator)
   - ios/Drome/UI/Settings/YearWrappedView.swift
     (from Aura WrappedView ideas)
+  - ios/Drome/Core/Services/NonstopEngine.swift
+    (from Aura Nonstop refill / skip-dislike session rules)
 
 Aura remains a separate project; Drome is not affiliated with Aura.

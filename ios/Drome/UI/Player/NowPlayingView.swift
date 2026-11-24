@@ -1625,6 +1625,16 @@ struct NowPlayingMoreSheet: View {
                     }
                     .listRowBackground(DromeTheme.elevated)
 
+                    if player.isNonstop {
+                        Button {
+                            player.dislikeNonstopSong()
+                            isPresented = false
+                        } label: {
+                            Label("Not for this station", systemImage: "hand.thumbsdown")
+                        }
+                        .listRowBackground(DromeTheme.elevated)
+                    }
+
                     if rotation.contains(song.id) {
                         Button {
                             Task {
