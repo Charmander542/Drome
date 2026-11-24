@@ -8,7 +8,24 @@ enum WidgetRecentSync {
     private static var playbackCancellable: AnyCancellable?
     private static var transportCancellable: AnyCancellable?
     private static var trackChangeCancellable: AnyCancellable?
-    private static var lastNowPlayingSignature: String?
+
+    /// In-memory mirror of the App Group snapshot. The app is the only writer,
+    /// so reads never need to touch the shared container after the first load.
+    private static var cachedSnapshot: WidgetRecentSnapshot?
+    private static var lastSnapshotWriteAt: TimeInterval = 0
+    private static var washCache: [String: (r: Double, g: Double, b: Double)] = [:]
+    /// Serial so snapshot files always land in the order they were produced.
+    private static let ioQueue = DispatchQueue(label: "com.drome.widget-snapshot", qos: .utility)
+
+    /// Widget + Watch extrapolate the playhead from `capturedAt`, so while the
+    /// app is on screen a steady stream only needs a periodic refresh to stay
+    /// inside `WidgetRecentSnapshot.staleSyncInterval`.
+    private static let foregroundRefreshInterval: TimeInterval = 45
+    /// Home / Lock Screen widgets can be visible once the app is backgrounded —
+    /// keep their progress bar moving at the cadence it always had.
+    private static let backgroundRefreshInterval: TimeInterval = 3
+    /// Seeks / stalls larger than this are pushed immediately.
+    private static let playheadDriftTolerance: TimeInterval = 1.5
 
     static func refresh(session: AppSession, database: AppDatabase) {
         Task { @MainActor in
@@ -32,6 +49,9 @@ enum WidgetRecentSync {
         )
         .debounce(for: .milliseconds(350), scheduler: RunLoop.main)
         .sink { _, _ in
+            // Fires twice a second while audio plays — stay off the disk
+            // unless the widget / Watch would actually show something new.
+            guard playheadNeedsSync(session: session) else { return }
             PhoneWatchSession.shared.broadcast(
                 session: session,
                 database: database,
@@ -93,13 +113,112 @@ enum WidgetRecentSync {
             priority: .full)
     }
 
-    /// Writes live player state to the shared widget snapshot (no Watch push).
+    /// Snapshot as last written by this process (loads the file once).
     @MainActor
-    static func writeNowPlayingSnapshot(session: AppSession, database: AppDatabase) {
-        guard WidgetRecentStore.artDirectoryURL != nil else { return }
+    static func currentSnapshot() -> WidgetRecentSnapshot {
+        if let cachedSnapshot { return cachedSnapshot }
+        let loaded = WidgetRecentStore.load()
+        cachedSnapshot = loaded
+        return loaded
+    }
 
-        var snapshot = WidgetRecentStore.load()
-        snapshot.updatedAt = Date().timeIntervalSince1970
+    @MainActor
+    private static var playingRefreshInterval: TimeInterval {
+        UIApplication.shared.applicationState == .active
+            ? foregroundRefreshInterval
+            : backgroundRefreshInterval
+    }
+
+    /// Cheap check for the playhead tick: true only when the stored snapshot
+    /// no longer predicts what the player is doing.
+    @MainActor
+    private static func playheadNeedsSync(session: AppSession) -> Bool {
+        guard let cached = cachedSnapshot else { return true }
+        let player = session.player
+        guard let current = player.current else { return cached.nowPlaying != nil }
+        guard let stored = cached.nowPlaying, stored.songId == current.song.id else { return true }
+
+        let playing = transportIsPlaying(session: session, localPlaying: player.isPlaying)
+        if stored.isPlaying != playing { return true }
+        if stored.rating != session.ratings.rating(for: current.song) { return true }
+        if stored.isOutOfRotation != session.rotation.contains(current.song.id) { return true }
+
+        let now = Date().timeIntervalSince1970
+        if playing, now - lastSnapshotWriteAt >= playingRefreshInterval { return true }
+
+        let duration = player.clock.duration > 0
+            ? player.clock.duration
+            : TimeInterval(current.song.duration ?? 0)
+        if abs(stored.duration - duration) > 1 { return true }
+
+        let predicted = stored.isPlaying
+            ? stored.elapsed + (now - stored.capturedAt)
+            : stored.elapsed
+        return abs(predicted - player.accurateElapsed()) > playheadDriftTolerance
+    }
+
+    /// True when `new` shows something a reader could not derive from `old`.
+    private static func isMeaningfulChange(
+        from old: WidgetNowPlaying?,
+        to new: WidgetNowPlaying?
+    ) -> Bool {
+        guard let old, let new else { return (old == nil) != (new == nil) }
+        if old.songId != new.songId
+            || old.isPlaying != new.isPlaying
+            || old.artworkFile != new.artworkFile
+            || old.title != new.title
+            || old.artist != new.artist
+            || old.rating != new.rating
+            || old.isOutOfRotation != new.isOutOfRotation
+            || old.pausedSince != new.pausedSince {
+            return true
+        }
+        if abs(old.duration - new.duration) > 1 { return true }
+        if abs(old.washR - new.washR) > 0.001
+            || abs(old.washG - new.washG) > 0.001
+            || abs(old.washB - new.washB) > 0.001 {
+            return true
+        }
+        let predicted = old.isPlaying
+            ? old.elapsed + (new.capturedAt - old.capturedAt)
+            : old.elapsed
+        return abs(predicted - new.elapsed) > playheadDriftTolerance
+    }
+
+    /// Updates the in-memory snapshot, then writes the shared file and reloads
+    /// widget timelines off the main thread.
+    @MainActor
+    private static func store(_ snapshot: WidgetRecentSnapshot) {
+        cachedSnapshot = snapshot
+        lastSnapshotWriteAt = snapshot.updatedAt
+        ioQueue.async {
+            WidgetRecentStore.save(snapshot)
+            // After the write so the widget never reloads against a stale file.
+            DispatchQueue.main.async {
+                WidgetCenter.shared.reloadAllTimelines()
+            }
+        }
+    }
+
+    /// Wash colors are derived from the cached cover file — decode it once per cover.
+    @MainActor
+    private static func wash(forArtworkFile file: String) -> (r: Double, g: Double, b: Double) {
+        if let cached = washCache[file] { return cached }
+        let wash = WidgetArtWash.fromArtworkFile(file)
+        if washCache.count >= 48 { washCache.removeAll(keepingCapacity: true) }
+        washCache[file] = wash
+        return wash
+    }
+
+    /// Writes live player state to the shared widget snapshot (no Watch push).
+    /// Returns `false` when the stored snapshot already describes the player.
+    @MainActor
+    @discardableResult
+    static func writeNowPlayingSnapshot(session: AppSession, database: AppDatabase) -> Bool {
+        let previous = currentSnapshot()
+        var snapshot = previous
+        let now = Date().timeIntervalSince1970
+        snapshot.updatedAt = now
         let player = session.player
 
         if let current = player.current {
@@ -107,7 +226,7 @@ enum WidgetRecentSync {
             let art = resolveNowPlayingArt(songId: song.id, in: snapshot)
             let wash: (r: Double, g: Double, b: Double)
             if let art {
-                wash = WidgetArtWash.fromArtworkFile(art)
+                wash = self.wash(forArtworkFile: art)
             } else if let prior = snapshot.nowPlaying, prior.songId == song.id {
                 wash = (prior.washR, prior.washG, prior.washB)
             } else {
@@ -119,7 +238,7 @@ enum WidgetRecentSync {
             if playing {
                 pausedSince = nil
             } else if prior?.songId != song.id || prior?.isPlaying == true || prior?.pausedSince == nil {
-                pausedSince = Date().timeIntervalSince1970
+                pausedSince = now
             } else {
                 pausedSince = prior?.pausedSince
             }
@@ -133,7 +252,7 @@ enum WidgetRecentSync {
                 duration: player.clock.duration > 0
                     ? player.clock.duration
                     : TimeInterval(song.duration ?? 0),
-                capturedAt: Date().timeIntervalSince1970,
+                capturedAt: now,
                 rating: session.ratings.rating(for: song),
                 isOutOfRotation: session.rotation.contains(song.id),
                 washR: wash.r, washG: wash.g, washB: wash.b,
@@ -142,25 +261,13 @@ enum WidgetRecentSync {
             snapshot.nowPlaying = nil
         }
 
-        WidgetRecentStore.save(snapshot)
-        reloadWidgetTimelinesIfNeeded(for: snapshot)
-    }
+        let changed = isMeaningfulChange(from: previous.nowPlaying, to: snapshot.nowPlaying)
+        let refreshDue = snapshot.nowPlaying?.isPlaying == true
+            && now - lastSnapshotWriteAt >= playingRefreshInterval
+        guard changed || refreshDue else { return false }
 
-    /// Reload home-screen widget timelines when live playback state changes.
-    @MainActor
-    private static func reloadWidgetTimelinesIfNeeded(for snapshot: WidgetRecentSnapshot) {
-        let signature = [
-            snapshot.nowPlaying?.songId,
-            snapshot.nowPlaying?.artworkFile ?? "none",
-            snapshot.nowPlaying.map { $0.isPlaying ? "1" : "0" },
-            snapshot.nowPlaying.map { np in
-                np.isPlaying ? String(Int(np.elapsed / 3)) : "0"
-            },
-        ].compactMap { $0 }.joined(separator: "|")
-        if signature != lastNowPlayingSignature {
-            lastNowPlayingSignature = signature
-            WidgetCenter.shared.reloadAllTimelines()
-        }
+        store(snapshot)
+        return true
     }
 
     /// Prefer snapshot art for the current song, then fall back to App Group cache.
@@ -207,7 +314,9 @@ enum WidgetRecentSync {
     @MainActor
     private static func perform(session: AppSession, database: AppDatabase) async {
         let userKey = session.account.userKey
-        let entries = (try? database.recentPlayEntries(userKey: userKey, limit: 12)) ?? []
+        let entries = await Task.detached(priority: .utility) {
+            (try? database.recentPlayEntries(userKey: userKey, limit: 12)) ?? []
+        }.value
         guard let artDir = WidgetRecentStore.artDirectoryURL else { return }
         try? FileManager.default.createDirectory(at: artDir, withIntermediateDirectories: true)
 
@@ -217,13 +326,12 @@ enum WidgetRecentSync {
             items.append(item)
         }
 
-        let existing = WidgetRecentStore.load()
+        let existing = currentSnapshot()
         let snapshot = WidgetRecentSnapshot(
             updatedAt: Date().timeIntervalSince1970,
             items: items,
             nowPlaying: existing.nowPlaying)
-        WidgetRecentStore.save(snapshot)
-        WidgetCenter.shared.reloadAllTimelines()
+        store(snapshot)
         PhoneWatchSession.shared.broadcast(
             session: session,
             database: database,
@@ -239,7 +347,7 @@ enum WidgetRecentSync {
                                        duration: TimeInterval) async {
         guard let artDir = WidgetRecentStore.artDirectoryURL else { return }
 
-        var snapshot = WidgetRecentStore.load()
+        var snapshot = currentSnapshot()
         snapshot.updatedAt = Date().timeIntervalSince1970
 
         if let current {
@@ -257,7 +365,7 @@ enum WidgetRecentSync {
             }
             let wash: (r: Double, g: Double, b: Double)
             if let art {
-                wash = WidgetArtWash.fromArtworkFile(art)
+                wash = self.wash(forArtworkFile: art)
             } else if let prior = snapshot.nowPlaying, prior.songId == song.id {
                 wash = (prior.washR, prior.washG, prior.washB)
             } else {
@@ -291,8 +399,7 @@ enum WidgetRecentSync {
             snapshot.nowPlaying = nil
         }
 
-        WidgetRecentStore.save(snapshot)
-        reloadWidgetTimelinesIfNeeded(for: snapshot)
+        store(snapshot)
         PhoneWatchSession.shared.broadcast(
             session: session,
             database: database,

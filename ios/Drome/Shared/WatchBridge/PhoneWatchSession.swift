@@ -38,10 +38,20 @@ final class PhoneWatchSession: NSObject, WCSessionDelegate {
         database: AppDatabase?,
         priority: BroadcastPriority
     ) {
+        var snapshotChanged = true
         if let session, let database {
-            WidgetRecentSync.writeNowPlayingSnapshot(session: session, database: database)
+            snapshotChanged = WidgetRecentSync.writeNowPlayingSnapshot(
+                session: session, database: database)
         }
-        guard WCSession.default.activationState == .activated else { return }
+        // The Watch extrapolates the scrubber itself — a playhead tick only
+        // needs to travel when the snapshot moved (seek, stall, keep-alive).
+        if priority == .playhead, !snapshotChanged { return }
+        guard WCSession.isSupported() else { return }
+        let wcSession = WCSession.default
+        guard wcSession.activationState == .activated,
+              wcSession.isPaired,
+              wcSession.isWatchAppInstalled
+        else { return }
         guard let message = outboundMessage(
             session: session,
             database: database,
@@ -138,13 +148,13 @@ final class PhoneWatchSession: NSObject, WCSessionDelegate {
     }
 
     private func snapshotJSON(session: AppSession?, database: AppDatabase?) -> String? {
-        let widgetSnap = WidgetRecentStore.load()
+        let widgetSnap = WidgetRecentSync.currentSnapshot()
         let playlists: [WatchPlaylistItem]
         if let session {
             let serverKey = session.account.serverKey
-            let userKey = session.account.userKey
+            let hidden = PlaylistOrderStore.hiddenIDs(userKey: session.account.userKey)
             playlists = (LibraryListCatalog.playlists(serverKey: serverKey) ?? [])
-                .filter { !PlaylistOrderStore.isHidden($0.id, userKey: userKey) }
+                .filter { !hidden.contains($0.id) }
                 .prefix(24)
                 .map { WatchPlaylistItem(id: $0.id, name: $0.name, songCount: $0.songCount ?? 0) }
         } else {
@@ -179,7 +189,7 @@ final class PhoneWatchSession: NSObject, WCSessionDelegate {
     }
 
     private func watchArtworkJPEG(for songId: String) -> Data? {
-        let widgetSnap = WidgetRecentStore.load()
+        let widgetSnap = WidgetRecentSync.currentSnapshot()
         var candidates: [String] = []
         if widgetSnap.nowPlaying?.songId == songId, let file = widgetSnap.nowPlaying?.artworkFile {
             candidates.append(file)
