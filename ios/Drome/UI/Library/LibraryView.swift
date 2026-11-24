@@ -1022,30 +1022,11 @@ struct LibraryView: View {
 
     @ViewBuilder
     private func playlistThumb(_ playlist: Playlist) -> some View {
-        let userKey = session.account.userKey
-        if PlaylistCoverStore.hasCustom(playlist.id, userKey: userKey) {
-            RemoteImage(
-                url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 96),
-                placeholderSymbol: "music.note.list")
-        } else {
-            let ids = PlaylistCoverStore.rememberedCoverIDs(
-                playlistID: playlist.id, userKey: userKey)
-            if ids.isEmpty {
-                // Avoid Navidrome’s shuffled mosaic until we’ve opened the playlist once.
-                Color(white: 0.16)
-                    .overlay {
-                        Image(systemName: "music.note.list")
-                            .font(.caption)
-                            .foregroundStyle(DromeTheme.muted)
-                    }
-            } else if ids.count == 1 {
-                RemoteImage(
-                    url: session.artworkURL(id: ids[0], size: 96),
-                    placeholderSymbol: "music.note.list")
-            } else {
-                PlaylistCoverCollage(coverIDs: ids, session: session)
-            }
-        }
+        PlaylistArtwork(
+            playlistID: playlist.id,
+            coverArt: playlist.coverArt,
+            session: session,
+            size: 96)
     }
 
     private func applyPlaylists(_ list: [Playlist]) {
@@ -1060,6 +1041,16 @@ struct LibraryView: View {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         playlists = PlaylistOrderStore.visibleOrdered(
             withoutSystem, userKey: userKey, serverKey: serverKey)
+        warmPlaylistCovers(playlists)
+    }
+
+    private func warmPlaylistCovers(_ playlists: [Playlist]) {
+        let urls = playlists.prefix(40).compactMap {
+            session.artworkURL(
+                id: PlaylistCoverStore.serverCoverID(coverArt: $0.coverArt, playlistID: $0.id),
+                size: Self.listArtSize)
+        }
+        ImageLoader.shared.prefetch(urls, limit: 40, priority: .userInitiated)
     }
 
     /// Full playlist set for disk cache — visible + hidden.

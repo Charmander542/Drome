@@ -313,31 +313,49 @@ struct PlaylistCard: View {
     @ViewBuilder
     private var cover: some View {
         if let session {
-            let userKey = session.account.userKey
-            if PlaylistCoverStore.hasCustom(playlist.id, userKey: userKey) {
-                RemoteImage(
-                    url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 300),
-                    placeholderSymbol: "music.note.list")
-            } else {
-                let ids = PlaylistCoverStore.rememberedCoverIDs(
-                    playlistID: playlist.id, userKey: userKey)
-                if ids.isEmpty {
-                    Color(white: 0.16)
-                        .overlay {
-                            Image(systemName: "music.note.list")
-                                .foregroundStyle(.secondary)
-                        }
-                } else {
-                    PlaylistCoverCollage(coverIDs: ids, session: session)
-                }
-            }
+            PlaylistArtwork(
+                playlistID: playlist.id,
+                coverArt: playlist.coverArt,
+                session: session,
+                size: 300)
         } else {
             Color(white: 0.16)
         }
     }
 }
 
+/// Playlist cover from Navidrome (`getCoverArt` on the playlist id / coverArt).
+/// Always hits the server image so custom uploads and mosaics load; never gates
+/// on a local “remembered collage” flag that left Library/Home blank.
+struct PlaylistArtwork: View {
+    let playlistID: String
+    var coverArt: String?
+    let session: AppSession
+    var size: Int = 300
+    var cacheBust: TimeInterval = 0
+    var placeholderSymbol: String = "music.note.list"
+
+    private var coverID: String {
+        PlaylistCoverStore.serverCoverID(coverArt: coverArt, playlistID: playlistID)
+    }
+
+    private var url: URL? {
+        session.artworkURL(id: coverID, size: size)
+    }
+
+    var body: some View {
+        RemoteImage(url: url, placeholderSymbol: placeholderSymbol)
+            .id("\(playlistID)-\(coverID)-\(Int(cacheBust))-\(size)")
+            .onAppear {
+                if let url {
+                    ImageLoader.shared.clearFailed(for: url)
+                }
+            }
+    }
+}
+
 /// Fills a square from 1–4 album covers with no empty mosaic tiles.
+/// Kept for detail fallbacks; list/home prefer `PlaylistArtwork`.
 struct PlaylistCoverCollage: View {
     let coverIDs: [String]
     let session: AppSession
