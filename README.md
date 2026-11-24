@@ -3,6 +3,13 @@
 A native iOS streaming client for a self-hosted Navidrome server, plus a Go
 companion backend for the wishlist.
 
+## License
+
+Drome is licensed under the [GNU General Public License v3.0](LICENSE).
+
+Some Made for you UI (templated mix covers) is adapted from
+[Aura](https://github.com/adrbn/aura) (GPL-3.0). See [NOTICE](NOTICE).
+
 ## Companion server
 
 The iOS app can paste Spotify track/album links into **Library → Wishlist**.

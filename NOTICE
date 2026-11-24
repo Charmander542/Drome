@@ -1,0 +1,21 @@
+Drome
+Copyright (C) 2024–2026 Charlie Van Hook and contributors
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+See the LICENSE file for the full text of the GNU General Public License.
+
+---------------------------------------------------------------------------
+
+Portions of this project are adapted from Aura
+(https://github.com/adrbn/aura), Copyright (C) Aura contributors,
+licensed under the GNU General Public License v3.0.
+
+Adapted files include (non-exhaustive):
+  - ios/Drome/UI/Home/MadeForYouCoverView.swift
+    (from Aura GeneratedCoverView / MixCoverView ideas)
+
+Aura remains a separate project; Drome is not affiliated with Aura.
