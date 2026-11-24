@@ -46,6 +46,17 @@ func newLibraryCleaner(cfg cleanupConfig, scanFn func(context.Context) error) *l
 	return &libraryCleaner{cfg: cfg, scanFn: scanFn}
 }
 
+// refreshPlaylistsAfterMerge rewrites Drome-managed .m3u8 files whose paths
+// break when cleanup merges Artist/Album folders into Various Artists.
+func (c *libraryCleaner) refreshPlaylistsAfterMerge() {
+	if c == nil || c.cfg.MusicDir == "" {
+		return
+	}
+	if n := refreshManagedPlaylistFiles(c.cfg.MusicDir); n > 0 {
+		logf("library cleanup: refreshed %d managed playlist file(s)", n)
+	}
+}
+
 func (c *libraryCleaner) Run(ctx context.Context) {
 	if !c.cfg.Enabled {
 		logf("library cleanup disabled (DROME_CLEANUP_ENABLED=false)")
@@ -121,6 +132,11 @@ func (c *libraryCleaner) runOnce(ctx context.Context) {
 		logf("library cleanup: %s", truncate(out, 800))
 	} else {
 		logf("library cleanup finished")
+	}
+
+	// Merges move files under Different Artist/ folders — rewrite .m3u8 paths.
+	if c.cfg.MergeDupes {
+		c.refreshPlaylistsAfterMerge()
 	}
 
 	// After merges, ask Navidrome to rescan so moved files reappear cleanly.

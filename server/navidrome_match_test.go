@@ -30,6 +30,15 @@ func TestTitlesMatch(t *testing.T) {
 	if !titlesMatch("01 - Iris", "Iris") {
 		t.Fatal("filename")
 	}
+	if !titlesMatch("買你", "買你") {
+		t.Fatal("cjk exact")
+	}
+	if got := normalizeMatchKey("買你"); got == "" {
+		t.Fatal("cjk normalize emptied title")
+	}
+	if !titlesMatch("新・仁義なき戦いのテーマ", "新・仁義なき戦いのテーマ") {
+		t.Fatal("japanese title")
+	}
 }
 
 func TestFileTitleKey(t *testing.T) {

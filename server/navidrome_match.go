@@ -12,7 +12,9 @@ import (
 )
 
 var (
-	nonAlphaNum    = regexp.MustCompile(`[^a-z0-9\s]+`)
+	// Keep Unicode letters/numbers (CJK titles, accented Latin, etc.).
+	// ASCII-only stripping used to turn "買你" into "" and miss owned tracks.
+	nonAlphaNum    = regexp.MustCompile(`[^\p{L}\p{N}\s]+`)
 	trackNumPrefix = regexp.MustCompile(`^\d{1,3}\s*[-.]\s*`)
 )
 

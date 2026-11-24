@@ -86,6 +86,64 @@ func TestPlaylistM3URelPath(t *testing.T) {
 	}
 }
 
+func TestRepairPlaylistFilePaths(t *testing.T) {
+	dir := t.TempDir()
+	must := func(rel string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("Various Artists/Musical Theatre Bangers/22 - You'll Be Back.flac")
+	plDir := filepath.Join(dir, "Playlists")
+	if err := os.MkdirAll(plDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pl := filepath.Join(plDir, "Musical Theatre Bangers.m3u8")
+	body := "#EXTM3U\n#DROME-MANAGED\n#EXTINF:-1,You'll Be Back\n../Jonathan Groff/Musical Theatre Bangers/22 - You'll Be Back.flac\n"
+	if err := os.WriteFile(pl, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	n, err := repairPlaylistFilePaths(dir, pl)
+	if err != nil || n != 1 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	got, _ := os.ReadFile(pl)
+	if !strings.Contains(string(got), "../Various Artists/Musical Theatre Bangers/22 - You'll Be Back.flac") {
+		t.Fatalf("contents:\n%s", got)
+	}
+}
+
+func TestRefreshManagedPlaylistFiles(t *testing.T) {
+	dir := t.TempDir()
+	must := func(rel string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("Various Artists/Musical Theatre Bangers/01 - Satisfied.flac")
+	must("Various Artists/Musical Theatre Bangers/22 - You'll Be Back.flac")
+	plDir := filepath.Join(dir, "Playlists")
+	_ = os.MkdirAll(plDir, 0o755)
+	pl := filepath.Join(plDir, "Musical Theatre Bangers.m3u8")
+	_ = os.WriteFile(pl, []byte("#EXTM3U\n#DROME-MANAGED\n#EXTINF:-1,x\n../Jonathan Groff/Musical Theatre Bangers/22 - You'll Be Back.flac\n"), 0o644)
+	if n := refreshManagedPlaylistFiles(dir); n != 1 {
+		t.Fatalf("refreshed %d", n)
+	}
+	got, _ := os.ReadFile(pl)
+	text := string(got)
+	if !strings.Contains(text, "01 - Satisfied.flac") || strings.Contains(text, "Jonathan Groff") {
+		t.Fatalf("contents:\n%s", text)
+	}
+}
+
 func TestPlaylistFileTracksNamedAlbumPrefersCompilation(t *testing.T) {
 	dir := t.TempDir()
 	mustMk := func(parts ...string) string {
