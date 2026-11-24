@@ -795,14 +795,14 @@ final class CarPlaySceneDelegate: UIResponder,
             let images = sliceTitles.map {
                 CarPlayArtwork.placeholder(style: style, title: $0)
             }
-            let row = CPListImageRowItem(text: rowText, images: images)
-            row.listImageRowHandler = { _, index, completion in
+            let row = CPListImageRowItem(text: rowText ?? "", images: images)
+            row.listImageRowHandler = { (_: CPSelectableListItem, index: Int, completion: @escaping () -> Void) in
                 let absolute = base + index
                 guard sliceTitles.indices.contains(index) else { completion(); return }
                 onTile(absolute)
                 completion()
             }
-            row.handler = { _, completion in
+            row.handler = { (_: CPSelectableListItem, completion: @escaping () -> Void) in
                 onRow()
                 completion()
             }
