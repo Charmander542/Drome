@@ -1,5 +1,33 @@
 import Foundation
 
+/// Playlists whose cover was uploaded from Drome — keep the server image instead
+/// of rebuilding a song collage on the detail hero.
+enum PlaylistCustomCoverStore {
+    private static func key(userKey: String) -> String {
+        "drome.playlistCustomCover.\(userKey)"
+    }
+
+    static func hasCustom(_ playlistID: String, userKey: String) -> Bool {
+        ids(userKey: userKey).contains(playlistID)
+    }
+
+    static func mark(_ playlistID: String, userKey: String) {
+        var ids = ids(userKey: userKey)
+        ids.insert(playlistID)
+        UserDefaults.standard.set(Array(ids).sorted(), forKey: key(userKey: userKey))
+    }
+
+    static func clear(_ playlistID: String, userKey: String) {
+        var ids = ids(userKey: userKey)
+        ids.remove(playlistID)
+        UserDefaults.standard.set(Array(ids).sorted(), forKey: key(userKey: userKey))
+    }
+
+    private static func ids(userKey: String) -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: key(userKey: userKey)) ?? [])
+    }
+}
+
 /// Per-user playlist order + hidden set in the Library tab.
 ///
 /// Hidden is local to this account — it never deletes a Navidrome playlist, so

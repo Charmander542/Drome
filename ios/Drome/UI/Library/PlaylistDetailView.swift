@@ -463,10 +463,7 @@ struct PlaylistDetailView: View {
     private func playlistHeader(_ playlist: PlaylistWithSongs) -> some View {
         VStack(spacing: 14) {
             ZStack {
-                RemoteImage(
-                    url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 600),
-                    placeholderSymbol: "music.note.list"
-                )
+                playlistHeroArtwork(playlist)
                 .id("\(playlist.id)-\(coverBump)")
                 .frame(width: 180, height: 180)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -582,11 +579,43 @@ struct PlaylistDetailView: View {
                 ImageLoader.shared.removeCached(for: url)
             }
             coverBump = Date().timeIntervalSince1970
+            PlaylistCustomCoverStore.mark(playlistID, userKey: session.account.userKey)
             await load()
             flash("Cover updated")
         } catch {
             flash(error.localizedDescription)
         }
+    }
+
+    /// Prefer a custom uploaded cover; otherwise build a song collage so Navidrome’s
+    /// auto mosaic can’t leave empty grey tiles on the right.
+    @ViewBuilder
+    private func playlistHeroArtwork(_ playlist: PlaylistWithSongs) -> some View {
+        let serverURL = session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 600)
+        let useCustom = PlaylistCustomCoverStore.hasCustom(playlist.id, userKey: session.account.userKey)
+            || coverBump > 0
+        if useCustom {
+            RemoteImage(url: serverURL, placeholderSymbol: "music.note.list")
+        } else {
+            let coverIDs = Self.uniqueCoverIDs(from: playlist.songs, limit: 4)
+            if coverIDs.isEmpty {
+                RemoteImage(url: serverURL, placeholderSymbol: "music.note.list")
+            } else {
+                PlaylistCoverCollage(coverIDs: coverIDs, session: session)
+            }
+        }
+    }
+
+    private static func uniqueCoverIDs(from songs: [Song], limit: Int) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for song in songs {
+            let id = song.coverArt ?? song.albumId
+            guard let id, !id.isEmpty, seen.insert(id).inserted else { continue }
+            out.append(id)
+            if out.count >= limit { break }
+        }
+        return out
     }
 
     private static func compressCover(_ data: Data) -> Data? {
