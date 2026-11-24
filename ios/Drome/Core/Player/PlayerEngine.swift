@@ -3087,7 +3087,8 @@ final class PlayerEngine: ObservableObject {
         let taste = TasteAffinity.build(
             ratings: ratings.ratings,
             seeds: Array(songs.prefix(40)),
-            knownSongs: songs)
+            knownSongs: songs,
+            memory: ratings.memory)
         return ShuffleEngine.order(songs, mode: shuffleMode,
                                    rating: { [weak self] in self?.ratings.rating(for: $0) ?? 0 },
                                    excluded: excluded,
@@ -3112,7 +3113,8 @@ final class PlayerEngine: ObservableObject {
             let taste = TasteAffinity.build(
                 ratings: ratings.ratings,
                 seeds: kept.prefix(40).map(\.song),
-                knownSongs: kept.map(\.song))
+                knownSongs: kept.map(\.song),
+                memory: ratings.memory)
             let songs = ShuffleEngine.order(kept.map(\.song), mode: shuffleMode,
                                             rating: { [weak self] in self?.ratings.rating(for: $0) ?? 0 },
                                             excluded: excluded,

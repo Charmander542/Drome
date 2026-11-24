@@ -630,6 +630,7 @@ final class AppSession: ObservableObject, Identifiable {
                 try? database.recordPlay(userKey: userKey, song: song, context: context)
                 #if os(iOS)
                 await MainActor.run {
+                    self.ratings.notePlay(song)
                     WidgetRecentSync.refresh(session: self, database: database)
                 }
                 #endif

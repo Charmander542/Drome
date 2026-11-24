@@ -7,18 +7,18 @@ import (
 
 func TestNormalizeGenre(t *testing.T) {
 	cases := map[string]string{
-		"Hip-Hop/Rap":        "Hip-Hop",
-		"lofi":               "Indie",
-		"R&B":                "R&B",
-		"synth-pop":          "Pop",
-		"Stage & Screen":     "", // too broad alone — need Musical/Broadway style
-		"broadway":           "Musical",
-		"Musical":            "Musical",
-		"opera":              "Classical",
-		"Films/Games":        "Soundtrack",
-		"Alternative Rock":   "Alternative",
-		"":                   "",
-		"xyzzy":              "",
+		"Hip-Hop/Rap":      "Hip-Hop",
+		"lofi":             "Indie",
+		"R&B":              "R&B",
+		"synth-pop":        "Pop",
+		"Stage & Screen":   "", // too broad alone — need Musical/Broadway style
+		"broadway":         "Musical",
+		"Musical":          "Musical",
+		"opera":            "Classical",
+		"Films/Games":      "Soundtrack",
+		"Alternative Rock": "Alternative",
+		"":                 "",
+		"xyzzy":            "",
 	}
 	for in, want := range cases {
 		if got := normalizeGenre(in); got != want {
@@ -187,6 +187,66 @@ func TestVibeMixPrefersMatchingGenres(t *testing.T) {
 	chill := buildVibeMix(lib, nil, "chill", "seed")
 	if chill.ID != "chill" || chill.Title == "" {
 		t.Fatalf("bad chill mix %+v", chill)
+	}
+}
+
+func TestSequenceStaysInGenreAndSeparatesArtists(t *testing.T) {
+	rng := mixRNG("sequence")
+	var tracks []mixTrack
+	jazz := []struct{ name, id string }{{"Miles", "m"}, {"Coltrane", "c"}, {"Evans", "e"}}
+	rock := []struct{ name, id string }{{"Radiohead", "r"}, {"Pixies", "p"}, {"Nirvana", "n"}}
+	for i := 0; i < 3; i++ {
+		for _, a := range jazz {
+			tracks = append(tracks, mixTrack{
+				ID: a.id + itoa(i), Title: "J", Artist: a.name, ArtistID: a.id,
+				Genre: "Jazz", UserRating: 5,
+			})
+		}
+		for _, a := range rock {
+			tracks = append(tracks, mixTrack{
+				ID: a.id + itoa(i), Title: "R", Artist: a.name, ArtistID: a.id,
+				Genre: "Rock", UserRating: 5,
+			})
+		}
+	}
+	out := sequenceMix(tracks, rng)
+	if len(out) != len(tracks) {
+		t.Fatalf("dropped songs: %d vs %d", len(out), len(tracks))
+	}
+	switches := 0
+	for i := 1; i < len(out); i++ {
+		if out[i].ArtistID != "" && out[i].ArtistID == out[i-1].ArtistID {
+			t.Fatalf("same artist back to back at %d (%s)", i, out[i].Artist)
+		}
+		if normalizeGenre(out[i].Genre) != normalizeGenre(out[i-1].Genre) {
+			switches++
+		}
+	}
+	// A walk changes rooms a handful of times. Alternating every song would
+	// be one switch per track.
+	if switches > len(out)/3 {
+		t.Fatalf("genre jumped %d times in %d songs", switches, len(out))
+	}
+}
+
+func TestFreshReleaseFromLikedArtistIsKept(t *testing.T) {
+	lib := sampleLibrary()
+	fresh := mixTrack{
+		ID: "ind-new", Title: "New One", Artist: "The National", ArtistID: "a-nat",
+		Genre: "Indie", Year: time.Now().Year(), UserRating: 4, Fresh: true,
+	}
+	lib = append(lib, fresh)
+	mixes := buildDailyMixes(lib, nil, "fresh-seed", nil)
+	found := false
+	for _, m := range mixes {
+		for _, s := range m.Songs {
+			if s.ID == "ind-new" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("new release from a top artist was left out of daily mixes")
 	}
 }
 

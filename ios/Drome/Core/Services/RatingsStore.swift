@@ -21,6 +21,10 @@ final class RatingsStore: ObservableObject {
     private let database: AppDatabase
     private let userKey: String
     weak var rotation: RotationManager?
+    /// What this listener plays and rates. Not published — shuffle reads it
+    /// without redrawing every row.
+    private(set) var memory = ListenerMemory.empty
+
     private var inFlight: [String: Task<Void, Never>] = [:]
     private var discoveryTask: Task<Void, Never>?
     private var ingestTask: Task<Void, Never>?
@@ -31,6 +35,36 @@ final class RatingsStore: ObservableObject {
         self.userKey = userKey
         // Don't block AppSession / first paint on a sync ratings table read.
         Task { await self.loadCachedRatings() }
+        Task { await self.rebuildMemory() }
+    }
+
+    /// Fold local play history into `memory`. Off the main thread for the read.
+    func rebuildMemory() async {
+        let key = userKey
+        let db = database
+        let rows = await Task.detached(priority: .utility) {
+            (try? db.playHistoryWeights(userKey: key, limit: 800)) ?? []
+        }.value
+        var next = ListenerMemory.empty
+        for row in rows.reversed() {
+            let genre = GenreNormalizer.shared.normalize(row.song.genre ?? "")
+            next.observe(
+                genre: genre,
+                artist: row.song.artistId,
+                amount: ListenerMemory.playAmount(row.plays),
+                at: row.lastPlayed)
+        }
+        memory = next
+    }
+
+    /// One more play, folded into the profile without rereading history.
+    func notePlay(_ song: Song, at: Date = Date()) {
+        let genre = GenreNormalizer.shared.normalize(song.genre ?? "")
+        memory.observe(
+            genre: genre,
+            artist: song.artistId,
+            amount: 1,
+            at: at.timeIntervalSince1970)
     }
 
     private func loadCachedRatings() async {
@@ -119,6 +153,11 @@ final class RatingsStore: ObservableObject {
         }
         ratings = next
         revision &+= 1
+        memory.observe(
+            genre: GenreNormalizer.shared.normalize(song.genre ?? ""),
+            artist: song.artistId,
+            amount: ListenerMemory.ratingAmount(clamped),
+            at: Date().timeIntervalSince1970)
 
         var snapshot = song
         snapshot.userRating = clamped == 0 ? nil : clamped

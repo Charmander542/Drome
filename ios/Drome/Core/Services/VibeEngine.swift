@@ -129,7 +129,12 @@ enum VibeEngine {
         }
     }
 
-    static func pick(vibe: MoodVibe, from songs: [Song], excluded: Set<String>) -> [Song] {
+    static func pick(
+        vibe: MoodVibe,
+        from songs: [Song],
+        excluded: Set<String>,
+        memory: ListenerMemory = .empty
+    ) -> [Song] {
         let pool = songs.filter { !excluded.contains($0.id) }.uniquedByID()
         guard !pool.isEmpty else { return [] }
         if vibe == .lucky {
@@ -168,7 +173,7 @@ enum VibeEngine {
         guard !candidatePool.isEmpty else { return [] }
 
         var scored = candidatePool.compactMap { song -> (Song, Double)? in
-            let s = score(song, spec: spec)
+            let s = personalScore(score(song, spec: spec), song: song, memory: memory)
             // Prefer-genre tracks always stay eligible even if energy is a bit off.
             if let g = normalizedGenre(song), spec.prefer.contains(g) {
                 return (song, max(0.4, s))
@@ -179,11 +184,44 @@ enum VibeEngine {
             scored = candidatePool.compactMap { song -> (Song, Double)? in
                 let g = normalizedGenre(song)
                 if let g, spec.avoid.contains(g) { return nil }
-                return (song, max(0.25, score(song, spec: spec)))
+                return (song, max(0.25, personalScore(score(song, spec: spec), song: song, memory: memory)))
             }
         }
         // Weighted random sample — not "always the same top band shuffled".
-        return weightedSample(scored, count: mixLength)
+        let sampled = weightedSample(scored, count: mixLength)
+        return sequence(sampled, vibe: vibe, weights: Dictionary(scored.map { ($0.0.id, $0.1) }, uniquingKeysWith: { a, _ in a }))
+    }
+
+    /// Inside a vibe, lean toward artists and genres this listener actually plays.
+    /// A zero-history profile leaves the score untouched, and a miss can't
+    /// pull the song out of the vibe — it only reorders the room.
+    private static func personalScore(_ score: Double, song: Song, memory: ListenerMemory) -> Double {
+        guard memory.hasSignal else { return score }
+        let affinity = memory.affinity(
+            genre: normalizedGenre(song),
+            artist: song.artistId)
+        return score * (0.72 + 0.56 * affinity)
+    }
+
+    /// Walk the chosen set so energy and genre don't lurch between songs.
+    private static func sequence(_ songs: [Song], vibe: MoodVibe, weights: [String: Double]) -> [Song] {
+        let tracks = songs.map { song -> FlowTrack in
+            let genre = normalizedGenre(song) ?? ""
+            let energy = estimatedEnergy(song, genre: genre.isEmpty ? nil : genre)
+            return FlowTrack(
+                id: song.id,
+                artist: song.artistId ?? song.artist ?? "",
+                album: song.albumId ?? song.album ?? "",
+                genre: genre,
+                energy: energy,
+                year: song.year ?? 0,
+                weight: weights[song.id] ?? 0.4)
+        }
+        let ordered = SessionFlow.arrange(tracks, strictGenre: vibe != .lucky)
+        var byID = Dictionary(uniqueKeysWithValues: songs.map { ($0.id, $0) })
+        let sequenced = ordered.compactMap { byID.removeValue(forKey: $0.id) }
+        if sequenced.count == songs.count { return sequenced }
+        return sequenced + byID.values
     }
 
     /// Hard filters so relax paths can't pull hype/pop/electronic into Focus.
