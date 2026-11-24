@@ -27,5 +27,7 @@ Adapted files include (non-exhaustive):
     (from Aura WrappedView ideas)
   - ios/Drome/Core/Services/NonstopEngine.swift
     (from Aura Nonstop refill / skip-dislike session rules)
+  - ios/Drome/Core/Services/LRCParser.swift
+    (song-pace line ends + mid-break focus from Aura LyricWordTiming)
 
 Aura remains a separate project; Drome is not affiliated with Aura.

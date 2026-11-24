@@ -234,12 +234,15 @@ struct LyricsView: View {
     }
 
     private func activeLineIndex(at elapsedMs: Int, in document: LyricsDocument) -> Int {
-        var idx = 0
+        // Last line that has started…
+        var last: Int?
         for (i, line) in document.lines.enumerated() {
             guard let start = line.startMs else { continue }
-            if start <= elapsedMs { idx = i } else { break }
+            if start <= elapsedMs { last = i } else { break }
         }
-        return idx
+        // …then Aura-style focus: during a long instrumental, move halfway
+        // through the break so the sheet isn’t stuck on a finished line.
+        return LRCParser.focusIndex(lines: document.lines, after: last, atMs: elapsedMs) ?? 0
     }
 
     private func sourceLabel(_ source: String) -> String {
