@@ -114,6 +114,11 @@ func (s *server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, fmt.Sprintf("authentication failed: %v", err))
 			return
 		}
+		// Cache verified Subsonic creds so background downloads can update
+		// Navidrome playlists even when DROME_NAVIDROME_SCAN_* is unset.
+		if s.downloads != nil && user != "" && token != "" && salt != "" {
+			s.downloads.rememberOperatorCreds(subsonicCreds{user: user, token: token, salt: salt})
+		}
 
 		next(w, r.WithContext(context.WithValue(r.Context(), userContextKey, user)))
 	}

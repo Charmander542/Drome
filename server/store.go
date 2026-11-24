@@ -494,6 +494,30 @@ func (s *wishlistStore) playlistMirror(owner, spotifyID string) (navidromeID, na
 	return navidromeID, name, err
 }
 
+type playlistMirrorRow struct {
+	Owner      string
+	SpotifyID  string
+	NavidromeID string
+	Name       string
+}
+
+func (s *wishlistStore) listPlaylistMirrors() ([]playlistMirrorRow, error) {
+	rows, err := s.db.Query(`SELECT owner, spotify_id, navidrome_id, name FROM playlist_mirrors ORDER BY name COLLATE NOCASE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []playlistMirrorRow
+	for rows.Next() {
+		var m playlistMirrorRow
+		if err := rows.Scan(&m.Owner, &m.SpotifyID, &m.NavidromeID, &m.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // downloadQueueStats counts the caller's active download-related wishlist rows.
 func (s *wishlistStore) downloadQueueStats(owner string) (downloadQueueStats, error) {
 	var st downloadQueueStats
