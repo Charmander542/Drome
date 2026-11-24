@@ -44,19 +44,24 @@ type downloadConfig struct {
 	Timeout      time.Duration
 	MaxAttempts  int
 	RetryBase    time.Duration
+	// SingleAlternates: when a Spotify Singles exclusive fails every provider,
+	// search Spotify for the nearest non-exclusive recording and download that.
+	SingleAlternates bool
 }
 
 func downloadConfigFromEnv() downloadConfig {
 	enabled := strings.ToLower(envOr("DROME_AUTO_DOWNLOAD", "true"))
+	alts := strings.ToLower(envOr("DROME_SPOTIFY_SINGLE_ALTERNATES", "true"))
 	cfg := downloadConfig{
-		Enabled:      enabled == "1" || enabled == "true" || enabled == "yes",
-		MusicDir:     envOr("DROME_MUSIC_DIR", "/music"),
-		SpotiflacBin: envOr("DROME_SPOTIFLAC_BIN", "mornye"),
-		RetagBin:     envOr("DROME_RETAG_BIN", "drome-retag"),
-		GenreBin:     envOr("DROME_GENRE_BIN", "drome-genre-tag"),
-		Timeout:      envDuration("DROME_DOWNLOAD_TIMEOUT", 45*time.Minute),
-		MaxAttempts:  envInt("DROME_DOWNLOAD_MAX_ATTEMPTS", 5),
-		RetryBase:    envDuration("DROME_DOWNLOAD_RETRY_BASE", 2*time.Minute),
+		Enabled:          enabled == "1" || enabled == "true" || enabled == "yes",
+		MusicDir:         envOr("DROME_MUSIC_DIR", "/music"),
+		SpotiflacBin:     envOr("DROME_SPOTIFLAC_BIN", "mornye"),
+		RetagBin:         envOr("DROME_RETAG_BIN", "drome-retag"),
+		GenreBin:         envOr("DROME_GENRE_BIN", "drome-genre-tag"),
+		Timeout:          envDuration("DROME_DOWNLOAD_TIMEOUT", 45*time.Minute),
+		MaxAttempts:      envInt("DROME_DOWNLOAD_MAX_ATTEMPTS", 5),
+		RetryBase:        envDuration("DROME_DOWNLOAD_RETRY_BASE", 2*time.Minute),
+		SingleAlternates: alts == "1" || alts == "true" || alts == "yes",
 	}
 	raw := envOr("DROME_SPOTIFLAC_SERVICES", "tidal,qobuz,amazon,deezer,youtube")
 	for _, part := range strings.Split(raw, ",") {
@@ -273,13 +278,37 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 	}
 
 	w.setPhase("spotiflac", "running SpotiFLAC")
+	retagEntry := *e
 	if err := w.runSpotiflac(ctx, e.SpotifyURL); err != nil {
-		w.fail(e, attempt, err)
-		return
+		origErr := err
+		alt, altErr := w.trySpotifySingleAlternate(ctx, e, origErr)
+		if alt == nil {
+			if altErr != nil {
+				logf("spotify single alternate id=%d: %v", e.ID, altErr)
+			}
+			w.fail(e, attempt, origErr)
+			return
+		}
+		logf("download alternate id=%d %q — %q → %q — %q",
+			e.ID, e.Artist, e.Title, alt.Artist, alt.Title)
+		w.setPhase("spotiflac", fmt.Sprintf("alternate: %s — %s", alt.Artist, alt.Title))
+		_ = w.store.setStatus(e.ID, statusDownloading,
+			fmt.Sprintf("Spotify Single unavailable; trying alternate %s — %s", alt.Artist, alt.Title))
+		if err := w.runSpotiflac(ctx, alt.SpotifyURL); err != nil {
+			w.fail(e, attempt, fmt.Errorf("%v; alternate also failed: %w", origErr, err))
+			return
+		}
+		// Tag/file as the alternate recording (honest library metadata).
+		retagEntry.SpotifyID = alt.SpotifyID
+		retagEntry.SpotifyURL = alt.SpotifyURL
+		retagEntry.Title = alt.Title
+		retagEntry.Artist = alt.Artist
+		retagEntry.Album = alt.Album
+		retagEntry.CoverURL = alt.CoverURL
 	}
 
 	w.setPhase("retag", "applying Spotify tags")
-	if err := w.retagRecent(ctx, e, started); err != nil {
+	if err := w.retagRecent(ctx, &retagEntry, started); err != nil {
 		// Audio may already be on disk — still treat as failure so we retry
 		// retag rather than deleting the wishlist row with broken tags.
 		w.fail(e, attempt, fmt.Errorf("retag: %w", err))
@@ -287,7 +316,7 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 	}
 
 	w.setPhase("genre", "looking up genre")
-	if err := w.tagGenreRecent(ctx, e, started); err != nil {
+	if err := w.tagGenreRecent(ctx, &retagEntry, started); err != nil {
 		// Genre is best-effort — don't fail the download over a Discogs blip.
 		logf("genre tag id=%d: %v", e.ID, err)
 	}
@@ -423,6 +452,27 @@ func (w *downloadWorker) fail(e *entry, attempt int, err error) {
 	if markErr := w.store.markFailed(e.ID, msg, attempt, w.cfg.MaxAttempts, backoff); markErr != nil {
 		logf("mark failed id=%d: %v", e.ID, markErr)
 	}
+}
+
+// trySpotifySingleAlternate returns a nearest non-exclusive Spotify recording
+// when the wishlist track looks like a Spotify Single and providers reported
+// "not available" / no match. Nil means "don't alternate; fail as usual".
+func (w *downloadWorker) trySpotifySingleAlternate(ctx context.Context, e *entry, downloadErr error) (*searchHit, error) {
+	if w == nil || e == nil || !w.cfg.SingleAlternates || w.spotify == nil {
+		return nil, nil
+	}
+	if e.Kind != "track" || !isSpotifyExclusiveTitle(e.Title, e.Album) {
+		return nil, nil
+	}
+	msg := strings.ToLower(downloadErr.Error())
+	if !strings.Contains(msg, "not available") &&
+		!strings.Contains(msg, "providers failed") &&
+		!strings.Contains(msg, "not_found") &&
+		!strings.Contains(msg, "no verified") &&
+		!strings.Contains(msg, "0 successful") {
+		return nil, nil
+	}
+	return w.spotify.findNearestSpotifyAlternate(ctx, e)
 }
 
 func min(a, b int) int {
