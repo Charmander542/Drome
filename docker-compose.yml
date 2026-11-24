@@ -25,6 +25,7 @@ services:
       # Mornye needs an extension registry (no built-in providers).
       MORNYE_REGISTRIES: ${MORNYE_REGISTRIES:-https://raw.githubusercontent.com/mornyeapp/Mornye-Extension/main/registry.json,https://raw.githubusercontent.com/mornyeapp/Mornye-Extension/main/registry-python.json}
       DROME_SPOTIFLAC_EXTENSIONS: ${DROME_SPOTIFLAC_EXTENSIONS:-utilities,tidal-web,qobuz-web,amazon,deezer,ytmusic-spotiflac}
+      DROME_SPOTIFY_SINGLE_ALTERNATES: ${DROME_SPOTIFY_SINGLE_ALTERNATES:-true}
       DROME_PUBLIC_URL: ${DROME_PUBLIC_URL:-}
       # Optional: admin (or any user allowed to scan) so downloads appear immediately.
       DROME_NAVIDROME_SCAN_USER: ${DROME_NAVIDROME_SCAN_USER:-}

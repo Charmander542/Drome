@@ -824,6 +824,7 @@ type searchHit struct {
 	Album      string `json:"album"`
 	CoverURL   string `json:"coverUrl"`
 	TrackCount int    `json:"trackCount,omitempty"`
+	Popularity int    `json:"popularity,omitempty"`
 }
 
 // playlistTrack is one track pulled from a Spotify playlist for wishlist import.
@@ -1761,10 +1762,11 @@ func (c *spotifyClient) search(ctx context.Context, query, types string, limit i
 	var body struct {
 		Tracks *struct {
 			Items []struct {
-				ID      string          `json:"id"`
-				Name    string          `json:"name"`
-				Artists []spotifyArtist `json:"artists"`
-				Album   struct {
+				ID         string          `json:"id"`
+				Name       string          `json:"name"`
+				Popularity int             `json:"popularity"`
+				Artists    []spotifyArtist `json:"artists"`
+				Album      struct {
 					Name   string         `json:"name"`
 					Images []spotifyImage `json:"images"`
 				} `json:"album"`
@@ -1833,6 +1835,7 @@ func (c *spotifyClient) search(ctx context.Context, query, types string, limit i
 				Artist:     joinArtists(t.Artists),
 				Album:      t.Album.Name,
 				CoverURL:   bestImage(t.Album.Images),
+				Popularity: t.Popularity,
 			})
 		}
 	}
