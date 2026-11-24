@@ -369,7 +369,11 @@ struct OutsidePicksRail: View {
 
     private func load() async {
         guard let client = session.wishlist else { return }
-        picks = (try? await client.outsidePicks()) ?? []
+        if session.ratings.memory.topPlayedArtists(limit: 1).isEmpty {
+            await session.ratings.rebuildMemory()
+        }
+        let artists = session.ratings.memory.topPlayedArtists(limit: 6)
+        picks = (try? await client.outsidePicks(artists: artists)) ?? []
     }
 
     private func get(_ pick: OutsidePick) async {

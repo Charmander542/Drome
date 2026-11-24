@@ -44,8 +44,20 @@ func TestTasteArtistNamesPrefersStarred(t *testing.T) {
 	tracks = append(tracks, mixTrack{
 		ID: "b", Title: "t", Artist: "Someone Else", ArtistID: "x", UserRating: 3,
 	})
-	names := tasteArtistNames(tracks, 1)
+	names := listeningArtistNames(tracks, 1)
 	if len(names) != 1 || names[0] != "Radiohead" {
+		t.Fatalf("got %v", names)
+	}
+}
+
+func TestListeningArtistNamesDoNotRequireStars(t *testing.T) {
+	tracks := []mixTrack{
+		{ID: "1", Title: "a", Artist: "Played A Lot", ArtistID: "a", PlayCount: 40},
+		{ID: "2", Title: "b", Artist: "Played A Lot", ArtistID: "a", PlayCount: 25},
+		{ID: "3", Title: "c", Artist: "Starred Once", ArtistID: "b", Starred: "true", PlayCount: 1, UserRating: 5},
+	}
+	names := listeningArtistNames(tracks, 2)
+	if len(names) < 2 || names[0] != "Played A Lot" {
 		t.Fatalf("got %v", names)
 	}
 }
