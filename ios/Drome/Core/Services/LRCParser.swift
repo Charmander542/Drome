@@ -6,10 +6,10 @@ import Foundation
 /// - Enhanced LRC (word-timed): `[mm:ss.xx] <mm:ss.xx>word <mm:ss.xx>word`
 /// - Global offset tag: `[offset:±NNNN]` (milliseconds applied to every stamp)
 ///
-/// When only line timestamps exist, word timings are synthesized with a
-/// character-weighted spread across the *sung* portion of the line — not the
-/// full gap to the next stamp (which often includes instrumental silence and
-/// made karaoke feel chronically slow).
+/// When only line timestamps exist, word timings are synthesized from the
+/// song’s own median pace (Aura `LyricWordTiming`, GPL-3.0 — see NOTICE):
+/// spread across the *sung* portion of the line, not the full gap to the next
+/// stamp (instrumental breaks used to make karaoke crawl).
 enum LRCParser {
     struct Word: Identifiable, Equatable, Hashable {
         let id: UUID
@@ -269,26 +269,36 @@ enum LRCParser {
     static func hydrateWordTimings(_ lines: [Line]) -> [Line] {
         guard !lines.isEmpty else { return lines }
         var result = lines
+        let songPace = paceMsPerChar(of: result)
 
         for i in result.indices {
             let lineStart = result[i].startMs ?? 0
-            let nextStart: Int? = {
-                if i + 1 < result.count { return result[i + 1].startMs }
-                return nil
-            }()
-            let gapEnd = nextStart.map { max($0, lineStart + 1) }
-                ?? (lineStart + max(2500, max(result[i].words.count, 1) * 350))
-
-            // Sing across a capped window — leave trailing silence until the
-            // next line instead of crawling words through an instrumental break.
-            let tokenCount = max(result[i].words.count, tokenize(result[i].text).count, 1)
-            let idealSung = min(max(900, tokenCount * 380), 6_500)
-            let sungEnd = min(gapEnd, lineStart + idealSung)
-            // If the next line arrives sooner than ideal, use the real gap.
-            let wordWindowEnd = nextStart != nil ? min(gapEnd, max(lineStart + 400, sungEnd)) : sungEnd
+            let wordWindowEnd = lineEndMs(lines: result, index: i, paceMs: songPace) ?? (lineStart + 2_500)
 
             if result[i].words.isEmpty {
                 result[i].words = tokenize(result[i].text).map { Word(text: $0, startMs: lineStart) }
+            }
+
+            // "… x4": phrase lights once per pass across the sung window.
+            if let marked = repeated(result[i].text),
+               let end = lineEndMs(lines: result, index: i, paceMs: songPace),
+               end > lineStart {
+                let passes = marked.passes
+                let period = (end - lineStart) / passes
+                let phraseEnd = lineStart + min(period, max(1_500, marked.phrase.count * songPace * 12 / 10))
+                var words = distributeWords(tokenize(marked.phrase), from: lineStart, to: phraseEnd)
+                if let last = words.indices.last {
+                    // Keep a space so joins stay lossless if we ever re-serialize.
+                    if !words[last].text.hasSuffix(" ") {
+                        words[last].text += " "
+                    }
+                }
+                words.append(Word(
+                    text: marked.marker.trimmingCharacters(in: .whitespaces),
+                    startMs: lineStart + period * (passes - 1),
+                    endMs: end))
+                result[i].words = words
+                continue
             }
 
             let uniqueStarts = Set(result[i].words.map(\.startMs))
@@ -296,6 +306,7 @@ enum LRCParser {
                 result[i].words = distributeWords(
                     result[i].words.map(\.text), from: lineStart, to: wordWindowEnd)
             } else {
+                // Server / Enhanced LRC measured words — keep starts, fill ends.
                 var words = result[i].words
                 for w in words.indices {
                     let end = w + 1 < words.count ? words[w + 1].startMs : wordWindowEnd
@@ -305,6 +316,94 @@ enum LRCParser {
             }
         }
         return result
+    }
+
+    // MARK: - Song-relative sync (Aura LyricWordTiming)
+
+    /// Fallback when there aren’t enough timed lines to learn a pace (ms / character).
+    static let defaultPaceMsPerChar = 90
+
+    /// Median gap÷length over long enough lines — slow for ballads, quick for rap.
+    /// Breaks are outliers; the median shrugs them off.
+    static func paceMsPerChar(of lines: [Line]) -> Int {
+        var samples: [Int] = []
+        for index in lines.indices {
+            guard let start = lines[index].startMs,
+                  lines[index].text.count >= 8,
+                  repeated(lines[index].text) == nil,
+                  let next = nextStartMs(after: index, in: lines),
+                  next > start
+            else { continue }
+            samples.append((next - start) / lines[index].text.count)
+        }
+        guard samples.count >= 3 else { return defaultPaceMsPerChar }
+        samples.sort()
+        return min(max(samples[samples.count / 2], 40), 300)
+    }
+
+    /// When the line at `index` stops being sung (not when the next stamp starts).
+    static func lineEndMs(lines: [Line], index: Int, paceMs: Int? = nil) -> Int? {
+        guard lines.indices.contains(index), let start = lines[index].startMs else { return nil }
+        let pace = paceMs ?? paceMsPerChar(of: lines)
+
+        if repeated(lines[index].text) != nil,
+           let next = nextStartMs(after: index, in: lines), next > start {
+            return next
+        }
+
+        let sung = start + max(1_500, sungLength(lines[index].text) * pace * 12 / 10)
+        if let next = nextStartMs(after: index, in: lines), next > start {
+            return min(next, sung)
+        }
+        return sung
+    }
+
+    /// When the active line has been fully sung (measured last word + beat, else `lineEndMs`).
+    static func lineFinishMs(lines: [Line], index: Int) -> Int? {
+        guard lines.indices.contains(index) else { return nil }
+        if repeated(lines[index].text) == nil,
+           let last = lines[index].words.last,
+           Set(lines[index].words.map(\.startMs)).count > 1 {
+            return last.startMs + 600
+        }
+        return lineEndMs(lines: lines, index: index)
+    }
+
+    /// Which line holds focus at `elapsedMs`, given `last` (most recently started).
+    ///
+    /// Across a real instrumental break (>2s), focus moves halfway through so the
+    /// sheet isn’t stuck on a finished line — and doesn’t jump before its last word.
+    static func focusIndex(lines: [Line], after last: Int?, atMs elapsedMs: Int) -> Int? {
+        guard let index = last, index + 1 < lines.count,
+              let nextStart = lines[index + 1].startMs,
+              let finished = lineFinishMs(lines: lines, index: index)
+        else { return last }
+        let breakLength = nextStart - finished
+        guard breakLength > 2_000, elapsedMs >= finished + breakLength / 2 else { return index }
+        return index + 1
+    }
+
+    /// Line ending in a repeat marker — "x4", "(x4)", "[4x]", "×4".
+    static func repeated(_ line: String) -> (phrase: String, marker: String, passes: Int)? {
+        let pattern = #"\s+([(\[]?\s*(?:[x×]\s?([2-9])|([2-9])\s?[x×])\s*[)\]]?)\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+              let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+              let whole = Range(match.range, in: line),
+              let marker = Range(match.range(at: 1), in: line)
+        else { return nil }
+        let digit = [2, 3].compactMap { Range(match.range(at: $0), in: line) }.first.flatMap { Int(line[$0]) }
+        let phrase = String(line[..<whole.lowerBound])
+        guard let passes = digit, !phrase.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        return (phrase, String(line[marker]), passes)
+    }
+
+    private static func sungLength(_ line: String) -> Int {
+        guard let marked = repeated(line) else { return line.count }
+        return marked.phrase.count * marked.passes
+    }
+
+    private static func nextStartMs(after index: Int, in lines: [Line]) -> Int? {
+        lines[(index + 1)...].first(where: { $0.startMs != nil })?.startMs
     }
 
     // MARK: - Internals
@@ -363,20 +462,25 @@ enum LRCParser {
         text.split(whereSeparator: \.isWhitespace).map(String.init).filter { !$0.isEmpty }
     }
 
+    /// Weight is `count + 1` per word (Aura): the +1 pays for the following space
+    /// so a line of short words doesn’t race ahead of one with fewer, longer words.
     private static func distributeWords(_ tokens: [String], from start: Int, to end: Int) -> [Word] {
         guard !tokens.isEmpty else { return [] }
         let duration = max(end - start, tokens.count * 120)
-        let weights = tokens.map { max($0.count, 1) }
+        let weights = tokens.map { Double(max($0.count, 0) + 1) }
         let totalWeight = max(weights.reduce(0, +), 1)
-        var cursor = start
+        guard end > start else {
+            return [Word(text: tokens.joined(separator: " "), startMs: start, endMs: start + 80)]
+        }
+        var elapsed = 0.0
         var result: [Word] = []
         for (idx, token) in tokens.enumerated() {
-            let slice = idx == tokens.count - 1
-                ? max(end - cursor, 80)
-                : max(80, duration * weights[idx] / totalWeight)
-            let wordEnd = min(end, cursor + slice)
-            result.append(Word(text: token, startMs: cursor, endMs: wordEnd))
-            cursor = wordEnd
+            let wordStart = start + Int(elapsed.rounded())
+            elapsed += Double(duration) * (weights[idx] / totalWeight)
+            let wordEnd = idx == tokens.count - 1
+                ? end
+                : min(end, start + Int(elapsed.rounded()))
+            result.append(Word(text: token, startMs: wordStart, endMs: max(wordEnd, wordStart + 80)))
         }
         if let last = result.indices.last {
             result[last].endMs = end

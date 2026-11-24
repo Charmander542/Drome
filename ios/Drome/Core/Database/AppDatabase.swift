@@ -592,12 +592,7 @@ final class AppDatabase: @unchecked Sendable {
         period: ListeningStatsPeriod = .allTime,
         topLimit: Int = 5
     ) throws -> ListeningStats {
-        let cutoff: Double?
-        if let days = period.lookbackDays {
-            cutoff = Date().timeIntervalSince1970 - Double(days) * 86_400
-        } else {
-            cutoff = nil
-        }
+        let cutoff = period.cutoff()?.timeIntervalSince1970
         let plays: [(playedAt: TimeInterval, song: Song)] = try pool.read { db in
             let rows: [Row]
             if let cutoff {
@@ -621,7 +616,7 @@ final class AppDatabase: @unchecked Sendable {
                 return (playedAt, song)
             }
         }
-        return ListeningStats.aggregate(plays: plays, topLimit: topLimit)
+        return ListeningStats.aggregate(plays: plays, topLimit: topLimit, period: period)
     }
 
     /// Most-recent-first plays, unique by `song_id` (keeps the newest row).

@@ -28,6 +28,48 @@ final class AutoplayProvider {
         return await nextBatch(seeds: seeds, excluding: excluding, count: count, relaxed: true)
     }
 
+    /// Aura-style Nonstop refill: liked → near → unheard round-robin.
+    func nonstopBatch(
+        seeds: [Song],
+        excluding: Set<String>,
+        session: NonstopEngine.Session,
+        count: Int = NonstopEngine.batchSize
+    ) async -> [Song] {
+        async let starredFetch = try? client.starred()
+        async let randomFetch = try? client.randomSongs(size: 50)
+        var liked = (await starredFetch)?.songs ?? []
+        if liked.isEmpty { liked = seeds }
+        liked = liked.shuffled()
+        let random = (await randomFetch) ?? []
+
+        var near: [Song] = []
+        let nearSeeds = Array((liked.isEmpty ? random : liked).prefix(2))
+        await withTaskGroup(of: [Song].self) { group in
+            for seed in nearSeeds {
+                group.addTask {
+                    if let artistId = seed.artistId {
+                        return (try? await self.client.similarSongs(artistId: artistId, count: 40)) ?? []
+                    }
+                    if let genre = seed.genre {
+                        return (try? await self.client.songsByGenre(genre, count: 40)) ?? []
+                    }
+                    return []
+                }
+            }
+            for await batch in group { near += batch }
+        }
+
+        return NonstopEngine.batch(
+            liked: liked,
+            near: near,
+            random: random,
+            played: excluding,
+            session: session,
+            excludedGenres: MadeForYouPreferences.excludedGenres,
+            rotationExcluded: rotation.excludedIDs,
+            count: count)
+    }
+
     private func buildBatch(
         seeds: [Song],
         excluding: Set<String>,

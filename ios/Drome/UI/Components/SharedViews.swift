@@ -530,3 +530,130 @@ struct ScrollableEmptyState<Content: View>: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
+
+// MARK: - Album / playlist action chrome (Aura-inspired, Drome colors)
+
+/// Equal Play + Shuffle pills — Aura playlist header rhythm, DromeTheme ink.
+struct LibraryPlayShuffleRow: View {
+    var canPlay: Bool
+    var songsReady: Bool = true
+    var onPlay: () -> Void
+    var onShuffle: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onPlay) {
+                Label("Play", systemImage: "play.fill")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(DromeTheme.accent, in: RoundedRectangle(
+                        cornerRadius: DromeTheme.Radius.md, style: .continuous))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canPlay)
+
+            Button(action: onShuffle) {
+                Group {
+                    if songsReady {
+                        Label("Shuffle", systemImage: "shuffle")
+                    } else {
+                        ProgressView()
+                    }
+                }
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .background(
+                    Color.white.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: DromeTheme.Radius.md, style: .continuous))
+                .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canPlay)
+        }
+    }
+}
+
+/// Album action strip: icon chips + wide Play (Aura album page layout).
+struct LibraryAlbumActionRow: View {
+    var canPlay: Bool
+    var songsReady: Bool
+    var isDownloaded: Bool
+    var mixBusy: Bool
+    var onShuffle: () -> Void
+    var onPlay: () -> Void
+    var onInstantMix: () -> Void
+    var onDownload: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            chip(
+                systemImage: "shuffle",
+                label: "Shuffle",
+                disabled: !canPlay,
+                action: onShuffle)
+
+            Button(action: onPlay) {
+                Group {
+                    if songsReady {
+                        Label("Play", systemImage: "play.fill")
+                    } else {
+                        ProgressView()
+                    }
+                }
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .frame(height: 40)
+                .background(DromeTheme.accent, in: RoundedRectangle(
+                    cornerRadius: DromeTheme.Radius.md, style: .continuous))
+                .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canPlay)
+
+            chip(
+                systemImage: mixBusy
+                    ? "antenna.radiowaves.left.and.right"
+                    : "antenna.radiowaves.left.and.right",
+                label: mixBusy ? "Mixing" : "Instant Mix",
+                disabled: !canPlay || mixBusy,
+                action: onInstantMix)
+
+            chip(
+                systemImage: isDownloaded ? "arrow.down.circle.fill" : "arrow.down.circle",
+                label: isDownloaded ? "Downloaded" : "Download album",
+                disabled: !canPlay,
+                accent: isDownloaded,
+                action: onDownload)
+        }
+    }
+
+    private func chip(
+        systemImage: String,
+        label: String,
+        disabled: Bool,
+        accent: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.title3)
+                .foregroundStyle(accent ? DromeTheme.accent : .white)
+                .frame(width: 50, height: 40)
+                .background(
+                    DromeTheme.elevated2,
+                    in: RoundedRectangle(cornerRadius: DromeTheme.Radius.md, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .accessibilityLabel(label)
+    }
+}

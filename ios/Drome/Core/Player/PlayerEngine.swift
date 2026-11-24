@@ -67,8 +67,16 @@ final class PlayerEngine: ObservableObject {
     @Published private(set) var sharePlayParticipantCount = 0
     @Published private(set) var isEligibleForSharePlay = false
     @Published var sharePlayNotice: String?
+    /// Fraction of the track loaded ahead of the playhead (0…1) for the scrubber buffer.
+    @Published private(set) var bufferProgress: Double = 0
+    /// Waiting on the network / decoder — drives a quiet scrubber pulse.
+    @Published private(set) var isBuffering: Bool = false
 
     var autoplayProvider: AutoplayProvider?
+    /// True while the active context is the Made for you / Nonstop endless station.
+    var isNonstop: Bool {
+        context?.kind == .mix && context?.label == NonstopEngine.label
+    }
     /// Fired when a track becomes current (explicit `setCurrent` or gapless advance).
     var onTrackStarted: ((Song) -> Void)?
     /// Called before music audio starts so podcast can yield the session.
@@ -115,6 +123,8 @@ final class PlayerEngine: ObservableObject {
     /// Bumped whenever in-flight autoplay work is cancelled so stale
     /// `nextBatch` results cannot rebuild the player window.
     private var autoplayGeneration = 0
+    /// Session bans for the current Nonstop run (Aura Nonstop skip/dislike).
+    private var nonstopSession = NonstopEngine.Session()
     private var cancellables = Set<AnyCancellable>()
     private var timeObserver: Any?
     /// Delayed lookahead insert so the current stream wins bandwidth first.
@@ -836,6 +846,9 @@ final class PlayerEngine: ObservableObject {
                 suppressShuffleReorder = false
             }
             self.context = context
+            if context.label != NonstopEngine.label {
+                nonstopSession.reset()
+            }
             fullContextSongs = songs
 
             let startSong = songs[index]
@@ -1079,6 +1092,41 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
+    /// Publish loaded buffer + waiting state for Now Playing’s scrubber.
+    /// Adapted from Aura’s `bufferProgress` / `isBuffering` (GPL-3.0) — see NOTICE.
+    private func refreshBufferProgress() {
+        #if os(tvOS)
+        if tvUsingAudioPlayer {
+            if abs(bufferProgress - 1) > 0.02 { bufferProgress = 1 }
+            if isBuffering { isBuffering = false }
+            return
+        }
+        #endif
+        guard let item = player.currentItem else {
+            if bufferProgress != 0 { bufferProgress = 0 }
+            if isBuffering { isBuffering = false }
+            return
+        }
+        let length = max(duration, item.duration.seconds.isFinite ? item.duration.seconds : 0, 0.1)
+        var loadedEnd: Double = 0
+        for value in item.loadedTimeRanges {
+            let range = value.timeRangeValue
+            let start = CMTimeGetSeconds(range.start)
+            let dur = CMTimeGetSeconds(range.duration)
+            guard start.isFinite, dur.isFinite else { continue }
+            loadedEnd = max(loadedEnd, start + dur)
+        }
+        let nextBuffer = min(max(0, loadedEnd / length), 1)
+        if abs(nextBuffer - bufferProgress) >= 0.02 {
+            bufferProgress = nextBuffer
+        }
+        let waiting = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+            || (wantsToPlay && item.isPlaybackBufferEmpty && !item.isPlaybackLikelyToKeepUp)
+        if waiting != isBuffering {
+            isBuffering = waiting
+        }
+    }
+
     func next() {
         let keepPlaying = wantsToPlay
         // Rapid Next while tearing down AVPlayer crashed — coalesce into one jump.
@@ -1088,12 +1136,61 @@ final class PlayerEngine: ObservableObject {
             DromeDiagnostics.logPlayer("next coalesced (pending=\(pendingNextCount)) \(diagnosticStateLine())")
             return
         }
+        // Nonstop: two early skips of the same artist leave them out of this run.
+        if isNonstop, elapsed < NonstopEngine.earlySkipSeconds {
+            let artist = current?.song.artistId ?? current?.song.artist
+            nonstopSession.recordEarlySkip(artist: artist)
+            if let artist, nonstopSession.bannedArtists.contains(artist) {
+                removeUpcoming(matchingArtist: artist)
+            }
+        }
         // Drop leading low-rated tracks when the user opted into global skip.
         drainLowRatedFromQueues(resyncWindow: false)
         let skips = 1 + pendingNextCount
         pendingNextCount = 0
         DromeDiagnostics.logPlayer("next advanceBy(\(skips))")
         advanceBy(skips, playImmediately: keepPlaying)
+    }
+
+    /// “Not for this station” — song out for this Nonstop; artist twice bans upcoming.
+    func dislikeNonstopSong() {
+        guard isNonstop, let song = current?.song else { return }
+        let bannedArtists = nonstopSession.dislike(song: song)
+        for artist in bannedArtists {
+            removeUpcoming(matchingArtist: artist)
+        }
+        // Also drop this exact song if it was re-queued.
+        contextQueue.removeAll { $0.song.id == song.id }
+        userQueue.removeAll { $0.song.id == song.id }
+        next()
+    }
+
+    /// Start Aura-style Nonstop: open on liked/seed tracks, refill forever.
+    func startNonstop(seeds: [Song] = []) {
+        nonstopSession.reset()
+        autoplayEnabled = true
+        let opening = NonstopEngine.opening(
+            from: seeds,
+            excludedGenres: MadeForYouPreferences.excludedGenres)
+        let context = PlaybackContext(label: NonstopEngine.label, kind: .mix)
+        if opening.isEmpty {
+            // Empty seed — kick Infinite Shuffle and label it Nonstop once audio lands.
+            self.context = context
+            continueWithAutoplayIfNeeded(playImmediately: true)
+            return
+        }
+        play(opening, startAt: 0, context: context)
+        ensureAutoplayBuffer()
+    }
+
+    private func removeUpcoming(matchingArtist artist: String) {
+        guard !artist.isEmpty else { return }
+        let matches: (Song) -> Bool = { song in
+            song.artistId == artist || song.artist == artist
+        }
+        contextQueue.removeAll { matches($0.song) }
+        userQueue.removeAll { matches($0.song) }
+        resyncUpcomingWindow()
     }
 
     /// Skip `count` tracks with a single player rebuild (not N nested rebuilds).
@@ -2055,6 +2152,8 @@ final class PlayerEngine: ObservableObject {
             elapsed: 0,
             duration: TimeInterval(playItem.song.duration ?? 0),
             resetDuration: true)
+        bufferProgress = 0
+        isBuffering = startPlaying
         #if !os(tvOS)
         clearStallRecoveryState(resetForcedResilient: true)
         #endif
@@ -2738,6 +2837,7 @@ final class PlayerEngine: ObservableObject {
                 let reported = (itemDuration?.isFinite == true && (itemDuration ?? 0) > 0)
                     ? itemDuration : nil
                 self.setPlayhead(elapsed: seconds, duration: reported)
+                self.refreshBufferProgress()
                 self.applyMixTransitionFadeIfNeeded(elapsed: seconds)
             }
         }
@@ -3264,10 +3364,18 @@ final class PlayerEngine: ObservableObject {
         excluding.formUnion(contextQueue.map(\.song.id))
         if let currentID = current?.song.id { excluding.insert(currentID) }
 
+        let useNonstop = isNonstop
+        let sessionSnapshot = nonstopSession
         autoplayGeneration += 1
         let generation = autoplayGeneration
         autoplayTask = Task { [weak self] in
-            let songs = await provider.nextBatch(seeds: seeds, excluding: excluding, count: 20)
+            let songs: [Song]
+            if useNonstop {
+                songs = await provider.nonstopBatch(
+                    seeds: seeds, excluding: excluding, session: sessionSnapshot, count: 20)
+            } else {
+                songs = await provider.nextBatch(seeds: seeds, excluding: excluding, count: 20)
+            }
             guard let self else { return }
             guard !Task.isCancelled, self.autoplayGeneration == generation else { return }
             self.autoplayTask = nil
@@ -3308,7 +3416,13 @@ final class PlayerEngine: ObservableObject {
         excluding.formUnion(contextQueue.map(\.song.id))
         if let currentID = current?.song.id { excluding.insert(currentID) }
         let seeds = history.suffix(8).map(\.song) + [current?.song].compactMap { $0 }
-        var songs = await provider.nextBatch(seeds: seeds, excluding: excluding, count: 20)
+        let songs: [Song]
+        if isNonstop {
+            songs = await provider.nonstopBatch(
+                seeds: seeds, excluding: excluding, session: nonstopSession, count: 20)
+        } else {
+            songs = await provider.nextBatch(seeds: seeds, excluding: excluding, count: 20)
+        }
         guard !Task.isCancelled, autoplayGeneration == generation else { return }
         guard !songs.isEmpty else {
             if playImmediately {

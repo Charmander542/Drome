@@ -324,32 +324,15 @@ enum VibeEngine {
         return GenreNormalizer.shared.normalize(raw)
     }
 
-    /// Crude energy 0...1 from genre + duration when the library has no BPM.
+    /// Energy 0…1 from genre + title when the library has no BPM.
+    /// Uses Aura-adapted `Energy` keyword table, then nudges by normalized genre.
     static func estimatedEnergy(_ song: Song, genre: String?) -> Double {
-        var e: Double
-        switch genre {
-        case "Classical", "Ambient": e = 0.16
-        case "Soundtrack": e = 0.28
-        // Slow/cool jazz fits focus; keep below mid-tempo defaults.
-        case "Jazz": e = 0.28
-        case "Blues": e = 0.32
-        case "Folk", "Country": e = 0.36
-        case "Soul", "R&B": e = 0.42
-        case "Indie", "Alternative": e = 0.48
-        case "Pop", "Funk", "Reggae": e = 0.62
-        case "Rock": e = 0.7
-        case "Hip-Hop", "Electronic": e = 0.78
-        case "Dance": e = 0.86
-        case "Punk", "Metal": e = 0.92
-        default: e = 0.5
+        var e = Energy.score(song)
+        // Prefer the normalized GenreNormalizer bucket when it disagrees with raw tags.
+        if let genre {
+            let keyed = Energy.score(genre: genre)
+            e = (e + keyed) / 2
         }
-        let seconds = song.duration ?? 0
-        if seconds >= 420 { e -= 0.14 }
-        else if seconds >= 300 { e -= 0.06 }
-        else if seconds > 0 && seconds < 140 { e += 0.08 }
-        let hay = haystack(song)
-        if hay.contains("adagio") || hay.contains("nocturne") || hay.contains("lullaby") { e -= 0.2 }
-        if hay.contains("remix") || hay.contains("club") || hay.contains("banger") { e += 0.15 }
         return min(1, max(0, e))
     }
 

@@ -86,6 +86,8 @@ struct DailyMixCard: View {
             ZStack {
                 if let nature = templatedNature {
                     MadeForYouCoverView(nature: nature, cornerRadius: 6)
+                } else if mix.coverArtIds.count >= 4 {
+                    MixCollageView(coverIDs: Array(mix.coverArtIds.prefix(4)), cornerRadius: 6)
                 } else {
                     songCover
                         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))

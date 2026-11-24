@@ -301,7 +301,7 @@ struct SettingsView: View {
             SettingsLibrarySyncView()
                 .settingsNavChrome()
         case .listeningStats:
-            ListeningStatsView()
+            YearWrappedView()
                 .settingsNavChrome()
                 .scrollIndicators(.hidden)
         case .appleWatch:
@@ -410,7 +410,7 @@ struct SettingsView: View {
         let database = session.database
         let userKey = session.account.userKey
         Task.detached(priority: .utility) {
-            let next = (try? database.listeningStats(userKey: userKey, period: .allTime)) ?? .empty
+            let next = (try? database.listeningStats(userKey: userKey, period: .thisYear)) ?? .empty
             await MainActor.run { listeningPreview = next }
         }
     }

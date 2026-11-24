@@ -974,10 +974,13 @@ struct NowPlayingView: View {
 
     private var scrubber: some View {
         // Custom bar — SwiftUI `Slider` snaps on each value change; this draws
-        // continuous width from the interpolating clock.
+        // continuous width from the interpolating clock. Buffer layer + drag
+        // thumb growth adapted from Aura’s BufferedProgressBar (GPL-3.0).
         TimelineView(.animation(
             minimumInterval: 1.0 / 60.0,
-            paused: !clock.isPlaying || isSeeking || scrubAnimElapsed != nil
+            paused: isSeeking
+                || scrubAnimElapsed != nil
+                || (!clock.isPlaying && !player.isBuffering)
         )) { context in
             let total = max(stableDuration, 0.1)
             let live = min(max(0, clock.displayElapsed(at: context.date)), total)
@@ -992,20 +995,33 @@ struct NowPlayingView: View {
             }()
             let remaining = max(0, total - displayed)
             let progress = CGFloat(displayed / total)
+            let bufferFrac = CGFloat(min(max(player.bufferProgress, 0), 1))
+            let trackPulse: Double = {
+                guard player.isBuffering else { return 1 }
+                let t = context.date.timeIntervalSinceReferenceDate
+                return 0.55 + 0.45 * (0.5 + 0.5 * sin(t * 4))
+            }()
 
             VStack(spacing: 6) {
                 GeometryReader { geo in
                     let width = max(0, geo.size.width)
                     let fill = width * min(max(progress, 0), 1)
-                    let thumb: CGFloat = isSeeking ? 14 : 10
+                    let bufferWidth = width * bufferFrac
+                    let barHeight: CGFloat = isSeeking ? 5 : 4
+                    let thumb: CGFloat = isSeeking ? 18 : 10
 
                     ZStack(alignment: .leading) {
                         Capsule()
                             .fill(Color.white.opacity(0.22))
-                            .frame(height: 4)
+                            .frame(height: barHeight)
+                            .opacity(trackPulse)
+                        // Ahead-of-playhead loaded range (streaming buffer).
+                        Capsule()
+                            .fill(Color.white.opacity(0.28))
+                            .frame(width: max(0, bufferWidth), height: barHeight)
                         Capsule()
                             .fill(Color.white)
-                            .frame(width: max(4, fill), height: 4)
+                            .frame(width: max(4, fill), height: barHeight)
                         Circle()
                             .fill(Color.white)
                             .frame(width: thumb, height: thumb)
@@ -1014,6 +1030,7 @@ struct NowPlayingView: View {
                     }
                     .frame(maxHeight: .infinity)
                     .contentShape(Rectangle())
+                    .animation(.spring(response: 0.28, dampingFraction: 0.72), value: isSeeking)
                     .gesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
@@ -1624,6 +1641,16 @@ struct NowPlayingMoreSheet: View {
                             systemImage: "shareplay")
                     }
                     .listRowBackground(DromeTheme.elevated)
+
+                    if player.isNonstop {
+                        Button {
+                            player.dislikeNonstopSong()
+                            isPresented = false
+                        } label: {
+                            Label("Not for this station", systemImage: "hand.thumbsdown")
+                        }
+                        .listRowBackground(DromeTheme.elevated)
+                    }
 
                     if rotation.contains(song.id) {
                         Button {

@@ -17,5 +17,27 @@ licensed under the GNU General Public License v3.0.
 Adapted files include (non-exhaustive):
   - ios/Drome/UI/Home/MadeForYouCoverView.swift
     (from Aura GeneratedCoverView / MixCoverView ideas)
+  - ios/Drome/UI/Home/MixCollageView.swift
+    (from Aura MixCollageView)
+  - ios/Drome/Core/Services/Energy.swift
+    (from Aura Energy heuristic)
+  - ios/Drome/Core/Services/MadeForYouStore.swift
+    (genre mixes / Nonstop / served-rotation ideas from MixGenerator)
+  - ios/Drome/UI/Settings/YearWrappedView.swift
+    (from Aura WrappedView ideas)
+  - ios/Drome/Core/Services/NonstopEngine.swift
+    (from Aura Nonstop refill / skip-dislike session rules)
+  - ios/Drome/Core/Services/LRCParser.swift
+    (song-pace line ends + mid-break focus from Aura LyricWordTiming)
+  - ios/Drome/Core/Player/PlayerEngine.swift
+    (bufferProgress / isBuffering publish from Aura progress ideas)
+  - ios/Drome/UI/Player/NowPlayingView.swift
+    (scrubber buffer layer + load pulse + drag thumb from BufferedProgressBar)
+  - ios/Drome/UI/Components/SharedViews.swift
+    (LibraryPlayShuffleRow / LibraryAlbumActionRow from Aura album & playlist headers)
+  - ios/Drome/UI/Library/AlbumDetailView.swift
+    (action strip + richer More menu from Aura AlbumDetail / QueueAllMenu)
+  - ios/Drome/UI/Library/PlaylistDetailView.swift
+    (Play/Shuffle pills + Remove Duplicates from Aura PlaylistDetail)
 
 Aura remains a separate project; Drome is not affiliated with Aura.
