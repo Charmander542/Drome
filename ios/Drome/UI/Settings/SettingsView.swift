@@ -17,6 +17,7 @@ struct SettingsView: View {
         case playback
         case streaming
         case appearance
+        case madeForYou
         case siriShortcuts
         case librarySync
         case listeningStats
@@ -188,6 +189,12 @@ struct SettingsView: View {
                 route: .streaming,
                 accessibilityId: "drome.settings.tile.downloads")
             settingsLink(
+                title: "Made for you",
+                systemImage: "sparkles",
+                route: .madeForYou,
+                subtitle: "Daypart, vibes, and fresh finds",
+                accessibilityId: "drome.settings.made-for-you")
+            settingsLink(
                 title: "Appearance",
                 systemImage: "paintbrush",
                 route: .appearance)
@@ -281,6 +288,9 @@ struct SettingsView: View {
                 path.append(Route.downloads)
             }
             .settingsNavChrome()
+        case .madeForYou:
+            SettingsMadeForYouView()
+                .settingsNavChrome()
         case .appearance:
             SettingsAppearanceView()
                 .settingsNavChrome()

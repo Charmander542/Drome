@@ -16,13 +16,13 @@ enum MoodPlayer {
             excluded.insert(currentID)
         }
 
-        var songs = await gather(vibe: vibe, session: session)
+        var songs = await gatherPool(vibe: vibe, session: session)
         var picked = VibeEngine.pick(
             vibe: vibe, from: songs, excluded: excluded, memory: session.ratings.memory)
 
         // Tiny libraries: if recent exclusions emptied the pool, refill without them.
         if picked.count < 8 {
-            songs = await gather(vibe: vibe, session: session)
+            songs = await gatherPool(vibe: vibe, session: session)
             picked = VibeEngine.pick(
                 vibe: vibe,
                 from: songs,
@@ -51,7 +51,8 @@ enum MoodPlayer {
         }
     }
 
-    private static func gather(vibe: MoodVibe, session: AppSession) async -> [Song] {
+    /// Genre-scoped candidate pool for a vibe — shared by Vibe Tuner and Made for you.
+    static func gatherPool(vibe: MoodVibe, session: AppSession) async -> [Song] {
         let client = session.client
         if vibe == .lucky {
             // Two pulls so Lucky doesn't recycle the same random page.

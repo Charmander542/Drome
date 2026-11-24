@@ -133,12 +133,14 @@ enum VibeEngine {
         vibe: MoodVibe,
         from songs: [Song],
         excluded: Set<String>,
-        memory: ListenerMemory = .empty
+        memory: ListenerMemory = .empty,
+        count: Int = mixLength
     ) -> [Song] {
+        let limit = max(1, count)
         let pool = songs.filter { !excluded.contains($0.id) }.uniquedByID()
         guard !pool.isEmpty else { return [] }
         if vibe == .lucky {
-            return Array(pool.shuffled().prefix(mixLength))
+            return Array(pool.shuffled().prefix(limit))
         }
         let spec = taste(for: vibe)
 
@@ -188,7 +190,7 @@ enum VibeEngine {
             }
         }
         // Weighted random sample — not "always the same top band shuffled".
-        let sampled = weightedSample(scored, count: mixLength)
+        let sampled = weightedSample(scored, count: limit)
         return sequence(sampled, vibe: vibe, weights: Dictionary(scored.map { ($0.0.id, $0.1) }, uniquingKeysWith: { a, _ in a }))
     }
 
