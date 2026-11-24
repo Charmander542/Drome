@@ -32,6 +32,21 @@ final class ConnectController: ObservableObject {
     private var lastMirroredSongId: String?
     /// Briefly ignore remote-active pauses after the user confirms "play here".
     private var ignoreRemoteUntil: Date?
+    private var lastHeartbeatAt = Date.distantPast
+    private var lastHeartbeatSignature: String?
+    private var lastSessionFetchAt = Date.distantPast
+
+    /// With no other device online nobody is mirroring this playhead, so the
+    /// full queue snapshot (hundreds of KB) only needs occasional refreshes
+    /// instead of competing with the audio stream every two seconds.
+    private static let soloPublishInterval: TimeInterval = 30
+    private static let soloSessionRefreshInterval: TimeInterval = 30
+    /// Devices drop off the server ~45s after their last heartbeat.
+    private static let soloHeartbeatInterval: TimeInterval = 10
+
+    private var othersOnline: Bool {
+        devices.contains { $0.id != deviceId }
+    }
 
     var isBusy: Bool { busyDeviceId != nil }
 
@@ -226,7 +241,7 @@ final class ConnectController: ObservableObject {
 
     private func tick() async {
         await heartbeat()
-        await refreshDevices()
+        await refreshDevices(forceSession: false)
         await pullCommands()
         await syncRemoteMode()
         if !isRemote {
@@ -249,36 +264,83 @@ final class ConnectController: ObservableObject {
             elapsed: player.accurateElapsed(),
             duration: player.duration,
             capabilities: ["audio", "remote", "transfer"])
+        // Alone: presence only has to outlive the server TTL. Anything another
+        // device could show (track, play state) still goes out immediately.
+        let signature = "\(body.songId ?? "")|\(body.isPlaying)"
+        let now = Date()
+        if !othersOnline,
+           serverStatus == nil,
+           signature == lastHeartbeatSignature,
+           now.timeIntervalSince(lastHeartbeatAt) < Self.soloHeartbeatInterval {
+            return
+        }
         do {
             _ = try await client.putDevice(body)
+            lastHeartbeatAt = now
+            lastHeartbeatSignature = signature
             clearServerStatus()
         } catch {
             recordServerFailure(error)
         }
     }
 
-    private func refreshDevices() async {
+    private func refreshDevices(forceSession: Bool = true) async {
         do {
-            devices = try await client.listDevices()
+            let listed = try await client.listDevices()
+            if listed != devices { devices = listed }
             clearServerStatus()
         } catch {
             recordServerFailure(error)
         }
+        guard forceSession || sessionNeedsRefresh() else { return }
         if let session = try? await client.getSession() {
-            remoteSession = session
+            lastSessionFetchAt = Date()
+            adoptSession(session)
         }
+    }
+
+    /// The (small) device list already says who is active, so the full
+    /// session — queue snapshot included — is only downloaded when another
+    /// device is the player and we mirror it, or ownership looks like it moved.
+    /// While this device is the active player the server copy is just what
+    /// we published; a slow refresh is enough as a safety net.
+    private func sessionNeedsRefresh() -> Bool {
+        guard let session = remoteSession else { return true }
+        if let listedActive = devices.first(where: { $0.isActive == true })?.id {
+            if listedActive != deviceId || session.activeDeviceId != deviceId { return true }
+        } else if othersOnline {
+            return true
+        }
+        return Date().timeIntervalSince(lastSessionFetchAt) >= Self.soloSessionRefreshInterval
+    }
+
+    /// Publish only when the server copy actually moved (it restamps
+    /// `updatedAt` on every write), so idle polls don't invalidate observers.
+    private func adoptSession(_ session: ConnectSession) {
+        if let existing = remoteSession,
+           existing.updatedAt == session.updatedAt,
+           existing.activeDeviceId == session.activeDeviceId,
+           existing.isPlaying == session.isPlaying,
+           (existing.snapshot == nil) == (session.snapshot == nil) {
+            return
+        }
+        remoteSession = session
+    }
+
+    private func setRemote(_ value: Bool) {
+        if isRemote != value { isRemote = value }
     }
 
     private func syncRemoteMode() {
         if let until = ignoreRemoteUntil, Date() < until {
-            isRemote = false
+            setRemote(false)
             return
         }
         ignoreRemoteUntil = nil
 
         guard let session = remoteSession,
               !session.activeDeviceId.isEmpty else {
-            isRemote = false
+            setRemote(false)
             player?.clearRemotePlayheadMirror()
             lastMirroredSongId = nil
             return
@@ -289,12 +351,12 @@ final class ConnectController: ObservableObject {
                 player?.clearRemotePlayheadMirror()
                 lastMirroredSongId = nil
             }
-            isRemote = false
+            setRemote(false)
             return
         }
 
         // Another device is the active player — this one must not make sound.
-        isRemote = true
+        setRemote(true)
         if player?.isLocalPlaybackEngaged == true {
             player?.pause()
         }
@@ -322,12 +384,20 @@ final class ConnectController: ObservableObject {
     private func publishSession(force: Bool, claim: Bool = false) async {
         // Only the active player may refresh the shared session. Claiming a new
         // activeDeviceId requires `claim: true` (confirm / takeControl / transfer).
-        guard !applyingRemote, !isRemote, let player, let snap = player.connectSnapshot() else { return }
+        guard !applyingRemote, !isRemote, let player, let current = player.current else { return }
         if !claim, let active = remoteSession?.activeDeviceId, !active.isEmpty, active != deviceId {
             return
         }
-        let fingerprint = "\(snap.currentSong.id)|\(Int(snap.elapsed))|\(player.isPlaying)|\(snap.userQueue.count)|\(snap.contextQueue.count)"
+        // Fingerprint from live state first — building the snapshot copies
+        // the whole queue, which is wasted work when nothing will be sent.
+        let mirrored = othersOnline
+        let elapsed = player.accurateElapsed()
+        let elapsedBucket = mirrored
+            ? Int(elapsed)
+            : Int(elapsed / Self.soloPublishInterval)
+        let fingerprint = "\(current.song.id)|\(elapsedBucket)|\(player.isPlaying)|\(player.userQueue.count)|\(player.contextQueue.count)|\(mirrored)"
         if !force, fingerprint == lastPublishedFingerprint { return }
+        guard let snap = player.connectSnapshot() else { return }
         lastPublishedFingerprint = fingerprint
         let creating = remoteSession == nil || remoteSession?.activeDeviceId.isEmpty == true
         if let session = try? await client.putSession(ConnectSessionPut(
@@ -335,6 +405,7 @@ final class ConnectController: ObservableObject {
             isPlaying: player.isPlaying,
             snapshot: snap,
             claim: claim || creating)) {
+            lastSessionFetchAt = Date()
             remoteSession = session
         }
     }

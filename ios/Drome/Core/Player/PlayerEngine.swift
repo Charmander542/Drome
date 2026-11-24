@@ -153,6 +153,10 @@ final class PlayerEngine: ObservableObject {
     #if !os(tvOS)
     /// Disk cache of compressed MP3 for Tailscale / cellular resilience.
     private let streamCache: StreamCache
+    /// Finished original file for the next LAN track, so the changeover
+    /// doesn't wait on a fresh HTTP buffer.
+    private let losslessAhead: LosslessAheadCache
+    private var losslessWarmTask: Task<Void, Never>?
     /// Coalesce stall recoveries so we don't rebuild in a loop.
     private var stallRecoveryTask: Task<Void, Never>?
     /// Escalation to rebuild — kept separate so soft seeks can't cancel it.
@@ -221,6 +225,7 @@ final class PlayerEngine: ObservableObject {
         self.tvCache = TVPlaybackCache(client: client)
         #else
         self.streamCache = StreamCache(client: client)
+        self.losslessAhead = LosslessAheadCache(client: client)
         #endif
 
         // Prefer stalling briefly over underrunning / glitching on hiccups.
@@ -1513,6 +1518,15 @@ final class PlayerEngine: ObservableObject {
         return true
     }
 
+    /// Copy only the slice that will be persisted. Connect publishes this
+    /// snapshot on a timer; mapping a multi-thousand-song queue first and
+    /// trimming after wasted a main-thread pass on every publish.
+    private static func snapshotSongs(_ items: [QueueItem], limit: Int, tail: Bool) -> [Song] {
+        guard items.count > limit else { return items.map(\.song) }
+        let slice = tail ? items.suffix(limit) : items.prefix(limit)
+        return slice.map(\.song)
+    }
+
     private func makeSessionSnapshot() -> PlaybackSessionSnapshot? {
         guard let current, let context else { return nil }
         // Prefer the engine playhead during transitions; AV currentTime can lag.
@@ -1538,11 +1552,11 @@ final class PlayerEngine: ObservableObject {
                 }
             }(),
             autoplayEnabled: autoplayEnabled,
-            history: history.map(\.song),
-            userQueue: userQueue.map(\.song),
-            contextQueue: contextQueue.map(\.song),
-            originalContextOrder: originalContextOrder.map(\.song),
-            fullContextSongs: fullContextSongs,
+            history: Self.snapshotSongs(history, limit: 40, tail: true),
+            userQueue: Self.snapshotSongs(userQueue, limit: 50, tail: false),
+            contextQueue: Self.snapshotSongs(contextQueue, limit: 120, tail: false),
+            originalContextOrder: Self.snapshotSongs(originalContextOrder, limit: 120, tail: false),
+            fullContextSongs: Array(fullContextSongs.prefix(160)),
             updatedAt: Date().timeIntervalSince1970
         )
         // Trim before returning so encode/copy work stays cheap on the hot path.
@@ -2171,6 +2185,11 @@ final class PlayerEngine: ObservableObject {
                 maxBitRate: resilientMaxBitRate,
                 estimateContentLength: true)
         }
+        // A finished original on disk starts like a download. Anything still
+        // downloading is ignored — playback stays on HTTP until the file is whole.
+        if let ahead = losslessAhead.cachedURL(for: song.id) {
+            return ahead
+        }
         return client.streamURL(songId: song.id, compatibleWithAirPlay: false)
         #endif
     }
@@ -2491,6 +2510,28 @@ final class PlayerEngine: ObservableObject {
                 _ = try? await self?.streamCache.fileURL(
                     for: song, maxBitRate: resilientMaxBitRate)
             }
+        }
+        scheduleLosslessAhead()
+    }
+
+    /// After the current track is up, pull the next original onto disk.
+    /// Waits a couple of seconds so the playhead buffer wins the network.
+    private func scheduleLosslessAhead() {
+        losslessWarmTask?.cancel()
+        losslessWarmTask = nil
+        guard !shouldUseResilientStream,
+              !isAirPlayRouteActive,
+              !isBluetoothRouteActive,
+              !sharePlayActive,
+              let next = peekUpcoming(limit: 1).first?.song
+        else { return }
+        if downloads.localURL(songId: next.id) != nil { return }
+        if losslessAhead.cachedURL(for: next.id) != nil { return }
+        losslessWarmTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard !Task.isCancelled, let self else { return }
+            guard self.current != nil, !self.shouldUseResilientStream else { return }
+            self.losslessAhead.prefetch(next)
         }
     }
     #endif
@@ -3422,6 +3463,11 @@ final class PlayerEngine: ObservableObject {
            url.path.contains("DromeStreamCache") {
             streamCache.invalidate(songID: current.song.id)
             DromeDiagnostics.logPlayer("\(reason) → invalidated stream cache")
+        } else if let url = (player.currentItem?.asset as? AVURLAsset)?.url,
+                  url.isFileURL,
+                  url.path.contains("DromeLosslessAhead") {
+            losslessAhead.invalidate(songID: current.song.id)
+            DromeDiagnostics.logPlayer("\(reason) → invalidated lossless ahead cache")
         }
         if stallRebuildCountForTrack < PlaybackResilience.maxRebuildsPerTrack {
             DromeDiagnostics.logPlayer("\(reason) → resilient rebuild")
