@@ -9,7 +9,7 @@ The iOS app can paste Spotify track/album links into **Library → Wishlist**.
 The companion:
 
 1. Resolves metadata from Spotify's public page / oEmbed (no API key required)
-2. Queues a SpotiFLAC download into your Navidrome music library (`Artist/Album/NN - Title.flac`)
+2. Queues a Mornye download into your Navidrome music library (`Artist/Album/NN - Title.flac`)
 3. Marks the entry acquired (Navidrome picks it up on the next scheduled scan)
 
 ### Deploy next to an existing Navidrome
@@ -53,9 +53,9 @@ pairing). Same Navidrome login on each device.
 | `DROME_SPOTIFY_CLIENT_ID` / `SECRET` | Required for in-app Spotify search; also improves link metadata |
 | `DROME_SPOTIFY_MARKET` | ISO country for Search (default `US`; needed with client-credentials) |
 | `DROME_MUSIC_DIR` | Shared library mount (default `/music`) |
-| `DROME_AUTO_DOWNLOAD` | Queue SpotiFLAC on every wishlist add (`true`/`false`) |
+| `DROME_AUTO_DOWNLOAD` | Queue Mornye on every wishlist add (`true`/`false`) |
 | `DROME_SPOTIFLAC_SERVICES` | Provider priority, comma-separated |
-| `SPOTIFLAC_REGISTRIES` | Extension registry JSON URLs (required for SpotiFLAC 5+) |
+| `MORNYE_REGISTRIES` | Extension registry JSON URLs (required; Mornye has no built-in providers) |
 | `DROME_SPOTIFLAC_EXTENSIONS` | Extensions to install on boot (`utilities,tidal-web,…`) |
 | `DROME_NAVIDROME_SCAN_USER` / `PASSWORD` | Optional; triggers immediate library scan |
 

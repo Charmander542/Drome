@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""List every track in a Spotify playlist the same way SpotiFLAC's GUI does.
+"""List every track in a Spotify playlist the same way Mornye's GUI does.
 
 Uses Spotify's partner GraphQL (pathfinder) with 1000-track pages — not the
 public Web API's 100-track cap or the embed scrape.
@@ -12,7 +12,10 @@ from __future__ import annotations
 import json
 import sys
 
-from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient
+try:
+    from mornye.core.spotify_metadata import SpotifyMetadataClient
+except ImportError:  # pragma: no cover — older SpotiFLAC images
+    from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient
 
 
 def main() -> int:

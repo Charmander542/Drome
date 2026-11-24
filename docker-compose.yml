@@ -1,4 +1,4 @@
-# Drome companion (wishlist + Connect + SpotiFLAC auto-download) next to an existing Navidrome.
+# Drome companion (wishlist + Connect + Mornye auto-download) next to an existing Navidrome.
 #
 # Your Navidrome already runs as container `navidrome` on network `navidrome_default`
 # with music at /srv/storage/Media/Music. This compose joins that network and writes
@@ -21,8 +21,8 @@ services:
       DROME_MUSIC_DIR: /music
       DROME_AUTO_DOWNLOAD: ${DROME_AUTO_DOWNLOAD:-true}
       DROME_SPOTIFLAC_SERVICES: ${DROME_SPOTIFLAC_SERVICES:-tidal,qobuz,amazon,deezer}
-      # SpotiFLAC 5+ needs an extension registry (no built-in providers).
-      SPOTIFLAC_REGISTRIES: ${SPOTIFLAC_REGISTRIES:-https://raw.githubusercontent.com/zarzet/SpotiFLAC-Extension/main/registry.json,https://raw.githubusercontent.com/mornyeapp/Mornye-Extension/main/registry-python.json}
+      # Mornye needs an extension registry (no built-in providers).
+      MORNYE_REGISTRIES: ${MORNYE_REGISTRIES:-https://raw.githubusercontent.com/mornyeapp/Mornye-Extension/main/registry.json,https://raw.githubusercontent.com/mornyeapp/Mornye-Extension/main/registry-python.json}
       DROME_SPOTIFLAC_EXTENSIONS: ${DROME_SPOTIFLAC_EXTENSIONS:-utilities,tidal-web,qobuz-web,amazon,deezer}
       DROME_PUBLIC_URL: ${DROME_PUBLIC_URL:-}
       # Optional: admin (or any user allowed to scan) so downloads appear immediately.
@@ -30,8 +30,9 @@ services:
       DROME_NAVIDROME_SCAN_PASSWORD: ${DROME_NAVIDROME_SCAN_PASSWORD:-}
     volumes:
       - ./data/drome-server:/data
-      # Persist SpotiFLAC extensions + signed sessions across recreates.
-      - ./data/drome-server/spotiflac:/home/drome/.spotiflac
+      # Persist Mornye extensions + signed sessions across recreates.
+      # Host path kept as spotiflac/ for existing installs; container uses ~/.mornye.
+      - ./data/drome-server/spotiflac:/home/drome/.mornye
       - /srv/storage/Media/Music:/music
     networks:
       - navidrome_default

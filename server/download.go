@@ -51,7 +51,7 @@ func downloadConfigFromEnv() downloadConfig {
 	cfg := downloadConfig{
 		Enabled:      enabled == "1" || enabled == "true" || enabled == "yes",
 		MusicDir:     envOr("DROME_MUSIC_DIR", "/music"),
-		SpotiflacBin: envOr("DROME_SPOTIFLAC_BIN", "spotiflac"),
+		SpotiflacBin: envOr("DROME_SPOTIFLAC_BIN", "mornye"),
 		RetagBin:     envOr("DROME_RETAG_BIN", "drome-retag"),
 		GenreBin:     envOr("DROME_GENRE_BIN", "drome-genre-tag"),
 		Timeout:      envDuration("DROME_DOWNLOAD_TIMEOUT", 45*time.Minute),
@@ -448,10 +448,23 @@ func (w *downloadWorker) retryBackoff(attempt int, errMsg string) time.Duration 
 }
 
 func (w *downloadWorker) spotiflacHome() string {
-	if h := strings.TrimSpace(os.Getenv("HOME")); h != "" {
-		return filepath.Join(h, ".spotiflac")
+	// Mornye stores extensions + signed sessions under ~/.mornye (or
+	// $MORNYE_DATA_DIR). Fall back to the legacy SpotiFLAC path.
+	if d := strings.TrimSpace(os.Getenv("MORNYE_DATA_DIR")); d != "" {
+		return d
 	}
-	return "/home/drome/.spotiflac"
+	if h := strings.TrimSpace(os.Getenv("HOME")); h != "" {
+		mornye := filepath.Join(h, ".mornye")
+		if st, err := os.Stat(mornye); err == nil && st.IsDir() {
+			return mornye
+		}
+		legacy := filepath.Join(h, ".spotiflac")
+		if st, err := os.Stat(legacy); err == nil && st.IsDir() {
+			return legacy
+		}
+		return mornye
+	}
+	return "/home/drome/.mornye"
 }
 
 func (w *downloadWorker) providerCooldownRemaining() time.Duration {
