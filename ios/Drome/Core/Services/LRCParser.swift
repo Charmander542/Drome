@@ -341,7 +341,11 @@ enum LRCParser {
         return min(max(samples[samples.count / 2], 40), 300)
     }
 
-    /// When the line at `index` stops being sung (not when the next stamp starts).
+    /// When the line at `index` stops being sung (word karaoke window end).
+    ///
+    /// Normal gaps (≤6s) fill through to the next stamp so words track the vocal.
+    /// Long instrumentals stop at the paced sung window so karaoke doesn’t crawl
+    /// across dead air — without advancing the *active line* early.
     static func lineEndMs(lines: [Line], index: Int, paceMs: Int? = nil) -> Int? {
         guard lines.indices.contains(index), let start = lines[index].startMs else { return nil }
         let pace = paceMs ?? paceMsPerChar(of: lines)
@@ -353,26 +357,40 @@ enum LRCParser {
 
         let sung = start + max(1_500, sungLength(lines[index].text) * pace * 12 / 10)
         if let next = nextStartMs(after: index, in: lines), next > start {
+            let gap = next - start
+            if gap <= 6_000 { return next }
             return min(next, sung)
         }
         return sung
     }
 
-    /// When the active line has been fully sung (measured last word + beat, else `lineEndMs`).
+    /// When the active line has been fully sung.
+    ///
+    /// Prefer the last word’s `endMs` (filled by hydrate). Never treat
+    /// pace-synthesized unique starts as Enhanced LRC — that used
+    /// `last.startMs + 600` and made every line “finish” seconds early.
     static func lineFinishMs(lines: [Line], index: Int) -> Int? {
         guard lines.indices.contains(index) else { return nil }
-        if repeated(lines[index].text) == nil,
-           let last = lines[index].words.last,
-           Set(lines[index].words.map(\.startMs)).count > 1 {
-            return last.startMs + 600
+        if let end = lines[index].words.last?.endMs {
+            return end
         }
         return lineEndMs(lines: lines, index: index)
     }
 
-    /// Which line holds focus at `elapsedMs`, given `last` (most recently started).
-    ///
-    /// Across a real instrumental break (>2s), focus moves halfway through so the
-    /// sheet isn’t stuck on a finished line — and doesn’t jump before its last word.
+    /// Line that should be highlighted at `elapsedMs`: the last stamp that has
+    /// started. Never advances before the next line’s `startMs` — early jumps
+    /// during instrumentals made karaoke feel “not even close.”
+    static func activeLineIndex(lines: [Line], atMs elapsedMs: Int) -> Int {
+        var last = 0
+        for (i, line) in lines.enumerated() {
+            guard let start = line.startMs else { continue }
+            if start <= elapsedMs { last = i } else { break }
+        }
+        return last
+    }
+
+    /// Scroll anticipation during a long instrumental (>2s after the sung
+    /// window). Must not drive karaoke highlight — use `activeLineIndex` for that.
     static func focusIndex(lines: [Line], after last: Int?, atMs elapsedMs: Int) -> Int? {
         guard let index = last, index + 1 < lines.count,
               let nextStart = lines[index + 1].startMs,
@@ -380,7 +398,8 @@ enum LRCParser {
         else { return last }
         let breakLength = nextStart - finished
         guard breakLength > 2_000, elapsedMs >= finished + breakLength / 2 else { return index }
-        return index + 1
+        // Cap at the next stamp — never claim the next line is “active” early.
+        return elapsedMs >= nextStart ? index + 1 : index
     }
 
     /// Line ending in a repeat marker — "x4", "(x4)", "[4x]", "×4".
