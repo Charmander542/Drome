@@ -86,10 +86,18 @@ enum SongNavigation {
 
 /// Owns album/artist push routes for a single `NavigationStack`.
 /// Destinations must be registered on the stack root — never inside a `List` row.
+///
+/// Uses a `NavigationPath` so artist → album (and similar) **stack** instead of
+/// replacing a single `navigationDestination(item:)` slot (which made Back skip
+/// the artist and land on Now Playing / the tab root).
 @MainActor
 final class SongNavigator: ObservableObject {
-    @Published var albumRoute: SongNavigation.AlbumRoute?
-    @Published var artistRoute: SongNavigation.ArtistRoute?
+    @Published var path = NavigationPath()
+
+    /// Legacy single-slot mirrors for callers/tests that still peek at these.
+    /// Prefer `path` for presentation; these stay in sync for `isDeep` checks.
+    @Published private(set) var albumRoute: SongNavigation.AlbumRoute?
+    @Published private(set) var artistRoute: SongNavigation.ArtistRoute?
 
     func viewAlbum(for song: Song) {
         guard let route = SongNavigation.albumRoute(for: song) else { return }
@@ -102,32 +110,27 @@ final class SongNavigator: ObservableObject {
     }
 
     private func presentAlbum(_ route: SongNavigation.AlbumRoute) {
-        if albumRoute?.albumId == route.albumId {
-            albumRoute = nil
-            DispatchQueue.main.async { self.albumRoute = route }
-        } else {
-            albumRoute = route
-        }
+        albumRoute = route
+        path.append(route)
     }
 
     func viewArtist(for song: Song) {
-        artistRoute = SongNavigation.artistRoute(for: song)
+        guard let route = SongNavigation.artistRoute(for: song) else { return }
+        presentArtist(route)
     }
 
     func viewArtist(id: String, name: String) {
         guard !id.isEmpty else { return }
-        let route = SongNavigation.ArtistRoute(artistId: id, name: name)
-        // Clearing first forces `navigationDestination(item:)` to fire even when
-        // tapping the same artist again; also avoids stale presentation races.
-        if artistRoute?.artistId == route.artistId {
-            artistRoute = nil
-            DispatchQueue.main.async { self.artistRoute = route }
-        } else {
-            artistRoute = route
-        }
+        presentArtist(SongNavigation.ArtistRoute(artistId: id, name: name))
+    }
+
+    private func presentArtist(_ route: SongNavigation.ArtistRoute) {
+        artistRoute = route
+        path.append(route)
     }
 
     func popToRoot() {
+        path = NavigationPath()
         albumRoute = nil
         artistRoute = nil
     }
@@ -173,21 +176,15 @@ extension View {
         self
             .environmentObject(navigator)
             .environment(\.songNavigator, navigator)
-            .navigationDestination(item: Binding(
-                get: { navigator.albumRoute },
-                set: { navigator.albumRoute = $0 }
-            )) { route in
+            .navigationDestination(for: SongNavigation.AlbumRoute.self) { route in
                 AlbumDetailView(albumID: route.albumId, placeholder: route.album)
             }
-            .navigationDestination(item: Binding(
-                get: { navigator.artistRoute },
-                set: { navigator.artistRoute = $0 }
-            )) { route in
+            .navigationDestination(for: SongNavigation.ArtistRoute.self) { route in
                 ArtistDetailView(artistID: route.artistId, placeholderName: route.name)
             }
     }
 
-    /// Convenience when the caller already holds `@StateObject` bindings.
+    /// Convenience when the caller already holds `@State` / `@StateObject` bindings.
     func songNavigationDestinations(
         album: Binding<SongNavigation.AlbumRoute?>,
         artist: Binding<SongNavigation.ArtistRoute?>
@@ -207,7 +204,6 @@ struct SongNavigationStack<Content: View>: View {
     /// Bumped by the tab bar when the user re-taps the selected tab.
     var popToRootTrigger: Int = 0
     @StateObject private var navigator = SongNavigator()
-    @State private var path = NavigationPath()
     /// Remount clears destination `NavigationLink` pushes (playlists, etc.) that
     /// are not reflected in `path`.
     @State private var stackID = UUID()
@@ -223,13 +219,13 @@ struct SongNavigationStack<Content: View>: View {
 
     private var isDeep: Bool {
         navigationDepth > 0
-            || !path.isEmpty
+            || !navigator.path.isEmpty
             || navigator.albumRoute != nil
             || navigator.artistRoute != nil
     }
 
     var body: some View {
-        NavigationStack(path: $path) {
+        NavigationStack(path: $navigator.path) {
             content()
                 .background {
                     NavigationDepthReader(
@@ -238,16 +234,10 @@ struct SongNavigationStack<Content: View>: View {
                         .frame(width: 0, height: 0)
                         .accessibilityHidden(true)
                 }
-                .navigationDestination(item: Binding(
-                    get: { navigator.albumRoute },
-                    set: { navigator.albumRoute = $0 }
-                )) { route in
+                .navigationDestination(for: SongNavigation.AlbumRoute.self) { route in
                     AlbumDetailView(albumID: route.albumId, placeholder: route.album)
                 }
-                .navigationDestination(item: Binding(
-                    get: { navigator.artistRoute },
-                    set: { navigator.artistRoute = $0 }
-                )) { route in
+                .navigationDestination(for: SongNavigation.ArtistRoute.self) { route in
                     ArtistDetailView(artistID: route.artistId, placeholderName: route.name)
                 }
         }
@@ -264,7 +254,6 @@ struct SongNavigationStack<Content: View>: View {
             // playlists, podcast shows, …) often never land in `path`, and UIKit
             // depth probing can lag — remounting is the reliable clear.
             let wasDeep = isDeep
-            path = NavigationPath()
             navigator.popToRoot()
             uiKitPopToRoot?()
             stackID = UUID()

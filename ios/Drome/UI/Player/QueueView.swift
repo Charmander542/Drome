@@ -8,7 +8,7 @@ struct QueueView: View {
     @State private var drag: HandleDrag?
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $songNavigator.path) {
             List {
                 if let current = player.current {
                     Section("Now playing") {
@@ -63,16 +63,10 @@ struct QueueView: View {
                 }
             }
             .tint(.white)
-            .navigationDestination(item: Binding(
-                get: { songNavigator.albumRoute },
-                set: { songNavigator.albumRoute = $0 }
-            )) { route in
+            .navigationDestination(for: SongNavigation.AlbumRoute.self) { route in
                 AlbumDetailView(albumID: route.albumId, placeholder: route.album)
             }
-            .navigationDestination(item: Binding(
-                get: { songNavigator.artistRoute },
-                set: { songNavigator.artistRoute = $0 }
-            )) { route in
+            .navigationDestination(for: SongNavigation.ArtistRoute.self) { route in
                 ArtistDetailView(artistID: route.artistId, placeholderName: route.name)
             }
         }

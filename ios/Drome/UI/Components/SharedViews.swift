@@ -20,8 +20,11 @@ struct AlbumCard: View {
     @Environment(\.songNavigator) private var songNavigator
 
     var body: some View {
-        Button {
-            songNavigator?.viewAlbum(album)
+        // NavigationLink stacks on top of an already-pushed artist page.
+        // `songNavigator.viewAlbum` shares one root `navigationDestination(item:)`
+        // slot and replaces the artist — back then skips to the player / tab root.
+        NavigationLink {
+            AlbumDetailView(albumID: album.id, placeholder: album)
         } label: {
             VStack(alignment: .leading, spacing: 8) {
                 RemoteImage(url: session?.artworkURL(id: album.coverArt ?? album.id, size: 300))
@@ -33,17 +36,11 @@ struct AlbumCard: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
-                        .contentShape(Rectangle())
-                        .highPriorityGesture(TapGesture().onEnded {
-                            songNavigator?.viewAlbum(album)
-                        })
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityLabel("View album \(album.name)")
                     if let rating = album.userRating, rating > 0 {
                         RatingBadge(rating: rating, size: 10)
                     }
                 }
-                    Text(album.artist ?? "Unknown Artist")
+                Text(album.artist ?? "Unknown Artist")
                     .font(.caption)
                     .foregroundStyle(DromeTheme.muted)
                     .lineLimit(1)
@@ -198,7 +195,6 @@ struct HorizontalAlbumRail: View {
 struct DiscographyAlbumCard: View {
     let album: Album
     @Environment(\.session) private var session
-    @Environment(\.songNavigator) private var songNavigator
 
     private var meta: String {
         var parts: [String] = []
@@ -208,8 +204,10 @@ struct DiscographyAlbumCard: View {
     }
 
     var body: some View {
-        Button {
-            songNavigator?.viewAlbum(album)
+        // Same as AlbumCard — push via NavigationLink so artist → album → back
+        // returns to the artist (not the Now Playing sheet / tab root).
+        NavigationLink {
+            AlbumDetailView(albumID: album.id, placeholder: album)
         } label: {
             VStack(alignment: .leading, spacing: 8) {
                 RemoteImage(url: session?.artworkURL(id: album.coverArt ?? album.id, size: 300))
