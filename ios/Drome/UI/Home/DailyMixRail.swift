@@ -60,7 +60,11 @@ struct DailyMixCard: View {
 
     @EnvironmentObject private var session: AppSession
 
-    private var cover: some View {
+    private var templatedNature: MadeForYouCoverView.Nature? {
+        MadeForYouCoverView.nature(for: mix)
+    }
+
+    private var songCover: some View {
         Group {
             if let first = mix.songs.first {
                 let coverId = mix.coverArtIds.first
@@ -80,27 +84,31 @@ struct DailyMixCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack {
-                cover
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                LinearGradient(
-                    colors: [
-                        Color(hex: mix.colors.first ?? "#2A9D8F").opacity(0.15),
-                        Color(hex: mix.colors.last ?? "#1D3557").opacity(0.55)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .allowsHitTesting(false)
-                VStack {
-                    Spacer()
-                    HStack {
-                        Text("\(mix.index)")
-                            .font(.system(size: 42, weight: .heavy, design: .rounded))
-                            .foregroundStyle(.white)
-                            .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
+                if let nature = templatedNature {
+                    MadeForYouCoverView(nature: nature, cornerRadius: 6)
+                } else {
+                    songCover
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    LinearGradient(
+                        colors: [
+                            Color(hex: mix.colors.first ?? "#2A9D8F").opacity(0.15),
+                            Color(hex: mix.colors.last ?? "#1D3557").opacity(0.55)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .allowsHitTesting(false)
+                    VStack {
                         Spacer()
+                        HStack {
+                            Text("\(mix.index)")
+                                .font(.system(size: 42, weight: .heavy, design: .rounded))
+                                .foregroundStyle(.white)
+                                .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
+                            Spacer()
+                        }
+                        .padding(10)
                     }
-                    .padding(10)
                 }
                 if isPlaying {
                     ProgressView().tint(.white)
