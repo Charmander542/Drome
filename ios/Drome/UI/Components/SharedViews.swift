@@ -283,8 +283,7 @@ struct PlaylistCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            RemoteImage(url: session?.artworkURL(id: playlist.coverArt ?? playlist.id, size: 300),
-                        placeholderSymbol: "music.note.list")
+            cover
                 .aspectRatio(1, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: DromeTheme.Radius.md, style: .continuous))
                 .contentShape(RoundedRectangle(cornerRadius: DromeTheme.Radius.md, style: .continuous))
@@ -309,6 +308,32 @@ struct PlaylistCard: View {
         }
         .hoverEffectDisabled()
         .transaction { $0.animation = nil }
+    }
+
+    @ViewBuilder
+    private var cover: some View {
+        if let session {
+            let userKey = session.account.userKey
+            if PlaylistCoverStore.hasCustom(playlist.id, userKey: userKey) {
+                RemoteImage(
+                    url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 300),
+                    placeholderSymbol: "music.note.list")
+            } else {
+                let ids = PlaylistCoverStore.rememberedCoverIDs(
+                    playlistID: playlist.id, userKey: userKey)
+                if ids.isEmpty {
+                    Color(white: 0.16)
+                        .overlay {
+                            Image(systemName: "music.note.list")
+                                .foregroundStyle(.secondary)
+                        }
+                } else {
+                    PlaylistCoverCollage(coverIDs: ids, session: session)
+                }
+            }
+        } else {
+            Color(white: 0.16)
+        }
     }
 }
 

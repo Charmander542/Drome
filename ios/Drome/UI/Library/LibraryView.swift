@@ -996,8 +996,7 @@ struct LibraryView: View {
                     Image(systemName: "lock.fill")
                         .foregroundStyle(DromeTheme.muted)
                 } else {
-                    RemoteImage(url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 96),
-                                placeholderSymbol: "music.note.list")
+                    playlistThumb(playlist)
                 }
             }
             .frame(width: 56, height: 56)
@@ -1025,6 +1024,34 @@ struct LibraryView: View {
                 Text(playlistSubtitle(playlist))
                     .font(.caption)
                     .foregroundStyle(DromeTheme.muted)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func playlistThumb(_ playlist: Playlist) -> some View {
+        let userKey = session.account.userKey
+        if PlaylistCoverStore.hasCustom(playlist.id, userKey: userKey) {
+            RemoteImage(
+                url: session.artworkURL(id: playlist.coverArt ?? playlist.id, size: 96),
+                placeholderSymbol: "music.note.list")
+        } else {
+            let ids = PlaylistCoverStore.rememberedCoverIDs(
+                playlistID: playlist.id, userKey: userKey)
+            if ids.isEmpty {
+                // Avoid Navidrome’s shuffled mosaic until we’ve opened the playlist once.
+                Color(white: 0.16)
+                    .overlay {
+                        Image(systemName: "music.note.list")
+                            .font(.caption)
+                            .foregroundStyle(DromeTheme.muted)
+                    }
+            } else if ids.count == 1 {
+                RemoteImage(
+                    url: session.artworkURL(id: ids[0], size: 96),
+                    placeholderSymbol: "music.note.list")
+            } else {
+                PlaylistCoverCollage(coverIDs: ids, session: session)
             }
         }
     }
