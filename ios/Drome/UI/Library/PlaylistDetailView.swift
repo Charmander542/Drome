@@ -27,6 +27,7 @@ struct PlaylistDetailView: View {
     @State private var showAddSongs = false
     @State private var showMoreSheet = false
     @State private var showBulkOORConfirm = false
+    @State private var showDuplicatesConfirm = false
     @State private var statusMessage: String?
     @State private var coverPickerItem: PhotosPickerItem?
     @State private var isUploadingCover = false
@@ -144,6 +145,8 @@ struct PlaylistDetailView: View {
                     flash("Downloading…")
                 },
                 onBulkOutOfRotation: { showBulkOORConfirm = true },
+                onRemoveDuplicates: { showDuplicatesConfirm = true },
+                duplicateCount: duplicateIndexes.count,
                 onHide: {
                     hidePlaylistLocally()
                 },
@@ -169,6 +172,21 @@ struct PlaylistDetailView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Tracks stay playable on demand but leave shuffle and autoplay. Songs that also live in other playlists are skipped until every playlist they belong to is marked too.")
+        }
+        .confirmationDialog(
+            "Remove Duplicates?",
+            isPresented: $showDuplicatesConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Remove Duplicates", role: .destructive) {
+                Task { await removeDuplicates() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            let count = duplicateIndexes.count
+            Text(count == 1
+                  ? "Keeps the first copy of each song. 1 extra copy will be removed."
+                  : "Keeps the first copy of each song. \(count) extra copies will be removed.")
         }
         .overlay(alignment: .bottom) {
             if let statusMessage {
@@ -210,7 +228,8 @@ struct PlaylistDetailView: View {
             Button {
                 showMoreSheet = true
             } label: {
-                Image(systemName: "ellipsis.circle")
+                Image(systemName: "ellipsis")
+                    .rotationEffect(.degrees(90))
             }
             .accessibilityLabel("More")
         }
@@ -240,35 +259,20 @@ struct PlaylistDetailView: View {
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 8, trailing: 16))
 
-                HStack(spacing: 12) {
-                    Button {
-                        player.play(allSongs, startAt: 0,
-                                    context: PlaybackContext(label: playlist.name, kind: contextKind))
-                    } label: {
-                        Label("Play", systemImage: "play.fill")
-                            .frame(maxWidth: .infinity)
+                LibraryPlayShuffleRow(
+                    canPlay: canPlay,
+                    songsReady: songsReady,
+                    onPlay: {
+                        player.play(
+                            allSongs, startAt: 0,
+                            context: PlaybackContext(label: playlist.name, kind: contextKind))
+                    },
+                    onShuffle: {
+                        player.playShuffled(
+                            allSongs,
+                            context: PlaybackContext(label: playlist.name, kind: contextKind))
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(DromeTheme.accent)
-                    .foregroundStyle(.white)
-                    .disabled(!canPlay)
-
-                    Button {
-                        player.playShuffled(allSongs,
-                                            context: PlaybackContext(label: playlist.name, kind: contextKind))
-                    } label: {
-                        if songsReady {
-                            Label("Shuffle", systemImage: "shuffle")
-                                .frame(maxWidth: .infinity)
-                        } else {
-                            ProgressView()
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.white)
-                    .disabled(!canPlay)
-                }
+                )
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
 
@@ -644,6 +648,31 @@ struct PlaylistDetailView: View {
         self.playlist = playlist
         Task {
             try? await session.client.updatePlaylist(id: playlist.id, removeIndices: indices)
+            await load()
+        }
+    }
+
+    /// Indexes of every song copy after the first (Aura Remove Duplicates).
+    private var duplicateIndexes: [Int] {
+        let songs = playlist?.songs ?? []
+        var seen = Set<String>()
+        return songs.indices.filter { !seen.insert(songs[$0].id).inserted }
+    }
+
+    private func removeDuplicates() async {
+        guard !isSystem else { return }
+        let copies = duplicateIndexes
+        guard !copies.isEmpty, var playlist else { return }
+        let songs = playlist.songs
+        let removed = Set(copies)
+        playlist.entry = songs.indices.filter { !removed.contains($0) }.map { songs[$0] }
+        self.playlist = playlist
+        do {
+            try await session.client.updatePlaylist(id: playlist.id, removeIndices: copies)
+            flash(copies.count == 1 ? "Removed 1 duplicate" : "Removed \(copies.count) duplicates")
+            await load()
+        } catch {
+            flash(error.localizedDescription)
             await load()
         }
     }
@@ -1107,6 +1136,8 @@ struct PlaylistMoreSheet: View {
     var onAddToQueue: () -> Void
     var onDownload: () -> Void
     var onBulkOutOfRotation: () -> Void
+    var onRemoveDuplicates: () -> Void = {}
+    var duplicateCount: Int = 0
     var onHide: () -> Void
     var onDelete: () -> Void
     /// False for shared / others' playlists — only Hide is offered.
@@ -1153,6 +1184,15 @@ struct PlaylistMoreSheet: View {
                                   systemImage: "person.2")
                         }
                         .listRowBackground(DromeTheme.elevated)
+
+                        if duplicateCount > 0 {
+                            Button(role: .destructive) {
+                                dismissThen(onRemoveDuplicates)
+                            } label: {
+                                Label("Remove Duplicates", systemImage: "square.on.square.dashed")
+                            }
+                            .listRowBackground(DromeTheme.elevated)
+                        }
                     } footer: {
                         Text("Share sends a Drome link. Make Public lets other accounts on your Navidrome server open and edit the playlist.")
                     }

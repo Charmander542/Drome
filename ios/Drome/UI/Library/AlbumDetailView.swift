@@ -14,6 +14,7 @@ struct AlbumDetailView: View {
     @State private var isLoading = true
     @State private var artistDestination: ArtistNav?
     @State private var visibleSongCount = ProgressiveSongReveal.initial
+    @State private var mixBusy = false
 
     private struct ArtistNav: Hashable, Identifiable {
         let id: String
@@ -131,24 +132,56 @@ struct AlbumDetailView: View {
         .scrollContentBackground(.hidden)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                // Aura QueueAllMenu + useful album actions; chrome stays Drome.
                 Menu {
                     Button {
-                        downloads.download(allSongs, albumId: album.id,
-                                           albumName: album.name, artist: album.artist)
+                        player.playNext(allSongs)
                     } label: {
-                        Label("Download Album", systemImage: "arrow.down.circle")
+                        Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
                     }
                     .disabled(!canPlay)
+
                     Button {
-                        player.playShuffled(allSongs,
-                                            context: PlaybackContext(label: album.name, kind: .album(id: album.id)))
+                        player.addToQueue(allSongs)
+                    } label: {
+                        Label("Add to Queue", systemImage: "text.append")
+                    }
+                    .disabled(!canPlay)
+
+                    Button {
+                        player.playShuffled(
+                            allSongs,
+                            context: PlaybackContext(label: album.name, kind: .album(id: album.id)))
                     } label: {
                         Label("Shuffle Play", systemImage: "shuffle")
                     }
                     .disabled(!canPlay)
+
+                    Button {
+                        Task { await startInstantMix(album) }
+                    } label: {
+                        Label("Instant Mix", systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                    .disabled(!canPlay || mixBusy)
+
+                    Divider()
+
+                    Button {
+                        downloads.download(
+                            allSongs, albumId: album.id,
+                            albumName: album.name, artist: album.artist)
+                    } label: {
+                        Label(
+                            albumFullyDownloaded(album) ? "Downloaded" : "Download Album",
+                            systemImage: albumFullyDownloaded(album)
+                                ? "checkmark.circle.fill" : "arrow.down.circle")
+                    }
+                    .disabled(!canPlay || albumFullyDownloaded(album))
                 } label: {
-                    Image(systemName: "ellipsis.circle")
+                    Image(systemName: "ellipsis")
+                        .rotationEffect(.degrees(90))
                 }
+                .accessibilityLabel("More")
             }
         }
     }
@@ -188,52 +221,30 @@ struct AlbumDetailView: View {
             }
             .frame(maxWidth: .infinity)
 
-            HStack(spacing: 12) {
-                Button {
-                    player.play(album.songs, startAt: 0,
-                                context: PlaybackContext(label: album.name, kind: .album(id: album.id)))
-                } label: {
-                    Label("Play", systemImage: "play.fill")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+            LibraryAlbumActionRow(
+                canPlay: canPlay,
+                songsReady: songsReady,
+                isDownloaded: albumFullyDownloaded(album),
+                mixBusy: mixBusy,
+                onShuffle: {
+                    player.playShuffled(
+                        album.songs,
+                        context: PlaybackContext(label: album.name, kind: .album(id: album.id)))
+                },
+                onPlay: {
+                    player.play(
+                        album.songs, startAt: 0,
+                        context: PlaybackContext(label: album.name, kind: .album(id: album.id)))
+                },
+                onInstantMix: {
+                    Task { await startInstantMix(album) }
+                },
+                onDownload: {
+                    downloads.download(
+                        album.songs, albumId: album.id,
+                        albumName: album.name, artist: album.artist)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(DromeTheme.accent)
-                .foregroundStyle(.white)
-                .disabled(!canPlay)
-
-                Button {
-                    player.playShuffled(album.songs,
-                                        context: PlaybackContext(label: album.name, kind: .album(id: album.id)))
-                } label: {
-                    Group {
-                        if songsReady {
-                            Label("Shuffle", systemImage: "shuffle")
-                        } else {
-                            ProgressView()
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                }
-                .buttonStyle(.bordered)
-                .tint(.white)
-                .disabled(!canPlay)
-
-                Button {
-                    downloads.download(album.songs, albumId: album.id,
-                                       albumName: album.name, artist: album.artist)
-                } label: {
-                    // Plain arrow — bordered already supplies chrome (avoids double-circle).
-                    Image(systemName: albumFullyDownloaded(album) ? "checkmark" : "arrow.down")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 46, height: 46)
-                }
-                .buttonStyle(.bordered)
-                .tint(albumFullyDownloaded(album) ? DromeTheme.accent : .white)
-                .disabled(!canPlay)
-                .accessibilityLabel(albumFullyDownloaded(album) ? "Downloaded" : "Download album")
-            }
+            )
             .padding(.horizontal, 16)
         }
         .frame(maxWidth: .infinity)
@@ -278,6 +289,17 @@ struct AlbumDetailView: View {
     private func albumFullyDownloaded(_ album: AlbumWithSongs) -> Bool {
         guard !album.songs.isEmpty else { return false }
         return album.songs.allSatisfy { downloads.isDownloaded($0.id) }
+    }
+
+    private func startInstantMix(_ album: AlbumWithSongs) async {
+        guard !mixBusy, let seed = album.songs.first else { return }
+        mixBusy = true
+        defer { mixBusy = false }
+        let mixed = await InstantMix.songs(from: seed, client: session.client)
+        guard !mixed.isEmpty else { return }
+        player.play(
+            mixed, startAt: 0,
+            context: PlaybackContext(label: "Instant Mix · \(album.name)", kind: .mix))
     }
 
     private func load() async {

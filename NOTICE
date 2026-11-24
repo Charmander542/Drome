@@ -33,5 +33,11 @@ Adapted files include (non-exhaustive):
     (bufferProgress / isBuffering publish from Aura progress ideas)
   - ios/Drome/UI/Player/NowPlayingView.swift
     (scrubber buffer layer + load pulse + drag thumb from BufferedProgressBar)
+  - ios/Drome/UI/Components/SharedViews.swift
+    (LibraryPlayShuffleRow / LibraryAlbumActionRow from Aura album & playlist headers)
+  - ios/Drome/UI/Library/AlbumDetailView.swift
+    (action strip + richer More menu from Aura AlbumDetail / QueueAllMenu)
+  - ios/Drome/UI/Library/PlaylistDetailView.swift
+    (Play/Shuffle pills + Remove Duplicates from Aura PlaylistDetail)
 
 Aura remains a separate project; Drome is not affiliated with Aura.
