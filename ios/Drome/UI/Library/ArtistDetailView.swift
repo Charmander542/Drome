@@ -467,7 +467,8 @@ struct ArtistDetailView: View {
                 bio: bio,
                 hero: heroImageURL)
 
-            if let upgraded = await resolveHeroImage(loaded) {
+            if let upgraded = await resolveHeroImage(loaded),
+               await ImageLoader.shared.image(for: upgraded) != nil {
                 heroImageURL = upgraded
             }
         } catch {
@@ -477,9 +478,10 @@ struct ArtistDetailView: View {
         }
     }
 
+    /// Navidrome cover art is the fast hero. A Spotify or Last.fm portrait
+    /// replaces it only after that bitmap is already decoded.
     private func immediateHero(for artist: ArtistWithAlbums) -> URL? {
         session.artistImages.memoryURL(artistId: artist.id)
-            ?? artist.artistImageUrl.flatMap(URL.init(string:))
     }
 
     /// Start cover fetches before the song lists return so the rail isn't blank.
