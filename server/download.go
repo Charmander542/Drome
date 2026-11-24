@@ -1024,9 +1024,12 @@ func (w *downloadWorker) writePlaylistFileNow(ctx context.Context, owner, spotif
 }
 
 // syncSourcePlaylistArtifacts refreshes the on-disk .m3u8 (always) and ensures
-// a Navidrome mirror exists when scan credentials are configured. A full
-// Spotify-ordered rewrite runs when no more active downloads remain for the
-// source playlist; otherwise we still refresh from whatever is already on disk.
+// a Navidrome mirror exists when scan credentials are configured.
+//
+// Always rebuild from the Spotify playlist order matched to files on disk.
+// Compilation-style imports (Chill Mix, "100 Greatest …") store tracks under
+// many artist folders, so an album-folder-only refresh would leave the .m3u8
+// stuck at whatever was owned at import time.
 func (w *downloadWorker) syncSourcePlaylistArtifacts(ctx context.Context, e *entry) {
 	if w == nil || e == nil || e.SourcePlaylistID == "" {
 		return
@@ -1036,27 +1039,21 @@ func (w *downloadWorker) syncSourcePlaylistArtifacts(ctx context.Context, e *ent
 		name = "Spotify playlist"
 	}
 	w.ensurePlaylistMirror(ctx, e.Owner, e.SourcePlaylistID, name)
+	path, werr := w.writePlaylistFileNow(ctx, e.Owner, e.SourcePlaylistID, name)
+	if werr != nil {
+		logf("write playlist file %q: %v", name, werr)
+		return
+	}
+	if path == "" {
+		return
+	}
 	remaining, err := w.store.countActiveBySourcePlaylist(e.Owner, e.SourcePlaylistID)
 	if err != nil {
 		logf("count active playlist downloads: %v", err)
-	}
-	// remaining still includes the current row until delete — treat <=1 as done.
-	if remaining <= 1 {
-		if _, werr := w.writePlaylistFileNow(ctx, e.Owner, e.SourcePlaylistID, name); werr != nil {
-			logf("write playlist file %q: %v", name, werr)
-		}
 		return
 	}
-	// Incremental: keep the file growing from album-folder contents so the
-	// playlist is usable before the full download finishes.
-	tracks := playlistFileTracksNamedAlbum(w.cfg.MusicDir, name)
-	if len(tracks) == 0 {
-		return
-	}
-	if path, werr := writeLibraryPlaylist(w.cfg.MusicDir, name, tracks); werr != nil {
-		logf("write playlist file %q: %v", name, werr)
-	} else if path != "" {
-		logf("playlist file updated %q → %s (%d tracks, %d still queued)", name, path, len(tracks), remaining-1)
+	if remaining > 1 {
+		logf("playlist file updated %q → %s (%d still queued)", name, path, remaining-1)
 	}
 }
 
