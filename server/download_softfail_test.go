@@ -55,10 +55,13 @@ func TestStripANSI(t *testing.T) {
 }
 
 func TestSpotiflacFailureTail(t *testing.T) {
-	out := "banner junk\nTurnstile token not obtained\n  ✗  Failed: demo — All providers failed after 1 attempt(s)\n"
+	out := "banner junk\nTurnstile token not obtained\nTrack not available: No verified TIDAL track match found\n  ✗  Failed: demo — All providers failed after 1 attempt(s)\n"
 	got := spotiflacFailureTail(out)
 	if !strings.Contains(got, "All providers failed") {
 		t.Fatalf("got %q", got)
+	}
+	if !strings.Contains(got, "Track not available") {
+		t.Fatalf("expected provider detail, got %q", got)
 	}
 	if strings.Contains(got, "banner") {
 		t.Fatalf("should drop banner: %q", got)

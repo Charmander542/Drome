@@ -51,10 +51,13 @@ if ! command -v mornye >/dev/null 2>&1; then
 fi
 
 set +e
+# --fallback lets a provider serve a lower tier when HI_RES isn't available,
+# instead of failing the whole track after a successful match.
 run_mornye "$BIN" "$URL" "$OUT" \
   --use-artist-subfolders \
   --use-album-subfolders \
   --filename-format "{track} - {title}" \
+  --fallback \
   "$@" 2>&1 | tee "$LOG"
 rc=${PIPESTATUS[0]}
 set -e

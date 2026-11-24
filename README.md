@@ -54,7 +54,7 @@ pairing). Same Navidrome login on each device.
 | `DROME_SPOTIFY_MARKET` | ISO country for Search (default `US`; needed with client-credentials) |
 | `DROME_MUSIC_DIR` | Shared library mount (default `/music`) |
 | `DROME_AUTO_DOWNLOAD` | Queue Mornye on every wishlist add (`true`/`false`) |
-| `DROME_SPOTIFLAC_SERVICES` | Provider priority, comma-separated |
+| `DROME_SPOTIFLAC_SERVICES` | Provider priority (`tidal,qobuz,amazon,deezer,youtube`) |
 | `MORNYE_REGISTRIES` | Extension registry JSON URLs (required; Mornye has no built-in providers) |
 | `DROME_SPOTIFLAC_EXTENSIONS` | Extensions to install on boot (`utilities,tidal-web,…`) |
 | `DROME_NAVIDROME_SCAN_USER` / `PASSWORD` | Optional; triggers immediate library scan |

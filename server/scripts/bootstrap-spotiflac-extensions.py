@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import sys
 
-DEFAULT_EXTS = ("utilities", "tidal-web", "qobuz-web", "amazon", "deezer")
+DEFAULT_EXTS = ("utilities", "tidal-web", "qobuz-web", "amazon", "deezer", "ytmusic-spotiflac")
 
 
 def _extension_manager():

@@ -58,7 +58,7 @@ func downloadConfigFromEnv() downloadConfig {
 		MaxAttempts:  envInt("DROME_DOWNLOAD_MAX_ATTEMPTS", 5),
 		RetryBase:    envDuration("DROME_DOWNLOAD_RETRY_BASE", 2*time.Minute),
 	}
-	raw := envOr("DROME_SPOTIFLAC_SERVICES", "tidal,qobuz,amazon,deezer")
+	raw := envOr("DROME_SPOTIFLAC_SERVICES", "tidal,qobuz,amazon,deezer,youtube")
 	for _, part := range strings.Split(raw, ",") {
 		part = strings.TrimSpace(part)
 		if part != "" {
@@ -66,7 +66,7 @@ func downloadConfigFromEnv() downloadConfig {
 		}
 	}
 	if len(cfg.Services) == 0 {
-		cfg.Services = []string{"tidal", "qobuz", "amazon"}
+		cfg.Services = []string{"tidal", "qobuz", "amazon", "youtube"}
 	}
 	if cfg.MaxAttempts < 1 {
 		cfg.MaxAttempts = 1
@@ -111,6 +111,10 @@ type downloadWorker struct {
 	wake   chan struct{}
 	closed bool
 
+	// Pace Mornye jobs so the signed-session / link-resolver APIs (api.zarz.moe)
+	// don't 429 mid-queue and make every subsequent provider look "not found".
+	jobGap time.Duration
+
 	// Live progress for GET /wishlist/downloads (and status_msg on the active row).
 	progress progressState
 }
@@ -123,6 +127,7 @@ func newDownloadWorker(cfg downloadConfig, store *wishlistStore, navidrome *navi
 		spotify:   spotify,
 		baseURL:   baseURL,
 		wake:      make(chan struct{}, 1),
+		jobGap:    envDuration("DROME_DOWNLOAD_JOB_GAP", 8*time.Second),
 	}
 }
 
@@ -193,6 +198,13 @@ func (w *downloadWorker) Run(ctx context.Context) {
 				break
 			}
 			w.process(ctx, e)
+			if w.jobGap > 0 {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(w.jobGap):
+				}
+			}
 		}
 	}
 }
@@ -684,6 +696,10 @@ func spotiflacFailureTail(out string) string {
 		}
 		if strings.Contains(l, "All providers failed") ||
 			strings.Contains(l, "Failed:") ||
+			strings.Contains(l, "Track not available") ||
+			strings.Contains(l, "No verified") ||
+			strings.Contains(l, "not_found") ||
+			strings.Contains(l, "RATE_LIMITED") ||
 			strings.Contains(l, "UNAVAILABLE") ||
 			strings.Contains(l, "AUTH_FAILED") ||
 			strings.Contains(l, "Turnstile") ||
