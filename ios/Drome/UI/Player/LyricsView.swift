@@ -385,28 +385,37 @@ struct LyricsView: View {
         }
 
         private var labelColor: Color {
-            state == .active ? DromeTheme.accent : Color.white.opacity(0.45)
+            switch state {
+            case .active: return DromeTheme.accent
+            case .past: return Color.white.opacity(0.55)
+            case .upcoming: return Color.white.opacity(0.35)
+            }
         }
 
         private var baseColor: Color {
             switch state {
             case .active: return .white
-            case .past: return Color.white.opacity(0.32)
-            case .upcoming: return Color.white.opacity(0.26)
+            // Past stays clearly brighter than upcoming so finished lines read as done.
+            case .past: return Color.white.opacity(0.58)
+            case .upcoming: return Color.white.opacity(0.24)
             }
         }
 
         private func color(for word: LRCParser.Word) -> Color {
             switch state {
             case .past:
-                return Color.white.opacity(0.32)
+                return Color.white.opacity(0.58)
             case .upcoming:
-                return Color.white.opacity(0.26)
+                return Color.white.opacity(0.24)
             case .active:
                 // Aura elapsed-at-time (incl. x4 cycle restarts). Stay lit once
-                // reached this pass — no endMs dim.
+                // reached this pass — no endMs dim. Soften words already passed
+                // so the current word stays brightest.
                 if word.isLit(atMs: elapsedMs) {
-                    return .white
+                    let laterStarted = line.words.contains {
+                        $0.startMs > word.startMs && $0.isLit(atMs: elapsedMs)
+                    }
+                    return laterStarted ? Color.white.opacity(0.72) : .white
                 }
                 return Color.white.opacity(0.28)
             }
