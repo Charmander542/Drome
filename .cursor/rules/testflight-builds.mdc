@@ -1,0 +1,12 @@
+---
+description: Keep older TestFlight / ASC builds when publishing
+alwaysApply: true
+---
+
+# TestFlight builds
+
+When uploading or submitting a new iOS build to App Store Connect / TestFlight:
+
+- Do **not** expire, delete, or invalidate previous builds to clear beta review or free a train slot.
+- Leave older builds available for testers who are still on them.
+- If Apple blocks a new external beta submission because another build is already in review (`ANOTHER_BUILD_IN_REVIEW` or similar), wait for that review to finish or tell Charlie — never expire the blocking build as a workaround.
