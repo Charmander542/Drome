@@ -52,7 +52,7 @@ struct LyricsView: View {
         // Drive the playhead from a background ticker so the ScrollView itself
         // isn't rebuilt 20×/sec inside a TimelineView.
         .background {
-            TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: false)) { timeline in
+            TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: false)) { timeline in
                 Color.clear
                     .onChange(of: timeline.date) { _, _ in
                         tick()
@@ -63,13 +63,33 @@ struct LyricsView: View {
     }
 
     private func tick() {
-        let ms = Int(player.accurateElapsed() * 1000)
+        // Round half-up so a stamp at exactly N ms isn’t missed for a frame.
+        let ms = Int((player.accurateElapsed() * 1000).rounded())
         elapsedMs = ms
         guard let document, document.synced else { return }
         let idx = activeLineIndex(at: syncElapsedMs, in: document)
         if idx != activeIndex {
             activeIndex = idx
         }
+    }
+
+    /// When LRCLIB’s master duration differs slightly from the file actually
+    /// playing, re-scale once against `player.duration` (tighter than tag length).
+    private func realignToPlayhead(_ document: LyricsDocument) -> LyricsDocument {
+        guard document.source.hasPrefix("lrclib"),
+              let fromSec = document.matchedDurationSec, fromSec > 0,
+              player.duration > 1
+        else { return document }
+        let toMs = Int((player.duration * 1000).rounded())
+        let fromMs = fromSec * 1000
+        let scaled = LRCParser.scale(document.lines, fromDurationMs: fromMs, toDurationMs: toMs)
+        guard scaled.map(\.startMs) != document.lines.map(\.startMs) else { return document }
+        return LyricsDocument(
+            lines: scaled,
+            synced: document.synced,
+            source: document.source,
+            timingOffsetMs: document.timingOffsetMs,
+            matchedDurationSec: Int((player.duration).rounded()))
     }
 
     private func lyricsBody(_ document: LyricsDocument) -> some View {
@@ -241,8 +261,8 @@ struct LyricsView: View {
 
     private func sourceLabel(_ source: String) -> String {
         switch source {
-        case "navidrome", "navidrome.v2": return "From your library"
-        case "lrclib", "lrclib.v2", "lrclib.v3": return "From LRCLIB"
+        case "navidrome", "navidrome.v2", "navidrome.v3": return "From your library"
+        case "lrclib", "lrclib.v2", "lrclib.v3", "lrclib.v4": return "From LRCLIB"
         default: return ""
         }
     }
@@ -251,13 +271,20 @@ struct LyricsView: View {
         isLoading = true
         error = nil
         defer { isLoading = false }
+        let fetched: LyricsDocument?
         if force {
-            document = await session.lyricsService.refetch(for: song)
+            fetched = await session.lyricsService.refetch(for: song)
         } else {
-            document = await session.lyricsService.lyrics(for: song)
+            fetched = await session.lyricsService.lyrics(for: song)
         }
-        if let document, document.synced {
-            activeIndex = activeLineIndex(at: syncElapsedMs, in: document)
+        if let fetched {
+            let aligned = realignToPlayhead(fetched)
+            document = aligned
+            if aligned.synced {
+                activeIndex = activeLineIndex(at: syncElapsedMs, in: aligned)
+            }
+        } else {
+            document = nil
         }
     }
 

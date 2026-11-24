@@ -30,22 +30,26 @@ final class LRCParserTimingTests: XCTestCase {
         XCTAssertEqual(lines.first?.startMs, 0)
     }
 
-    func testScaleStretchesWithinBand() {
+    func testScaleStretchesWithinTightBand() {
         let lines = LRCParser.parse("""
             [00:00.00]a
             [01:00.00]b
             """)
-        let scaled = LRCParser.scale(lines, fromDurationMs: 60_000, toDurationMs: 66_000)
-        XCTAssertEqual(scaled[1].startMs, 66_000)
+        // 2% — inside the ±2.5% near-cut window.
+        let scaled = LRCParser.scale(lines, fromDurationMs: 60_000, toDurationMs: 61_200)
+        XCTAssertEqual(scaled[1].startMs, 61_200)
     }
 
-    func testScaleRejectsWildMismatch() {
+    func testScaleRejectsProgressiveDriftBand() {
         let lines = LRCParser.parse("""
             [00:00.00]a
             [01:00.00]b
             """)
-        let scaled = LRCParser.scale(lines, fromDurationMs: 60_000, toDurationMs: 120_000)
+        // 10% used to be allowed and caused mid-song drift.
+        let scaled = LRCParser.scale(lines, fromDurationMs: 60_000, toDurationMs: 66_000)
         XCTAssertEqual(scaled[1].startMs, 60_000)
+        let wild = LRCParser.scale(lines, fromDurationMs: 60_000, toDurationMs: 120_000)
+        XCTAssertEqual(wild[1].startMs, 60_000)
     }
 
     func testActiveLineFollowsStampsOnly() {

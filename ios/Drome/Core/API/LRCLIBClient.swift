@@ -90,13 +90,13 @@ struct LRCLIBClient {
 
             if let duration, let remote = result.duration, remote > 0 {
                 let delta = abs(remote - Double(duration))
-                if delta <= 1.5 { s += 40 }
-                else if delta <= 3 { s += 25 }
-                else if delta <= 5 { s += 10 }
-                else if delta <= 8 { s += 2 }
-                else { s -= 40 }
-                // Soft preference for closer durations.
-                s -= delta * 1.5
+                // Tight duration match — loose hits “sometimes” sync, then drift.
+                if delta <= 1.0 { s += 50 }
+                else if delta <= 2.0 { s += 35 }
+                else if delta <= 3.5 { s += 15 }
+                else if delta <= 5.0 { s += 2 }
+                else { s -= 60 }
+                s -= delta * 2.5
             }
 
             if let album, !album.isEmpty,
@@ -111,15 +111,28 @@ struct LRCLIBClient {
         let ranked = unique.sorted { score($0) > score($1) }
         guard let best = ranked.first else { return nil }
 
-        // If the winner's duration is way off and we have a closer synced hit, prefer that.
+        // Prefer a closer synced hit whenever the winner’s duration is soft.
         if let duration,
            let remote = best.duration,
-           abs(remote - Double(duration)) > 8,
+           abs(remote - Double(duration)) > 3.5,
            let closer = ranked.first(where: {
                $0.syncedLyrics?.isEmpty == false
-                   && abs(($0.duration ?? 0) - Double(duration)) <= 5
+                   && abs(($0.duration ?? 0) - Double(duration)) <= 3.0
            }) {
             return closer
+        }
+        // Refuse synced lyrics that are clearly a different cut — constant
+        // wrong timing is worse than “no synced lyrics”.
+        if let duration,
+           let remote = best.duration,
+           best.syncedLyrics?.isEmpty == false,
+           abs(remote - Double(duration)) > 6.0 {
+            if let plain = ranked.first(where: {
+                $0.plainLyrics?.isEmpty == false
+                    && ($0.syncedLyrics == nil || $0.syncedLyrics?.isEmpty == true)
+            }) {
+                return plain
+            }
         }
         return best
     }
@@ -129,8 +142,8 @@ struct LRCLIBClient {
             && (requestedArtist.isEmpty || titlesMatch(requestedArtist, result.artistName ?? ""))
     }
 
-    /// Loose identity compare: ignore case, diacritics, and punctuation so
-    /// "2007" ≠ "Something 2007 Remix" unless one contains the other cleanly.
+    /// Identity compare: ignore case / diacritics / punctuation. Require near-
+    /// equal length so short titles don’t match longer remixes via `contains`.
     private func titlesMatch(_ a: String, _ b: String) -> Bool {
         let na = normalize(a)
         let nb = normalize(b)
@@ -138,10 +151,12 @@ struct LRCLIBClient {
         if na == nb { return true }
         let shorter = na.count <= nb.count ? na : nb
         let longer = na.count <= nb.count ? nb : na
-        if shorter.count <= 4 {
+        // Allow small suffix/prefix noise ("remastered") but not "love" ⊂ "lovelyday".
+        guard shorter.count >= 5 else {
             return longer == shorter || longer.hasPrefix(shorter) || longer.hasSuffix(shorter)
         }
-        return longer.contains(shorter)
+        guard longer.contains(shorter) else { return false }
+        return Double(shorter.count) / Double(longer.count) >= 0.72
     }
 
     private func normalize(_ raw: String) -> String {

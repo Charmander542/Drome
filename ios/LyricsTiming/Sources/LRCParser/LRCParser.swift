@@ -152,14 +152,16 @@ enum LRCParser {
     }
 
     /// Linearly scale timestamps so lyrics timed for `fromDurationMs` land on a
-    /// song of `toDurationMs`. Keeps the first stamp anchored and stretches the
-    /// rest — fixes progressive early/late drift from radio-edit vs album cuts.
+    /// song of `toDurationMs`.
+    ///
+    /// Only tiny near-cuts (±2.5%). Larger stretches used to “sometimes” look
+    /// fine at the start and drift seconds off by the chorus — better to leave
+    /// a constant nudge the user can fix than progressive drift.
     static func scale(_ lines: [Line], fromDurationMs: Int, toDurationMs: Int) -> [Line] {
         guard fromDurationMs > 1_000, toDurationMs > 1_000 else { return lines }
         let ratio = Double(toDurationMs) / Double(fromDurationMs)
-        // Ignore tiny differences; reject wild mismatches (wrong song).
-        if abs(ratio - 1) < 0.008 { return lines }
-        if abs(ratio - 1) > 0.12 { return lines }
+        if abs(ratio - 1) < 0.005 { return lines }
+        if abs(ratio - 1) > 0.025 { return lines }
 
         func map(_ ms: Int) -> Int {
             max(0, Int((Double(ms) * ratio).rounded()))
@@ -285,7 +287,7 @@ enum LRCParser {
                end > lineStart {
                 let passes = marked.passes
                 let period = (end - lineStart) / passes
-                let phraseEnd = lineStart + min(period, max(1_500, marked.phrase.count * songPace * 12 / 10))
+                let phraseEnd = lineStart + min(period, max(1_500, marked.phrase.count * songPace * 13 / 10))
                 var words = distributeWords(tokenize(marked.phrase), from: lineStart, to: phraseEnd)
                 if let last = words.indices.last {
                     // Keep a space so joins stay lossless if we ever re-serialize.
@@ -336,14 +338,14 @@ enum LRCParser {
             else { continue }
             samples.append((next - start) / lines[index].text.count)
         }
-        guard samples.count >= 3 else { return defaultPaceMsPerChar }
+        guard !samples.isEmpty else { return defaultPaceMsPerChar }
         samples.sort()
         return min(max(samples[samples.count / 2], 40), 300)
     }
 
     /// When the line at `index` stops being sung (word karaoke window end).
     ///
-    /// Aura `LyricWordTiming.lineEnd`: paced sung length with 20% slack, capped by
+    /// Aura `LyricWordTiming.lineEnd`: paced sung length with slack, capped by
     /// the next stamp. Ordinary gaps (≈ song pace) run all the way to the next
     /// line so words land with the vocal; only a real instrumental ends early.
     static func lineEndMs(lines: [Line], index: Int, paceMs: Int? = nil) -> Int? {
@@ -355,7 +357,9 @@ enum LRCParser {
             return next
         }
 
-        let sung = start + max(1_500, sungLength(lines[index].text) * pace * 12 / 10)
+        // 30% slack (Aura used 20%) — slight underestimates used to finish the
+        // last words early while the vocal was still on the line.
+        let sung = start + max(1_500, sungLength(lines[index].text) * pace * 13 / 10)
         if let next = nextStartMs(after: index, in: lines), next > start {
             return min(next, sung)
         }
@@ -483,21 +487,27 @@ enum LRCParser {
     /// so a line of short words doesn’t race ahead of one with fewer, longer words.
     private static func distributeWords(_ tokens: [String], from start: Int, to end: Int) -> [Word] {
         guard !tokens.isEmpty else { return [] }
-        let duration = max(end - start, tokens.count * 120)
-        let weights = tokens.map { Double(max($0.count, 0) + 1) }
-        let totalWeight = max(weights.reduce(0, +), 1)
         guard end > start else {
             return [Word(text: tokens.joined(separator: " "), startMs: start, endMs: start + 80)]
         }
+        let duration = Double(max(end - start, tokens.count * 120))
+        let weights = tokens.map { Double(max($0.count, 0) + 1) }
+        let totalWeight = max(weights.reduce(0, +), 1)
         var elapsed = 0.0
         var result: [Word] = []
+        result.reserveCapacity(tokens.count)
         for (idx, token) in tokens.enumerated() {
             let wordStart = start + Int(elapsed.rounded())
-            elapsed += Double(duration) * (weights[idx] / totalWeight)
+            elapsed += duration * (weights[idx] / totalWeight)
             let wordEnd = idx == tokens.count - 1
                 ? end
                 : min(end, start + Int(elapsed.rounded()))
-            result.append(Word(text: token, startMs: wordStart, endMs: max(wordEnd, wordStart + 80)))
+            // Ensure strictly increasing starts so karaoke never stalls on a tie.
+            let clampedStart = result.last.map { max(wordStart, $0.startMs + 40) } ?? wordStart
+            result.append(Word(
+                text: token,
+                startMs: min(clampedStart, max(start, end - (tokens.count - idx) * 40)),
+                endMs: max(wordEnd, clampedStart + 80)))
         }
         if let last = result.indices.last {
             result[last].endMs = end
