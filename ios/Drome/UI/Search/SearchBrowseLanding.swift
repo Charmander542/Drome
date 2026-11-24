@@ -317,7 +317,7 @@ struct SearchBrowseLanding: View {
         }
         usedCoverIds = used
         genreArt = urls
-        ImageLoader.shared.prefetch(Array(urls.values), limit: artworkPageSize)
+        ImageLoader.shared.prefetch(Array(urls.values), limit: artworkPageSize, priority: .userInitiated)
     }
 }
 

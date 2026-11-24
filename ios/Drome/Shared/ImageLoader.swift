@@ -18,8 +18,10 @@ final class ImageLoader: @unchecked Sendable {
     /// Skip hammering IDs that returned non-images (XML errors, empty bodies).
     private var failed = Set<NSString>()
     private var activeFetches = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-    private let maxConcurrentFetches = 8
+    /// On-screen loads. A fast network should fill these before background prefetch.
+    private var highWaiters: [CheckedContinuation<Void, Never>] = []
+    private var lowWaiters: [CheckedContinuation<Void, Never>] = []
+    private let maxConcurrentFetches = 16
     /// Parsed cover URLs. Row bodies ask about the same URL several times
     /// per frame (exact cache, preview, identity); parsing query items each
     /// time showed up while scrolling.
@@ -67,9 +69,13 @@ final class ImageLoader: @unchecked Sendable {
         }
         let task = Task<UIImage?, Never> { [weak self] in
             guard let self else { return nil }
-            await self.acquireFetchSlot()
+            // Disk hits must not wait behind in-flight network covers.
+            if let decoded = await self.decodeCachedCover(url: url, key: key, priority: priority) {
+                return decoded
+            }
+            await self.acquireFetchSlot(high: priority >= .userInitiated)
             defer { self.releaseFetchSlot() }
-            return await self.fetchAndDecode(url: url, key: key, priority: priority)
+            return await self.fetchAndDecode(url: url, key: key, priority: priority, allowDisk: false)
         }
         inflight[key] = task
         lock.unlock()
@@ -82,7 +88,7 @@ final class ImageLoader: @unchecked Sendable {
     }
 
     /// Warm the cache for nearby list cells so fast flings paint like a back-nav.
-    func prefetch(_ urls: [URL], limit: Int = 24) {
+    func prefetch(_ urls: [URL], limit: Int = 24, priority: TaskPriority = .utility) {
         var started = 0
         for url in urls {
             guard started < limit else { break }
@@ -97,7 +103,7 @@ final class ImageLoader: @unchecked Sendable {
             lock.unlock()
             guard !skip else { continue }
             started += 1
-            Task(priority: .utility) { _ = await image(for: url, priority: .utility) }
+            Task(priority: priority) { _ = await image(for: url, priority: priority) }
         }
     }
 
@@ -152,6 +158,32 @@ final class ImageLoader: @unchecked Sendable {
     }
 
     // MARK: - Fetch
+
+    /// Decode a local file or a previously saved cover without taking a network slot.
+    private func decodeCachedCover(url: URL, key: NSString, priority: TaskPriority) async -> UIImage? {
+        let parsed = parsedArtwork(for: url)
+        let data: Data? = await Task.detached(priority: priority) { [parsed] in
+            if parsed.isFile {
+                return try? Data(contentsOf: parsed.resource)
+            }
+            return self.readDiskCover(parsed)
+        }.value
+        guard let data else { return nil }
+        let maxPixel = parsed.maxPixel
+        let image = await Task.detached(priority: priority) {
+            Self.downsampledImage(data: data, maxPixel: maxPixel)
+        }.value
+        guard let image else {
+            if !parsed.isFile, let file = diskFileURL(parsed) {
+                diskQueue.async { try? FileManager.default.removeItem(at: file) }
+            }
+            return nil
+        }
+        let cost = Self.approximateCost(of: image)
+        cache.setObject(image, forKey: key, cost: cost)
+        rememberCover(image, for: url)
+        return image
+    }
 
     private func fetchAndDecode(
         url: URL,
@@ -412,15 +444,18 @@ final class ImageLoader: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func acquireFetchSlot() async {
+    private func acquireFetchSlot(high: Bool) async {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             lock.lock()
             if activeFetches < maxConcurrentFetches {
                 activeFetches += 1
                 lock.unlock()
                 cont.resume()
+            } else if high {
+                highWaiters.append(cont)
+                lock.unlock()
             } else {
-                waiters.append(cont)
+                lowWaiters.append(cont)
                 lock.unlock()
             }
         }
@@ -428,15 +463,19 @@ final class ImageLoader: @unchecked Sendable {
 
     private func releaseFetchSlot() {
         lock.lock()
-        if !waiters.isEmpty {
-            // Transfer the slot to the next waiter.
-            let next = waiters.removeFirst()
-            lock.unlock()
-            next.resume()
+        let next: CheckedContinuation<Void, Never>?
+        if !highWaiters.isEmpty {
+            next = highWaiters.removeFirst()
+        } else if !lowWaiters.isEmpty {
+            next = lowWaiters.removeFirst()
         } else {
-            activeFetches = max(0, activeFetches - 1)
-            lock.unlock()
+            next = nil
         }
+        if next == nil {
+            activeFetches = max(0, activeFetches - 1)
+        }
+        lock.unlock()
+        next?.resume()
     }
 
     /// Prefer the Subsonic `size=` query (already list-sized). Local cover
@@ -522,6 +561,9 @@ struct RemoteImage: View {
 
     @State private var image: UIImage?
     @State private var loadedURL: URL?
+    /// The note only appears when there is no art to fetch, or the fetch failed.
+    /// A fast load should fill the tile before that icon is ever drawn.
+    @State private var failedURL: URL?
 
     var body: some View {
         // Prefer state, but fall back to the memory cache on the first frame so a
@@ -535,7 +577,7 @@ struct RemoteImage: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-            } else {
+            } else if url == nil || failedURL == url {
                 Image(systemName: placeholderSymbol)
                     .font(.title2)
                     .foregroundStyle(.secondary)
@@ -552,6 +594,7 @@ struct RemoteImage: View {
             if loadedURL == url, image != nil { return }
             if let preview = ImageLoader.shared.previewImage(for: url), image == nil || loadedURL != url {
                 image = preview
+                failedURL = nil
                 if ImageLoader.shared.cachedImage(for: url) != nil {
                     loadedURL = url
                     return
@@ -563,7 +606,10 @@ struct RemoteImage: View {
                 if self.url == url {
                     image = loaded
                     loadedURL = url
+                    failedURL = nil
                 }
+            } else if !Task.isCancelled, self.url == url, image == nil {
+                failedURL = url
             }
         }
     }

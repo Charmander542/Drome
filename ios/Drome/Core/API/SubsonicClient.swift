@@ -10,6 +10,9 @@ final class SubsonicClient {
 
     let account: Account
     let session: URLSession
+    /// Cover bytes only. Kept off `session` so a search or biography call
+    /// cannot sit on the few connections a fast grid of covers needs.
+    let imageSession: URLSession
     private let password: String
     /// Active base URL (home LAN vs away). Defaults to home when set, else server.
     private(set) var baseURL: URL
@@ -31,16 +34,29 @@ final class SubsonicClient {
             .map { String(format: "%02x", $0) }
             .joined()
 
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 180
-        config.timeoutIntervalForResource = 300
-        config.urlCache = URLCache(memoryCapacity: 32 * 1024 * 1024,
-                                   diskCapacity: 256 * 1024 * 1024)
         let host = (account.homeURL ?? account.serverURL).host
         let delegate = account.allowSelfSigned
             ? ServerTrustDelegate(trustedHost: host)
             : nil
+
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 180
+        config.timeoutIntervalForResource = 300
+        config.httpMaximumConnectionsPerHost = 6
+        config.urlCache = URLCache(memoryCapacity: 16 * 1024 * 1024,
+                                   diskCapacity: 32 * 1024 * 1024)
         self.session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+
+        let images = URLSessionConfiguration.default
+        images.timeoutIntervalForRequest = 20
+        images.timeoutIntervalForResource = 40
+        // Navidrome is often HTTP/1.1, which otherwise allows only a handful
+        // of cover requests at once. A fast network can fill a rail in one burst.
+        images.httpMaximumConnectionsPerHost = 16
+        images.requestCachePolicy = .returnCacheDataElseLoad
+        images.urlCache = URLCache(memoryCapacity: 48 * 1024 * 1024,
+                                   diskCapacity: 256 * 1024 * 1024)
+        self.imageSession = URLSession(configuration: images, delegate: delegate, delegateQueue: nil)
     }
 
     /// Switch between home and away base URLs (Nautiline-style).

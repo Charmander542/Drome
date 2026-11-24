@@ -964,19 +964,19 @@ struct LibraryView: View {
         let urls = albums.compactMap {
             session.artworkURL(id: $0.coverArt ?? $0.id, size: Self.listArtSize)
         }
-        ImageLoader.shared.prefetch(urls, limit: 48)
+        ImageLoader.shared.prefetch(urls, limit: 32, priority: .userInitiated)
     }
 
     private func warmArtistCovers(_ artists: [Artist]) {
         let urls = artists.compactMap {
             session.artworkURL(id: $0.coverArt ?? $0.id, size: Self.listArtSize)
         }
-        ImageLoader.shared.prefetch(urls, limit: 48)
+        ImageLoader.shared.prefetch(urls, limit: 32, priority: .userInitiated)
     }
 
     private func warmSongCovers(_ songs: [Song]) {
         let urls = songs.compactMap { session.artworkURL(for: $0, size: Self.listArtSize) }
-        ImageLoader.shared.prefetch(urls, limit: 48)
+        ImageLoader.shared.prefetch(urls, limit: 32, priority: .userInitiated)
     }
 
     private func playlistRow(_ playlist: Playlist) -> some View {

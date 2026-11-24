@@ -557,7 +557,7 @@ final class AppSession: ObservableObject, Identifiable {
         artistImages = ArtistImageStore(database: database, serverKey: account.serverKey)
         connectivity = ConnectivityMonitor()
 
-        ImageLoader.shared.session = client.session
+        ImageLoader.shared.session = client.imageSession
         Task {
             await ServerReachability.probeAndSelect(client: client, account: account)
             await rotation.refresh()
