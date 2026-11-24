@@ -33,8 +33,6 @@ type mixTrack struct {
 	PlayCount  int    `json:"playCount,omitempty"`
 	UserRating int    `json:"userRating,omitempty"`
 	Starred    string `json:"starred,omitempty"`
-	// New release from an artist or style already in this listener's mix.
-	Fresh bool `json:"fresh,omitempty"`
 }
 
 func (t mixTrack) genreKey() string {
@@ -415,21 +413,16 @@ func artistFallbackClusters(tracks []mixTrack, usedSongs map[string]struct{}, ne
 }
 
 func fillCluster(c mixCluster, pool []mixTrack, similar map[string][]mixTrack, used map[string]struct{}, rng *rand.Rand, length int) []mixTrack {
-	var familiar, discover, fresh []mixTrack
+	var familiar, discover []mixTrack
 	for _, t := range pool {
 		if _, ok := used[t.ID]; ok {
 			continue
 		}
-		inArtists := false
 		if _, ok := c.artists[t.artistKey()]; ok {
-			inArtists = true
-		}
-		inGenre := c.genre != "" && t.genreKey() == c.genre
-		if t.Fresh && (inArtists || inGenre) {
-			fresh = append(fresh, t)
+			familiar = append(familiar, t)
 			continue
 		}
-		if inArtists || inGenre {
+		if c.genre != "" && t.genreKey() == c.genre {
 			familiar = append(familiar, t)
 		}
 	}
@@ -486,14 +479,9 @@ func fillCluster(c mixCluster, pool []mixTrack, similar map[string][]mixTrack, u
 		return false
 	}
 
-	// Familiar, then a new release from the same artists when we have one,
-	// otherwise an adjacent discovery. Cap how many "new" songs land so the
-	// mix stays the listener's music with a few fresh arrivals.
-	freshBudget := length / 5
-	if freshBudget < 1 {
-		freshBudget = 1
-	}
-	freshUsed := 0
+	// ~70% familiar / 30% adjacent discovery, interleaved so it doesn't
+	// dump all known tracks first. Cap per artist, then relax if the
+	// cluster is a handful of big names.
 	for len(out) < length {
 		progress := false
 		if take(&familiar, maxSongsPerArtist) {
@@ -502,10 +490,7 @@ func fillCluster(c mixCluster, pool []mixTrack, similar map[string][]mixTrack, u
 		if len(out) < length && take(&familiar, maxSongsPerArtist) {
 			progress = true
 		}
-		if len(out) < length && freshUsed < freshBudget && take(&fresh, maxSongsPerArtist) {
-			freshUsed++
-			progress = true
-		} else if len(out) < length && take(&discover, maxSongsPerArtist) {
+		if len(out) < length && take(&discover, maxSongsPerArtist) {
 			progress = true
 		}
 		if !progress {
@@ -513,8 +498,6 @@ func fillCluster(c mixCluster, pool []mixTrack, similar map[string][]mixTrack, u
 		}
 	}
 	for len(out) < length && take(&familiar, maxSongsPerArtist*2) {
-	}
-	for len(out) < length && take(&fresh, maxSongsPerArtist*2) {
 	}
 	for len(out) < length && take(&discover, maxSongsPerArtist*2) {
 	}
