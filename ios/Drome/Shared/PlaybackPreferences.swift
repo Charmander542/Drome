@@ -143,10 +143,42 @@ enum ArtistCredits {
     static func split(_ raw: String) -> [String] {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
-        let pattern = #"\s*(?:,|;|/|\s+&(?:amp;)?\s+|\s+feat\.?\s+|\s+ft\.?\s+|\s+with\s+)\s*"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
-            return [trimmed]
+        // Song rows call this from body and Equatable. Most credits are a
+        // single name — don't compile or run the separator regex for those.
+        guard needsSplit(trimmed) else { return [trimmed] }
+        cacheLock.lock()
+        if let cached = splitCache[trimmed] {
+            cacheLock.unlock()
+            return cached
         }
+        cacheLock.unlock()
+        let parts = splitWithRegex(trimmed)
+        cacheLock.lock()
+        if splitCache.count > 2048 {
+            splitCache.removeAll(keepingCapacity: true)
+        }
+        splitCache[trimmed] = parts
+        cacheLock.unlock()
+        return parts
+    }
+
+    private static let cacheLock = NSLock()
+    private static var splitCache: [String: [String]] = [:]
+    private static let separatorRegex: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"\s*(?:,|;|/|\s+&(?:amp;)?\s+|\s+feat\.?\s+|\s+ft\.?\s+|\s+with\s+)\s*"#,
+        options: .caseInsensitive)
+
+    private static func needsSplit(_ raw: String) -> Bool {
+        let lower = raw.lowercased()
+        if lower.contains(",") || lower.contains(";") || lower.contains("/") { return true }
+        if lower.contains(" & ") || lower.contains("&amp;") { return true }
+        if lower.contains(" feat") || lower.contains(" ft.") || lower.contains(" ft ") { return true }
+        if lower.contains(" with ") { return true }
+        return false
+    }
+
+    private static func splitWithRegex(_ trimmed: String) -> [String] {
+        guard let regex = separatorRegex else { return [trimmed] }
         let range = NSRange(trimmed.startIndex..., in: trimmed)
         let parts = regex.stringByReplacingMatches(in: trimmed, range: range, withTemplate: "\u{1F}")
             .split(separator: "\u{1F}")

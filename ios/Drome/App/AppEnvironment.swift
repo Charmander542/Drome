@@ -387,6 +387,10 @@ final class AppSession: ObservableObject, Identifiable {
     private var playbackSideEffectCancellables = Set<AnyCancellable>()
     private var artistOwnershipCache: [String: ArtistOwnership]?
     private var artistOwnershipServerKey: String?
+    /// Remote cover URLs for the current base host. Building one walks
+    /// URLComponents plus the media-auth query on every row, every frame.
+    private var remoteArtworkURLs: [String: URL] = [:]
+    private var remoteArtworkBase: String?
 
     var id: UUID { account.id }
 
@@ -427,7 +431,20 @@ final class AppSession: ObservableObject, Identifiable {
         if let local = downloads.localCoverURL(coverId: id) {
             return ImageLoader.sizedFileURL(local, size: clamped)
         }
-        return client.coverArtURL(id: id, size: clamped)
+        guard let id, !id.isEmpty else { return nil }
+        let base = client.baseURL.absoluteString
+        if remoteArtworkBase != base {
+            remoteArtworkURLs.removeAll(keepingCapacity: true)
+            remoteArtworkBase = base
+        }
+        let key = "\(id)|\(clamped)"
+        if let cached = remoteArtworkURLs[key] { return cached }
+        guard let url = client.coverArtURL(id: id, size: clamped) else { return nil }
+        if remoteArtworkURLs.count > 4000 {
+            remoteArtworkURLs.removeAll(keepingCapacity: true)
+        }
+        remoteArtworkURLs[key] = url
+        return url
     }
 
     func artworkURL(for song: Song, size: Int = 600) -> URL? {

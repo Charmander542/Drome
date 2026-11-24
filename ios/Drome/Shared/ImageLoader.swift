@@ -20,6 +20,13 @@ final class ImageLoader: @unchecked Sendable {
     private var activeFetches = 0
     private var waiters: [CheckedContinuation<Void, Never>] = []
     private let maxConcurrentFetches = 8
+    /// Parsed cover URLs. Row bodies ask about the same URL several times
+    /// per frame (exact cache, preview, identity); parsing query items each
+    /// time showed up while scrolling.
+    private var parsedRequests: [String: ParsedArtwork] = [:]
+    private let diskQueue = DispatchQueue(label: "com.drome.cover-disk", qos: .utility)
+    private let diskDirectory: URL
+    private var diskWritesSinceTrim = 0
 
     var session: URLSession {
         get { lock.lock(); defer { lock.unlock() }; return _session }
@@ -32,9 +39,12 @@ final class ImageLoader: @unchecked Sendable {
         cache.totalCostLimit = 192 * 1024 * 1024
         coverCache.countLimit = 400
         coverCache.totalCostLimit = 96 * 1024 * 1024
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        diskDirectory = caches.appendingPathComponent("DromeCoverCache", isDirectory: true)
+        try? FileManager.default.createDirectory(at: diskDirectory, withIntermediateDirectories: true)
     }
 
-    func image(for url: URL) async -> UIImage? {
+    func image(for url: URL, priority: TaskPriority = .userInitiated) async -> UIImage? {
         let key = url.absoluteString as NSString
         if let cached = cache.object(forKey: key) {
             // Older builds decoded local covers at 240px — drop those so
@@ -59,7 +69,7 @@ final class ImageLoader: @unchecked Sendable {
             guard let self else { return nil }
             await self.acquireFetchSlot()
             defer { self.releaseFetchSlot() }
-            return await self.fetchAndDecode(url: url, key: key)
+            return await self.fetchAndDecode(url: url, key: key, priority: priority)
         }
         inflight[key] = task
         lock.unlock()
@@ -87,7 +97,7 @@ final class ImageLoader: @unchecked Sendable {
             lock.unlock()
             guard !skip else { continue }
             started += 1
-            Task(priority: .utility) { _ = await image(for: url) }
+            Task(priority: .utility) { _ = await image(for: url, priority: .utility) }
         }
     }
 
@@ -121,27 +131,49 @@ final class ImageLoader: @unchecked Sendable {
     func removeCached(for url: URL) {
         let key = url.absoluteString as NSString
         cache.removeObject(forKey: key)
-        if let id = Self.coverIdentity(for: url) {
-            coverCache.removeObject(forKey: id as NSString)
+        let identity = parsedArtwork(for: url).coverID ?? Self.coverIdentity(for: url)
+        if let identity {
+            coverCache.removeObject(forKey: identity as NSString)
+            let prefix = Self.diskPrefix(coverID: identity, host: url.host ?? "")
+            let directory = diskDirectory
+            diskQueue.async {
+                guard let files = try? FileManager.default.contentsOfDirectory(
+                    at: directory, includingPropertiesForKeys: nil)
+                else { return }
+                for file in files where file.lastPathComponent.hasPrefix(prefix) {
+                    try? FileManager.default.removeItem(at: file)
+                }
+            }
         }
         lock.lock()
         failed.remove(key)
+        parsedRequests.removeValue(forKey: url.absoluteString)
         lock.unlock()
     }
 
     // MARK: - Fetch
 
-    private func fetchAndDecode(url: URL, key: NSString) async -> UIImage? {
+    private func fetchAndDecode(
+        url: URL,
+        key: NSString,
+        priority: TaskPriority,
+        allowDisk: Bool = true
+    ) async -> UIImage? {
+        let parsed = parsedArtwork(for: url)
         // File URLs may carry a synthetic `?size=` tag for cache/decode sizing —
         // strip it before reading so FileManager / URLSession can open the path.
-        let resource = Self.resourceURL(for: url)
         let data: Data?
         let response: URLResponse?
-        if resource.isFileURL {
-            data = try? Data(contentsOf: resource)
+        var fromDisk = false
+        if parsed.isFile {
+            data = try? Data(contentsOf: parsed.resource)
             response = nil
+        } else if allowDisk, let cached = readDiskCover(parsed) {
+            data = cached
+            response = nil
+            fromDisk = true
         } else {
-            let result = try? await session.data(from: resource)
+            let result = try? await session.data(from: parsed.resource)
             data = result?.0
             response = result?.1
         }
@@ -152,17 +184,29 @@ final class ImageLoader: @unchecked Sendable {
             return nil
         }
 
-        let maxPixel = Self.maxPixelDimension(for: url)
-        let image = await Task.detached(priority: .utility) {
+        let maxPixel = parsed.maxPixel
+        let image = await Task.detached(priority: priority) {
             Self.downsampledImage(data: data, maxPixel: maxPixel)
         }.value
         guard let image else {
+            if fromDisk {
+                // Corrupt cache file — forget it and pull the cover again.
+                if let file = diskFileURL(parsed) {
+                    try? FileManager.default.removeItem(at: file)
+                }
+                return await fetchAndDecode(url: url, key: key, priority: priority, allowDisk: false)
+            }
             markFailed(key)
             return nil
         }
         let cost = Self.approximateCost(of: image)
         cache.setObject(image, forKey: key, cost: cost)
         rememberCover(image, for: url)
+        // Media URLs carry a per-launch salt, so URLCache never survives a
+        // relaunch. Keep the server's already-sized bytes under the cover id.
+        if !parsed.isFile, !fromDisk {
+            writeDiskCover(data, parsed: parsed)
+        }
         return image
     }
 
@@ -172,11 +216,11 @@ final class ImageLoader: @unchecked Sendable {
     /// cells don't composite 1200px textures.
     func previewImage(for url: URL) -> UIImage? {
         if let exact = cachedImage(for: url) { return exact }
-        if let id = Self.coverIdentity(for: url),
+        let parsed = parsedArtwork(for: url)
+        if let id = parsed.coverID,
            let preview = coverCache.object(forKey: id as NSString) {
-            let target = Self.maxPixelDimension(for: url)
             let pixels = max(preview.size.width, preview.size.height) * preview.scale
-            if pixels <= target * 1.35 {
+            if pixels <= parsed.maxPixel * 1.35 {
                 return preview
             }
         }
@@ -221,7 +265,7 @@ final class ImageLoader: @unchecked Sendable {
     }
 
     private func rememberCover(_ image: UIImage, for url: URL) {
-        guard let id = Self.coverIdentity(for: url) else { return }
+        guard let id = parsedArtwork(for: url).coverID else { return }
         let key = id as NSString
         if let existing = coverCache.object(forKey: key) {
             let old = max(existing.size.width, existing.size.height) * existing.scale
@@ -229,6 +273,122 @@ final class ImageLoader: @unchecked Sendable {
             if new < old { return }
         }
         coverCache.setObject(image, forKey: key, cost: Self.approximateCost(of: image))
+    }
+
+    private struct ParsedArtwork {
+        var resource: URL
+        var coverID: String?
+        var maxPixel: CGFloat
+        var isFile: Bool
+    }
+
+    private func parsedArtwork(for url: URL) -> ParsedArtwork {
+        let key = url.absoluteString
+        lock.lock()
+        if let cached = parsedRequests[key] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+        let parsed = Self.makeParsedArtwork(url)
+        lock.lock()
+        if parsedRequests.count > 2500 {
+            parsedRequests.removeAll(keepingCapacity: true)
+        }
+        parsedRequests[key] = parsed
+        lock.unlock()
+        return parsed
+    }
+
+    private static func makeParsedArtwork(_ url: URL) -> ParsedArtwork {
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let items = components?.queryItems
+        let coverID: String? = {
+            if let id = items?.first(where: { $0.name == "id" })?.value, !id.isEmpty {
+                return id
+            }
+            if url.isFileURL {
+                let name = url.deletingPathExtension().lastPathComponent
+                return name.isEmpty ? nil : name
+            }
+            return nil
+        }()
+        let maxPixel: CGFloat = {
+            if let value = items?.first(where: { $0.name == "size" })?.value,
+               let size = Double(value), size > 0 {
+                return CGFloat(min(max(size * 2, 120), 1200))
+            }
+            return url.isFileURL ? 1200 : 600
+        }()
+        let resource: URL = {
+            guard url.isFileURL, components?.query != nil, var stripped = components else { return url }
+            stripped.query = nil
+            return stripped.url ?? url
+        }()
+        return ParsedArtwork(
+            resource: resource,
+            coverID: coverID,
+            maxPixel: maxPixel,
+            isFile: url.isFileURL)
+    }
+
+    /// Original server bytes, keyed by cover id + decode size so a relaunch
+    /// (new media salt, home/away host) still paints from disk.
+    private func diskFileURL(_ parsed: ParsedArtwork) -> URL? {
+        guard let id = parsed.coverID else { return nil }
+        let name = Self.diskPrefix(coverID: id, host: parsed.resource.host ?? "")
+            + "\(Int(parsed.maxPixel.rounded())).img"
+        return diskDirectory.appendingPathComponent(name)
+    }
+
+    /// Host is part of the key so two Navidrome servers can't share a cover id
+    /// and paint the wrong album.
+    private static func diskPrefix(coverID: String, host: String) -> String {
+        func safe(_ raw: String) -> String {
+            let mapped = raw.map { $0.isLetter || $0.isNumber ? $0 : "_" }
+            return "\(mapped.count)_\(String(mapped))"
+        }
+        return "h\(safe(host))__c\(safe(coverID))__"
+    }
+
+    private func readDiskCover(_ parsed: ParsedArtwork) -> Data? {
+        guard let file = diskFileURL(parsed) else { return nil }
+        return try? Data(contentsOf: file)
+    }
+
+    private func writeDiskCover(_ data: Data, parsed: ParsedArtwork) {
+        guard data.count > 24, data.count < 4_000_000, let file = diskFileURL(parsed) else { return }
+        let directory = diskDirectory
+        diskQueue.async { [weak self] in
+            try? data.write(to: file, options: .atomic)
+            guard let self else { return }
+            self.diskWritesSinceTrim += 1
+            if self.diskWritesSinceTrim >= 24 {
+                self.diskWritesSinceTrim = 0
+                Self.trimCoverDisk(directory)
+            }
+        }
+    }
+
+    /// Keep roughly 120 MB / 1500 covers. Oldest files go first.
+    private static func trimCoverDisk(_ directory: URL) {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]
+        ) else { return }
+        let ranked = files.compactMap { url -> (URL, Date, Int)? in
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            return (url, values?.contentModificationDate ?? .distantPast, values?.fileSize ?? 0)
+        }.sorted { $0.1 > $1.1 }
+        let maxFiles = 1500
+        let maxBytes = 120_000_000
+        var total = ranked.reduce(0) { $0 + $1.2 }
+        for (index, entry) in ranked.enumerated() {
+            if index < maxFiles && total <= maxBytes { continue }
+            total -= entry.2
+            try? fm.removeItem(at: entry.0)
+        }
     }
 
     static func coverIdentity(for url: URL) -> String? {

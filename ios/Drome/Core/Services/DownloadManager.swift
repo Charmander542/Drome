@@ -51,6 +51,9 @@ final class DownloadManager: ObservableObject {
     private var tasksBySongID: [String: URLSessionDownloadTask] = [:]
     private var coverInflight: Set<String> = []
     private var streamingSuspended = false
+    /// safe filename → local cover. List rows ask for this on every body
+    /// pass; scanning four extensions with fileExists each time was a scroll hitch.
+    private var localCoversByComponent: [String: URL] = [:]
 
     init(client: SubsonicClient, database: AppDatabase, serverKey: String) {
         self.client = client
@@ -69,6 +72,7 @@ final class DownloadManager: ObservableObject {
         session = URLSession(configuration: config, delegate: sessionDelegate, delegateQueue: nil)
 
         try? FileManager.default.createDirectory(at: artDirectory, withIntermediateDirectories: true)
+        refreshLocalCoverIndex()
 
         reload()
         // Reattach to tasks that survived an app relaunch.
@@ -165,13 +169,21 @@ final class DownloadManager: ObservableObject {
     /// Local album art for a cover id (shared across songs on the same album).
     func localCoverURL(coverId: String?) -> URL? {
         guard let coverId, !coverId.isEmpty else { return nil }
-        let base = Self.safeFileComponent(coverId)
+        return localCoversByComponent[Self.safeFileComponent(coverId)]
+    }
+
+    private func refreshLocalCoverIndex() {
         let dir = artDirectory
-        for ext in ["jpg", "jpeg", "png", "webp"] {
-            let url = dir.appendingPathComponent("\(base).\(ext)")
-            if FileManager.default.fileExists(atPath: url.path) { return url }
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil)) ?? []
+        var map: [String: URL] = [:]
+        map.reserveCapacity(files.count)
+        for url in files {
+            let ext = url.pathExtension.lowercased()
+            guard ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "webp" else { continue }
+            map[url.deletingPathExtension().lastPathComponent] = url
         }
-        return nil
+        localCoversByComponent = map
     }
 
     func localCoverURL(for song: Song) -> URL? {
@@ -313,6 +325,7 @@ final class DownloadManager: ObservableObject {
         }
         try? FileManager.default.removeItem(at: artDirectory)
         try? FileManager.default.createDirectory(at: artDirectory, withIntermediateDirectories: true)
+        localCoversByComponent.removeAll()
         reload()
     }
 
@@ -354,6 +367,7 @@ final class DownloadManager: ObservableObject {
                 try FileManager.default.removeItem(at: dest)
             }
             try data.write(to: dest, options: .atomic)
+            localCoversByComponent[Self.safeFileComponent(coverId)] = dest
             // Seed a list-sized decode off the main thread (not a full-res UIImage).
             let seeded = await Task.detached(priority: .utility) {
                 ImageLoader.downsample(data, maxPixel: 240)
