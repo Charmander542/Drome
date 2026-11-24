@@ -77,6 +77,49 @@ func TestWriteLibraryPlaylist(t *testing.T) {
 	}
 }
 
+func TestWriteLibraryPlaylistPrefersExistingM3U(t *testing.T) {
+	dir := t.TempDir()
+	plDir := filepath.Join(dir, "Playlists")
+	if err := os.MkdirAll(plDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(plDir, "Songs to Sing in the Shower.m3u")
+	if err := os.WriteFile(legacy, []byte("#EXTM3U\n../Old/Track.flac\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Stale sibling that previously caused a Navidrome duplicate.
+	stale := filepath.Join(plDir, "Songs to Sing in the Shower.m3u8")
+	if err := os.WriteFile(stale, []byte("#EXTM3U\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := writeLibraryPlaylist(dir, "Songs to Sing in the Shower", []playlistFileTrack{
+		{Title: "Iris", Artist: "The Goo Goo Dolls", Rel: "The Goo Goo Dolls/Album/11 - Iris.flac"},
+		{Title: "Espresso", Artist: "Sabrina Carpenter", Rel: "Sabrina Carpenter/Short n' Sweet/04 - Espresso.flac"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != legacy {
+		t.Fatalf("expected legacy .m3u path, got %s", path)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("expected sibling .m3u8 removed, err=%v", err)
+	}
+	body, _ := os.ReadFile(path)
+	text := string(body)
+	if strings.Contains(text, "#DROME-MANAGED") {
+		t.Fatal("legacy .m3u merge should not stamp #DROME-MANAGED")
+	}
+	if !strings.Contains(text, "../Old/Track.flac") {
+		t.Fatal("legacy entries must be kept")
+	}
+	if !strings.Contains(text, "../The Goo Goo Dolls/Album/11 - Iris.flac") ||
+		!strings.Contains(text, "04 - Espresso.flac") {
+		t.Fatalf("expected Spotify matches appended:\n%s", text)
+	}
+}
+
 func TestPlaylistM3URelPath(t *testing.T) {
 	if got := playlistM3URelPath("Various Artists/Album/01 - Song.flac"); got != "../Various Artists/Album/01 - Song.flac" {
 		t.Fatalf("got %q", got)
