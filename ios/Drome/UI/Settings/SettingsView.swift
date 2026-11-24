@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// SubSonify-inspired settings hub: large title, Done pill, Server card, then
+/// SubSonify-inspired settings hub: large title, confirm/Done, Server card, then
 /// green-icon rows that push into focused sub-pages (Playback, Streaming, …).
 struct SettingsView: View {
     @EnvironmentObject private var env: AppEnvironment
@@ -88,19 +88,28 @@ struct SettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .settingsNavChrome()
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    dismiss()
-                } label: {
-                    Text("Done")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(DromeTheme.accent)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(DromeTheme.elevated2, in: Capsule(style: .continuous))
+            // iOS 26 liquid glass already supplies one capsule for confirm —
+            // a second Capsule background stacked another “Done” on top.
+            ToolbarItem(placement: .confirmationAction) {
+                if #available(iOS 26.0, *) {
+                    Button(role: .confirm) {
+                        dismiss()
+                    }
+                    .accessibilityIdentifier("drome.settings.close")
+                } else {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Text("Done")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(DromeTheme.accent)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 6)
+                            .background(DromeTheme.elevated2, in: Capsule(style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("drome.settings.close")
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("drome.settings.close")
             }
         }
         .accessibilityIdentifier("drome.settings.screen")
