@@ -255,14 +255,6 @@ struct ArtistDetailView: View {
             }
 
             actionIconButton(
-                systemImage: "heart",
-                label: mixBusy ? "Mixing" : "Instant Mix",
-                disabled: mixBusy
-            ) {
-                Task { await startInstantMix(artist) }
-            }
-
-            actionIconButton(
                 systemImage: "shuffle",
                 label: "Shuffle",
                 disabled: playPool.isEmpty
@@ -271,6 +263,14 @@ struct ArtistDetailView: View {
                 player.playShuffled(
                     playPool,
                     context: PlaybackContext(label: artist.name, kind: .artist(id: artist.id)))
+            }
+
+            actionIconButton(
+                systemImage: "antenna.radiowaves.left.and.right",
+                label: mixBusy ? "Starting radio" : "Radio",
+                disabled: mixBusy
+            ) {
+                Task { await startArtistRadio(artist) }
             }
 
             Spacer(minLength: 8)
@@ -347,17 +347,29 @@ struct ArtistDetailView: View {
         downloads.download(downloadPool, artist: name)
     }
 
-    private func startInstantMix(_ artist: ArtistWithAlbums) async {
+    /// Artist radio: a few of their tracks, then similar / nearby, with Keep Playing on.
+    private func startArtistRadio(_ artist: ArtistWithAlbums) async {
         guard !mixBusy else { return }
         mixBusy = true
         defer { mixBusy = false }
+
         var songs = await InstantMix.songs(fromArtistId: artist.id, client: session.client)
         if songs.isEmpty, let seed = playPool.first {
             songs = await InstantMix.songs(from: seed, client: session.client)
         }
+
+        // Anchor the station on this artist so Radio doesn't open on a stranger.
+        let seeds = Array(playPool.shuffled().prefix(4))
+        if !seeds.isEmpty {
+            var seen = Set(seeds.map(\.id))
+            songs = seeds + songs.filter { seen.insert($0.id).inserted }
+        }
         guard !songs.isEmpty else { return }
-        player.play(songs, startAt: 0,
-                    context: PlaybackContext(label: "Instant Mix · \(artist.name)", kind: .mix))
+
+        if !player.autoplayEnabled { player.autoplayEnabled = true }
+        player.play(
+            songs, startAt: 0,
+            context: PlaybackContext(label: "Radio · \(artist.name)", kind: .mix))
     }
 
     private func sortedAlbums(_ albums: [Album]) -> [Album] {
