@@ -30,6 +30,16 @@ services:
       # Optional: admin (or any user allowed to scan) so downloads appear immediately.
       DROME_NAVIDROME_SCAN_USER: ${DROME_NAVIDROME_SCAN_USER:-}
       DROME_NAVIDROME_SCAN_PASSWORD: ${DROME_NAVIDROME_SCAN_PASSWORD:-}
+      # Background "songs you might like" planner → wishlist auto-download.
+      # Conservative defaults: 3 tracks/day for cvanhook, skip when queue is busy.
+      DROME_OUTSIDE_PLAN_ENABLED: ${DROME_OUTSIDE_PLAN_ENABLED:-false}
+      DROME_OUTSIDE_PLAN_USERS: ${DROME_OUTSIDE_PLAN_USERS:-cvanhook}
+      DROME_OUTSIDE_PLAN_INTERVAL: ${DROME_OUTSIDE_PLAN_INTERVAL:-24h}
+      DROME_OUTSIDE_PLAN_ON_START: ${DROME_OUTSIDE_PLAN_ON_START:-false}
+      DROME_OUTSIDE_PLAN_PER_RUN: ${DROME_OUTSIDE_PLAN_PER_RUN:-3}
+      DROME_OUTSIDE_PLAN_PER_ARTIST: ${DROME_OUTSIDE_PLAN_PER_ARTIST:-1}
+      DROME_OUTSIDE_PLAN_SEED_ARTISTS: ${DROME_OUTSIDE_PLAN_SEED_ARTISTS:-4}
+      DROME_OUTSIDE_PLAN_MAX_ACTIVE: ${DROME_OUTSIDE_PLAN_MAX_ACTIVE:-8}
     volumes:
       - ./data/drome-server:/data
       # Persist Mornye extensions + signed sessions across recreates.

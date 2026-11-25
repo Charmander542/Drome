@@ -192,55 +192,57 @@ func listeningArtistNames(tracks []mixTrack, n int) []string {
 	return names
 }
 
-// GET /recommendations/outside
-//
-// Songs Spotify knows for this listener's favorite artists that Navidrome does
-// not already have. Adding one is POST /wishlist with spotifyUrl — the
-// download worker already turns that into a library file.
-func (s *server) handleOutsidePicks(w http.ResponseWriter, r *http.Request) {
+// planOutsidePicks finds Spotify tracks for seed artists that are not already
+// in the library or wishlist. phoneSeeds come from the iOS play-history query
+// string; when empty (background planner), listening history from Navidrome is
+// used alone.
+func (s *server) planOutsidePicks(
+	ctx context.Context,
+	owner string,
+	creds subsonicCreds,
+	phoneSeeds []string,
+	seedArtists, perArtist, limit int,
+) (picks []outsidePick, note string) {
 	if s.spotify == nil || !s.spotify.hasAPICreds() {
-		writeJSON(w, http.StatusOK, outsideResponse{
-			Picks: []outsidePick{},
-			Note:  "Spotify search isn't configured on the companion.",
-		})
-		return
+		return nil, "Spotify search isn't configured on the companion."
 	}
-	creds, ok := s.playlistCreds(r)
-	if !ok || s.navidrome == nil {
-		writeJSON(w, http.StatusOK, outsideResponse{Picks: []outsidePick{}})
-		return
+	if s.navidrome == nil || creds.user == "" {
+		return nil, ""
+	}
+	if seedArtists < 1 {
+		seedArtists = 4
+	}
+	if perArtist < 1 {
+		perArtist = 1
+	}
+	if limit < 1 {
+		return nil, ""
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
-	defer cancel()
-
-	// The phone sends artists learned from its own play history. Stars are
-	// optional. If that list is short, fill from library play counts too.
-	names := requestArtistSeeds(r)
-	if len(names) < 4 {
+	names := append([]string{}, phoneSeeds...)
+	if len(names) > seedArtists {
+		names = names[:seedArtists]
+	}
+	if len(names) < seedArtists {
 		seen := map[string]struct{}{}
 		for _, name := range names {
 			seen[strings.ToLower(name)] = struct{}{}
 		}
 		snapshot := s.navidrome.mixSnapshot(ctx, creds)
-		for _, name := range listeningArtistNames(snapshot, 4) {
+		for _, name := range listeningArtistNames(snapshot, seedArtists) {
 			key := strings.ToLower(name)
 			if _, ok := seen[key]; ok {
 				continue
 			}
 			seen[key] = struct{}{}
 			names = append(names, name)
-			if len(names) >= 4 {
+			if len(names) >= seedArtists {
 				break
 			}
 		}
 	}
 	if len(names) == 0 {
-		writeJSON(w, http.StatusOK, outsideResponse{
-			Picks: []outsidePick{},
-			Note:  "Play a few songs and Drome can look for more you don't have yet.",
-		})
-		return
+		return nil, "Play a few songs and Drome can look for more you don't have yet."
 	}
 
 	var candidates []outsideCandidate
@@ -267,7 +269,7 @@ func (s *server) handleOutsidePicks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	wished := map[string]struct{}{}
-	if rows, err := s.store.listFor(requestUser(r)); err == nil {
+	if rows, err := s.store.listFor(owner); err == nil {
 		for _, row := range rows {
 			if row.SpotifyID != "" {
 				wished[row.SpotifyID] = struct{}{}
@@ -275,11 +277,86 @@ func (s *server) handleOutsidePicks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	picks := chooseOutsidePicks(candidates, func(title, artist string) bool {
-		return s.navidrome.libraryOwns(ctx, creds.user, creds.token, creds.salt, title, artist)
-	}, wished, 3, 12)
+	musicDir := ""
+	if s.downloads != nil {
+		musicDir = s.downloads.cfg.MusicDir
+	}
+	picks = chooseOutsidePicks(candidates, func(title, artist string) bool {
+		if s.navidrome.libraryOwns(ctx, creds.user, creds.token, creds.salt, title, artist) {
+			return true
+		}
+		return musicDir != "" && diskHasTrack(musicDir, title, artist)
+	}, wished, perArtist, limit)
+	return picks, ""
+}
+
+// enqueueOutsidePick inserts one planned track onto the owner's wishlist as a
+// queued download. Returns false when it was skipped (already owned/wishlisted).
+func (s *server) enqueueOutsidePick(ctx context.Context, owner string, pick outsidePick, creds subsonicCreds) (bool, error) {
+	id := strings.TrimSpace(pick.SpotifyID)
+	if id == "" && pick.SpotifyURL != "" {
+		if kind, sid, err := parseSpotifyLink(pick.SpotifyURL); err == nil && kind == "track" {
+			id = sid
+		}
+	}
+	if id == "" {
+		return false, nil
+	}
+	entry, err := s.spotify.resolve(ctx, "track", id)
+	if err != nil {
+		return false, err
+	}
+	entry.Owner = owner
+	entry.CreatedAt = time.Now()
+	entry.SourcePlaylistID = autoPicksSourceID
+	entry.SourcePlaylistName = autoPicksSourceName
+	if s.downloads != nil && s.downloads.cfg.Enabled {
+		entry.Status = statusQueued
+	} else {
+		entry.Status = statusSkipped
+	}
+
+	if existing, err := s.store.findActiveByTitleArtist(owner, entry.Kind, entry.Title, entry.Artist); err == nil && existing != nil {
+		return false, nil
+	}
+	if s.navidrome != nil && creds.user != "" &&
+		s.navidrome.libraryOwns(ctx, creds.user, creds.token, creds.salt, entry.Title, entry.Artist) {
+		return false, nil
+	}
+	if s.downloads != nil && diskHasTrack(s.downloads.cfg.MusicDir, entry.Title, entry.Artist) {
+		return false, nil
+	}
+	if err := s.store.insert(entry); err != nil {
+		return false, err
+	}
+	return entry.Status == statusQueued, nil
+}
+
+// GET /recommendations/outside
+//
+// Songs Spotify knows for this listener's favorite artists that Navidrome does
+// not already have. Adding one is POST /wishlist with spotifyUrl — the
+// download worker already turns that into a library file.
+func (s *server) handleOutsidePicks(w http.ResponseWriter, r *http.Request) {
+	if s.spotify == nil || !s.spotify.hasAPICreds() {
+		writeJSON(w, http.StatusOK, outsideResponse{
+			Picks: []outsidePick{},
+			Note:  "Spotify search isn't configured on the companion.",
+		})
+		return
+	}
+	creds, ok := s.playlistCreds(r)
+	if !ok || s.navidrome == nil {
+		writeJSON(w, http.StatusOK, outsideResponse{Picks: []outsidePick{}})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+
+	picks, note := s.planOutsidePicks(ctx, requestUser(r), creds, requestArtistSeeds(r), 4, 3, 12)
 	if picks == nil {
 		picks = []outsidePick{}
 	}
-	writeJSON(w, http.StatusOK, outsideResponse{Picks: picks})
+	writeJSON(w, http.StatusOK, outsideResponse{Picks: picks, Note: note})
 }
