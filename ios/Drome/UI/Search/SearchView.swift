@@ -153,14 +153,15 @@ struct SearchView: View {
                     .background(DromeTheme.background)
             }
         }
-        .onChange(of: query) { oldValue, newValue in
+        .onChange(of: query) { _, newValue in
             expandedSections = []
             scheduleSearch(newValue)
-            // Clear (X) with prior text → back to the colorful browse landing.
-            let oldTrim = oldValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Field clear (mini ✕): stay in text-search with the keyboard up.
+            // Only Cancel / the far-right dismiss returns to genre browse.
             let newTrim = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !isBrowseMode, !oldTrim.isEmpty, newTrim.isEmpty {
-                returnToBrowse()
+            if !isBrowseMode, newTrim.isEmpty, !isSearchPresented {
+                ignoreScrollKeyboardDismissUntil = Date().addingTimeInterval(0.75)
+                isSearchPresented = true
             }
         }
         .onChange(of: isSearchPresented) { _, presented in
@@ -182,10 +183,9 @@ struct SearchView: View {
                 }
                 return
             }
-            // Cancel / ✕ with an empty query returns to the browse landing.
-            // Scroll only resigns the keyboard and leaves the field mounted.
-            if !isBrowseMode,
-               query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Cancel / far-right ✕ → genre browse landing.
+            // Mini field clear keeps isSearchPresented true and does not hit this.
+            if !isBrowseMode {
                 returnToBrowse()
             }
         }
