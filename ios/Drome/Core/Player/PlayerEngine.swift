@@ -845,7 +845,7 @@ final class PlayerEngine: ObservableObject {
                 shuffleMode = .off
                 suppressShuffleReorder = false
             }
-            self.context = context
+            self.context = normalizedPlaybackContext(context, songs: songs)
             if context.label != NonstopEngine.label {
                 nonstopSession.reset()
             }
@@ -925,7 +925,7 @@ final class PlayerEngine: ObservableObject {
             cancelAutoplayWork()
             ratings.ingest(songs)
             if shuffleMode == .off { shuffleMode = .smart }
-            self.context = context
+            self.context = normalizedPlaybackContext(context, songs: songs)
             fullContextSongs = songs
 
             // ShuffleEngine keeps OOR out of algorithmic pools, but falls back
@@ -983,8 +983,8 @@ final class PlayerEngine: ObservableObject {
         default: repeatMode = .off
         }
         autoplayEnabled = snap.autoplayEnabled
-        context = snap.makeContext()
         fullContextSongs = snap.fullContextSongs
+        context = normalizedPlaybackContext(snap.makeContext(), songs: snap.fullContextSongs)
         history = snap.history.map { QueueItem(song: $0) }
         userQueue = snap.userQueue.map { QueueItem(song: $0) }
         contextQueue = snap.contextQueue.map { song in
@@ -3183,7 +3183,8 @@ final class PlayerEngine: ObservableObject {
     // MARK: - Shuffle
 
     private func orderedForShuffle(_ songs: [Song]) -> [Song] {
-        let excluded = (context?.allowsOutOfRotation ?? false) ? [] : rotation.excludedIDs
+        // Same stick rule as skip / Keep Playing — never empty an OOR pool.
+        let excluded = sticksToOutOfRotationPool ? [] : rotation.excludedIDs
         let taste = TasteAffinity.build(
             ratings: ratings.ratings,
             seeds: Array(songs.prefix(40)),
@@ -3205,7 +3206,7 @@ final class PlayerEngine: ObservableObject {
             let extras = contextQueue.filter { item in !originalContextOrder.contains(where: { $0.id == item.id }) }
             contextQueue = restored + extras
         case .smart, .random:
-            let excluded = (context?.allowsOutOfRotation ?? false) ? Set<String>() : rotation.excludedIDs
+            let excluded = sticksToOutOfRotationPool ? Set<String>() : rotation.excludedIDs
             let eligible = contextQueue.filter { !excluded.contains($0.song.id) }
             // Same as ShuffleEngine: if the whole remaining queue is OOR,
             // reshuffle it rather than emptying Up Next.
@@ -3231,10 +3232,50 @@ final class PlayerEngine: ObservableObject {
     /// a playlist that is entirely OOR). Library Infinite Shuffle excludes
     /// these tracks, so we must keep reshuffling this pool instead.
     private var sticksToOutOfRotationPool: Bool {
-        ShuffleEngine.sticksToOutOfRotationPool(
+        let playingSystemOOR: Bool = {
+            guard let context else { return false }
+            if case .playlist(let id) = context.kind,
+               let oorID = rotation.playlist?.id,
+               id == oorID {
+                return true
+            }
+            return false
+        }()
+        let allLowRated = !fullContextSongs.isEmpty
+            && fullContextSongs.allSatisfy { (1...2).contains(ratings.rating(for: $0)) }
+        return ShuffleEngine.sticksToOutOfRotationPool(
             allowsOutOfRotation: context?.allowsOutOfRotation == true,
             contextSongIDs: fullContextSongs.map(\.id),
-            excludedIDs: rotation.excludedIDs)
+            excludedIDs: rotation.excludedIDs,
+            contextLabelIsOutOfRotation: context?.label == RotationManager.playlistName,
+            playingSystemOutOfRotationPlaylist: playingSystemOOR,
+            allContextSongsLowRated: allLowRated)
+    }
+
+    /// Promote the system Out of Rotation playlist to `.outOfRotation` even when
+    /// a caller passed `.playlist(id:)` — that mismatch was enough for skip /
+    /// Keep Playing to drain the queue and jump into library Infinite Shuffle.
+    private func normalizedPlaybackContext(
+        _ context: PlaybackContext,
+        songs: [Song]
+    ) -> PlaybackContext {
+        if context.allowsOutOfRotation { return context }
+        if context.label == RotationManager.playlistName {
+            return PlaybackContext(label: RotationManager.playlistName, kind: .outOfRotation)
+        }
+        if case .playlist(let id) = context.kind,
+           let oorID = rotation.playlist?.id,
+           id == oorID {
+            return PlaybackContext(label: RotationManager.playlistName, kind: .outOfRotation)
+        }
+        if !songs.isEmpty,
+           !rotation.excludedIDs.isEmpty,
+           songs.allSatisfy({ rotation.excludedIDs.contains($0.id) }) {
+            // Explicit play of an all-OOR collection — keep the original label
+            // but honor OOR listening semantics via sticksToOutOfRotationPool.
+            return context
+        }
+        return context
     }
 
     /// Keeps a healthy upcoming buffer whenever Infinite Shuffle is on.
@@ -3242,6 +3283,16 @@ final class PlayerEngine: ObservableObject {
     /// empty Up Next list.
     private func ensureAutoplayBuffer() {
         guard !applyingSharePlay, autoplayEnabled, repeatMode == .off, current != nil else { return }
+        if sticksToOutOfRotationPool {
+            // Drop any library Infinite Shuffle fillers that attached before
+            // we recognized this as OOR listening (short playlists + Keep Playing).
+            let contextIDs = Set(fullContextSongs.map(\.id))
+            let before = contextQueue.count
+            contextQueue.removeAll { $0.isAutoplay && !contextIDs.contains($0.song.id) }
+            if contextQueue.count != before {
+                resyncUpcomingWindow()
+            }
+        }
         let upcoming = userQueue.count + contextQueue.count
         // Refill early — never wait until the queue is already empty.
         if upcoming < 8 {
@@ -3393,6 +3444,21 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func forceAutoplayContinuation(playImmediately: Bool, generation: Int) async {
+        // Defense in depth — never let a stale library refill win over OOR.
+        if sticksToOutOfRotationPool, !fullContextSongs.isEmpty, let context {
+            if playImmediately {
+                setPlaybackIntent(true)
+                if shuffleMode != .off {
+                    playShuffled(fullContextSongs, context: context, clearUserQueue: false)
+                } else {
+                    play(fullContextSongs, startAt: 0, context: context, clearUserQueue: false)
+                }
+            } else {
+                extendOutOfRotationContextIfNeeded(force: true)
+            }
+            return
+        }
+
         guard let provider = autoplayProvider else {
             if playImmediately {
                 player.pause()
@@ -3452,6 +3518,18 @@ final class PlayerEngine: ObservableObject {
         // Playing Out of Rotation on purpose — do not strip the queue down to
         // empty and fall into library Infinite Shuffle after the first song.
         if sticksToOutOfRotationPool { return }
+        let contextIDs = Set(fullContextSongs.map(\.id))
+        // If every remaining collection track is low-rated, this *is* OOR-style
+        // listening even when the exclusion set hasn't refreshed yet — keep them.
+        let remainingCollection = contextQueue.filter { contextIDs.contains($0.song.id) }
+        if !remainingCollection.isEmpty,
+           remainingCollection.allSatisfy({ (1...2).contains(ratings.rating(for: $0.song)) }) {
+            // Still drop unrelated autoplay fillers that snuck in.
+            contextQueue.removeAll { $0.isAutoplay && (1...2).contains(ratings.rating(for: $0.song)) }
+            userQueue.removeAll { shouldSkipLowRated($0.song) }
+            if resyncWindow { resyncUpcomingWindow() }
+            return
+        }
         userQueue.removeAll { shouldSkipLowRated($0.song) }
         contextQueue.removeAll { shouldSkipLowRated($0.song) }
         // Skip resync when the caller is about to rebuild the window entirely
