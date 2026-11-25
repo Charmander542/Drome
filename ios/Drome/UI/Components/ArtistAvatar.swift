@@ -72,30 +72,42 @@ struct ArtistAvatar: View {
     var allowsSpotifyLookup: Bool = false
 
     @EnvironmentObject private var session: AppSession
-    @State private var spotifyURL: URL?
+    /// Single painted URL — never Navidrome-then-Spotify swap.
+    @State private var displayURL: URL?
 
-    /// List-sized cover (≈2× point size) — small enough to feel instant.
+    /// List-sized cover (≈2× point size) — permanent fallback when no portrait.
     private var coverURL: URL? {
         session.artworkURL(id: navidromeCoverArt ?? artistId, size: Int(max(size * 2, 96)))
     }
 
     var body: some View {
-        Group {
-            if let spotifyURL {
-                RemoteImage(url: spotifyURL, placeholderSymbol: "person.crop.circle")
-            } else {
-                RemoteImage(url: coverURL, placeholderSymbol: "person.crop.circle")
+        RemoteImage(url: displayURL, placeholderSymbol: "person.crop.circle")
+            .frame(width: size, height: size)
+            .clipShape(Circle())
+            .task(id: artistId) {
+                // Drop any recycled cell's previous face before resolving this id.
+                displayURL = nil
+                await resolveDisplayURL()
             }
+    }
+
+    private func resolveDisplayURL() async {
+        // Lists: one Navidrome cover, no upgrade path.
+        guard allowsSpotifyLookup else {
+            displayURL = coverURL
+            return
         }
-        .frame(width: size, height: size)
-        .clipShape(Circle())
-        .task(id: artistId) {
-            spotifyURL = session.artistImages.memoryURL(artistId: artistId)
-            guard allowsSpotifyLookup, spotifyURL == nil else { return }
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            guard !Task.isCancelled else { return }
-            spotifyURL = await session.artistImages.resolve(
-                artistId: artistId, name: name, wishlist: session.wishlist)
+
+        if let cached = session.artistImages.memoryURL(artistId: artistId) {
+            displayURL = cached
+            return
         }
+
+        // Wait for the portrait (or confirm there isn't one) before painting —
+        // avoids album-cover → Spotify face swaps on Fans also like.
+        let portrait = await session.artistImages.resolve(
+            artistId: artistId, name: name, wishlist: session.wishlist)
+        guard !Task.isCancelled else { return }
+        displayURL = portrait ?? coverURL
     }
 }
