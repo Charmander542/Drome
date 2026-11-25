@@ -1745,11 +1745,14 @@ private struct SearchChromeOpaqueFix: UIViewRepresentable {
         appearance.backgroundColor = bg
         appearance.shadowColor = .clear
         appearance.titleTextAttributes = [.foregroundColor: UIColor.white]
-        nav.navigationBar.standardAppearance = appearance
-        nav.navigationBar.scrollEdgeAppearance = appearance
-        nav.navigationBar.compactAppearance = appearance
-        nav.navigationBar.isTranslucent = false
-        nav.navigationBar.barTintColor = bg
+        // Scope opacity to Search's navigationItem only — setting the bar
+        // globally left a black strip on pushed artist heroes (toolbarBackground
+        // .hidden couldn't undo isTranslucent = false).
+        if let item = nav.topViewController?.navigationItem {
+            item.standardAppearance = appearance
+            item.scrollEdgeAppearance = appearance
+            item.compactAppearance = appearance
+        }
 
         hardenSearchBars(in: nav.view, background: bg)
         if let search = nav.topViewController?.navigationItem.searchController?.searchBar {

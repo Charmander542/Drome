@@ -61,6 +61,9 @@ struct ArtistDetailView: View {
         .navigationTitle(artist?.name ?? placeholderName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
+        // Undo Search's opaque nav chrome so the hero bleeds under the status bar
+        // (otherwise a black strip sits above the art).
+        .background(ArtistHeroNavChrome())
         .task { await load() }
     }
 
@@ -637,5 +640,48 @@ private struct ArtistSongsListView: View {
         .background(DromeTheme.background.ignoresSafeArea())
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// Clears opaque Search nav chrome so the artist hero can draw under the status bar.
+private struct ArtistHeroNavChrome: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        DispatchQueue.main.async {
+            Self.apply(from: uiView)
+        }
+    }
+
+    @discardableResult
+    private static func apply(from seed: UIView) -> Bool {
+        var responder: UIView? = seed
+        var host: UIViewController?
+        while let current = responder {
+            if let vc = current.next as? UIViewController {
+                host = vc
+                break
+            }
+            responder = current.superview
+        }
+        guard let host else { return false }
+        let nav = host.navigationController
+        let item = host.navigationItem
+
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithTransparentBackground()
+        appearance.backgroundColor = .clear
+        appearance.shadowColor = .clear
+        appearance.titleTextAttributes = [.foregroundColor: UIColor.white]
+        item.standardAppearance = appearance
+        item.scrollEdgeAppearance = appearance
+        item.compactAppearance = appearance
+        nav?.navigationBar.isTranslucent = true
+        return true
     }
 }
