@@ -195,7 +195,6 @@ struct ArtistDetailView: View {
     // MARK: - Hero
 
     private func hero(_ artist: ArtistWithAlbums) -> some View {
-        let coverFallback = session.artworkURL(id: artist.coverArt ?? artist.id, size: 800)
         let bleed = heroTopBleed
         // Taller frame + slight downward bias so faces / subjects aren’t cropped off the top.
         let heroBody: CGFloat = 400
@@ -203,8 +202,9 @@ struct ArtistDetailView: View {
             GeometryReader { geo in
                 let w = geo.size.width
                 let h = geo.size.height
+                // Only the final portrait/cover — never paint Navidrome then swap to Spotify.
                 RemoteImage(
-                    url: heroImageURL ?? coverFallback,
+                    url: heroImageURL,
                     placeholderSymbol: "person.crop.rectangle",
                     holdImageWhileLoading: true)
                     // Draw taller than the slot, then nudge down so more of the
@@ -369,18 +369,29 @@ struct ArtistDetailView: View {
         }
     }
 
+    /// One final hero URL: Spotify/wishlist portrait when available, otherwise
+    /// Navidrome artist image / cover. Never returns an interim that will swap.
     private func resolveHeroImage(_ artist: ArtistWithAlbums) async -> URL? {
         if let cached = session.artistImages.memoryURL(artistId: artist.id) {
             return cached
         }
-        if let raw = artist.artistImageUrl, let url = URL(string: raw), !raw.isEmpty {
-            // Still try Spotify/wishlist upgrade, but return Navidrome URL immediately.
-            let resolved = await session.artistImages.resolve(
-                artistId: artist.id, name: artist.name, wishlist: session.wishlist)
-            return resolved ?? url
-        }
-        return await session.artistImages.resolve(
+        if let resolved = await session.artistImages.resolve(
             artistId: artist.id, name: artist.name, wishlist: session.wishlist)
+        {
+            return resolved
+        }
+        if let raw = artist.artistImageUrl, let url = URL(string: raw), !raw.isEmpty {
+            return url
+        }
+        return session.artworkURL(id: artist.coverArt ?? artist.id, size: 800)
+    }
+
+    /// Decode before assigning so the first paint is the real bitmap.
+    private func commitHeroImage(_ url: URL?) async {
+        guard let url else { return }
+        _ = await ImageLoader.shared.image(for: url)
+        guard !Task.isCancelled else { return }
+        heroImageURL = url
     }
 
     // MARK: - Load
@@ -393,7 +404,7 @@ struct ArtistDetailView: View {
                 owned: cached.owned,
                 related: relatedArtists,
                 bio: biography,
-                hero: heroImageURL)
+                hero: session.artistImages.memoryURL(artistId: cached.artist.id))
             isLoading = false
             warmImages(artist: cached.artist, songs: cached.topSongs + cached.owned)
         } else {
@@ -406,13 +417,15 @@ struct ArtistDetailView: View {
             // Albums + cover art are enough to paint. Biography, top songs, and
             // search used to block the hero and every album thumbnail.
             let loaded = try await session.client.artist(id: artistID)
+            // Only paint a cached portrait immediately — never a cover that will
+            // flip to Spotify a moment later.
             apply(
                 artist: loaded,
                 topSongs: topSongs,
                 owned: ownedSongs,
                 related: relatedArtists,
                 bio: biography,
-                hero: immediateHero(for: loaded))
+                hero: session.artistImages.memoryURL(artistId: loaded.id))
             isLoading = false
             warmImages(artist: loaded, songs: topSongs + ownedSongs)
 
@@ -420,6 +433,8 @@ struct ArtistDetailView: View {
             async let searchTask = session.client.search(
                 loaded.name, artistCount: 0, albumCount: 0, songCount: 40)
             async let infoTask = session.client.artistInfo2(id: loaded.id, count: 12)
+            // Resolve the one hero in parallel with song lists.
+            async let heroTask = resolveHeroImage(loaded)
 
             let fetchedTop = (try? await topTask) ?? []
             let search = try? await searchTask
@@ -444,7 +459,7 @@ struct ArtistDetailView: View {
                 owned: owned,
                 related: relatedArtists,
                 bio: biography,
-                hero: heroImageURL)
+                hero: nil)
             warmImages(artist: loaded, songs: fetchedTop + owned)
 
             let info = try? await infoTask
@@ -455,22 +470,17 @@ struct ArtistDetailView: View {
             }
             let bio = info?.plainBiography.flatMap { $0.isEmpty ? nil : $0 }
             let relatedFinal = Array(related.prefix(12))
-            let relatedCovers = relatedFinal.compactMap {
-                session.artworkURL(id: $0.coverArt ?? $0.id, size: 192)
-            }
-            ImageLoader.shared.prefetch(relatedCovers, limit: 12, priority: .utility)
+            // Warm portraits (not album covers) so Fans also like doesn't flip.
+            await warmRelatedPortraits(relatedFinal)
             apply(
                 artist: loaded,
                 topSongs: fetchedTop,
                 owned: owned,
                 related: relatedFinal,
                 bio: bio,
-                hero: heroImageURL)
+                hero: nil)
 
-            if let upgraded = await resolveHeroImage(loaded),
-               await ImageLoader.shared.image(for: upgraded) != nil {
-                heroImageURL = upgraded
-            }
+            await commitHeroImage(await heroTask)
         } catch {
             if artist == nil {
                 self.error = error.localizedDescription
@@ -478,18 +488,33 @@ struct ArtistDetailView: View {
         }
     }
 
-    /// Navidrome cover art is the fast hero. A Spotify or Last.fm portrait
-    /// replaces it only after that bitmap is already decoded.
-    private func immediateHero(for artist: ArtistWithAlbums) -> URL? {
-        session.artistImages.memoryURL(artistId: artist.id)
+    /// Prefetch Spotify/wishlist portraits for the related rail so each avatar
+    /// paints once instead of cover → face.
+    private func warmRelatedPortraits(_ artists: [Artist]) async {
+        guard !artists.isEmpty else { return }
+        await withTaskGroup(of: URL?.self) { group in
+            for artist in artists.prefix(12) {
+                group.addTask { @MainActor in
+                    if let cached = session.artistImages.memoryURL(artistId: artist.id) {
+                        return cached
+                    }
+                    return await session.artistImages.resolve(
+                        artistId: artist.id,
+                        name: artist.name,
+                        wishlist: session.wishlist)
+                }
+            }
+            var urls: [URL] = []
+            for await url in group {
+                if let url { urls.append(url) }
+            }
+            ImageLoader.shared.prefetch(urls, limit: 12, priority: .utility)
+        }
     }
 
-    /// Start cover fetches before the song lists return so the rail isn't blank.
+    /// Start album/song cover fetches before the song lists return so rails aren't blank.
     private func warmImages(artist: ArtistWithAlbums, songs: [Song]) {
         var urls: [URL] = []
-        if let hero = session.artworkURL(id: artist.coverArt ?? artist.id, size: 800) {
-            urls.append(hero)
-        }
         for album in artist.albums.prefix(16) {
             if let url = session.artworkURL(id: album.coverArt ?? album.id, size: 300) {
                 urls.append(url)
