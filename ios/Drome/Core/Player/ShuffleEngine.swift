@@ -7,11 +7,27 @@ enum ShuffleEngine {
     static func sticksToOutOfRotationPool(
         allowsOutOfRotation: Bool,
         contextSongIDs: [String],
-        excludedIDs: Set<String>
+        excludedIDs: Set<String>,
+        contextLabelIsOutOfRotation: Bool = false,
+        playingSystemOutOfRotationPlaylist: Bool = false,
+        allContextSongsLowRated: Bool = false
     ) -> Bool {
         if allowsOutOfRotation { return true }
-        guard !contextSongIDs.isEmpty, !excludedIDs.isEmpty else { return false }
-        return contextSongIDs.allSatisfy { excludedIDs.contains($0) }
+        // Callers sometimes pass `.playlist(id:)` for the system OOR list —
+        // still stick so Shuffle / Keep Playing cannot leak into the library.
+        if contextLabelIsOutOfRotation || playingSystemOutOfRotationPlaylist {
+            return true
+        }
+        if !contextSongIDs.isEmpty, !excludedIDs.isEmpty,
+           contextSongIDs.allSatisfy({ excludedIDs.contains($0) }) {
+            return true
+        }
+        // Exclusion set can lag behind the playlist body after a cold start.
+        // A collection that is entirely 1–2★ is OOR listening in practice.
+        if allContextSongsLowRated, !contextSongIDs.isEmpty {
+            return true
+        }
+        return false
     }
 
     /// Taste-weighted order, then a smooth walk so the next song stays in the
