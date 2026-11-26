@@ -67,6 +67,8 @@ pairing). Same Navidrome login on each device.
 | `MORNYE_REGISTRIES` | Extension registry JSON URLs (required; Mornye has no built-in providers) |
 | `DROME_SPOTIFLAC_EXTENSIONS` | Extensions to install on boot (`utilities,tidal-web,…`) |
 | `DROME_NAVIDROME_SCAN_USER` / `PASSWORD` | Optional; triggers immediate library scan |
+| `DROME_LYRICS_SYNC` | After each download, write an LRCLIB `.lrc` sidecar next to the file (default `true`; prefers word-synced) |
+| `DROME_LYRICS_BACKFILL` | One-shot walk of the existing library for missing/upgradable sidecars (default `true`; marks done in `lyrics-backfill-v1.done`) |
 
 Auth reuses Subsonic `u` / `t` / `s` query params — same credentials as Navidrome login.
 

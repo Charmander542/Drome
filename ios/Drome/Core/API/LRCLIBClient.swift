@@ -85,8 +85,12 @@ struct LRCLIBClient {
 
         func score(_ result: Result) -> Double {
             var s = 0.0
-            if result.syncedLyrics?.isEmpty == false { s += 100 }
-            else if result.plainLyrics?.isEmpty == false { s += 10 }
+            if let synced = result.syncedLyrics, !synced.isEmpty {
+                // Enhanced LRC word stamps beat line-only karaoke.
+                s += Self.hasWordSync(synced) ? 140 : 100
+            } else if result.plainLyrics?.isEmpty == false {
+                s += 10
+            }
 
             if let duration, let remote = result.duration, remote > 0 {
                 let delta = abs(remote - Double(duration))
@@ -163,5 +167,10 @@ struct LRCLIBClient {
         raw.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .joined()
+    }
+
+    /// Enhanced LRC uses `<mm:ss.xx>` (or ms) stamps before each word.
+    static func hasWordSync(_ lrc: String) -> Bool {
+        lrc.range(of: #"<\d{1,2}:\d{1,2}(?:[.:]\d{1,3})?>"#, options: .regularExpression) != nil
     }
 }

@@ -13,13 +13,14 @@ import (
 )
 
 type server struct {
-	store     *wishlistStore
-	navidrome *navidromeVerifier
-	spotify   *spotifyClient
-	downloads *downloadWorker
-	connect   *connectHub
-	mixes     *mixHub
-	lyrics    *lyricsIndex
+	store      *wishlistStore
+	navidrome  *navidromeVerifier
+	spotify    *spotifyClient
+	downloads  *downloadWorker
+	connect    *connectHub
+	mixes      *mixHub
+	lyrics     *lyricsIndex
+	lyricsSync *lyricsSyncer
 }
 
 func (s *server) routes() http.Handler {

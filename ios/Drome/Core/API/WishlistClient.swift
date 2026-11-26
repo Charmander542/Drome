@@ -1,5 +1,13 @@
 import Foundation
 
+struct CompanionTrackLyrics: Equatable {
+    var found: Bool
+    var content: String?
+    var synced: Bool
+    var wordSynced: Bool
+    var source: String
+}
+
 struct WishlistEntry: Codable, Identifiable, Hashable {
     let id: Int64
     var owner: String
@@ -284,6 +292,32 @@ struct DromeWishlistClient {
                 URLQueryItem(name: "limit", value: String(min(max(limit, 1), 10))),
             ]
         ).results
+    }
+
+    /// Raw `.lrc` sidecar from the music library (preserves word timestamps).
+    func trackLyrics(title: String, artist: String) async throws -> CompanionTrackLyrics {
+        struct Response: Decodable {
+            var found: Bool
+            var content: String?
+            var synced: Bool?
+            var wordSynced: Bool?
+            var source: String?
+        }
+        let response = try await send(
+            Response.self,
+            path: "/lyrics/track",
+            method: "GET",
+            extraQuery: [
+                URLQueryItem(name: "title", value: title),
+                URLQueryItem(name: "artist", value: artist),
+            ]
+        )
+        return CompanionTrackLyrics(
+            found: response.found,
+            content: response.content,
+            synced: response.synced ?? false,
+            wordSynced: response.wordSynced ?? false,
+            source: response.source ?? "sidecar")
     }
 
     /// Fuzzy lyrics search against the companion's library-wide index (.lrc sidecars).

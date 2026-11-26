@@ -111,6 +111,7 @@ type downloadWorker struct {
 	navidrome *navidromeVerifier
 	spotify   *spotifyClient
 	baseURL   string
+	lyrics    *lyricsSyncer
 
 	mu     sync.Mutex
 	wake   chan struct{}
@@ -140,6 +141,13 @@ func newDownloadWorker(cfg downloadConfig, store *wishlistStore, navidrome *navi
 		wake:      make(chan struct{}, 1),
 		jobGap:    envDuration("DROME_DOWNLOAD_JOB_GAP", 8*time.Second),
 	}
+}
+
+func (w *downloadWorker) setLyricsSyncer(syncer *lyricsSyncer) {
+	if w == nil {
+		return
+	}
+	w.lyrics = syncer
 }
 
 func (w *downloadWorker) kick() {
@@ -335,6 +343,12 @@ func (w *downloadWorker) process(parent context.Context, e *entry) {
 	if err := cleanupRecentASINLeftovers(w.cfg.MusicDir, started); err != nil {
 		w.fail(e, attempt, err)
 		return
+	}
+
+	// Best-effort LRCLIB sidecar (prefer word-synced) before Navidrome scans.
+	w.setPhase("lyrics", "fetching synced lyrics")
+	if w.lyrics != nil {
+		w.lyrics.syncRecentAfterDownload(ctx, retagEntry.Title, retagEntry.Artist, retagEntry.Album, started)
 	}
 
 	logf("download done id=%d — removing from wishlist", e.ID)
