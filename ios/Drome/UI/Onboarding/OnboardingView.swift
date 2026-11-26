@@ -44,8 +44,8 @@ struct OnboardingView: View {
             accessibilityMockLabel: "Your Library preview. The Home, Search, Your Library, and Podcasts tabs are highlighted in the tab bar."),
         OnboardingTourPage(
             title: "Search three ways",
-            caption: "Library, Spotify, and Podcasts — in Library, pick Lyrics in the filter chips to search lyrics.",
-            accessibilityMockLabel: "Search screen. Use Library, Spotify, or Podcasts. In Library mode, the filter chips are All, Songs, Albums, Artists, and Lyrics."),
+            caption: "Library, Spotify, and Podcasts — in Library, filter by Songs, Albums, Artists, or Playlists.",
+            accessibilityMockLabel: "Search screen. Use Library, Spotify, or Podcasts. In Library mode, the filter chips are All, Songs, Albums, Artists, and Playlists."),
         OnboardingTourPage(
             title: "Rate with stars",
             caption: "High ratings shape mixes; one or two stars send a track to Out of Rotation.",

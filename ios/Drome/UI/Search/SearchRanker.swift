@@ -1,10 +1,10 @@
 import Foundation
 
-/// A single ranked search hit. Artists, albums, songs (and optional lyrics
-/// matches) share one list sorted by how well they match the query.
+/// A single ranked search hit. Artists, albums, songs, and playlists share one
+/// list sorted by how well they match the query.
 struct SearchHit: Identifiable {
     enum Kind: String {
-        case artist, album, song, lyrics
+        case artist, album, song, playlist
     }
 
     var id: String
@@ -17,16 +17,17 @@ struct SearchHit: Identifiable {
     var artist: Artist?
     var album: Album?
     var song: Song?
-    var lyrics: LyricsSearchMatch?
+    var playlist: Playlist?
 }
 
 enum SearchRanker {
-    /// Build a flat, best-match-first list from Subsonic search3 (+ optional
-    /// lyrics hits). Exact / prefix artist matches outrank song titles that
-    /// merely contain the query — so "adele" surfaces Adele the artist first.
+    /// Build a flat, best-match-first list from Subsonic search3 (+ playlists
+    /// from getPlaylists, filtered client-side by name). Exact / prefix artist
+    /// matches outrank song titles that merely contain the query — so "adele"
+    /// surfaces Adele the artist first.
     static func rank(query: String,
                      result: SearchResult3,
-                     lyrics: [LyricsSearchMatch] = [],
+                     playlists: [Playlist] = [],
                      artistFilter: ((Artist) -> Bool)? = nil) -> [SearchHit] {
         let q = normalize(query)
         guard !q.isEmpty else { return [] }
@@ -85,35 +86,35 @@ enum SearchRanker {
             ))
         }
 
-        for lyric in lyrics {
-            // Lyrics matches are useful but should sit below strong metadata hits.
-            let titleScore = matchScore(name: lyric.title, query: q, kind: .lyrics)
-            let artistScore = matchScore(name: lyric.artist, query: q, kind: .lyrics) * 0.8
-            // Fuzzy line score dominates; metadata is a small tie-break.
-            let lineScore = lyric.score > 0 ? lyric.score : (
-                lyric.snippet.localizedCaseInsensitiveContains(q) ? 120 : 40
-            )
-            let score = lineScore + max(titleScore, artistScore) * 0.05
+        for playlist in playlists {
+            let score = matchScore(name: playlist.name, query: q, kind: .playlist)
+            guard score > 0 else { continue }
+            let countLabel: String?
+            if let count = playlist.songCount {
+                countLabel = count == 1 ? "1 song" : "\(count) songs"
+            } else {
+                countLabel = nil
+            }
             hits.append(SearchHit(
-                id: "lyrics-\(lyric.songId)",
-                kind: .lyrics,
+                id: "playlist-\(playlist.id)",
+                kind: .playlist,
                 score: score,
-                title: lyric.title,
-                subtitle: "\(lyric.artist) · Lyrics",
-                coverArt: nil,
-                lyrics: lyric
+                title: playlist.name,
+                subtitle: [countLabel, "Playlist"].compactMap { $0 }.joined(separator: " · "),
+                coverArt: playlist.coverArt ?? playlist.id,
+                playlist: playlist
             ))
         }
 
         // Stable sort: artists with 0 albums last, then score desc, then kind
-        // priority (artist > album > song > lyrics), then title.
+        // priority (artist > album > song > playlist), then title.
         return hits.sorted { a, b in
             let aEmptyArtist = a.kind == .artist && (a.artist?.albumCount ?? -1) == 0
             let bEmptyArtist = b.kind == .artist && (b.artist?.albumCount ?? -1) == 0
             if aEmptyArtist != bEmptyArtist { return !aEmptyArtist && bEmptyArtist }
 
             if abs(a.score - b.score) > 0.5 { return a.score > b.score }
-            let kindOrder: [SearchHit.Kind: Int] = [.artist: 0, .album: 1, .song: 2, .lyrics: 3]
+            let kindOrder: [SearchHit.Kind: Int] = [.artist: 0, .album: 1, .song: 2, .playlist: 3]
             let ka = kindOrder[a.kind] ?? 9
             let kb = kindOrder[b.kind] ?? 9
             if ka != kb { return ka < kb }
@@ -134,7 +135,7 @@ enum SearchRanker {
         case .artist: kindWeight = 1.45
         case .album: kindWeight = 1.15
         case .song: kindWeight = 1.0
-        case .lyrics: kindWeight = 0.75
+        case .playlist: kindWeight = 1.1
         }
 
         // Exact equality — "adele" → Adele
