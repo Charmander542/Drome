@@ -261,8 +261,10 @@ struct LyricsView: View {
 
     private func sourceLabel(_ source: String) -> String {
         switch source {
-        case "navidrome", "navidrome.v2", "navidrome.v3": return "From your library"
-        case "lrclib", "lrclib.v2", "lrclib.v3", "lrclib.v4": return "From LRCLIB"
+        case "navidrome", "navidrome.v2", "navidrome.v3", "navidrome.v4":
+            return "From your library"
+        case "lrclib", "lrclib.v2", "lrclib.v3", "lrclib.v4", "lrclib.v5":
+            return "From LRCLIB"
         default: return ""
         }
     }
@@ -403,6 +405,13 @@ struct LyricsView: View {
             case .upcoming:
                 return Color.white.opacity(0.26)
             case .active:
+                // Word karaoke when cues have started. Mid-break focus can mark
+                // the coming line active before any word start — fall back to a
+                // full-line highlight so the sheet never looks “stuck off”.
+                let anyLit = line.words.contains { $0.isLit(atMs: elapsedMs) }
+                if !anyLit {
+                    return baseColor
+                }
                 // Aura elapsed-at-time (incl. x4 cycle restarts). Stay lit once
                 // reached this pass — no endMs dim.
                 if word.isLit(atMs: elapsedMs) {

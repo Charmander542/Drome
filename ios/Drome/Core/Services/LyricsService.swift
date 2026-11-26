@@ -40,10 +40,11 @@ actor LyricsService {
     private let serverKey: String
 
     /// Bumped when matching / alignment rules change so old hits refetch once.
-    private static let lrclibSource = "lrclib.v4"
-    private static let navidromeSource = "navidrome.v3"
+    private static let lrclibSource = "lrclib.v5"
+    private static let navidromeSource = "navidrome.v4"
     private static let legacySources: Set<String> = [
-        "lrclib", "lrclib.v2", "lrclib.v3", "navidrome", "navidrome.v2",
+        "lrclib", "lrclib.v2", "lrclib.v3", "lrclib.v4",
+        "navidrome", "navidrome.v2", "navidrome.v3",
     ]
 
     init(database: AppDatabase, client: SubsonicClient, serverKey: String) {
@@ -85,26 +86,35 @@ actor LyricsService {
     }
 
     private func fetchAndCache(song: Song) async -> LyricsDocument? {
+        // Unsynced Navidrome text used to short-circuit before LRCLIB — songs
+        // with embedded plain lyrics (e.g. some Kanye tags) never got karaoke.
+        // Only accept Navidrome as final when it has usable line timestamps;
+        // otherwise keep plain as a fallback after trying LRCLIB synced LRC.
+        var unsyncedFallback: (content: String, source: String, offsetMs: Int)?
+
         // 1. Navidrome (embedded tags / .lrc sidecar files, served as
         //    OpenSubsonic structured lyrics).
         if let structured = try? await client.lyrics(songId: song.id),
-           let best = preferSynced(structured),
+           let best = preferTimed(structured),
            let lines = best.line, !lines.isEmpty {
-            let synced = (best.synced ?? false) || lines.contains { $0.start != nil }
+            let hasTiming = lines.contains { $0.start != nil }
             let offsetMs = best.offset ?? 0
             let content = LRCParser.serialize(
                 lines: lines.map { ($0.start, $0.value) },
                 offsetMs: offsetMs)
-            store(song: song, synced: synced, content: content, source: Self.navidromeSource)
-            return document(
-                from: content,
-                synced: synced,
-                source: Self.navidromeSource,
-                songDuration: song.duration,
-                structuredOffsetMs: offsetMs)
+            if hasTiming {
+                store(song: song, synced: true, content: content, source: Self.navidromeSource)
+                return document(
+                    from: content,
+                    synced: true,
+                    source: Self.navidromeSource,
+                    songDuration: song.duration,
+                    structuredOffsetMs: offsetMs)
+            }
+            unsyncedFallback = (content, Self.navidromeSource, offsetMs)
         }
 
-        // 2. LRCLIB fallback.
+        // 2. LRCLIB — prefer synced karaoke; plain only if we have nothing else.
         if let artist = song.artist,
            let result = try? await lrclib.lyrics(
             artist: artist, title: song.title,
@@ -119,7 +129,8 @@ actor LyricsService {
                     songDuration: song.duration,
                     matchedDurationSec: matchedDuration)
             }
-            if let plain = result.plainLyrics, !plain.isEmpty {
+            if unsyncedFallback == nil,
+               let plain = result.plainLyrics, !plain.isEmpty {
                 store(song: song, synced: false, content: plain, source: Self.lrclibSource)
                 return document(
                     from: plain,
@@ -130,14 +141,30 @@ actor LyricsService {
             }
         }
 
+        if let fallback = unsyncedFallback {
+            store(
+                song: song,
+                synced: false,
+                content: fallback.content,
+                source: fallback.source)
+            return document(
+                from: fallback.content,
+                synced: false,
+                source: fallback.source,
+                songDuration: song.duration,
+                structuredOffsetMs: fallback.offsetMs)
+        }
+
         // Negative cache so the indexer and repeated plays don't refetch.
         try? database.storeLyrics(negativeEntry(for: song))
         return nil
     }
 
-    private func preferSynced(_ items: [StructuredLyrics]) -> StructuredLyrics? {
-        items.first(where: { $0.synced == true })
-            ?? items.first(where: { $0.line?.contains(where: { $0.start != nil }) == true })
+    /// Prefer entries that actually carry line start times. A `synced: true`
+    /// flag with nil starts is treated as unsynced so we can still ask LRCLIB.
+    private func preferTimed(_ items: [StructuredLyrics]) -> StructuredLyrics? {
+        items.first(where: { $0.line?.contains(where: { $0.start != nil }) == true })
+            ?? items.first(where: { $0.synced == true })
             ?? items.first
     }
 
