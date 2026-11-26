@@ -212,8 +212,10 @@ struct SettingsMadeForYouView: View {
         } else {
             next.remove(genre.lowercased())
         }
+        // Genres that differ only in case share a key — keep the first spelling.
         let display = Dictionary(
-            uniqueKeysWithValues: allGenres.map { ($0.lowercased(), $0) })
+            allGenres.map { ($0.lowercased(), $0) },
+            uniquingKeysWith: { a, _ in a })
         excluded = next.sorted().map { display[$0] ?? $0 }
         MadeForYouPreferences.excludedGenres = next
     }

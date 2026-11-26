@@ -77,8 +77,15 @@ enum ShuffleEngine {
                 weight: taste.effectiveRating(for: song, raw: rating(song)))
         }
         let ordered = SessionFlow.arrange(tracks)
-        var byID = Dictionary(uniqueKeysWithValues: songs.map { ($0.id, $0) })
-        return ordered.compactMap { byID.removeValue(forKey: $0.id) }
+        // Playlists can list the same song twice — group so every queue entry
+        // (duplicates included) is consumed exactly once in walk order.
+        var byID = Dictionary(grouping: songs, by: \.id)
+        return ordered.compactMap { track -> Song? in
+            guard var bucket = byID[track.id], !bucket.isEmpty else { return nil }
+            let song = bucket.removeLast()
+            byID[track.id] = bucket
+            return song
+        }
     }
 
     /// Order the given songs for playback under a shuffle mode, dropping
