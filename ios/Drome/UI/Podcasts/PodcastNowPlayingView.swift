@@ -10,6 +10,7 @@ struct PodcastNowPlayingView: View {
     @EnvironmentObject private var clock: PlaybackClock
     @EnvironmentObject private var podcastManager: PodcastManager
     @EnvironmentObject private var sleepTimer: SleepTimerController
+    @EnvironmentObject private var session: AppSession
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     var onClose: (() -> Void)? = nil
@@ -30,6 +31,7 @@ struct PodcastNowPlayingView: View {
     @State private var showPreciseTime = false
     @State private var showChapters = false
     @State private var showSleepTimer = false
+    @State private var showOutput = false
 
     var body: some View {
         NavigationStack {
@@ -56,7 +58,8 @@ struct PodcastNowPlayingView: View {
                     VStack(spacing: 0) {
                         dismissChrome(topInset: topInset)
                             .modifier(PodcastDismissGesture(
-                enabled: !isDismissClosing && !showSpeedPicker && !showChapters && !showSleepTimer,
+                enabled: !isDismissClosing && !showSpeedPicker && !showChapters
+                    && !showSleepTimer && !showOutput,
                 gesture: dismissGesture))
 
                         episodePane(width: width, height: paneHeight)
@@ -79,7 +82,8 @@ struct PodcastNowPlayingView: View {
                     && !isDismissClosing
                     && !showSpeedPicker
                     && !showChapters
-                    && !showSleepTimer,
+                    && !showSleepTimer
+                    && !showOutput,
                 gesture: dismissGesture))
             .ignoresSafeArea()
             .toolbar(.hidden, for: .navigationBar)
@@ -115,6 +119,12 @@ struct PodcastNowPlayingView: View {
                 .environmentObject(sleepTimer)
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
+            }
+            .sheet(isPresented: $showOutput) {
+                AudioOutputSheet()
+                    .environmentObject(session)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
             }
             .sheet(isPresented: $showChapters) {
                 chaptersSheet
@@ -562,6 +572,26 @@ struct PodcastNowPlayingView: View {
 
             Spacer(minLength: 0)
 
+            Button {
+                showOutput = true
+            } label: {
+                Image(systemName: session.connect?.isRemote == true
+                      ? "speaker.wave.2.fill"
+                      : "hifispeaker.2.fill")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(
+                        session.connect?.isRemote == true
+                        ? DromeTheme.accent
+                        : Color.white.opacity(0.55))
+                    .frame(width: 44, height: 44)
+                    .background(
+                        Capsule()
+                            .fill(Color.white.opacity(0.08))
+                    )
+            }
+            .accessibilityLabel(session.connect != nil ? "Connect and AirPlay" : "AirPlay")
+            .accessibilityIdentifier("drome.podcast.nowplaying.output")
+
             Menu {
                 Button {
                     toggleStar()
@@ -587,7 +617,7 @@ struct PodcastNowPlayingView: View {
                         sleepTimer.isActive || episodeIsStarred
                         ? DromeTheme.accent
                         : Color.white.opacity(0.55))
-                    .frame(width: 48, height: 44)
+                    .frame(width: 44, height: 44)
                     .background(
                         Capsule()
                             .fill(Color.white.opacity(0.08))
