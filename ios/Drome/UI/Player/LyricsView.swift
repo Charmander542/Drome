@@ -276,8 +276,8 @@ struct LyricsView: View {
     }
 
     private func activeLineIndex(at elapsedMs: Int, in document: LyricsDocument) -> Int {
-        // Aura current line: last started stamp, then mid-break focus so long
-        // instrumentals preview the coming line (words stay unlit until starts).
+        // Heard stamp + mid-break focus: scroll/scale onto the coming line during
+        // long instrumentals. Word lighting still waits on each cue’s start.
         LRCParser.currentLineIndex(lines: document.lines, atMs: elapsedMs)
     }
 
@@ -442,12 +442,14 @@ struct LyricsView: View {
             case .upcoming:
                 return Color.white.opacity(0.24)
             case .active:
-                // Word karaoke when cues have started. Mid-break focus can mark
-                // the coming line active before any word start — fall back to a
-                // full-line highlight so the sheet never looks “stuck off”.
+                // Focus/scale can mark this line early (mid-break preview, or
+                // line stamp before the first word). Don't also paint it fully
+                // lit — that raced the word karaoke. Stay dim until a cue fires;
+                // scale alone shows focus. Plain lines (no words) still use
+                // `baseColor` via the non-word Text path.
                 let anyLit = line.words.contains { $0.isLit(atMs: elapsedMs) }
                 if !anyLit {
-                    return baseColor
+                    return Color.white.opacity(0.24)
                 }
                 // Aura elapsed-at-time (incl. x4 cycle restarts). Stay lit once
                 // reached this pass — no endMs dim. Soften words already passed
