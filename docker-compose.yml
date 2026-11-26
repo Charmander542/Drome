@@ -40,6 +40,11 @@ services:
       DROME_OUTSIDE_PLAN_PER_ARTIST: ${DROME_OUTSIDE_PLAN_PER_ARTIST:-1}
       DROME_OUTSIDE_PLAN_SEED_ARTISTS: ${DROME_OUTSIDE_PLAN_SEED_ARTISTS:-4}
       DROME_OUTSIDE_PLAN_MAX_ACTIVE: ${DROME_OUTSIDE_PLAN_MAX_ACTIVE:-8}
+      # LRCLIB synced .lrc sidecars (word-timed preferred) next to library audio.
+      DROME_LYRICS_SYNC: ${DROME_LYRICS_SYNC:-true}
+      DROME_LYRICS_BACKFILL: ${DROME_LYRICS_BACKFILL:-true}
+      DROME_LYRICS_SYNC_DELAY: ${DROME_LYRICS_SYNC_DELAY:-400ms}
+      DROME_LYRICS_BACKFILL_MAX: ${DROME_LYRICS_BACKFILL_MAX:-0}
     volumes:
       - ./data/drome-server:/data
       # Persist Mornye extensions + signed sessions across recreates.
