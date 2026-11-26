@@ -52,8 +52,6 @@ final class DownloadManager: ObservableObject {
     private var tasksBySongID: [String: URLSessionDownloadTask] = [:]
     private var coverInflight: Set<String> = []
     private var streamingSuspended = false
-    /// Retains the prefs observer for Wi‑Fi-only / quality changes.
-    private var downloadPrefsObserver: NSObjectProtocol?
     /// safe filename → local cover. List rows ask for this on every body
     /// pass; scanning four extensions with fileExists each time was a scroll hitch.
     private var localCoversByComponent: [String: URL] = [:]
@@ -85,32 +83,16 @@ final class DownloadManager: ObservableObject {
         // Reattach to tasks that survived an app relaunch.
         session.getAllTasks { tasks in
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                let allowCellular = !PlaybackPreferences.wifiOnlyDownloads
                 for task in tasks {
                     guard let songId = task.taskDescription else { continue }
-                    task.allowsCellularAccess = allowCellular
-                    self.tasksBySongID[songId] = task as? URLSessionDownloadTask
+                    self?.tasksBySongID[songId] = task as? URLSessionDownloadTask
                 }
-            }
-        }
-        downloadPrefsObserver = NotificationCenter.default.addObserver(
-            forName: PlaybackPreferences.downloadPreferenceDidChange,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.applyCellularAccessPreference()
             }
         }
         Task { await self.backfillMissingCoverArt() }
     }
 
     func invalidate() {
-        if let downloadPrefsObserver {
-            NotificationCenter.default.removeObserver(downloadPrefsObserver)
-            self.downloadPrefsObserver = nil
-        }
         session.invalidateAndCancel()
     }
 
@@ -134,13 +116,6 @@ final class DownloadManager: ObservableObject {
         values.isExcludedFromBackup = true
         var mutable = url
         try? mutable.setResourceValues(values)
-    }
-
-    private func applyCellularAccessPreference() {
-        let allowCellular = !PlaybackPreferences.wifiOnlyDownloads
-        for task in tasksBySongID.values {
-            task.allowsCellularAccess = allowCellular
-        }
     }
 
     /// URL for a new offline file: compressed `stream` or original `download`.
@@ -311,9 +286,12 @@ final class DownloadManager: ObservableObject {
                     state: "downloading", relPath: nil, fileSize: 0)
                 try? database.upsertDownload(record)
 
-                let task = session.downloadTask(with: url)
+                // Cellular policy lives on the request — URLSessionTask no longer
+                // exposes `allowsCellularAccess` on the current SDK.
+                var request = URLRequest(url: url)
+                request.allowsCellularAccess = !PlaybackPreferences.wifiOnlyDownloads
+                let task = session.downloadTask(with: request)
                 task.taskDescription = resolved.id
-                task.allowsCellularAccess = !PlaybackPreferences.wifiOnlyDownloads
                 tasksBySongID[resolved.id] = task
                 liveProgress.set(resolved.id, fraction: 0)
                 if streamingSuspended {
