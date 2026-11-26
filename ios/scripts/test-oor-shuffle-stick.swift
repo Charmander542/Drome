@@ -8,11 +8,23 @@ enum ShuffleEngine {
     static func sticksToOutOfRotationPool(
         allowsOutOfRotation: Bool,
         contextSongIDs: [String],
-        excludedIDs: Set<String>
+        excludedIDs: Set<String>,
+        contextLabelIsOutOfRotation: Bool = false,
+        playingSystemOutOfRotationPlaylist: Bool = false,
+        allContextSongsLowRated: Bool = false
     ) -> Bool {
         if allowsOutOfRotation { return true }
-        guard !contextSongIDs.isEmpty, !excludedIDs.isEmpty else { return false }
-        return contextSongIDs.allSatisfy { excludedIDs.contains($0) }
+        if contextLabelIsOutOfRotation || playingSystemOutOfRotationPlaylist {
+            return true
+        }
+        if !contextSongIDs.isEmpty, !excludedIDs.isEmpty,
+           contextSongIDs.allSatisfy({ excludedIDs.contains($0) }) {
+            return true
+        }
+        if allContextSongsLowRated, !contextSongIDs.isEmpty {
+            return true
+        }
+        return false
     }
 }
 
@@ -73,6 +85,42 @@ expect(
         allowsOutOfRotation: false,
         contextSongIDs: ["a"],
         excludedIDs: []),
+    equals: false)
+
+expect(
+    "playlist-id OOR sticks via system playlist flag",
+    ShuffleEngine.sticksToOutOfRotationPool(
+        allowsOutOfRotation: false,
+        contextSongIDs: ["a", "b"],
+        excludedIDs: [],
+        playingSystemOutOfRotationPlaylist: true),
+    equals: true)
+
+expect(
+    "OOR label sticks without allowsOutOfRotation",
+    ShuffleEngine.sticksToOutOfRotationPool(
+        allowsOutOfRotation: false,
+        contextSongIDs: ["a"],
+        excludedIDs: [],
+        contextLabelIsOutOfRotation: true),
+    equals: true)
+
+expect(
+    "all low-rated collection sticks when exclusion set stale",
+    ShuffleEngine.sticksToOutOfRotationPool(
+        allowsOutOfRotation: false,
+        contextSongIDs: ["a", "b"],
+        excludedIDs: [],
+        allContextSongsLowRated: true),
+    equals: true)
+
+expect(
+    "low-rated flag alone does not stick empty context",
+    ShuffleEngine.sticksToOutOfRotationPool(
+        allowsOutOfRotation: false,
+        contextSongIDs: [],
+        excludedIDs: [],
+        allContextSongsLowRated: true),
     equals: false)
 
 if failures > 0 {

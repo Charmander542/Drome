@@ -6,6 +6,8 @@ struct PodcastMiniPlayerBar: View {
 
     @EnvironmentObject private var podcastPlayer: PodcastPlayer
     @EnvironmentObject private var podcastManager: PodcastManager
+    @EnvironmentObject private var session: AppSession
+    @State private var showOutput = false
 
     var body: some View {
         if let episode = podcastPlayer.currentEpisode {
@@ -15,11 +17,20 @@ struct PodcastMiniPlayerBar: View {
                 showName: showTitle(for: episode),
                 artworkURL: artworkURL(for: episode),
                 isPlaying: podcastPlayer.isPlaying,
+                remoteOutput: session.connect?.isRemote == true,
+                hasConnect: session.connect != nil,
                 onOpen: onOpen,
                 onPlayPause: { podcastPlayer.playPause() },
                 onSkipForward: { podcastPlayer.skipForward(seconds: 30) },
+                onOutput: { showOutput = true },
                 clock: podcastPlayer.clock
             )
+            .sheet(isPresented: $showOutput) {
+                AudioOutputSheet()
+                    .environmentObject(session)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
         }
     }
 
@@ -43,9 +54,12 @@ private struct PodcastMiniPlayerChrome: View {
     let showName: String
     let artworkURL: URL?
     let isPlaying: Bool
+    let remoteOutput: Bool
+    let hasConnect: Bool
     let onOpen: () -> Void
     let onPlayPause: () -> Void
     let onSkipForward: () -> Void
+    let onOutput: () -> Void
     @ObservedObject var clock: PlaybackClock
 
     var body: some View {
@@ -99,6 +113,17 @@ private struct PodcastMiniPlayerChrome: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Skip forward 30 seconds")
+
+            Button(action: onOutput) {
+                Image(systemName: remoteOutput ? "speaker.wave.2.fill" : "hifispeaker.2.fill")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(remoteOutput ? DromeTheme.accent : .white)
+                    .frame(width: 40, height: 40)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(hasConnect ? "Connect and AirPlay" : "AirPlay")
+            .accessibilityIdentifier("drome.podcast.mini.output")
         }
         .padding(.leading, 8)
         .padding(.trailing, 6)

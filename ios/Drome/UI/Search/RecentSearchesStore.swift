@@ -3,7 +3,7 @@ import Foundation
 /// A library item the user opened or played from Search.
 struct RecentSearchItem: Codable, Identifiable, Equatable {
     enum Kind: String, Codable {
-        case artist, album, song
+        case artist, album, song, playlist
     }
 
     var kind: Kind
@@ -45,18 +45,15 @@ struct RecentSearchItem: Codable, Identifiable, Equatable {
                 subtitle: hit.subtitle,
                 coverArt: hit.coverArt,
                 payloadJSON: encode(song))
-        case .lyrics:
-            guard let lyric = hit.lyrics else { return nil }
-            // Treat lyrics hits as the underlying song.
+        case .playlist:
+            guard let playlist = hit.playlist else { return nil }
             return RecentSearchItem(
-                kind: .song,
-                entityId: lyric.songId,
-                title: lyric.title,
-                subtitle: [lyric.artist, lyric.album, "Song"]
-                    .filter { !$0.isEmpty }
-                    .joined(separator: " · "),
-                coverArt: nil,
-                payloadJSON: nil)
+                kind: .playlist,
+                entityId: playlist.id,
+                title: hit.title,
+                subtitle: hit.subtitle,
+                coverArt: hit.coverArt,
+                payloadJSON: encode(playlist))
         }
     }
 
@@ -78,6 +75,7 @@ struct RecentSearchItem: Codable, Identifiable, Equatable {
     private static var songCache: [String: Song] = [:]
     private static var albumCache: [String: Album] = [:]
     private static var artistCache: [String: Artist] = [:]
+    private static var playlistCache: [String: Playlist] = [:]
 
     func decodedSong() -> Song? {
         guard kind == .song else { return nil }
@@ -110,6 +108,17 @@ struct RecentSearchItem: Codable, Identifiable, Equatable {
         else { return nil }
         Self.artistCache[entityId] = artist
         return artist
+    }
+
+    func decodedPlaylist() -> Playlist? {
+        guard kind == .playlist else { return nil }
+        if let cached = Self.playlistCache[entityId] { return cached }
+        guard let payloadJSON,
+              let data = payloadJSON.data(using: .utf8),
+              let playlist = try? JSONDecoder().decode(Playlist.self, from: data)
+        else { return nil }
+        Self.playlistCache[entityId] = playlist
+        return playlist
     }
 
     private static func encode<T: Encodable>(_ value: T) -> String? {
