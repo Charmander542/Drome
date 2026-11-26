@@ -77,15 +77,13 @@ final class NowPlayingCenter {
             artworkImage = nil
             return
         }
-        // CarPlay / Lock Screen request specific sizes via the handler. Returning
-        // a properly scaled square for each request is what makes the foreground
-        // album tile appear (blurred background alone is not enough).
-        let maxSide = max(image.size.width * image.scale, image.size.height * image.scale, 1024)
-        let bounds = CGSize(width: maxSide, height: maxSide)
-        // Capture the bitmap — the request handler may run off the main actor.
+        // The system Now Playing widget sizes its tile from the bitmap we
+        // return. A non-square request (or a wide cover) used to make that
+        // tile rectangular. Always hand back a center-cropped square.
         let source = image
-        artwork = MPMediaItemArtwork(boundsSize: bounds) { requested in
-            Self.squared(source, to: requested)
+        artwork = MPMediaItemArtwork(boundsSize: CGSize(width: 1024, height: 1024)) { requested in
+            let side = min(max(requested.width, requested.height, 1), 1024)
+            return Self.squareFilled(source, side: side)
         }
     }
 
@@ -125,24 +123,24 @@ final class NowPlayingCenter {
         AudioFocus.shared.allowsRemotePlayback(for: .music)
     }
 
-    /// Square, letterboxed image at the size CarPlay/Lock Screen asked for.
-    private static func squared(_ image: UIImage, to size: CGSize) -> UIImage {
-        let target = CGSize(
-            width: max(size.width, 1),
-            height: max(size.height, 1))
-        let renderer = UIGraphicsImageRenderer(size: target)
+    /// Center-cropped square. The canvas is always `side` × `side`, even when
+    /// the system asks for a rectangle or the source cover is not square.
+    /// The artwork request handler runs off the main actor.
+    nonisolated static func squareFilled(_ image: UIImage, side: CGFloat) -> UIImage {
+        let side = max(side, 1)
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = true
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(
+            size: CGSize(width: side, height: side),
+            format: format)
         return renderer.image { _ in
-            UIColor.black.setFill()
-            UIRectFill(CGRect(origin: .zero, size: target))
-            let scale = min(
-                target.width / max(image.size.width, 1),
-                target.height / max(image.size.height, 1))
-            let drawSize = CGSize(
-                width: image.size.width * scale,
-                height: image.size.height * scale)
+            let src = image.size
+            let scale = max(side / max(src.width, 1), side / max(src.height, 1))
+            let drawSize = CGSize(width: src.width * scale, height: src.height * scale)
             let origin = CGPoint(
-                x: (target.width - drawSize.width) / 2,
-                y: (target.height - drawSize.height) / 2)
+                x: (side - drawSize.width) / 2,
+                y: (side - drawSize.height) / 2)
             image.draw(in: CGRect(origin: origin, size: drawSize))
         }
     }
