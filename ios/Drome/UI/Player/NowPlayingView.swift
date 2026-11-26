@@ -52,6 +52,8 @@ struct NowPlayingView: View {
     @State private var showSleepTimer = false
     @State private var showEqualizer = false
     @State private var equalizerDetent: PresentationDetent = .medium
+    @State private var queueDetent: PresentationDetent = .medium
+    @State private var moreDetent: PresentationDetent = .medium
     /// Dual backdrops so album color + blur can crossfade on track change.
     @State private var backdropFront = NowPlayingBackdrop.Layer()
     @State private var backdropBack = NowPlayingBackdrop.Layer()
@@ -131,7 +133,13 @@ struct NowPlayingView: View {
             .accessibilityIdentifier("drome.nowplaying.screen")
             .sheet(isPresented: $showQueue) {
                 QueueView()
-                    .presentationDetents([.medium, .large])
+                    // Once expanded to large, drop medium so swipe-down
+                    // dismisses instead of collapsing back to half-height.
+                    .presentationDetents(
+                        Self.expandableSheetDetents(for: queueDetent),
+                        selection: $queueDetent)
+                    .presentationDragIndicator(.visible)
+                    .onAppear { queueDetent = .medium }
                     .dromeSession(session)
             }
             .sheet(isPresented: $showAddToPlaylist) {
@@ -156,8 +164,11 @@ struct NowPlayingView: View {
                         showAddToPlaylist = true
                     }
                     .dromeSession(session)
-                    .presentationDetents([.medium, .large])
+                    .presentationDetents(
+                        Self.expandableSheetDetents(for: moreDetent),
+                        selection: $moreDetent)
                     .presentationDragIndicator(.visible)
+                    .onAppear { moreDetent = .medium }
                 }
             }
             .sheet(isPresented: $showConnect) {
@@ -168,7 +179,9 @@ struct NowPlayingView: View {
             }
             .sheet(isPresented: $showEqualizer) {
                 EqualizerSheet(detent: $equalizerDetent)
-                    .presentationDetents([.medium, .large], selection: $equalizerDetent)
+                    .presentationDetents(
+                        Self.expandableSheetDetents(for: equalizerDetent),
+                        selection: $equalizerDetent)
                     .presentationDragIndicator(.visible)
                     .onAppear { equalizerDetent = .medium }
             }
@@ -217,6 +230,14 @@ struct NowPlayingView: View {
     private static func finiteSize(_ value: CGFloat) -> CGFloat {
         guard value.isFinite, value > 0 else { return 0 }
         return value
+    }
+
+    /// Medium opens half-height; after the user expands to large, only large
+    /// remains so the next downward swipe closes the sheet.
+    private static func expandableSheetDetents(
+        for selection: PresentationDetent
+    ) -> Set<PresentationDetent> {
+        selection == .large ? [.large] : [.medium, .large]
     }
 
     /// Safe area from the key window — GeometryReader reports zero after `.ignoresSafeArea()`.
