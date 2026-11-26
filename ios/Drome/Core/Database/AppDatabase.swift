@@ -408,6 +408,19 @@ final class AppDatabase: @unchecked Sendable {
         }
     }
 
+    /// Drops on-device lyrics rows + FTS for a server (lyrics live on the
+    /// companion / Navidrome, not the phone).
+    func clearLyrics(serverKey: String) throws {
+        try pool.write { db in
+            try db.execute(sql: "DELETE FROM lyrics WHERE server_key = ?",
+                           arguments: [serverKey])
+            try db.execute(sql: "DELETE FROM lyrics_fts WHERE server_key = ?",
+                           arguments: [serverKey])
+            try db.execute(sql: "DELETE FROM lyrics_index_state WHERE server_key = ?",
+                           arguments: [serverKey])
+        }
+    }
+
     // MARK: - Downloads
 
     func upsertDownload(_ record: DownloadRecord) throws {

@@ -1,9 +1,8 @@
 import SwiftUI
 
-/// SubSonify-style Playback page: Autoplay, Transitions, Equalizer, ReplayGain, lyrics.
+/// SubSonify-style Playback page: Autoplay, Transitions, Equalizer, ReplayGain.
 struct SettingsPlaybackView: View {
     @EnvironmentObject private var player: PlayerEngine
-    @EnvironmentObject private var lyricsIndexer: LyricsIndexer
 
     var openEqualizer: () -> Void
 
@@ -102,19 +101,6 @@ struct SettingsPlaybackView: View {
                 .pickerStyle(.menu)
             } footer: {
                 Text("Uses loudness tags from your server when present; otherwise a gentle fallback.")
-            }
-            .listRowBackground(DromeTheme.elevated)
-
-            Section {
-                Toggle(isOn: Binding(
-                    get: { lyricsIndexer.isEnabled },
-                    set: { lyricsIndexer.isEnabled = $0 }
-                )) {
-                    Text("Lyrics from LRCLIB")
-                }
-                .tint(DromeTheme.accent)
-            } footer: {
-                Text("When your server has no lyrics for a song, its title, artist, album and length are sent to lrclib.net to look them up.")
             }
             .listRowBackground(DromeTheme.elevated)
 
