@@ -66,7 +66,7 @@ enum DromeTheme {
         #if os(iOS)
         let ui = UIColor(wash)
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        guard ui.getRed(&r, green: &g, blue: &b, alpha: &a) else {
+        if !ui.getRed(&r, green: &g, blue: &b, alpha: &a) {
             // Fallback for grayscale / wide-gamut representations.
             var w: CGFloat = 0
             ui.getWhite(&w, alpha: &a)
