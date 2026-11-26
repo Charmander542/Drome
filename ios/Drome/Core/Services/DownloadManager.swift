@@ -20,10 +20,11 @@ final class DownloadProgressStore: ObservableObject {
     }
 }
 
-/// Manages offline downloads of original (lossless) files via a background
-/// URLSession, so queued albums keep downloading when the app is suspended.
-/// Files land under Application Support/Drome/Downloads/<server>/ and the
-/// player transparently prefers them over streaming.
+/// Manages offline downloads via a background URLSession so queued albums keep
+/// downloading when the app is suspended. Quality follows
+/// `PlaybackPreferences.downloadQuality` (compressed MP3 by default, or the
+/// original library file). Files land under Application Support/Drome/Downloads/
+/// <server>/ and the player transparently prefers them over streaming.
 @MainActor
 final class DownloadManager: ObservableObject {
     /// Observed only by in-progress download UI (not SongRow lists).
@@ -51,6 +52,8 @@ final class DownloadManager: ObservableObject {
     private var tasksBySongID: [String: URLSessionDownloadTask] = [:]
     private var coverInflight: Set<String> = []
     private var streamingSuspended = false
+    /// Retains the prefs observer for Wi‑Fi-only / quality changes.
+    private var downloadPrefsObserver: NSObjectProtocol?
     /// safe filename → local cover. List rows ask for this on every body
     /// pass; scanning four extensions with fileExists each time was a scroll hitch.
     private var localCoversByComponent: [String: URL] = [:]
@@ -69,25 +72,45 @@ final class DownloadManager: ObservableObject {
             withIdentifier: "com.drome.app.downloads")
         config.isDiscretionary = false
         config.sessionSendsLaunchEvents = true
+        // Cellular gate is also set per-task so toggling Wi‑Fi-only mid-queue
+        // still applies to newly enqueued work.
+        config.allowsCellularAccess = !PlaybackPreferences.wifiOnlyDownloads
         session = URLSession(configuration: config, delegate: sessionDelegate, delegateQueue: nil)
 
         try? FileManager.default.createDirectory(at: artDirectory, withIntermediateDirectories: true)
+        Self.excludeFromBackup(downloadDirectory)
         refreshLocalCoverIndex()
 
         reload()
         // Reattach to tasks that survived an app relaunch.
         session.getAllTasks { tasks in
             Task { @MainActor [weak self] in
+                guard let self else { return }
+                let allowCellular = !PlaybackPreferences.wifiOnlyDownloads
                 for task in tasks {
                     guard let songId = task.taskDescription else { continue }
-                    self?.tasksBySongID[songId] = task as? URLSessionDownloadTask
+                    task.allowsCellularAccess = allowCellular
+                    self.tasksBySongID[songId] = task as? URLSessionDownloadTask
                 }
+            }
+        }
+        downloadPrefsObserver = NotificationCenter.default.addObserver(
+            forName: PlaybackPreferences.downloadPreferenceDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.applyCellularAccessPreference()
             }
         }
         Task { await self.backfillMissingCoverArt() }
     }
 
     func invalidate() {
+        if let downloadPrefsObserver {
+            NotificationCenter.default.removeObserver(downloadPrefsObserver)
+            self.downloadPrefsObserver = nil
+        }
         session.invalidateAndCancel()
     }
 
@@ -101,7 +124,36 @@ final class DownloadManager: ObservableObject {
         #endif
         let dir = root.appendingPathComponent("Drome/Downloads/\(safe)", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        excludeFromBackup(dir)
         return dir
+    }
+
+    /// Keep offline audio out of iCloud/device backups (Spotify-style).
+    private static func excludeFromBackup(_ url: URL) {
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var mutable = url
+        try? mutable.setResourceValues(values)
+    }
+
+    private func applyCellularAccessPreference() {
+        let allowCellular = !PlaybackPreferences.wifiOnlyDownloads
+        for task in tasksBySongID.values {
+            task.allowsCellularAccess = allowCellular
+        }
+    }
+
+    /// URL for a new offline file: compressed `stream` or original `download`.
+    private func offlineFetchURL(songId: String) -> URL? {
+        let quality = PlaybackPreferences.downloadQuality
+        if let bitRate = quality.maxBitRate {
+            return client.streamURL(
+                songId: songId,
+                format: "mp3",
+                maxBitRate: bitRate,
+                estimateContentLength: true)
+        }
+        return client.downloadURL(songId: songId)
     }
 
     private var artDirectory: URL {
@@ -247,7 +299,7 @@ final class DownloadManager: ObservableObject {
                 continue
             }
             if !liveProgress.contains(song.id) {
-                guard let url = client.downloadURL(songId: song.id) else { continue }
+                guard let url = offlineFetchURL(songId: song.id) else { continue }
                 let resolved = (try? await client.song(id: song.id)) ?? song
                 guard !resolved.id.isEmpty else { continue }
                 let json = (try? JSONEncoder().encode(resolved)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
@@ -261,6 +313,7 @@ final class DownloadManager: ObservableObject {
 
                 let task = session.downloadTask(with: url)
                 task.taskDescription = resolved.id
+                task.allowsCellularAccess = !PlaybackPreferences.wifiOnlyDownloads
                 tasksBySongID[resolved.id] = task
                 liveProgress.set(resolved.id, fraction: 0)
                 if streamingSuspended {
@@ -327,6 +380,28 @@ final class DownloadManager: ObservableObject {
         try? FileManager.default.createDirectory(at: artDirectory, withIntermediateDirectories: true)
         localCoversByComponent.removeAll()
         reload()
+    }
+
+    /// Drop finished offline files and queue them again at the current quality
+    /// (Spotify-style: quality changes apply on re-download).
+    func redownloadAllAtCurrentQuality() {
+        let songs = downloadedSongs()
+        guard !songs.isEmpty else { return }
+        let memberships = playlistMemberships
+        removeAll()
+        Task {
+            // Single enqueue pass avoids racing duplicate tasks per song.
+            await enqueueDownloads(
+                songs, albumId: nil, albumName: nil, artist: nil,
+                playlistId: nil, playlistName: nil)
+            for membership in memberships {
+                attachPlaylistMembership(
+                    songId: membership.songId,
+                    playlistId: membership.playlistId,
+                    playlistName: membership.playlistName)
+            }
+            reload()
+        }
     }
 
     // MARK: - Cover art
@@ -462,7 +537,18 @@ private final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegat
         }
 
         let suggested = downloadTask.response?.suggestedFilename ?? ""
-        let ext = (suggested as NSString).pathExtension.isEmpty ? "flac" : (suggested as NSString).pathExtension
+        let mime = (downloadTask.response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
+        let suggestedExt = (suggested as NSString).pathExtension.lowercased()
+        let ext: String = {
+            if !suggestedExt.isEmpty { return suggestedExt }
+            if mime.contains("mpeg") || mime.contains("mp3") { return "mp3" }
+            if mime.contains("mp4") || mime.contains("aac") || mime.contains("m4a") { return "m4a" }
+            if mime.contains("flac") { return "flac" }
+            if mime.contains("ogg") || mime.contains("opus") { return "ogg" }
+            // Compressed downloads are the default now — prefer mp3 over flac.
+            return "mp3"
+        }()
         let safeID = songId.replacingOccurrences(of: "/", with: "_")
         let relPath = "\(safeID).\(ext)"
         let destination = directory.appendingPathComponent(relPath)

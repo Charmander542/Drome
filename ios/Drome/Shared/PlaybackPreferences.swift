@@ -1,5 +1,46 @@
 import Foundation
 
+/// Spotify-style offline download quality. Compressed tiers use Navidrome's
+/// `stream` transcode; `original` keeps the library file as-is (often FLAC).
+enum DownloadQuality: String, CaseIterable, Identifiable {
+    case normal
+    case high
+    case veryHigh
+    case original
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .normal: return "Normal"
+        case .high: return "High"
+        case .veryHigh: return "Very High"
+        case .original: return "Original"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .normal: return "≈96 kbps · smallest"
+        case .high: return "≈160 kbps · balanced"
+        case .veryHigh: return "≈320 kbps · near-CD"
+        case .original: return "Lossless library file"
+        }
+    }
+
+    /// `nil` means use the Subsonic `download` endpoint (no transcode).
+    var maxBitRate: Int? {
+        switch self {
+        case .normal: return 96
+        case .high: return 160
+        case .veryHigh: return 320
+        case .original: return nil
+        }
+    }
+
+    var usesTranscode: Bool { maxBitRate != nil }
+}
+
 /// User-tunable playback preferences persisted in UserDefaults.
 @MainActor
 enum PlaybackPreferences {
@@ -7,8 +48,12 @@ enum PlaybackPreferences {
     private static let recencyHoursKey = "drome.autoplayRecencyHours"
     private static let compressCellularKey = "drome.compressOnCellular"
     private static let resilientStreamingKey = "drome.resilientStreaming"
+    private static let downloadQualityKey = "drome.downloadQuality"
+    private static let wifiOnlyDownloadsKey = "drome.wifiOnlyDownloads"
     /// Posted when stream-format prefs change so the player can rebuild.
     static let streamPreferenceDidChange = Notification.Name("drome.streamPreferenceDidChange")
+    /// Posted when offline download quality / Wi‑Fi-only prefs change.
+    static let downloadPreferenceDidChange = Notification.Name("drome.downloadPreferenceDidChange")
 
     static var skipLowRatedEverywhere: Bool {
         get { UserDefaults.standard.bool(forKey: skipLowRatedKey) }
@@ -61,6 +106,32 @@ enum PlaybackPreferences {
     /// Cap getCoverArt `size=` over Funnel/remote so grids don't pull 600–1200px.
     /// `nonisolated`: pure constant; called from nonisolated `SubsonicClient`.
     nonisolated static var remoteCoverMaxSize: Int { 200 }
+
+    /// Offline download quality. Defaults to High — Spotify-sized storage instead
+    /// of shipping full FLAC onto the phone.
+    static var downloadQuality: DownloadQuality {
+        get {
+            let raw = UserDefaults.standard.string(forKey: downloadQualityKey) ?? ""
+            return DownloadQuality(rawValue: raw) ?? .high
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: downloadQualityKey)
+            NotificationCenter.default.post(name: downloadPreferenceDidChange, object: nil)
+        }
+    }
+
+    /// When on, background download tasks refuse cellular (Spotify-style).
+    /// Defaults on so large offline syncs don't burn LTE.
+    static var wifiOnlyDownloads: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: wifiOnlyDownloadsKey) == nil { return true }
+            return UserDefaults.standard.bool(forKey: wifiOnlyDownloadsKey)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: wifiOnlyDownloadsKey)
+            NotificationCenter.default.post(name: downloadPreferenceDidChange, object: nil)
+        }
+    }
 
     /// Bitrate for compressed streams given the configured Navidrome host.
     nonisolated static func preferredMaxBitRate(serverHost: String?) -> Int {

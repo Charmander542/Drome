@@ -172,7 +172,11 @@ struct DownloadsView: View {
         let count = downloadedSongs.count
         let songs = count == 1 ? "1 song" : "\(count) songs"
         let size = Formatters.fileSize(downloads.totalBytesUsed)
-        return count == 0 ? size : "\(songs) · \(size)"
+        let quality = PlaybackPreferences.downloadQuality.title
+        if count == 0 {
+            return "New downloads · \(quality)"
+        }
+        return "\(songs) · \(size) · \(quality)"
     }
 
     private func song(from record: DownloadRecord) -> Song? {
