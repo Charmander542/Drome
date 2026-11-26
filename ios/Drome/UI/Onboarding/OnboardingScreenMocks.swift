@@ -114,6 +114,10 @@ enum OnboardingTourChrome {
     static let mockMaxWidth: CGFloat = 320
     static let mockMaxWidthAX: CGFloat = 280
     static let mockMaxHeight: CGFloat = 380
+    /// Welcome page uses dead space above the dots for a larger hero.
+    static let mockMaxHeightHero: CGFloat = 420
+    /// Accent page keeps the orb compact so swatches clear the Continue bar.
+    static let mockMaxHeightAccent: CGFloat = 220
     static let mockMaxHeightAX: CGFloat = 240
     static let mockHorizontalPadding: CGFloat = 28
     static let mockBottomSpacing: CGFloat = 14
@@ -242,20 +246,84 @@ struct OnboardingMockTabBar: View {
     }
 }
 
-private struct MockArtTile: View {
-    let colors: [Color]
+/// Deterministic, copyright-free cover art — vivid gradients + simple shapes.
+struct MockArtTile: View {
+    var index: Int = 0
     var corner: CGFloat = 8
-    var symbol: String = "music.note"
+    /// Legacy two-stop override (search placeholders, etc.).
+    var colors: [Color]? = nil
+    var symbol: String? = nil
+
+    private var palette: [Color] {
+        if let colors, !colors.isEmpty { return colors }
+        return Self.palette(for: index)
+    }
 
     var body: some View {
+        let hues = palette
         RoundedRectangle(cornerRadius: corner, style: .continuous)
             .fill(
-                LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                LinearGradient(
+                    colors: hues,
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing))
             .overlay {
-                Image(systemName: symbol)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.85))
+                GeometryReader { geo in
+                    let w = geo.size.width
+                    let h = geo.size.height
+                    let seed = index & 7
+                    ZStack {
+                        Circle()
+                            .fill(Color.white.opacity(0.18))
+                            .frame(width: w * 0.55, height: w * 0.55)
+                            .offset(
+                                x: seed % 2 == 0 ? w * 0.22 : -w * 0.18,
+                                y: seed < 4 ? -h * 0.2 : h * 0.16)
+                        RoundedRectangle(cornerRadius: corner * 0.6, style: .continuous)
+                            .fill(Color.white.opacity(0.12))
+                            .frame(width: w * 0.42, height: h * 0.28)
+                            .rotationEffect(.degrees(Double(seed) * 12 - 18))
+                            .offset(x: -w * 0.16, y: h * 0.22)
+                        if let symbol {
+                            Image(systemName: symbol)
+                                .font(.system(size: max(10, w * 0.22), weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.88))
+                        } else {
+                            // Soft glyph — not a flat ♪ on teal.
+                            Capsule()
+                                .fill(Color.white.opacity(0.28))
+                                .frame(width: w * 0.12, height: h * 0.42)
+                                .offset(y: h * 0.04)
+                            Circle()
+                                .fill(Color.white.opacity(0.35))
+                                .frame(width: w * 0.2, height: w * 0.2)
+                                .offset(x: -w * 0.06, y: h * 0.18)
+                        }
+                    }
+                    .frame(width: w, height: h)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
             }
+            .overlay {
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+            }
+    }
+
+    static func palette(for index: Int) -> [Color] {
+        let palettes: [[Color]] = [
+            [Color(hex: "#FF6B35"), Color(hex: "#F7C59F"), Color(hex: "#2EC4B6")],
+            [Color(hex: "#7B2CBF"), Color(hex: "#E0AAFF"), Color(hex: "#3C096C")],
+            [Color(hex: "#0077B6"), Color(hex: "#00B4D8"), Color(hex: "#90E0EF")],
+            [Color(hex: "#E63946"), Color(hex: "#F4A261"), Color(hex: "#1D3557")],
+            [Color(hex: "#2A9D8F"), Color(hex: "#E9C46A"), Color(hex: "#264653")],
+            [Color(hex: "#FF8FAB"), Color(hex: "#FB6F92"), Color(hex: "#FFC2D1")],
+            [Color(hex: "#80ED99"), Color(hex: "#57CC99"), Color(hex: "#22577A")],
+            [Color(hex: "#F72585"), Color(hex: "#7209B7"), Color(hex: "#3A0CA3")],
+            [Color(hex: "#FFB703"), Color(hex: "#FB8500"), Color(hex: "#023047")],
+            [Color(hex: "#4CC9F0"), Color(hex: "#4361EE"), Color(hex: "#3A0CA3")],
+        ]
+        return palettes[abs(index) % palettes.count]
     }
 }
 
@@ -267,17 +335,21 @@ struct OnboardingHomeMock: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Real Home has no large title — only the account avatar.
-            HStack {
-                Spacer()
-                Image(systemName: "person.crop.circle")
-                    .font(.system(size: 16, weight: .regular))
-                    .foregroundStyle(DromeTheme.muted)
+            // Match real Home: DROME wordmark + gear Settings (not an avatar).
+            HStack(alignment: .center, spacing: 8) {
+                Text("DROME")
+                    .font(.system(size: 16, weight: .heavy))
+                    .foregroundStyle(DromeTheme.accent)
+                    .tracking(1.2)
+                Spacer(minLength: 4)
+                Image(systemName: "gearshape.circle.fill")
+                    .font(.system(size: 18, weight: .regular))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(DromeTheme.accent)
             }
             .padding(.horizontal, 14)
             .padding(.top, 10)
             .padding(.bottom, 6)
-            .opacity(0.7)
 
             VStack(alignment: .leading, spacing: 10) {
                 OnboardingSpotlight(
@@ -363,13 +435,7 @@ struct OnboardingHomeMock: View {
             HStack(spacing: 8) {
                 ForEach(0..<3, id: \.self) { index in
                     VStack(alignment: .leading, spacing: 3) {
-                        MockArtTile(
-                            colors: index == 0
-                                ? [Color(hex: "#2A9D8F"), Color(hex: "#1D3557")]
-                                : index == 1
-                                    ? [Color(hex: "#E76F51"), Color(hex: "#264653")]
-                                    : [Color(hex: "#9B5DE5"), Color(hex: "#1D3557")],
-                            corner: 6)
+                        MockArtTile(index: index + 1, corner: 6)
                             .frame(width: 56, height: 56)
                         Text("Daily Mix \(index + 1)")
                             .font(.system(size: 8, weight: .semibold))
@@ -390,9 +456,9 @@ struct OnboardingBrowseMock: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Match real Library chrome: heart · Your Library · +
-            HStack {
-                Image(systemName: "heart")
+            // Match real Library: star · Your Library · ≡/+ capsule.
+            HStack(spacing: 8) {
+                Image(systemName: "star")
                     .font(.system(size: 13, weight: .regular))
                     .foregroundStyle(DromeTheme.muted)
                     .frame(width: 22)
@@ -401,15 +467,21 @@ struct OnboardingBrowseMock: View {
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white)
                 Spacer()
-                Image(systemName: "plus")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(DromeTheme.muted)
-                    .frame(width: 22)
+                HStack(spacing: 10) {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 11, weight: .semibold))
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(DromeTheme.muted)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(DromeTheme.elevated2, in: Capsule())
             }
             .padding(.horizontal, 12)
             .padding(.top, 10)
             .padding(.bottom, 6)
-            .opacity(0.55)
+            .opacity(0.85)
 
             HStack(spacing: 0) {
                 ForEach(filters, id: \.self) { title in
@@ -432,14 +504,13 @@ struct OnboardingBrowseMock: View {
             .opacity(0.55)
 
             VStack(spacing: 0) {
-                libraryRow("Create playlist", "plus.circle.fill", accent: true)
                 libraryRow("Downloaded", "arrow.down.circle.fill")
-                libraryRow("Wishlist", "heart.fill")
                 libraryRow("Top Rated", "star.fill")
                 libraryRow("Out of Rotation", "lock.fill")
+                libraryRow("Hidden Playlists", "eye.slash")
             }
             .padding(.horizontal, 8)
-            .opacity(0.45)
+            .opacity(0.55)
 
             Spacer(minLength: 0)
 
@@ -685,23 +756,29 @@ struct OnboardingSearchMock: View {
     }
 
     private var resultsPlaceholder: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(0..<3, id: \.self) { index in
+        let rows: [(title: String, subtitle: String, art: Int, round: Bool)] = [
+            ("Neon Harbor", "Artist", 2, true),
+            ("Midnight Drive", "Song · Glass Roads", 0, false),
+            ("Coastline Mix", "Playlist · 42 songs", 5, false),
+        ]
+        return VStack(alignment: .leading, spacing: 7) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                 HStack(spacing: 8) {
                     MockArtTile(
-                        colors: [DromeTheme.elevated2, DromeTheme.elevated],
-                        corner: index == 0 ? 14 : 5,
-                        symbol: index == 0 ? "person.crop.circle" : "music.note")
+                        index: row.art,
+                        corner: row.round ? 14 : 5)
                         .frame(width: 32, height: 32)
                     VStack(alignment: .leading, spacing: 2) {
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(Color.white.opacity(0.55))
-                            .frame(width: 84 - CGFloat(index * 12), height: 6)
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(Color.white.opacity(0.22))
-                            .frame(width: 52, height: 5)
+                        Text(row.title)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Text(row.subtitle)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(DromeTheme.muted)
+                            .lineLimit(1)
                     }
-                    Spacer()
+                    Spacer(minLength: 0)
                 }
             }
         }
@@ -720,14 +797,11 @@ struct OnboardingNowPlayingMock: View {
                 .padding(.bottom, 6)
                 .opacity(0.5)
 
-            MockArtTile(
-                colors: [Color(hex: "#264653"), Color(hex: "#2A9D8F")],
-                corner: OnboardingTourChrome.coverCorner,
-                symbol: "music.note")
+            MockArtTile(index: 0, corner: OnboardingTourChrome.coverCorner)
                 .frame(width: 104, height: 104)
                 .shadow(color: .black.opacity(0.35), radius: 10, y: 6)
                 .padding(.bottom, 10)
-                .opacity(0.45)
+                .opacity(0.9)
 
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -857,89 +931,47 @@ private struct OnboardingScrubberMock: View {
 }
 
 /// Manual steps on the Now Playing controls lesson (Continue / swipe advances).
-/// Order follows the real player: art → scrubber → transport → panes → bottom bar → ···.
+/// Grouped into a short walk: navigate → playback → lyrics → tools → more.
 enum OnboardingNowPlayingStep: Int, CaseIterable {
-    case artSwipe
-    case scrubber
-    case shuffle
-    case `repeat`
+    case navigate
+    case playback
     case lyrics
-    case addToPlaylist
-    case queue
-    case sleep
-    case output
-    case equalizer
-    case share
+    case tools
     case more
 
     var title: String {
         switch self {
-        case .artSwipe: return "Swipe the artwork"
-        case .scrubber: return "Scrubber"
-        case .shuffle: return "Shuffle"
-        case .repeat: return "Repeat"
-        case .lyrics: return "Song & Lyrics"
-        case .addToPlaylist: return "Add to Playlist"
-        case .queue: return "Queue"
-        case .sleep: return "Sleep Timer"
-        case .output: return "Output"
-        case .equalizer: return "Equalizer"
-        case .share: return "Share"
-        case .more: return "More"
+        case .navigate: return "Skip ahead with a swipe"
+        case .playback: return "Scrub, shuffle, repeat"
+        case .lyrics: return "Follow every word"
+        case .tools: return "Queue, sleep, share & EQ"
+        case .more: return "Keep the mix alive"
         }
     }
 
-    /// Plain-language caption matching real PlayerEngine / NowPlayingView behavior.
+    /// Captions lead with the benefit — they do not repeat the title.
     func caption(compact: Bool) -> String {
         switch self {
-        case .artSwipe:
+        case .navigate:
             return compact
                 ? "Swipe art left for next, right for previous."
-                : "Swipe album art left for the next song, right for the previous."
-        case .scrubber:
+                : "Flick album art left for the next track, right for the previous — no buttons required."
+        case .playback:
             return compact
-                ? "Elapsed left, time left (−) right. Drag to seek."
-                : "Elapsed on the left, time remaining on the right. Drag the scrubber — it tracks the real song."
-        case .shuffle:
-            return compact
-                ? "Off: order. Smart: ★ rated. Random: any."
-                : "Off plays in list order. Smart favors higher-rated tracks. Random plays this list in random order."
-        case .repeat:
-            return compact
-                ? "Once: list. Twice: one song."
-                : "Tap once to repeat the list, twice for one song, again to turn off."
+                ? "Drag to seek. Shuffle Off / Smart / Random. Repeat list or one song."
+                : "Drag the scrubber to seek. Shuffle: Off, Smart (★ rated), or Random. Tap repeat for the list, twice for one song."
         case .lyrics:
             return compact
                 ? "Song / Lyrics panes. Swipe up on art opens Lyrics."
-                : "Switch panes for the player or synced lyrics. Swipe up on art also opens Lyrics."
-        case .addToPlaylist:
+                : "Flip between the player and synced lyrics — or swipe up on the artwork to open Lyrics."
+        case .tools:
             return compact
-                ? "Save this song into one of your playlists."
-                : "Add the playing song to a playlist without leaving Now Playing."
-        case .queue:
-            return compact
-                ? "Opens upcoming tracks to reorder or clear."
-                : "Opens the upcoming tracks so you can reorder or clear what’s next."
-        case .sleep:
-            return compact
-                ? "Fade out after a set number of minutes."
-                : "Set a sleep timer so playback fades out after the minutes you pick."
-        case .output:
-            return compact
-                ? "AirPlay, Connect speakers, and phone output."
-                : "Pick AirPlay, a Connect speaker, or this iPhone — same sheet as the speaker button."
-        case .equalizer:
-            return compact
-                ? "Tune bass, mids, and treble while you listen."
-                : "Open the equalizer to shape bass, mids, and treble without leaving the player."
-        case .share:
-            return compact
-                ? "Share this track with the system share sheet."
-                : "Share the playing track via Messages, Mail, or anything else on your share sheet."
+                ? "Add, queue, sleep, speakers, EQ, and share from the bar."
+                : "Save to a playlist, open the queue, set a sleep timer, pick speakers, tune EQ, or share — all from the bottom bar."
         case .more:
             return compact
-                ? "Instant Mix, Keep Playing, and station steering."
-                : "··· opens Instant Mix, Keep Playing (autoplay), and station steering for what’s next."
+                ? "··· opens Instant Mix, Keep Playing, and steering."
+                : "The ··· menu opens Instant Mix, Keep Playing (autoplay), and station steering for what’s next."
         }
     }
 
@@ -949,18 +981,32 @@ enum OnboardingNowPlayingStep: Int, CaseIterable {
 
     var symbolName: String {
         switch self {
-        case .artSwipe: return "hand.draw"
-        case .scrubber: return "slider.horizontal.3"
-        case .shuffle: return "shuffle"
-        case .repeat: return "repeat"
+        case .navigate: return "hand.draw"
+        case .playback: return "slider.horizontal.3"
         case .lyrics: return "text.alignleft"
-        case .addToPlaylist: return "text.badge.plus"
-        case .queue: return "list.bullet"
-        case .sleep: return "moon.zzz"
-        case .output: return "hifispeaker.2.fill"
-        case .equalizer: return "slider.vertical.3"
-        case .share: return "square.and.arrow.up"
+        case .tools: return "slider.vertical.3"
         case .more: return "ellipsis"
+        }
+    }
+
+    /// Focus point inside the mock (0…1) used to zoom toward the highlighted region.
+    var focusAnchor: UnitPoint {
+        switch self {
+        case .navigate: return UnitPoint(x: 0.5, y: 0.28)
+        case .playback: return UnitPoint(x: 0.5, y: 0.62)
+        case .lyrics: return UnitPoint(x: 0.5, y: 0.12)
+        case .tools: return UnitPoint(x: 0.5, y: 0.78)
+        case .more: return UnitPoint(x: 0.88, y: 0.42)
+        }
+    }
+
+    var focusScale: CGFloat {
+        switch self {
+        case .navigate: return 1.12
+        case .playback: return 1.18
+        case .lyrics: return 1.2
+        case .tools: return 1.22
+        case .more: return 1.16
         }
     }
 }
@@ -979,15 +1025,31 @@ struct OnboardingNowPlayingControlsMock: View {
     @State private var swipeHintOffset: CGFloat = 0
     @State private var isAnimatingCover = false
 
-    private let artPalettes: [[Color]] = [
-        [Color(hex: "#264653"), Color(hex: "#2A9D8F")],
-        [Color(hex: "#E76F51"), Color(hex: "#264653")],
-        [Color(hex: "#1D3557"), Color(hex: "#457B9D")],
-    ]
-
     private let coverSize: CGFloat = 102
+    private let artCount = 3
 
     var body: some View {
+        GeometryReader { geo in
+            playerChrome
+                .frame(width: OnboardingMockDesign.width, height: OnboardingMockDesign.height)
+                // Zoom toward the highlighted region so in-mock text stays readable.
+                .scaleEffect(reduceMotion ? 1 : step.focusScale, anchor: step.focusAnchor)
+                .frame(width: geo.size.width, height: geo.size.height)
+                .clipped()
+                .animation(
+                    reduceMotion ? nil : .easeInOut(duration: 0.28),
+                    value: step)
+        }
+        .background(DromeTheme.background)
+        .onAppear { restartSwipeHint() }
+        .onChange(of: step) { _, _ in
+            stopCoverMotion()
+            restartSwipeHint()
+        }
+        .onChange(of: reduceMotion) { _, _ in restartSwipeHint() }
+    }
+
+    private var playerChrome: some View {
         VStack(spacing: 0) {
             Capsule()
                 .fill(Color.white.opacity(0.28))
@@ -1025,18 +1087,13 @@ struct OnboardingNowPlayingControlsMock: View {
 
             // Reserved chip slot — constant height across all tips (fits 3 rows).
             stateChipSlot
-                .frame(height: 72)
+                .frame(height: 78)
                 .padding(.horizontal, 12)
+                .padding(.bottom, 8)
 
             Spacer(minLength: 0)
         }
         .background(DromeTheme.background)
-        .onAppear { restartSwipeHint() }
-        .onChange(of: step) { _, _ in
-            stopCoverMotion()
-            restartSwipeHint()
-        }
-        .onChange(of: reduceMotion) { _, _ in restartSwipeHint() }
     }
 
     /// Clears drag + hint immediately (cancels any in-flight repeatForever hint).
@@ -1058,7 +1115,7 @@ struct OnboardingNowPlayingControlsMock: View {
             cornerRadius: 9
         ) {
             HStack(spacing: 0) {
-                pickerChip("Song", selected: step != .lyrics)
+                pickerChip("Song", selected: !active)
                 pickerChip("Lyrics", selected: active)
             }
             .padding(3)
@@ -1083,12 +1140,12 @@ struct OnboardingNowPlayingControlsMock: View {
 
     /// One square cover. Neighbour tiles only exist on the swipe tip (avoids bleed on other tips).
     private var albumArt: some View {
-        let active = step == .artSwipe
+        let active = step == .navigate
         let hint = (active && !reduceMotion && !isAnimatingCover) ? swipeHintOffset : 0
         return ZStack {
             if active {
                 // Underlay fills the ring during left-hint / drag so no dark gap shows.
-                artTile(index: (artIndex + 1) % artPalettes.count)
+                artTile(index: (artIndex + 1) % artCount)
                     .frame(width: coverSize, height: coverSize)
 
                 artTile(index: artIndex)
@@ -1096,7 +1153,7 @@ struct OnboardingNowPlayingControlsMock: View {
                     .offset(x: artDragX + hint)
 
                 if artDragX > 0 {
-                    artTile(index: (artIndex + artPalettes.count - 1) % artPalettes.count)
+                    artTile(index: (artIndex + artCount - 1) % artCount)
                         .frame(width: coverSize, height: coverSize)
                         .offset(x: artDragX - coverSize)
                 }
@@ -1142,7 +1199,7 @@ struct OnboardingNowPlayingControlsMock: View {
                     .stroke(DromeTheme.accent, lineWidth: OnboardingTourChrome.highlightStroke)
             }
         }
-        .opacity(active || step == .lyrics ? 1 : (step == .scrubber ? 0.55 : 0.72))
+        .opacity(active || step == .lyrics ? 1 : (step == .playback ? 0.55 : 0.72))
         .background {
             GeometryReader { geo in
                 Color.clear.preference(
@@ -1158,23 +1215,20 @@ struct OnboardingNowPlayingControlsMock: View {
     }
 
     private func artTile(index: Int) -> some View {
-        MockArtTile(
-            colors: artPalettes[index % artPalettes.count],
-            corner: OnboardingTourChrome.coverCorner,
-            symbol: "music.note")
+        MockArtTile(index: index, corner: OnboardingTourChrome.coverCorner)
     }
 
     /// Fake song-change only — never advances tour steps.
     private var artSwipeGesture: some Gesture {
         DragGesture(minimumDistance: 12)
             .onChanged { value in
-                guard step == .artSwipe, !isAnimatingCover else { return }
+                guard step == .navigate, !isAnimatingCover else { return }
                 guard abs(value.translation.width) > abs(value.translation.height) * 0.55 else { return }
                 var t = Transaction(); t.disablesAnimations = true
                 withTransaction(t) { artDragX = value.translation.width }
             }
             .onEnded { value in
-                guard step == .artSwipe, !isAnimatingCover else {
+                guard step == .navigate, !isAnimatingCover else {
                     withAnimation(.easeOut(duration: 0.2)) { artDragX = 0 }
                     return
                 }
@@ -1200,9 +1254,9 @@ struct OnboardingNowPlayingControlsMock: View {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + (reduceMotion ? 0.16 : 0.28)) {
             if goingNext {
-                artIndex = (artIndex + 1) % artPalettes.count
+                artIndex = (artIndex + 1) % artCount
             } else {
-                artIndex = (artIndex + artPalettes.count - 1) % artPalettes.count
+                artIndex = (artIndex + artCount - 1) % artCount
             }
             artDragX = 0
             isAnimatingCover = false
@@ -1211,7 +1265,7 @@ struct OnboardingNowPlayingControlsMock: View {
 
     private func restartSwipeHint() {
         stopCoverMotion()
-        guard step == .artSwipe, !reduceMotion else { return }
+        guard step == .navigate, !reduceMotion else { return }
         withAnimation(.easeInOut(duration: 0.95).repeatForever(autoreverses: true)) {
             swipeHintOffset = -14
         }
@@ -1240,7 +1294,7 @@ struct OnboardingNowPlayingControlsMock: View {
                 tint: moreActive ? .white : Color.white.opacity(0.55),
                 active: moreActive)
         }
-        .opacity(moreActive || step == .scrubber || step == .lyrics ? 0.95 : 0.7)
+        .opacity(moreActive || step == .playback || step == .lyrics ? 0.95 : 0.7)
     }
 
     private var ratingRow: some View {
@@ -1259,18 +1313,19 @@ struct OnboardingNowPlayingControlsMock: View {
     private var scrubber: some View {
         OnboardingScrubberMock(
             fraction: 0.42,
-            dimmed: step != .scrubber,
-            highlighted: step == .scrubber,
+            dimmed: step != .playback,
+            highlighted: step == .playback,
             reduceMotion: reduceMotion)
     }
 
     private var transportRow: some View {
-        HStack {
+        let active = step == .playback
+        return HStack {
             controlIcon(
                 "shuffle",
-                tint: step == .shuffle ? DromeTheme.accent : Color.white.opacity(0.45),
-                active: step == .shuffle,
-                badge: step == .shuffle)
+                tint: active ? DromeTheme.accent : Color.white.opacity(0.45),
+                active: active,
+                badge: active)
             Spacer(minLength: 4)
             Image(systemName: "backward.fill")
                 .font(.system(size: 16, weight: .semibold))
@@ -1287,39 +1342,48 @@ struct OnboardingNowPlayingControlsMock: View {
             Spacer(minLength: 4)
             controlIcon(
                 "repeat",
-                tint: step == .repeat ? DromeTheme.accent : Color.white.opacity(0.45),
-                active: step == .repeat)
+                tint: active ? DromeTheme.accent : Color.white.opacity(0.45),
+                active: active)
         }
     }
 
     private var bottomBar: some View {
         // Match real Now Playing bottom bar: add · queue · sleep · output · EQ · share.
-        HStack(spacing: 0) {
-            bottomBarIcon("text.badge.plus", active: step == .addToPlaylist)
-            Spacer(minLength: 0)
-            bottomBarIcon("list.bullet", active: step == .queue)
-            Spacer(minLength: 0)
-            bottomBarIcon("moon.zzz", active: step == .sleep)
-            Spacer(minLength: 0)
-            bottomBarIcon("hifispeaker.2.fill", active: step == .output)
-            Spacer(minLength: 0)
-            bottomBarIcon("slider.vertical.3", active: step == .equalizer)
-            Spacer(minLength: 0)
-            bottomBarIcon("square.and.arrow.up", active: step == .share, shareOffset: true)
+        let active = step == .tools
+        return OnboardingSpotlightRing(
+            isActive: active,
+            reduceMotion: reduceMotion,
+            cornerRadius: 10
+        ) {
+            HStack(spacing: 0) {
+                bottomBarGlyph("text.badge.plus", lit: active)
+                Spacer(minLength: 0)
+                bottomBarGlyph("list.bullet", lit: active)
+                Spacer(minLength: 0)
+                bottomBarGlyph("moon.zzz", lit: active)
+                Spacer(minLength: 0)
+                bottomBarGlyph("hifispeaker.2.fill", lit: active)
+                Spacer(minLength: 0)
+                bottomBarGlyph("slider.vertical.3", lit: active)
+                Spacer(minLength: 0)
+                bottomBarGlyph("square.and.arrow.up", lit: active, yOffset: -1.5)
+            }
+            .frame(height: 36)
+            .padding(.horizontal, active ? 4 : 0)
         }
-        .frame(height: 36)
     }
 
-    private func bottomBarIcon(
+    /// Glyph only — the tools tip rings the whole bar, not each icon.
+    private func bottomBarGlyph(
         _ systemName: String,
-        active: Bool,
-        shareOffset: Bool = false
+        lit: Bool,
+        yOffset: CGFloat = 0
     ) -> some View {
-        controlIcon(
-            systemName,
-            tint: active ? .white : Color.white.opacity(0.4),
-            active: active,
-            yOffset: shareOffset ? -1.5 : 0)
+        Image(systemName: systemName)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(lit ? Color.white : Color.white.opacity(0.4))
+            .offset(y: yOffset)
+            .frame(width: 32, height: 32)
     }
 
     private func controlIcon(
@@ -1354,44 +1418,33 @@ struct OnboardingNowPlayingControlsMock: View {
     @ViewBuilder
     private var stateChipSlot: some View {
         switch step {
-        case .shuffle:
-            chipStack([
-                ("Off", "Order", false),
-                ("Smart", "★ rated", true),
-                ("Random", "Any", true),
+        case .playback:
+            // Choose-one modes — mode name + single checkmark on the selected option.
+            modeChipStack([
+                ("Off", "List order", false),
+                ("Smart", "★ rated first", true),
+                ("Random", "Any order", false),
             ])
-        case .repeat:
-            chipStack([
-                ("Off", "None", false),
-                ("List", "Once", true),
-                ("One", "Twice", true),
+        case .tools:
+            modeChipStack([
+                ("Flat", "As recorded", false),
+                ("Bass Boost", "More low end", true),
+                ("Vocal", "Clear mids", false),
             ])
         case .more:
-            chipStack([
-                ("Instant Mix", "Radio", true),
-                ("Keep Playing", "Autoplay", true),
-                ("Steering", "Next up", true),
-            ])
-        case .sleep:
-            chipStack([
-                ("15m", "Short", false),
-                ("30m", "Default", true),
-                ("45m", "Long", false),
-            ])
-        case .equalizer:
-            chipStack([
-                ("Bass", "Low", true),
-                ("Mids", "Mid", true),
-                ("Treble", "High", true),
+            actionChipStack([
+                ("Instant Mix", "Radio from this track"),
+                ("Keep Playing", "Autoplay when the queue ends"),
+                ("Steering", "Nudge what’s next"),
             ])
         default:
             Color.clear
         }
     }
 
-    private func chipStack(_ items: [(String, String, Bool)]) -> some View {
-        // Vertical so AX5 never mid-word truncates; same layout at default size.
-        VStack(alignment: .leading, spacing: 4) {
+    /// Mutually exclusive modes — one checkmark, never On/On/On.
+    private func modeChipStack(_ items: [(String, String, Bool)]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                 HStack(spacing: 8) {
                     Text(item.0)
@@ -1403,13 +1456,36 @@ struct OnboardingNowPlayingControlsMock: View {
                         .foregroundStyle(DromeTheme.muted)
                         .lineLimit(1)
                     Spacer(minLength: 0)
-                    Text(item.2 ? "On" : "Off")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(item.2 ? DromeTheme.accent : DromeTheme.muted)
+                    if item.2 {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(DromeTheme.accent)
+                    }
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.bottom, 4)
+    }
+
+    private func actionChipStack(_ items: [(String, String)]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                HStack(spacing: 8) {
+                    Text(item.0)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text(item.1)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(DromeTheme.muted)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.bottom, 4)
     }
 }
 
@@ -1418,9 +1494,9 @@ struct OnboardingPlaylistsMock: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Library chrome with + for create.
-            HStack {
-                Image(systemName: "heart")
+            // Match real Library: star · title · ≡/+ capsule with New spotlight.
+            HStack(spacing: 8) {
+                Image(systemName: "star")
                     .font(.system(size: 12))
                     .foregroundStyle(DromeTheme.muted)
                     .frame(width: 20)
@@ -1435,10 +1511,16 @@ struct OnboardingPlaylistsMock: View {
                     reduceMotion: reduceMotion,
                     overlayCallout: true
                 ) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 24, height: 24)
+                    HStack(spacing: 8) {
+                        Image(systemName: "line.3.horizontal")
+                            .font(.system(size: 11, weight: .semibold))
+                        Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(DromeTheme.elevated2, in: Capsule())
                 }
             }
             .padding(.horizontal, 10)
@@ -1518,25 +1600,30 @@ struct OnboardingSettingsMock: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Settings is reached from Home's avatar menu — not a tab.
+            // Settings opens from Home’s gear — not an avatar.
             HStack {
+                Text("DROME")
+                    .font(.system(size: 14, weight: .heavy))
+                    .foregroundStyle(DromeTheme.accent)
+                    .tracking(1.0)
                 Spacer()
                 OnboardingSpotlight(
-                    label: "Avatar",
+                    label: "Settings",
                     isActive: true,
                     reduceMotion: reduceMotion,
                     overlayCallout: true
                 ) {
-                    Image(systemName: "person.crop.circle")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.white)
-                        .frame(width: 26, height: 26)
+                    Image(systemName: "gearshape.circle.fill")
+                        .font(.system(size: 18))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(DromeTheme.accent)
+                        .frame(width: 28, height: 28)
                 }
             }
             .padding(.horizontal, 12)
             .padding(.top, 14)
 
-            Text("Avatar → Settings")
+            Text("Home → Settings")
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(DromeTheme.accent)
                 .padding(.bottom, 6)
