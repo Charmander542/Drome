@@ -284,7 +284,7 @@ struct LyricsView: View {
     private func sourceLabel(_ source: String) -> String {
         switch source {
         case "navidrome", "navidrome.v2", "navidrome.v3", "navidrome.v4", "navidrome.v5",
-             "sidecar", "sidecar.v1":
+             "sidecar", "sidecar.v1", "offline", "offline.v1":
             return "From your library"
         case "lrclib", "lrclib.v2", "lrclib.v3", "lrclib.v4", "lrclib.v5":
             return "From LRCLIB"
