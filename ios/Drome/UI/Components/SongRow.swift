@@ -55,16 +55,16 @@ struct SongRow: View {
         })
         .accessibilityAddTraits(playsOnTap ? .isButton : [])
         .accessibilityHint(playsOnTap ? "Plays this song" : "")
-        // Lightweight catalog rows skip context menu + sheet attach cost.
+        // Keep long-press (View Artist / View Album / queue) even on lightweight
+        // Search/Library rows — layout stays cheap, menu still works.
         .modifier(ConditionalSongContext(
-            enabled: !lightweight,
+            enabled: true,
             menu: { contextMenu },
             showAddToPlaylist: $showAddToPlaylist,
             song: song,
             session: session
         ))
-        // Swipes stay available on lightweight Search/Library rows — only the
-        // context menu / add-to-playlist sheet is stripped for catalog flings.
+        // Swipes stay available on lightweight Search/Library rows.
         .modifier(ConditionalSongSwipe(enabled: enablesSwipeActions, song: song))
         .confirmReplaceUserQueue(
             isPresented: $showReplaceQueueConfirm,
