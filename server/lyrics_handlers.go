@@ -9,6 +9,7 @@ import (
 func (s *server) registerLyricsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /lyrics/search", s.requireAuth(s.handleLyricsSearch))
 	mux.HandleFunc("GET /lyrics/stats", s.requireAuth(s.handleLyricsStats))
+	mux.HandleFunc("GET /lyrics/track", s.requireAuth(s.handleLyricsTrack))
 }
 
 // GET /lyrics/search?q=...&limit=40
@@ -51,4 +52,34 @@ func (s *server) handleLyricsStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.lyrics.stats())
+}
+
+// GET /lyrics/track?title=...&artist=...
+// Returns the raw .lrc sidecar from the music library (preserves word stamps).
+func (s *server) handleLyricsTrack(w http.ResponseWriter, r *http.Request) {
+	title := strings.TrimSpace(r.URL.Query().Get("title"))
+	artist := strings.TrimSpace(r.URL.Query().Get("artist"))
+	if title == "" {
+		writeError(w, http.StatusBadRequest, "query parameter \"title\" is required")
+		return
+	}
+	musicDir := ""
+	if s.lyricsSync != nil {
+		musicDir = s.lyricsSync.musicDir
+	} else if s.lyrics != nil {
+		musicDir = s.lyrics.musicDir
+	}
+	path, content, ok := findSidecarLRC(musicDir, title, artist)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"found": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"found":      true,
+		"path":       path,
+		"content":    content,
+		"synced":     hasLineSync(content) || hasWordSync(content),
+		"wordSynced": hasWordSync(content),
+		"source":     "sidecar",
+	})
 }

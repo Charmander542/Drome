@@ -1,5 +1,14 @@
 import Foundation
 
+enum LyricsWordTiming: String, Equatable {
+    /// Enhanced LRC / measured word stamps from the file.
+    case measured
+    /// Line-synced LRC with paced word starts.
+    case approximated
+    /// Plain text or no usable timing.
+    case none
+}
+
 struct LyricsDocument {
     var lines: [LRCParser.Line]
     var synced: Bool
@@ -9,27 +18,39 @@ struct LyricsDocument {
     var timingOffsetMs: Int
     /// LRCLIB / sidecar duration used for scaling, when known.
     var matchedDurationSec: Int?
+    /// Whether karaoke uses real word stamps or paced approximations.
+    var wordTiming: LyricsWordTiming
 
     init(
         lines: [LRCParser.Line],
         synced: Bool,
         source: String,
         timingOffsetMs: Int = 0,
-        matchedDurationSec: Int? = nil
+        matchedDurationSec: Int? = nil,
+        wordTiming: LyricsWordTiming? = nil
     ) {
         self.lines = lines
         self.synced = synced
         self.source = source
         self.timingOffsetMs = timingOffsetMs
         self.matchedDurationSec = matchedDurationSec
+        if let wordTiming {
+            self.wordTiming = wordTiming
+        } else if !synced {
+            self.wordTiming = .none
+        } else if lines.contains(where: { $0.words.contains(where: \.measured) }) {
+            self.wordTiming = .measured
+        } else {
+            self.wordTiming = .approximated
+        }
     }
 }
 
 /// Lyrics lookup pipeline, in priority order:
-/// 1. local SQLite cache
-/// 2. Navidrome `getLyricsBySongId` (serves lyrics embedded in the FLAC tags
-///    or sidecar `.lrc` files next to the music)
-/// 3. LRCLIB public API (matched by artist/title/duration)
+/// 1. Companion library sidecar (raw `.lrc` next to the file — keeps word stamps)
+/// 2. Navidrome `getLyricsBySongId` when it has usable line timing
+/// 3. local SQLite cache (offline / after network miss)
+/// 4. LRCLIB public API (matched by artist/title/duration; prefers word-synced)
 ///
 /// Timestamps are aligned to the local file: LRC `[offset:]` tags, OpenSubsonic
 /// `offset`, and mild duration scaling when the matched master is a near-cut.
@@ -37,38 +58,49 @@ actor LyricsService {
     private let database: AppDatabase
     private let client: SubsonicClient
     private let lrclib: LRCLIBClient
+    private let wishlist: DromeWishlistClient?
     private let serverKey: String
 
     /// Bumped when matching / alignment rules change so old hits refetch once.
     private static let lrclibSource = "lrclib.v5"
-    private static let navidromeSource = "navidrome.v4"
+    private static let navidromeSource = "navidrome.v5"
+    private static let sidecarSource = "sidecar.v1"
     private static let legacySources: Set<String> = [
         "lrclib", "lrclib.v2", "lrclib.v3", "lrclib.v4",
-        "navidrome", "navidrome.v2", "navidrome.v3",
+        "navidrome", "navidrome.v2", "navidrome.v3", "navidrome.v4",
     ]
 
-    init(database: AppDatabase, client: SubsonicClient, serverKey: String) {
+    init(
+        database: AppDatabase,
+        client: SubsonicClient,
+        serverKey: String,
+        wishlist: DromeWishlistClient? = nil
+    ) {
         self.database = database
         self.client = client
         self.lrclib = LRCLIBClient(session: client.session)
+        self.wishlist = wishlist
         self.serverKey = serverKey
     }
 
     func lyrics(for song: Song, allowNetwork: Bool = true) async -> LyricsDocument? {
+        if allowNetwork, let fresh = await fetchAndCache(song: song) {
+            return fresh
+        }
+
         if let cached = try? database.cachedLyrics(serverKey: serverKey, songId: song.id) {
             if cached.source == "none" {
                 return nil
             }
-            // Ignore pre-alignment-fix rows — they may be wrong song or unscaled.
             if Self.legacySources.contains(cached.source) {
-                // Fall through to refetch.
-            } else {
-                return document(
-                    from: cached.content,
-                    synced: cached.synced,
-                    source: cached.source,
-                    songDuration: song.duration)
+                guard allowNetwork else { return nil }
+                return await fetchAndCache(song: song)
             }
+            return document(
+                from: cached.content,
+                synced: cached.synced,
+                source: cached.source,
+                songDuration: song.duration)
         }
         guard allowNetwork else { return nil }
         return await fetchAndCache(song: song)
@@ -92,8 +124,22 @@ actor LyricsService {
         // otherwise keep plain as a fallback after trying LRCLIB synced LRC.
         var unsyncedFallback: (content: String, source: String, offsetMs: Int)?
 
-        // 1. Navidrome (embedded tags / .lrc sidecar files, served as
-        //    OpenSubsonic structured lyrics).
+        // 1. Companion raw sidecar — preserves Enhanced LRC word stamps.
+        if let wishlist,
+           let sidecar = try? await wishlist.trackLyrics(
+            title: song.title, artist: song.artist ?? ""),
+           sidecar.found,
+           let content = sidecar.content, !content.isEmpty {
+            let synced = sidecar.synced || LRCParser.isSynced(content)
+            store(song: song, synced: synced, content: content, source: Self.sidecarSource)
+            return document(
+                from: content,
+                synced: synced,
+                source: Self.sidecarSource,
+                songDuration: song.duration)
+        }
+
+        // 2. Navidrome structured lyrics — prefer timed; defer plain to after LRCLIB.
         if let structured = try? await client.lyrics(songId: song.id),
            let best = preferTimed(structured),
            let lines = best.line, !lines.isEmpty {
@@ -114,7 +160,18 @@ actor LyricsService {
             unsyncedFallback = (content, Self.navidromeSource, offsetMs)
         }
 
-        // 2. LRCLIB — prefer synced karaoke; plain only if we have nothing else.
+        // 3. Warm cache after a network miss on server sources.
+        if let cached = try? database.cachedLyrics(serverKey: serverKey, songId: song.id),
+           cached.source != "none",
+           !Self.legacySources.contains(cached.source) {
+            return document(
+                from: cached.content,
+                synced: cached.synced,
+                source: cached.source,
+                songDuration: song.duration)
+        }
+
+        // 4. LRCLIB — prefer synced karaoke; plain only if we have nothing else.
         if let artist = song.artist,
            let result = try? await lrclib.lyrics(
             artist: artist, title: song.title,

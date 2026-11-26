@@ -89,7 +89,8 @@ struct LyricsView: View {
             synced: document.synced,
             source: document.source,
             timingOffsetMs: document.timingOffsetMs,
-            matchedDurationSec: Int((player.duration).rounded()))
+            matchedDurationSec: Int((player.duration).rounded()),
+            wordTiming: document.wordTiming)
     }
 
     private func lyricsBody(_ document: LyricsDocument) -> some View {
@@ -176,6 +177,14 @@ struct LyricsView: View {
                 Text(offsetLabel)
                     .font(.caption.weight(.semibold).monospacedDigit())
                     .foregroundStyle(Color.white.opacity(0.85))
+                if let timing = timingLabel(document) {
+                    Text(timing)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(
+                            document.wordTiming == .measured
+                                ? DromeTheme.accent.opacity(0.9)
+                                : Color.white.opacity(0.55))
+                }
                 Text(sourceLabel(document.source))
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(Color.white.opacity(0.4))
@@ -274,11 +283,21 @@ struct LyricsView: View {
 
     private func sourceLabel(_ source: String) -> String {
         switch source {
-        case "navidrome", "navidrome.v2", "navidrome.v3", "navidrome.v4":
+        case "navidrome", "navidrome.v2", "navidrome.v3", "navidrome.v4", "navidrome.v5",
+             "sidecar", "sidecar.v1":
             return "From your library"
         case "lrclib", "lrclib.v2", "lrclib.v3", "lrclib.v4", "lrclib.v5":
             return "From LRCLIB"
         default: return ""
+        }
+    }
+
+    private func timingLabel(_ document: LyricsDocument) -> String? {
+        guard document.synced else { return nil }
+        switch document.wordTiming {
+        case .measured: return "Word-synced"
+        case .approximated: return "Approx. word timing"
+        case .none: return nil
         }
     }
 

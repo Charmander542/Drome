@@ -80,14 +80,21 @@ func main() {
 	worker := newDownloadWorker(cfg.Download, store, newNavidromeVerifier(cfg.NavidromeURL, 5*time.Minute), spotify, cfg.NavidromeURL)
 	cleaner := newLibraryCleaner(cfg.Cleanup, worker.triggerScan)
 	lyrics := newLyricsIndex(cfg.Download.MusicDir)
+	lyricsSync := newLyricsSyncer(
+		lyricsSyncConfigFromEnv(cfg.Download.MusicDir, cfg.DBPath),
+		cfg.Download.MusicDir,
+		lyrics,
+	)
+	worker.setLyricsSyncer(lyricsSync)
 	srv := &server{
-		store:     store,
-		navidrome: worker.navidrome,
-		spotify:   spotify,
-		downloads: worker,
-		connect:   newConnectHub(),
-		mixes:     newMixHub(),
-		lyrics:    lyrics,
+		store:      store,
+		navidrome:  worker.navidrome,
+		spotify:    spotify,
+		downloads:  worker,
+		connect:    newConnectHub(),
+		mixes:      newMixHub(),
+		lyrics:     lyrics,
+		lyricsSync: lyricsSync,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -95,6 +102,7 @@ func main() {
 	go worker.Run(ctx)
 	go cleaner.Run(ctx)
 	go lyrics.run(ctx.Done())
+	go lyricsSync.runBackfill(ctx)
 
 	httpSrv := &http.Server{Addr: cfg.ListenAddr, Handler: srv.routes()}
 	go func() {

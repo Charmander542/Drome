@@ -517,7 +517,8 @@ final class AppSession: ObservableObject, Identifiable {
         self.account = account
         self.database = database
         library = LibraryIndex(database: database)
-        client = SubsonicClient(account: account, password: password)
+        let subsonicClient = SubsonicClient(account: account, password: password)
+        client = subsonicClient
         ratings = RatingsStore(client: client, database: database, userKey: account.userKey)
         rotation = RotationManager(client: client, database: database, userKey: account.userKey)
         ratings.rotation = rotation
@@ -551,7 +552,16 @@ final class AppSession: ObservableObject, Identifiable {
         player.autoplayProvider = AutoplayProvider(
             client: client, ratings: ratings, rotation: rotation,
             database: database, userKey: userKey)
-        lyricsService = LyricsService(database: database, client: client, serverKey: account.serverKey)
+        lyricsService = LyricsService(
+            database: database,
+            client: subsonicClient,
+            serverKey: account.serverKey,
+            wishlist: account.wishlistURL.map { url in
+                DromeWishlistClient(
+                    baseURL: url,
+                    session: subsonicClient.session,
+                    authItems: { subsonicClient.authQueryItems() })
+            })
         lyricsIndexer = LyricsIndexer(client: client, database: database,
                                       lyricsService: lyricsService, serverKey: account.serverKey)
         artistImages = ArtistImageStore(database: database, serverKey: account.serverKey)
