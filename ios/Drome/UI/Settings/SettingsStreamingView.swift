@@ -1,8 +1,11 @@
 import SwiftUI
 
-/// SubSonify-style Streaming & Downloads page.
+/// Streaming & Downloads page — Spotify-style quality tiers for offline storage.
 struct SettingsStreamingView: View {
     @EnvironmentObject private var downloads: DownloadManager
+    @State private var downloadQuality = PlaybackPreferences.downloadQuality
+    @State private var wifiOnlyDownloads = PlaybackPreferences.wifiOnlyDownloads
+    @State private var confirmRedownload = false
 
     var openDownloads: () -> Void
 
@@ -40,14 +43,6 @@ struct SettingsStreamingView: View {
                         .foregroundStyle(DromeTheme.accent)
                 }
 
-                Toggle(isOn: Binding(
-                    get: { AudioFXPreferences.autoDownloadStarred },
-                    set: { AudioFXPreferences.autoDownloadStarred = $0 }
-                )) {
-                    Text("Auto-download starred")
-                }
-                .tint(DromeTheme.accent)
-
                 Picker(selection: Binding(
                     get: { AudioFXPreferences.prefetchCount },
                     set: { AudioFXPreferences.prefetchCount = $0 }
@@ -59,6 +54,53 @@ struct SettingsStreamingView: View {
                 } label: {
                     Text("Pre-cache upcoming")
                 }
+            } header: {
+                Text("Streaming")
+            }
+            .listRowBackground(DromeTheme.elevated)
+
+            Section {
+                Picker(selection: $downloadQuality) {
+                    ForEach(DownloadQuality.allCases) { quality in
+                        Text(quality.title).tag(quality)
+                    }
+                } label: {
+                    Text("Download quality")
+                }
+                .onChange(of: downloadQuality) { _, newValue in
+                    PlaybackPreferences.downloadQuality = newValue
+                }
+
+                Text(downloadQuality.detail)
+                    .font(.caption)
+                    .foregroundStyle(DromeTheme.muted)
+                    .listRowSeparator(.hidden)
+
+                Toggle(isOn: $wifiOnlyDownloads) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Download over Wi‑Fi only")
+                        Text("Pause offline sync on cellular data.")
+                            .font(.caption)
+                            .foregroundStyle(DromeTheme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .tint(DromeTheme.accent)
+                .onChange(of: wifiOnlyDownloads) { _, newValue in
+                    PlaybackPreferences.wifiOnlyDownloads = newValue
+                }
+
+                Toggle(isOn: Binding(
+                    get: { AudioFXPreferences.autoDownloadStarred },
+                    set: { AudioFXPreferences.autoDownloadStarred = $0 }
+                )) {
+                    Text("Auto-download starred")
+                }
+                .tint(DromeTheme.accent)
+            } header: {
+                Text("Downloads")
+            } footer: {
+                Text("New downloads use the selected quality. Existing offline files stay as-is until you remove them or re-download.")
             }
             .listRowBackground(DromeTheme.elevated)
 
@@ -96,6 +138,20 @@ struct SettingsStreamingView: View {
                 .buttonStyle(.borderless)
                 .accessibilityIdentifier("drome.settings.tile.downloads")
 
+                if downloads.downloadedCount > 0 {
+                    Button {
+                        confirmRedownload = true
+                    } label: {
+                        HStack {
+                            Text("Re-download at \(downloadQuality.title)")
+                            Spacer()
+                            Text(Formatters.fileSize(downloads.totalBytesUsed))
+                                .foregroundStyle(DromeTheme.muted)
+                        }
+                    }
+                    .foregroundStyle(.white)
+                }
+
                 Button(role: .destructive) {
                     downloads.removeAll()
                 } label: {
@@ -107,6 +163,8 @@ struct SettingsStreamingView: View {
                 }
             } header: {
                 Text("Storage")
+            } footer: {
+                Text("Compressed downloads are typically 10–20× smaller than lossless library files.")
             }
             .listRowBackground(DromeTheme.elevated)
         }
@@ -115,6 +173,18 @@ struct SettingsStreamingView: View {
         .scrollIndicators(.hidden)
         .navigationTitle("Streaming & Downloads")
         .navigationBarTitleDisplayMode(.large)
+        .confirmationDialog(
+            "Re-download \(downloads.downloadedCount) tracks at \(downloadQuality.title)?",
+            isPresented: $confirmRedownload,
+            titleVisibility: .visible
+        ) {
+            Button("Re-download", role: .destructive) {
+                downloads.redownloadAllAtCurrentQuality()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes the current offline files and queues them again. Wi‑Fi recommended.")
+        }
     }
 
     private var storageBar: some View {
