@@ -34,8 +34,10 @@ type lrclibResult struct {
 	AlbumName    string   `json:"albumName"`
 	Duration     *float64 `json:"duration"`
 	Instrumental *bool    `json:"instrumental"`
+	HasWordSync  *bool    `json:"hasWordSync"`
 	PlainLyrics  string   `json:"plainLyrics"`
 	SyncedLyrics string   `json:"syncedLyrics"`
+	Lyricsfile   string   `json:"lyricsfile"`
 }
 
 type lyricsSyncConfig struct {
@@ -53,7 +55,9 @@ func lyricsSyncConfigFromEnv(musicDir, dbPath string) lyricsSyncConfig {
 	backfill := strings.ToLower(envOr("DROME_LYRICS_BACKFILL", "true"))
 	state := envOr("DROME_LYRICS_BACKFILL_STATE", "")
 	if state == "" {
-		state = filepath.Join(filepath.Dir(dbPath), "lyrics-backfill-v1.done")
+		// v2 re-walks the library so Word Synced lyricsfile hits can upgrade
+		// line-only .lrc sidecars written by v1 (which ignored lyricsfile).
+		state = filepath.Join(filepath.Dir(dbPath), "lyrics-backfill-v2.done")
 	}
 	return lyricsSyncConfig{
 		Enabled:     enabled == "1" || enabled == "true" || enabled == "yes",
@@ -249,7 +253,7 @@ func (s *lyricsSyncer) syncAudioFile(ctx context.Context, audioPath, title, arti
 	if hit == nil {
 		return false, nil
 	}
-	content := strings.TrimSpace(hit.SyncedLyrics)
+	content := effectiveSyncedLyrics(*hit)
 	if content == "" {
 		return false, nil // never write plain text — blocks better sync later
 	}
@@ -306,7 +310,7 @@ func (s *lyricsSyncer) getExact(ctx context.Context, title, artist, album string
 	if err != nil || !ok {
 		return nil, err
 	}
-	if result.SyncedLyrics == "" && result.PlainLyrics == "" {
+	if result.SyncedLyrics == "" && result.PlainLyrics == "" && strings.TrimSpace(result.Lyricsfile) == "" {
 		return nil, nil
 	}
 	return &result, nil
@@ -365,10 +369,11 @@ func pickBestLRCLIB(results []lrclibResult, album string, durationSec int) *lrcl
 
 	score := func(r lrclibResult) float64 {
 		var s float64
+		content := effectiveSyncedLyrics(r)
 		switch {
-		case hasWordSync(r.SyncedLyrics):
+		case hasWordSync(content):
 			s += 140
-		case strings.TrimSpace(r.SyncedLyrics) != "":
+		case strings.TrimSpace(content) != "":
 			s += 100
 		case strings.TrimSpace(r.PlainLyrics) != "":
 			s += 10
@@ -405,7 +410,7 @@ func pickBestLRCLIB(results []lrclibResult, album string, durationSec int) *lrcl
 			best, bestScore = r, sc
 		}
 	}
-	if strings.TrimSpace(best.SyncedLyrics) == "" {
+	if effectiveSyncedLyrics(best) == "" {
 		return nil
 	}
 	if durationSec > 0 && best.Duration != nil {
