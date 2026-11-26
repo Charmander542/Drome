@@ -12,13 +12,14 @@ struct OnboardingAccentMock: View {
 
     private var accent: Color { store.color }
 
-    private var orbSize: CGFloat { compact ? 88 : 112 }
-    private var ringBase: CGFloat { compact ? 92 : 118 }
-    private var orbBlockHeight: CGFloat { compact ? 148 : 210 }
+    /// Compact orb is ~120pt tall so SE can fit title + caption + two swatch rows.
+    private var orbSize: CGFloat { compact ? 64 : 112 }
+    private var ringBase: CGFloat { compact ? 68 : 118 }
+    private var orbBlockHeight: CGFloat { compact ? 108 : 210 }
 
     var body: some View {
         VStack(spacing: 0) {
-            Spacer(minLength: compact ? 10 : 16)
+            Spacer(minLength: compact ? 4 : 16)
 
             ZStack {
                 ForEach(0..<3, id: \.self) { ring in
@@ -27,8 +28,8 @@ struct OnboardingAccentMock: View {
                             accent.opacity(0.28 - Double(ring) * 0.08),
                             lineWidth: 2)
                         .frame(
-                            width: ringBase + CGFloat(ring) * (compact ? 28 : 38),
-                            height: ringBase + CGFloat(ring) * (compact ? 28 : 38))
+                            width: ringBase + CGFloat(ring) * (compact ? 20 : 38),
+                            height: ringBase + CGFloat(ring) * (compact ? 20 : 38))
                         .scaleEffect(pulse && !reduceMotion ? 1.05 : 1)
                 }
 
@@ -40,14 +41,14 @@ struct OnboardingAccentMock: View {
                             startRadius: 8,
                             endRadius: orbSize * 0.65))
                     .frame(width: orbSize, height: orbSize)
-                    .shadow(color: accent.opacity(0.55), radius: compact ? 18 : 26, y: 10)
+                    .shadow(color: accent.opacity(0.55), radius: compact ? 12 : 26, y: compact ? 6 : 10)
                     .scaleEffect(pulse && !reduceMotion ? 1.04 : 1)
 
                 HStack(alignment: .bottom, spacing: 5) {
                     ForEach(0..<5, id: \.self) { index in
                         RoundedRectangle(cornerRadius: 2, style: .continuous)
                             .fill(Color.white.opacity(0.92))
-                            .frame(width: compact ? 6 : 7, height: barHeight(index))
+                            .frame(width: compact ? 5 : 7, height: barHeight(index))
                     }
                 }
             }
@@ -60,27 +61,27 @@ struct OnboardingAccentMock: View {
                 value: store.customRGB)
 
             Text("DROME")
-                .font(.system(size: compact ? 24 : 30, weight: .heavy))
+                .font(.system(size: compact ? 20 : 30, weight: .heavy))
                 .foregroundStyle(accent)
-                .padding(.top, compact ? 2 : 6)
+                .padding(.top, compact ? 0 : 6)
 
             Text(vibeCaption)
-                .font(.system(size: compact ? 12 : 13, weight: .semibold))
+                .font(.system(size: compact ? 11 : 13, weight: .semibold))
                 .foregroundStyle(Color.white.opacity(0.72))
-                .padding(.top, 4)
+                .padding(.top, compact ? 2 : 4)
                 .animation(
                     reduceMotion ? nil : .easeInOut(duration: 0.2),
                     value: vibeCaption)
 
-            Spacer(minLength: compact ? 6 : 10)
+            Spacer(minLength: compact ? 2 : 10)
 
             // Tiny chrome strip so the color feels “in the app.”
             HStack(spacing: 8) {
-                Capsule().fill(accent).frame(width: 58, height: 9)
-                Capsule().fill(Color.white.opacity(0.22)).frame(width: 42, height: 9)
-                Capsule().fill(Color.white.opacity(0.12)).frame(width: 34, height: 9)
+                Capsule().fill(accent).frame(width: compact ? 44 : 58, height: compact ? 7 : 9)
+                Capsule().fill(Color.white.opacity(0.22)).frame(width: compact ? 32 : 42, height: compact ? 7 : 9)
+                Capsule().fill(Color.white.opacity(0.12)).frame(width: compact ? 24 : 34, height: compact ? 7 : 9)
             }
-            .padding(.bottom, compact ? 14 : 22)
+            .padding(.bottom, compact ? 8 : 22)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(DromeTheme.background)
@@ -108,10 +109,10 @@ struct OnboardingAccentMock: View {
 
     private func barHeight(_ index: Int) -> CGFloat {
         let heights: [CGFloat] = compact
-            ? [14, 26, 20, 30, 16]
+            ? [10, 18, 14, 22, 12]
             : [18, 34, 26, 40, 22]
         let base = heights[index % heights.count]
-        return pulse && !reduceMotion ? base + (compact ? 4 : 6) : base
+        return pulse && !reduceMotion ? base + (compact ? 3 : 6) : base
     }
 
     private func restartPulse() {

@@ -20,6 +20,8 @@ struct OnboardingView: View {
     @State private var artCoverFrame: CGRect = .null
     /// When entering NP by swiping back from Playlists, land on the last tip.
     @State private var enterNowPlayingAtEnd = false
+    /// Measured height of brand + title + caption + controls (excludes the phone mock).
+    @State private var measuredCopyHeight: CGFloat = 180
 
     /// Grows with Dynamic Type so Large XXL captions aren’t clipped.
     @ScaledMetric(relativeTo: .body) private var captionBaseHeight: CGFloat = 72
@@ -133,16 +135,18 @@ struct OnboardingView: View {
         .padding(.horizontal, 8)
         .padding(.top, 4)
         .padding(.bottom, 2)
-        .background(DromeTheme.background)
-        // Soft fade under Skip so scrolled titles don’t hard-clip into the header (AX5).
-        .overlay(alignment: .bottom) {
+        // Fade into the ambient amber glow — no flat opaque band / hard seam.
+        .background {
             LinearGradient(
-                colors: [DromeTheme.background, DromeTheme.background.opacity(0)],
+                stops: [
+                    .init(color: DromeTheme.background.opacity(0.92), location: 0),
+                    .init(color: DromeTheme.background.opacity(0.55), location: 0.55),
+                    .init(color: DromeTheme.background.opacity(0), location: 1),
+                ],
                 startPoint: .top,
                 endPoint: .bottom)
-                .frame(height: 18)
-                .offset(y: 18)
-                .allowsHitTesting(false)
+            .padding(.bottom, -22)
+            .allowsHitTesting(false)
         }
         .zIndex(1)
         .accessibilityElement(children: .contain)
@@ -300,24 +304,30 @@ struct OnboardingView: View {
 
     private var pageChrome: some View {
         GeometryReader { geo in
-            let mockCap: CGFloat = {
-                let hardCap = accessibilityLayout
-                    ? OnboardingTourChrome.mockMaxHeightAX
-                    : (page == 0
-                        ? OnboardingTourChrome.mockMaxHeightHero
-                        : (page == accentPageIndex
-                            ? OnboardingTourChrome.mockMaxHeightAccent
-                            : OnboardingTourChrome.mockMaxHeight))
-                // Grow the mock into leftover height so pages don’t leave a
-                // 100–150pt empty band above the dots.
-                var reserved: CGFloat = accessibilityLayout ? 200 : 150
-                if page == 0 { reserved += accessibilityLayout ? 36 : 44 }
-                if isNowPlayingLesson { reserved += 22 }
-                if page == accentPageIndex { reserved += accessibilityLayout ? 110 : 96 }
-                let fill = max(geo.size.height - reserved, 160)
-                // SE / short screens still keep title + caption on-screen.
-                return min(hardCap, max(fill, geo.size.height * 0.48))
-            }()
+            let hardCap = accessibilityLayout
+                ? OnboardingTourChrome.mockMaxHeightAX
+                : (page == 0
+                    ? OnboardingTourChrome.mockMaxHeightHero
+                    : (page == accentPageIndex
+                        ? OnboardingTourChrome.mockMaxHeightAccent
+                        : OnboardingTourChrome.mockMaxHeight))
+            // Scroll padding + mock bottom spacing aren’t in the measured copy stack.
+            let chromePad: CGFloat = accessibilityLayout ? 46 : 36
+            let mockBottom: CGFloat = accessibilityLayout
+                ? OnboardingTourChrome.mockBottomSpacingAX
+                : OnboardingTourChrome.mockBottomSpacing
+            let leftover = geo.size.height - measuredCopyHeight - chromePad - mockBottom
+            // Mock only gets leftover space — never steal caption lines.
+            // Short screens (SE): hard-cap at ~42% so title/caption/swatches always fit.
+            // No 0.48×height floor (that was clipping captions on SE / xxxLarge).
+            let shortScreen = geo.size.height < 700
+            let shortCap = shortScreen ? geo.size.height * 0.42 : .infinity
+            let mockCap = min(hardCap, shortCap, max(160, leftover))
+            let contentFits = (mockCap + measuredCopyHeight + chromePad + mockBottom)
+                <= geo.size.height + 1
+            let showScrollIndicators = accessibilityLayout
+                || dynamicTypeSize >= .xxxLarge
+                || !contentFits
 
             ScrollView {
                 VStack(spacing: 0) {
@@ -329,6 +339,7 @@ struct OnboardingView: View {
                             .padding(.bottom, accessibilityLayout ? 6 : 10)
                             .accessibilityAddTraits(.isHeader)
                             .accessibilityHidden(true)
+                            .onboardingReserveHeight()
                     }
 
                     phonePreview(for: page)
@@ -339,48 +350,47 @@ struct OnboardingView: View {
                         .frame(maxHeight: mockCap)
                         .frame(maxWidth: .infinity)
                         .padding(.horizontal, OnboardingTourChrome.mockHorizontalPadding)
-                        .padding(
-                            .bottom,
-                            accessibilityLayout
-                                ? OnboardingTourChrome.mockBottomSpacingAX
-                                : OnboardingTourChrome.mockBottomSpacing)
+                        .padding(.bottom, mockBottom)
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel(pageAccessibilityLabel)
 
-                    if isNowPlayingLesson {
-                        Text("NOW PLAYING")
-                            .font(DromeTheme.overlineFont)
-                            .tracking(1.4)
-                            .foregroundStyle(liveAccent.opacity(0.95))
-                            .padding(.bottom, 4)
-                            .accessibilityHidden(true)
-                    }
-
-                    titleBlock
-                        .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
-                        .padding(
-                            .bottom,
-                            accessibilityLayout
-                                ? OnboardingTourChrome.titleBottomSpacingAX
-                                : OnboardingTourChrome.titleBottomSpacing)
-
-                    captionBlock
-                        .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            guard isNowPlayingLesson else { return }
-                            lockGesture()
-                            advance(allowFinish: false)
+                    VStack(spacing: 0) {
+                        if isNowPlayingLesson {
+                            Text("NOW PLAYING")
+                                .font(DromeTheme.overlineFont)
+                                .tracking(1.4)
+                                .foregroundStyle(liveAccent.opacity(0.95))
+                                .padding(.bottom, 4)
+                                .accessibilityHidden(true)
                         }
-                        .id(isNowPlayingLesson ? "np-cap-\(nowPlayingStep.rawValue)" : "tour-caption")
-                        .transition(stepTransition)
-                        .animation(chromeAnimation, value: nowPlayingStep)
 
-                    if page == accentPageIndex {
-                        OnboardingAccentChooser(reduceMotion: reduceMotion)
+                        titleBlock
                             .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
-                            .padding(.top, accessibilityLayout ? 10 : 6)
+                            .padding(
+                                .bottom,
+                                accessibilityLayout
+                                    ? OnboardingTourChrome.titleBottomSpacingAX
+                                    : OnboardingTourChrome.titleBottomSpacing)
+
+                        captionBlock
+                            .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                guard isNowPlayingLesson else { return }
+                                lockGesture()
+                                advance(allowFinish: false)
+                            }
+                            .id(isNowPlayingLesson ? "np-cap-\(nowPlayingStep.rawValue)" : "tour-caption")
+                            .transition(stepTransition)
+                            .animation(chromeAnimation, value: nowPlayingStep)
+
+                        if page == accentPageIndex {
+                            OnboardingAccentChooser(reduceMotion: reduceMotion)
+                                .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
+                                .padding(.top, accessibilityLayout ? 10 : 6)
+                        }
                     }
+                    .onboardingReserveHeight()
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
                 .padding(.top, accessibilityLayout ? 6 : 8)
@@ -388,10 +398,22 @@ struct OnboardingView: View {
                 .padding(.bottom, accessibilityLayout ? 28 : 20)
                 .frame(
                     minHeight: max(geo.size.height - 8, 0),
-                    alignment: .center)
+                    // Only center when everything fits — otherwise top-align so
+                    // captions scroll into view instead of sitting under the bar.
+                    alignment: contentFits ? .center : .top)
             }
-            .scrollIndicators(accessibilityLayout ? .visible : .automatic)
+            .scrollIndicators(showScrollIndicators ? .visible : .automatic)
             .scrollBounceBehavior(.basedOnSize)
+            .onPreferenceChange(OnboardingReservedHeightKey.self) { height in
+                // Avoid feedback loops from sub-point noise.
+                if abs(height - measuredCopyHeight) > 1 {
+                    measuredCopyHeight = height
+                }
+            }
+            .onChange(of: page) { _, _ in
+                // Seed until the next preference pass; avoids one-frame oversize mock.
+                measuredCopyHeight = page == accentPageIndex ? 220 : 180
+            }
         }
     }
 
@@ -600,6 +622,27 @@ struct OnboardingArtCoverFrameKey: PreferenceKey {
     static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
         // Always take the latest report so leaving the art tip clears the hit target.
         value = nextValue()
+    }
+}
+
+/// Sums measured heights of brand + copy/controls so the mock only takes leftover space.
+private struct OnboardingReservedHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value += nextValue()
+    }
+}
+
+private extension View {
+    /// Reports this view’s laid-out height into `OnboardingReservedHeightKey`.
+    func onboardingReserveHeight() -> some View {
+        background {
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: OnboardingReservedHeightKey.self,
+                    value: geo.size.height)
+            }
+        }
     }
 }
 
