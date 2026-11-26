@@ -107,13 +107,7 @@ struct LyricsView: View {
                         .padding(.vertical, 10)
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            if let start = line.startMs {
-                                userScrolling = false
-                                lastScrolledIndex = index
-                                let seekTo = max(0, Double(start - userOffsetMs) / 1000.0)
-                                player.seek(to: seekTo)
-                                activeIndex = index
-                            }
+                            seekToLine(line, index: index)
                         }
                     }
                 }
@@ -253,6 +247,25 @@ struct LyricsView: View {
         return .upcoming
     }
 
+    /// Jump playback to the tapped line's stamp. Uses `seekExact` so streaming
+    /// buffers can't clamp a mid-song lyric into a random early second.
+    private func seekToLine(_ line: LRCParser.Line, index: Int) {
+        let start = line.startMs ?? line.words.first?.startMs
+        guard let start else { return }
+        userScrolling = false
+        lastScrolledIndex = index
+        activeIndex = index
+        // Undo the sync nudge so audio lands where this stamp was authored.
+        let seekTo = max(0, Double(start - userOffsetMs) / 1000.0)
+        if session.connect?.isRemote == true {
+            Task {
+                await session.connect?.sendRemote(ConnectCommandType.seek, seekTo: seekTo)
+            }
+        } else {
+            player.seekExact(to: seekTo)
+        }
+    }
+
     private func activeLineIndex(at elapsedMs: Int, in document: LyricsDocument) -> Int {
         // Aura current line: last started stamp, then mid-break focus so long
         // instrumentals preview the coming line (words stay unlit until starts).
@@ -385,28 +398,37 @@ struct LyricsView: View {
         }
 
         private var labelColor: Color {
-            state == .active ? DromeTheme.accent : Color.white.opacity(0.45)
+            switch state {
+            case .active: return DromeTheme.accent
+            case .past: return Color.white.opacity(0.55)
+            case .upcoming: return Color.white.opacity(0.35)
+            }
         }
 
         private var baseColor: Color {
             switch state {
             case .active: return .white
-            case .past: return Color.white.opacity(0.32)
-            case .upcoming: return Color.white.opacity(0.26)
+            // Past stays clearly brighter than upcoming so finished lines read as done.
+            case .past: return Color.white.opacity(0.58)
+            case .upcoming: return Color.white.opacity(0.24)
             }
         }
 
         private func color(for word: LRCParser.Word) -> Color {
             switch state {
             case .past:
-                return Color.white.opacity(0.32)
+                return Color.white.opacity(0.58)
             case .upcoming:
-                return Color.white.opacity(0.26)
+                return Color.white.opacity(0.24)
             case .active:
                 // Aura elapsed-at-time (incl. x4 cycle restarts). Stay lit once
-                // reached this pass — no endMs dim.
+                // reached this pass — no endMs dim. Soften words already passed
+                // so the current word stays brightest.
                 if word.isLit(atMs: elapsedMs) {
-                    return .white
+                    let laterStarted = line.words.contains {
+                        $0.startMs > word.startMs && $0.isLit(atMs: elapsedMs)
+                    }
+                    return laterStarted ? Color.white.opacity(0.72) : .white
                 }
                 return Color.white.opacity(0.28)
             }
