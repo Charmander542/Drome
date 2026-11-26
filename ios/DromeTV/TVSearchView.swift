@@ -12,10 +12,11 @@ struct TVSearchView: View {
     private var songs: [SearchHit] { hits.filter { $0.kind == .song } }
     private var albums: [SearchHit] { hits.filter { $0.kind == .album } }
     private var artists: [SearchHit] { hits.filter { $0.kind == .artist } }
+    private var playlists: [SearchHit] { hits.filter { $0.kind == .playlist } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 28) {
-            TextField("Search songs, albums, artists", text: $query)
+            TextField("Search songs, albums, artists, playlists", text: $query)
                 .padding(.horizontal, TVTheme.gutter)
                 .padding(.top, 12)
 
@@ -29,6 +30,9 @@ struct TVSearchView: View {
                     }
                     if !songs.isEmpty {
                         hitRail(title: "Songs", items: songs)
+                    }
+                    if !playlists.isEmpty {
+                        hitRail(title: "Playlists", items: playlists)
                     }
                     if session.wishlist != nil, !wishlistHits.isEmpty {
                         Text("Add to wishlist")
@@ -82,8 +86,17 @@ struct TVSearchView: View {
             wishlistHits = []
             return
         }
-        if let result = try? await session.client.search(q, artistCount: 8, albumCount: 8, songCount: 20) {
-            hits = SearchRanker.rank(query: q, result: result)
+        async let resultTask = session.client.search(q, artistCount: 8, albumCount: 8, songCount: 20)
+        async let playlistsTask = session.client.playlists()
+        let result = try? await resultTask
+        let lists = (try? await playlistsTask) ?? []
+        if let result {
+            hits = SearchRanker.rank(query: q, result: result, playlists: lists)
+        } else if !lists.isEmpty {
+            hits = SearchRanker.rank(
+                query: q,
+                result: SearchResult3(artist: nil, album: nil, song: nil),
+                playlists: lists)
         }
         if hits.isEmpty, let wishlist = session.wishlist {
             wishlistHits = (try? await wishlist.search(query: q, types: "track", limit: 6)) ?? []
@@ -115,8 +128,14 @@ struct TVSearchView: View {
                             context: PlaybackContext(label: artist.name, kind: .artist(id: artist.id)))
                 NowPlayingPresenter.open()
             }
-        case .lyrics:
-            break
+        case .playlist:
+            if let playlist = hit.playlist,
+               let loaded = try? await session.client.playlist(id: playlist.id),
+               !loaded.songs.isEmpty {
+                player.play(loaded.songs, startAt: 0,
+                            context: PlaybackContext(label: loaded.name, kind: .playlist(id: loaded.id)))
+                NowPlayingPresenter.open()
+            }
         }
     }
 

@@ -471,14 +471,14 @@ enum OnboardingSearchFocus: Int, CaseIterable {
     case library
     case spotify
     case podcasts
-    case lyrics
+    case playlists
 
     var callout: String {
         switch self {
         case .library: return "Library"
         case .spotify: return "Spotify"
         case .podcasts: return "Podcasts"
-        case .lyrics: return "Lyrics"
+        case .playlists: return "Playlists"
         }
     }
 }
@@ -490,12 +490,12 @@ struct OnboardingSearchMock: View {
 
     private var selectedSource: OnboardingSearchFocus {
         switch focus {
-        case .lyrics: return .library
+        case .playlists: return .library
         default: return focus
         }
     }
 
-    private let filterChips = ["All", "Songs", "Albums", "Artists", "Lyrics"]
+    private let filterChips = ["All", "Songs", "Albums", "Artists", "Playlists"]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -550,7 +550,7 @@ struct OnboardingSearchMock: View {
 
     private var prompt: String {
         switch selectedSource {
-        case .library, .lyrics: return "Artists, songs, albums…"
+        case .library, .playlists: return "Artists, songs, albums, playlists…"
         case .spotify: return "Search Spotify tracks, albums…"
         case .podcasts: return "Search podcasts or paste feed URL…"
         }
@@ -629,39 +629,41 @@ struct OnboardingSearchMock: View {
         }
     }
 
-    /// Library-mode result filters — Lyrics replaces the old quote toggle.
+    /// Library-mode result filters — Playlists replaces the old Lyrics chip.
     private var filterChipRow: some View {
         Group {
             if showAllCallouts {
                 VStack(spacing: 4) {
-                    OnboardingCalloutLabel(text: "All · Songs · Albums · Artists · Lyrics")
+                    OnboardingCalloutLabel(text: "All · Songs · Albums · Artists · Playlists")
                         .frame(height: 20)
-                    chips(highlightLyrics: false)
+                    chips(highlightPlaylists: false)
                 }
             } else {
                 VStack(spacing: 4) {
                     ZStack {
-                        if focus == .lyrics {
-                            OnboardingCalloutLabel(text: "Lyrics")
+                        if focus == .playlists {
+                            OnboardingCalloutLabel(text: "Playlists")
                                 .transition(.opacity)
                         }
                     }
                     .frame(height: 20)
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: focus == .lyrics)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: focus == .playlists)
 
-                    chips(highlightLyrics: focus == .lyrics)
+                    chips(highlightPlaylists: focus == .playlists)
                         .transaction { $0.animation = nil }
                 }
             }
         }
     }
 
-    private func chips(highlightLyrics: Bool) -> some View {
+    private func chips(highlightPlaylists: Bool) -> some View {
         HStack(spacing: 5) {
             ForEach(filterChips, id: \.self) { title in
-                let isLyrics = title == "Lyrics"
-                let selected = isLyrics ? (focus == .lyrics || showAllCallouts) : (title == "All" && focus != .lyrics && !showAllCallouts)
-                let ring = isLyrics && highlightLyrics
+                let isPlaylists = title == "Playlists"
+                let selected = isPlaylists
+                    ? (focus == .playlists || showAllCallouts)
+                    : (title == "All" && focus != .playlists && !showAllCallouts)
+                let ring = isPlaylists && highlightPlaylists
                 OnboardingSpotlightRing(
                     isActive: ring,
                     reduceMotion: reduceMotion,

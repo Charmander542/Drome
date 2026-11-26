@@ -64,13 +64,12 @@ struct SearchView: View {
     @State private var matchedSongs: [String: Song] = [:]
     @State private var matchedAlbums: [String: Album] = [:]
     @State private var expandedSections: Set<String> = []
-
-    /// Lyrics chip enables the same lyric-index path the old quote toggle used.
-    private var includeLyrics: Bool { resultFilter == .lyrics }
+    /// Cached getPlaylists() — Subsonic has no playlist search API.
+    @State private var playlistCache: [Playlist] = []
 
     /// Keep the prompt stable — swapping it on mode change rebuilds the
     /// system search field and makes typed text blink out.
-    private var searchPrompt: String { "Artists, songs, albums…" }
+    private var searchPrompt: String { "Artists, songs, albums, playlists…" }
 
     private var filteredHits: [SearchHit] {
         switch resultFilter {
@@ -82,8 +81,8 @@ struct SearchView: View {
             return hits.filter { $0.kind == .album }
         case .artists:
             return hits.filter { $0.kind == .artist }
-        case .lyrics:
-            return hits.filter { $0.kind == .lyrics }
+        case .playlists:
+            return hits.filter { $0.kind == .playlist }
         }
     }
 
@@ -97,9 +96,8 @@ struct SearchView: View {
             return recentItems.filter { $0.kind == .album }
         case .artists:
             return recentItems.filter { $0.kind == .artist }
-        case .lyrics:
-            // Lyrics hits aren't stored in recents.
-            return []
+        case .playlists:
+            return recentItems.filter { $0.kind == .playlist }
         }
     }
 
@@ -214,11 +212,6 @@ struct SearchView: View {
                         isSearchPresented = true
                     }
                 }
-            }
-        }
-        .onChange(of: resultFilter) { oldValue, newValue in
-            if (oldValue == .lyrics) != (newValue == .lyrics) {
-                scheduleSearch(query)
             }
         }
         .onChange(of: tabPopToRootTrigger) { _, trigger in
@@ -428,22 +421,22 @@ struct SearchView: View {
         case .songs: return "Search songs"
         case .albums: return "Search albums"
         case .artists: return "Search artists"
-        case .lyrics: return "Search lyrics"
+        case .playlists: return "Search playlists"
         }
     }
 
     private var libraryEmptyMessage: String {
         switch resultFilter {
         case .all:
-            return "Find artists, albums, and songs. Recent picks show up here."
+            return "Find artists, albums, songs, and playlists. Recent picks show up here."
         case .songs:
             return "Try a song title or artist."
         case .albums:
             return "Try an album or artist name."
         case .artists:
             return "Try an artist name."
-        case .lyrics:
-            return "Try a line you remember — typos and mixed-up words are OK."
+        case .playlists:
+            return "Try a playlist name."
         }
     }
 
@@ -452,7 +445,7 @@ struct SearchView: View {
     private var artistsHits: [SearchHit] { filteredHits.filter { $0.kind == .artist } }
     private var albumsHits: [SearchHit] { filteredHits.filter { $0.kind == .album } }
     private var songsHits: [SearchHit] { filteredHits.filter { $0.kind == .song } }
-    private var lyricsHits: [SearchHit] { filteredHits.filter { $0.kind == .lyrics } }
+    private var playlistsHits: [SearchHit] { filteredHits.filter { $0.kind == .playlist } }
     private var topHit: SearchHit? {
         guard resultFilter == .all else { return nil }
         return filteredHits.first
@@ -547,7 +540,7 @@ struct SearchView: View {
                 VStack(spacing: 10) {
                     ProgressView()
                         .tint(DromeTheme.muted)
-                    Text(includeLyrics ? "Searching lyrics…" : "Searching…")
+                    Text("Searching…")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(DromeTheme.muted)
                 }
@@ -558,7 +551,7 @@ struct SearchView: View {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text(includeLyrics ? "Updating lyrics…" : "Searching…")
+                    Text("Searching…")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(DromeTheme.muted)
                 }
@@ -904,9 +897,7 @@ struct SearchView: View {
         resultSection(title: "Artists", key: "artists", hits: artistsHits, excludingTop: true)
         resultSection(title: "Albums", key: "albums", hits: albumsHits, excludingTop: true)
         resultSection(title: "Songs", key: "songs", hits: songsHits, excludingTop: true)
-        if !lyricsHits.isEmpty {
-            resultSection(title: "Lyrics", key: "lyrics", hits: lyricsHits, excludingTop: true)
-        }
+        resultSection(title: "Playlists", key: "playlists", hits: playlistsHits, excludingTop: true)
     }
 
     @ViewBuilder
@@ -1005,6 +996,21 @@ struct SearchView: View {
                         })
                 }
             }
+
+        case .playlist:
+            NavigationLink {
+                PlaylistDetailView(
+                    playlistID: item.entityId,
+                    placeholder: item.decodedPlaylist() ?? Playlist(
+                        id: item.entityId,
+                        name: item.title,
+                        coverArt: item.coverArt))
+            } label: {
+                recentItemLabel(item, shape: .rounded)
+            }
+            .simultaneousGesture(TapGesture().onEnded {
+                bumpRecent(item)
+            })
         }
     }
 
@@ -1012,7 +1018,7 @@ struct SearchView: View {
         HStack(spacing: 12) {
             RemoteImage(
                 url: session.artworkURL(id: item.coverArt ?? item.entityId, size: 120),
-                placeholderSymbol: item.kind == .artist ? "person.crop.circle" : "music.note")
+                placeholderSymbol: recentPlaceholder(for: item.kind))
                 .frame(width: 44, height: 44)
                 .clipShape(shape == .circle ? AnyShape(Circle()) : AnyShape(RoundedRectangle(cornerRadius: 4)))
 
@@ -1030,6 +1036,15 @@ struct SearchView: View {
             Text(item.kind.rawValue.uppercased())
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(DromeTheme.muted)
+        }
+    }
+
+    private func recentPlaceholder(for kind: RecentSearchItem.Kind) -> String {
+        switch kind {
+        case .artist: return "person.crop.circle"
+        case .album: return "square.stack"
+        case .song: return "music.note"
+        case .playlist: return "music.note.list"
         }
     }
 
@@ -1242,51 +1257,18 @@ struct SearchView: View {
                     NowPlayingPresenter.open()
                 }
             }
-        case .lyrics:
-            if let lyric = hit.lyrics {
-                Button {
-                    rememberHit(hit)
-                    Task { await playLyricsHit(lyric) }
+        case .playlist:
+            if let playlist = hit.playlist {
+                NavigationLink {
+                    PlaylistDetailView(playlistID: playlist.id, placeholder: playlist)
                 } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        hitLabel(hit, shape: .rounded, showsCover: false)
-                        lyricSnippetView(lyric)
-                            .padding(.leading, dynamicTypeSize.isAccessibilitySize ? 0 : 60)
-                    }
+                    hitLabel(hit, shape: .rounded)
                 }
-                .buttonStyle(.plain)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(hit.title), \(hit.subtitle). \(lyric.accessibilityLabel)")
+                .simultaneousGesture(TapGesture().onEnded {
+                    rememberHit(hit)
+                })
             }
         }
-    }
-
-    @ViewBuilder
-    private func lyricSnippetView(_ lyric: LyricsSearchMatch) -> some View {
-        Text(highlightedLyricSnippet(lyric))
-            .font(.caption)
-            .foregroundStyle(DromeTheme.muted)
-            .multilineTextAlignment(.leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityHidden(true) // spoken via the row label
-    }
-
-    private func highlightedLyricSnippet(_ lyric: LyricsSearchMatch) -> AttributedString {
-        var attributed = AttributedString(lyric.snippet)
-        attributed.foregroundColor = DromeTheme.muted
-        let ns = lyric.snippet as NSString
-        for range in lyric.matchUTF16Ranges {
-            guard range.location >= 0,
-                  range.length > 0,
-                  range.location + range.length <= ns.length else { continue }
-            let nsRange = NSRange(location: range.location, length: range.length)
-            guard let stringRange = Range(nsRange, in: lyric.snippet),
-                  let attrRange = Range(stringRange, in: attributed) else { continue }
-            attributed[attrRange].foregroundColor = DromeTheme.accent
-            attributed[attrRange].font = Font.caption.weight(.bold)
-        }
-        return attributed
     }
 
     private func rememberHit(_ hit: SearchHit) {
@@ -1296,23 +1278,12 @@ struct SearchView: View {
 
     private enum CoverShape { case circle, rounded }
 
-    private func hitLabel(_ hit: SearchHit, shape: CoverShape, showsCover: Bool = true) -> some View {
+    private func hitLabel(_ hit: SearchHit, shape: CoverShape) -> some View {
         HStack(spacing: 12) {
-            if showsCover {
-                Group {
-                    RemoteImage(url: session.artworkURL(id: hit.coverArt, size: 120),
-                                placeholderSymbol: placeholder(for: hit.kind))
-                }
+            RemoteImage(url: session.artworkURL(id: hit.coverArt, size: 120),
+                        placeholderSymbol: placeholder(for: hit.kind))
                 .frame(width: 44, height: 44)
                 .clipShape(shape == .circle ? AnyShape(Circle()) : AnyShape(RoundedRectangle(cornerRadius: 4)))
-            } else {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 4).fill(DromeTheme.elevated2)
-                    Image(systemName: "text.quote")
-                        .foregroundStyle(DromeTheme.muted)
-                }
-                .frame(width: 44, height: 44)
-            }
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -1347,7 +1318,7 @@ struct SearchView: View {
         case .artist: return "ARTIST"
         case .album: return "ALBUM"
         case .song: return "SONG"
-        case .lyrics: return "LYRICS"
+        case .playlist: return "PLAYLIST"
         }
     }
 
@@ -1356,7 +1327,7 @@ struct SearchView: View {
         case .artist: return "person.crop.circle"
         case .album: return "square.stack"
         case .song: return "music.note"
-        case .lyrics: return "text.quote"
+        case .playlist: return "music.note.list"
         }
     }
 
@@ -1378,7 +1349,6 @@ struct SearchView: View {
             return
         }
         error = nil
-        // Show loading immediately — lyrics fuzzy can take a beat before first paint.
         isSearching = true
         hasCompletedSearch = false
         debounceTask = Task {
@@ -1399,11 +1369,8 @@ struct SearchView: View {
                     hasCompletedSearch = true
                     return
                 }
-                // Lyrics mode: skip the extra debounce — stream network as soon as local lands.
-                if !includeLyrics {
-                    try? await Task.sleep(nanoseconds: 200_000_000)
-                    guard !Task.isCancelled else { return }
-                }
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
                 async let music: Void = runNetworkSearch(trimmed)
                 async let podcasts: Void = runLibraryPodcastSearch(trimmed)
                 _ = await (music, podcasts)
@@ -1474,27 +1441,18 @@ struct SearchView: View {
     private func runLocalSearch(_ q: String) async {
         let serverKey = session.account.serverKey
         let index = session.library
-        let db = session.database
-        let wantLyrics = includeLyrics
+        let playlists = await cachedPlaylists()
         let ownership = await session.artistOwnershipStats()
         let songsIndexed = await session.songsIndexComplete()
         let hideCredits = LibraryArtistFilter.hideCreditOnlyArtists
         let ranked = await Task.detached(priority: .userInitiated) {
             let metadata = (try? index.search(serverKey: serverKey, query: q))
                 ?? SearchResult3(artist: nil, album: nil, song: nil)
-            let lyrics: [LyricsSearchMatch]
-            if wantLyrics {
-                await LyricsFuzzyIndex.shared.ensureReady(serverKey: serverKey, database: db)
-                let fuzzy = await LyricsFuzzyIndex.shared.search(query: q, limit: 40)
-                lyrics = fuzzy.map { LyricsSearchMatch.from(hit: $0, source: "local") }
-            } else {
-                lyrics = []
-            }
             let artistFilter: ((Artist) -> Bool)? = hideCredits
                 ? { LibraryArtistFilter.isVisible($0, ownership: ownership[$0.id], songsIndexed: songsIndexed) }
                 : nil
             return SearchRanker.rank(
-                query: q, result: metadata, lyrics: lyrics, artistFilter: artistFilter)
+                query: q, result: metadata, playlists: playlists, artistFilter: artistFilter)
         }.value
         guard !Task.isCancelled else { return }
         hits = ranked
@@ -1511,11 +1469,7 @@ struct SearchView: View {
             hasCompletedSearch = true
         }
         do {
-            let serverKey = session.account.serverKey
-            let db = session.database
-            let wantLyrics = includeLyrics
             let client = session.client
-            let wishlist = session.wishlist
             let ownership = await session.artistOwnershipStats()
             let songsIndexed = await session.songsIndexComplete()
             let hideCredits = LibraryArtistFilter.hideCreditOnlyArtists
@@ -1524,29 +1478,17 @@ struct SearchView: View {
                 : nil
 
             async let metadataTask = client.search(q, artistCount: 20, albumCount: 20, songCount: 40)
-            async let localLyricsTask = loadLocalLyricsHits(
-                wantLyrics: wantLyrics, serverKey: serverKey, database: db, query: q)
-            async let serverLyricsTask = loadServerLyricsHits(
-                wantLyrics: wantLyrics, wishlist: wishlist, query: q)
+            async let playlistsTask = refreshPlaylists()
 
-            // Paint metadata + on-device lyrics first; companion lyrics stream in after.
             let metadata = try await metadataTask
-            let localLyrics = await localLyricsTask
+            let playlists = await playlistsTask
             guard !Task.isCancelled else { return }
             hits = SearchRanker.rank(
-                query: q, result: metadata, lyrics: localLyrics, artistFilter: artistFilter)
+                query: q, result: metadata, playlists: playlists, artistFilter: artistFilter)
             let songs = metadata.songs
             Task { @MainActor in
                 await Task.yield()
                 session.ratings.ingest(songs)
-            }
-
-            let serverLyrics = await serverLyricsTask
-            guard !Task.isCancelled else { return }
-            if wantLyrics, !serverLyrics.isEmpty {
-                let lyrics = mergeLyricsHits(local: localLyrics, server: serverLyrics)
-                hits = SearchRanker.rank(
-                    query: q, result: metadata, lyrics: lyrics, artistFilter: artistFilter)
             }
         } catch {
             if hits.isEmpty {
@@ -1555,53 +1497,16 @@ struct SearchView: View {
         }
     }
 
-    private func loadLocalLyricsHits(
-        wantLyrics: Bool,
-        serverKey: String,
-        database: AppDatabase,
-        query: String
-    ) async -> [LyricsSearchMatch] {
-        guard wantLyrics else { return [] }
-        await LyricsFuzzyIndex.shared.ensureReady(serverKey: serverKey, database: database)
-        let fuzzy = await LyricsFuzzyIndex.shared.search(query: query, limit: 40)
-        return fuzzy.map { LyricsSearchMatch.from(hit: $0, source: "local") }
+    /// Prefer a warm cache so the first keystroke can rank playlists offline.
+    private func cachedPlaylists() async -> [Playlist] {
+        if !playlistCache.isEmpty { return playlistCache }
+        return await refreshPlaylists()
     }
 
-    private func loadServerLyricsHits(
-        wantLyrics: Bool,
-        wishlist: DromeWishlistClient?,
-        query: String
-    ) async -> [LyricsSearchMatch] {
-        guard wantLyrics, let wishlist else { return [] }
-        return (try? await wishlist.searchLyrics(query: query, limit: 40)) ?? []
-    }
-
-    /// Prefer the higher-scoring hit per song; local wins ties so offline
-    /// highlighting ranges stay coherent.
-    private func mergeLyricsHits(
-        local: [LyricsSearchMatch],
-        server: [LyricsSearchMatch]
-    ) -> [LyricsSearchMatch] {
-        var best: [String: LyricsSearchMatch] = [:]
-        for hit in local where !hit.songId.isEmpty {
-            best[hit.songId] = hit
-        }
-        for hit in server {
-            let key: String
-            if !hit.songId.isEmpty {
-                key = hit.songId
-            } else {
-                key = "meta:\(hit.title.lowercased())|\(hit.artist.lowercased())"
-            }
-            if let existing = best[key] {
-                if hit.score > existing.score + 0.5 {
-                    best[key] = hit
-                }
-            } else {
-                best[key] = hit
-            }
-        }
-        return Array(best.values).sorted { $0.score > $1.score }
+    private func refreshPlaylists() async -> [Playlist] {
+        let list = (try? await session.client.playlists()) ?? playlistCache
+        playlistCache = list
+        return list
     }
 
     private func runSpotifySearch(_ q: String) async {
@@ -1661,29 +1566,6 @@ struct SearchView: View {
         }
     }
 
-    private func playLyricsHit(_ hit: LyricsSearchMatch) async {
-        do {
-            let song: Song
-            if !hit.songId.isEmpty {
-                song = try await session.client.song(id: hit.songId)
-            } else {
-                let result = try await session.client.search(
-                    "\(hit.title) \(hit.artist)",
-                    artistCount: 0, albumCount: 0, songCount: 20)
-                guard let match = result.songs.first(where: {
-                    $0.title.localizedCaseInsensitiveCompare(hit.title) == .orderedSame
-                }) ?? result.songs.first else {
-                    throw URLError(.resourceUnavailable)
-                }
-                song = match
-            }
-            session.player.play([song], startAt: 0,
-                        context: PlaybackContext(label: "Lyrics search", kind: .search))
-            NowPlayingPresenter.open()
-        } catch {
-            self.error = error.localizedDescription
-        }
-    }
 }
 
 /// Type-erased Shape so we can pick Circle vs RoundedRectangle in one call site.
