@@ -31,6 +31,7 @@ type config struct {
 	DBPath              string
 	Download            downloadConfig
 	Cleanup             cleanupConfig
+	OutsidePlan         outsidePlanConfig
 }
 
 func configFromEnv() config {
@@ -44,6 +45,7 @@ func configFromEnv() config {
 		DBPath:              envOr("DROME_DB_PATH", "drome.db"),
 		Download:            dl,
 		Cleanup:             cleanupConfigFromEnv(dl.MusicDir),
+		OutsidePlan:         outsidePlanConfigFromEnv(),
 	}
 	return cfg
 }
@@ -96,11 +98,13 @@ func main() {
 		lyrics:     lyrics,
 		lyricsSync: lyricsSync,
 	}
+	planner := newOutsidePlanner(cfg.OutsidePlan, srv)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go worker.Run(ctx)
 	go cleaner.Run(ctx)
+	go planner.Run(ctx)
 	go lyrics.run(ctx.Done())
 	go lyricsSync.runBackfill(ctx)
 
@@ -113,9 +117,10 @@ func main() {
 		worker.Close()
 	}()
 
-	log.Printf("drome-server listening on %s (navidrome: %s, db: %s, music: %s, cleanup: %v/%s)",
+	log.Printf("drome-server listening on %s (navidrome: %s, db: %s, music: %s, cleanup: %v/%s, outsidePlan: %v/%s)",
 		cfg.ListenAddr, cfg.NavidromeURL, cfg.DBPath, cfg.Download.MusicDir,
-		cfg.Cleanup.Enabled, cfg.Cleanup.Interval)
+		cfg.Cleanup.Enabled, cfg.Cleanup.Interval,
+		cfg.OutsidePlan.Enabled, cfg.OutsidePlan.Interval)
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}

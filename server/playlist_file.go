@@ -40,8 +40,17 @@ func sanitizePlaylistFilename(name string) string {
 	return out
 }
 
+// libraryPlaylistPath picks where Drome writes a managed playlist.
+// If an older Playlists/<name>.m3u already exists (often with custom cover
+// art in Navidrome), update that file instead of creating a parallel .m3u8
+// that shows up as a duplicate playlist.
 func libraryPlaylistPath(musicDir, name string) string {
-	return filepath.Join(musicDir, "Playlists", sanitizePlaylistFilename(name)+".m3u8")
+	base := filepath.Join(musicDir, "Playlists", sanitizePlaylistFilename(name))
+	m3u := base + ".m3u"
+	if st, err := os.Stat(m3u); err == nil && !st.IsDir() {
+		return m3u
+	}
+	return base + ".m3u8"
 }
 
 // playlistM3URelPath turns a music-root-relative file path into a path usable
@@ -62,9 +71,15 @@ func playlistM3URelPath(rel string) string {
 	return "../" + rel
 }
 
-// writeLibraryPlaylist writes (or rewrites) a library .m3u8 so Navidrome can
-// pick it up on the next scan. Drome owns these files for Spotify imports, so
-// they are replaced whenever the on-disk track set changes.
+// writeLibraryPlaylist writes (or rewrites) a library .m3u/.m3u8 so Navidrome
+// can pick it up on the next scan.
+//
+//   - .m3u8 (Drome-created): fully replaced from the Spotify track set and
+//     tagged #DROME-MANAGED.
+//   - existing .m3u (often hand-curated with custom cover art): keep every
+//     existing entry and append any Spotify matches that are not already
+//     listed, then drop a sibling .m3u8 so Navidrome does not show two
+//     playlists with the same name.
 func writeLibraryPlaylist(musicDir, name string, tracks []playlistFileTrack) (string, error) {
 	if strings.TrimSpace(musicDir) == "" || len(tracks) == 0 {
 		return "", nil
@@ -74,32 +89,72 @@ func writeLibraryPlaylist(musicDir, name string, tracks []playlistFileTrack) (st
 		return "", err
 	}
 	path := libraryPlaylistPath(musicDir, name)
+	mergeExisting := strings.HasSuffix(path, ".m3u")
+
 	var b strings.Builder
-	b.WriteString("#EXTM3U\n")
-	b.WriteString("#DROME-MANAGED\n")
 	seen := map[string]struct{}{}
 	wrote := 0
-	for _, t := range tracks {
-		rel := playlistM3URelPath(strings.TrimSpace(t.Rel))
-		if rel == "" {
-			continue
+	b.WriteString("#EXTM3U\n")
+	if mergeExisting {
+		if body, err := os.ReadFile(path); err == nil {
+			for _, line := range strings.Split(string(body), "\n") {
+				trim := strings.TrimSpace(line)
+				if trim == "" || strings.HasPrefix(trim, "#") {
+					continue
+				}
+				rel := playlistM3URelPath(trim)
+				if rel == "" {
+					continue
+				}
+				if _, ok := seen[rel]; ok {
+					continue
+				}
+				seen[rel] = struct{}{}
+				b.WriteString(rel)
+				b.WriteByte('\n')
+				wrote++
+			}
 		}
-		if _, ok := seen[rel]; ok {
-			continue
+		for _, t := range tracks {
+			rel := playlistM3URelPath(strings.TrimSpace(t.Rel))
+			if rel == "" {
+				continue
+			}
+			if _, ok := seen[rel]; ok {
+				continue
+			}
+			seen[rel] = struct{}{}
+			b.WriteString(rel)
+			b.WriteByte('\n')
+			wrote++
 		}
-		seen[rel] = struct{}{}
-		label := t.Title
-		if t.Artist != "" && t.Title != "" {
-			label = t.Artist + " - " + t.Title
+	} else {
+		b.WriteString("#DROME-MANAGED\n")
+		for _, t := range tracks {
+			rel := playlistM3URelPath(strings.TrimSpace(t.Rel))
+			if rel == "" {
+				continue
+			}
+			if _, ok := seen[rel]; ok {
+				continue
+			}
+			seen[rel] = struct{}{}
+			label := t.Title
+			if t.Artist != "" && t.Title != "" {
+				label = t.Artist + " - " + t.Title
+			}
+			fmt.Fprintf(&b, "#EXTINF:-1,%s\n%s\n", label, rel)
+			wrote++
 		}
-		fmt.Fprintf(&b, "#EXTINF:-1,%s\n%s\n", label, rel)
-		wrote++
 	}
 	if wrote == 0 {
 		return "", nil
 	}
 	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
 		return "", err
+	}
+	if strings.HasSuffix(path, ".m3u") {
+		_ = os.Remove(path + "8") // foo.m3u → foo.m3u8
 	}
 	return path, nil
 }
