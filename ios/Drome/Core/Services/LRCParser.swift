@@ -64,6 +64,21 @@ enum LRCParser {
         }
 
         func isLit(atMs time: Int) -> Bool { elapsed(atMs: time) >= 0 }
+
+        /// 0…1 fill across this word. Apple Music paints a left-to-right wipe
+        /// over the sung window instead of snapping the whole word on.
+        func sungFraction(atMs time: Int) -> Double {
+            let into = elapsed(atMs: time)
+            if into <= 0 { return 0 }
+            let span: Int
+            if let endMs, endMs > startMs {
+                span = endMs - startMs
+            } else {
+                span = max(180, text.count * 80)
+            }
+            guard span > 0 else { return 1 }
+            return min(1, Double(into) / Double(span))
+        }
     }
 
     struct Line: Identifiable, Equatable {

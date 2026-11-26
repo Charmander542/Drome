@@ -153,6 +153,18 @@ struct LyricsView: View {
             .onAppear {
                 scrollToActive(proxy: proxy, document: document, index: activeIndex, animated: false)
             }
+            // Apple Music fades lines off the top and bottom of the lyric stage.
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .black, location: 0.07),
+                        .init(color: .black, location: 0.82),
+                        .init(color: .clear, location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom)
+            )
         }
         .overlay(alignment: .bottom) {
             if document.synced {
@@ -239,10 +251,10 @@ struct LyricsView: View {
         let id = document.lines[index].id
         if animated {
             withAnimation(.interactiveSpring(response: 0.45, dampingFraction: 0.86, blendDuration: 0.2)) {
-                proxy.scrollTo(id, anchor: UnitPoint(x: 0.5, y: 0.38))
+                proxy.scrollTo(id, anchor: UnitPoint(x: 0.5, y: 0.32))
             }
         } else {
-            proxy.scrollTo(id, anchor: UnitPoint(x: 0.5, y: 0.38))
+            proxy.scrollTo(id, anchor: UnitPoint(x: 0.5, y: 0.32))
         }
     }
 
@@ -330,23 +342,23 @@ struct LyricsView: View {
             .padding(.leading, line.side == .secondary ? 28 : 0)
             .padding(.trailing, line.side == .primary ? 28 : 0)
             // Scale does not affect layout — keeps scroll positions stable.
-            .scaleEffect(state == .active ? 1.05 : 1.0, anchor: scaleAnchor)
-            .animation(.interactiveSpring(response: 0.35, dampingFraction: 0.85), value: state == .active)
+            .scaleEffect(state == .active ? 1.22 : 1.0, anchor: scaleAnchor)
+            .animation(.interactiveSpring(response: 0.38, dampingFraction: 0.84), value: state == .active)
         }
 
         @ViewBuilder
         private var words: some View {
             if line.words.isEmpty {
                 Text(line.text.isEmpty ? " " : line.text)
-                    .font(.system(size: baseSize, weight: .semibold))
+                    .font(.system(size: baseSize, weight: .bold))
                     .foregroundStyle(baseColor)
                     .multilineTextAlignment(textAlignment)
             } else {
                 WordFlowLayout(spacing: 7, lineSpacing: 5) {
                     ForEach(line.words) { word in
                         Text(word.text)
-                            .font(.system(size: baseSize, weight: .semibold))
-                            .foregroundStyle(color(for: word))
+                            .font(.system(size: baseSize, weight: .bold))
+                            .foregroundStyle(fill(for: word))
                     }
                 }
             }
@@ -391,24 +403,43 @@ struct LyricsView: View {
         private var baseColor: Color {
             switch state {
             case .active: return .white
-            case .past: return Color.white.opacity(0.32)
-            case .upcoming: return Color.white.opacity(0.26)
+            case .past: return Color.white.opacity(0.5)
+            case .upcoming: return Color.white.opacity(0.22)
             }
         }
 
-        private func color(for word: LRCParser.Word) -> Color {
+        /// Apple Music–style wipe: sung words stay bright, the current word
+        /// fills left to right, and a line with no cues yet stays fully present.
+        private func fill(for word: LRCParser.Word) -> AnyShapeStyle {
             switch state {
             case .past:
-                return Color.white.opacity(0.32)
+                return AnyShapeStyle(Color.white.opacity(0.5))
             case .upcoming:
-                return Color.white.opacity(0.26)
+                return AnyShapeStyle(Color.white.opacity(0.22))
             case .active:
-                // Aura elapsed-at-time (incl. x4 cycle restarts). Stay lit once
-                // reached this pass — no endMs dim.
-                if word.isLit(atMs: elapsedMs) {
-                    return .white
+                let anyStarted = line.words.contains { $0.sungFraction(atMs: elapsedMs) > 0 }
+                if !anyStarted {
+                    return AnyShapeStyle(Color.white)
                 }
-                return Color.white.opacity(0.28)
+                let fraction = word.sungFraction(atMs: elapsedMs)
+                if fraction <= 0.001 {
+                    return AnyShapeStyle(Color.white.opacity(0.34))
+                }
+                if fraction >= 0.999 {
+                    return AnyShapeStyle(Color.white)
+                }
+                let feather = 0.14
+                let lead = max(0, fraction - feather)
+                let trail = min(1, fraction)
+                return AnyShapeStyle(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .white, location: lead),
+                            .init(color: Color.white.opacity(0.34), location: trail),
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing)
+                )
             }
         }
     }

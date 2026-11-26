@@ -137,6 +137,9 @@ final class LRCParserTimingTests: XCTestCase {
         XCTAssertEqual(words.last?.marker, true)
         let second = words[1]
         let period = second.cycle!.periodMs
+        XCTAssertEqual(second.sungFraction(atMs: second.startMs - 20), 0, accuracy: 0.001)
+        XCTAssertGreaterThan(second.sungFraction(atMs: second.startMs + 40), 0)
+        XCTAssertLessThan(second.sungFraction(atMs: second.startMs + 40), 1)
         XCTAssertTrue(second.isLit(atMs: second.startMs))
         // Next pass: not yet at this word’s offset into the pass, then lit again.
         XCTAssertFalse(second.isLit(atMs: second.startMs + period - 40))
