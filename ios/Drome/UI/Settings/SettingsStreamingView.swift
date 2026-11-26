@@ -117,9 +117,9 @@ struct SettingsStreamingView: View {
                 }
                 HStack {
                     Circle().fill(Color.white.opacity(0.35)).frame(width: 8, height: 8)
-                    Text("Cached lyrics / art")
+                    Text("Cover art cache")
                     Spacer()
-                    Text("On device")
+                    Text("Temporary")
                         .foregroundStyle(DromeTheme.muted)
                 }
 

@@ -1,9 +1,8 @@
 import Foundation
 
-/// Progressive background job that walks the library album by album and
-/// caches lyrics for every track, building up the FTS index that powers deep
-/// (lyrics) search. Resumable: progress is persisted per server, and the job
-/// is polite to LRCLIB (small delay between network fetches).
+/// Optional background job that walks the library and warms the *session*
+/// lyrics cache. Off by default — durable lyrics live as companion sidecars /
+/// Navidrome, so we no longer fill phone SQLite with every LRC.
 @MainActor
 final class LyricsIndexer: ObservableObject {
     @Published private(set) var isRunning = false
@@ -11,7 +10,7 @@ final class LyricsIndexer: ObservableObject {
     @Published private(set) var cachedCount = 0
 
     var isEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: "drome.lyricsIndexer") as? Bool ?? true }
+        get { UserDefaults.standard.object(forKey: "drome.lyricsIndexer") as? Bool ?? false }
         set {
             UserDefaults.standard.set(newValue, forKey: "drome.lyricsIndexer")
             objectWillChange.send()
@@ -31,6 +30,11 @@ final class LyricsIndexer: ObservableObject {
         self.database = database
         self.lyricsService = lyricsService
         self.serverKey = serverKey
+        // One-time: retire the old whole-library on-disk crawler for upgrades.
+        if UserDefaults.standard.object(forKey: "drome.lyricsIndexerRetired.v1") == nil {
+            UserDefaults.standard.set(false, forKey: "drome.lyricsIndexer")
+            UserDefaults.standard.set(true, forKey: "drome.lyricsIndexerRetired.v1")
+        }
         refreshCount()
     }
 

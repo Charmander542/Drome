@@ -49,8 +49,10 @@ struct LyricsDocument {
 /// Lyrics lookup pipeline, in priority order:
 /// 1. Companion library sidecar (raw `.lrc` next to the file — keeps word stamps)
 /// 2. Navidrome `getLyricsBySongId` when it has usable line timing
-/// 3. local SQLite cache (offline / after network miss)
-/// 4. LRCLIB public API (matched by artist/title/duration; prefers word-synced)
+/// 3. LRCLIB public API (matched by artist/title/duration; prefers word-synced)
+///
+/// Results stay in a small **session** memory cache only — nothing is written to
+/// phone SQLite. Backend sidecars + Navidrome are the durable store.
 ///
 /// Timestamps are aligned to the local file: LRC `[offset:]` tags, OpenSubsonic
 /// `offset`, and mild duration scaling when the matched master is a near-cut.
@@ -65,10 +67,16 @@ actor LyricsService {
     private static let lrclibSource = "lrclib.v5"
     private static let navidromeSource = "navidrome.v5"
     private static let sidecarSource = "sidecar.v1"
-    private static let legacySources: Set<String> = [
-        "lrclib", "lrclib.v2", "lrclib.v3", "lrclib.v4",
-        "navidrome", "navidrome.v2", "navidrome.v3", "navidrome.v4",
-    ]
+
+    private enum MemoryEntry {
+        case hit(LyricsDocument)
+        case miss
+    }
+
+    /// Soft cap so flipping through many songs doesn't retain every LRC blob.
+    private static let memoryCap = 48
+    private var memory: [String: MemoryEntry] = [:]
+    private var memoryOrder: [String] = []
 
     init(
         database: AppDatabase,
@@ -81,43 +89,37 @@ actor LyricsService {
         self.lrclib = LRCLIBClient(session: client.session)
         self.wishlist = wishlist
         self.serverKey = serverKey
+        // Reclaim older on-disk lyrics / FTS rows for this server.
+        try? database.clearLyrics(serverKey: serverKey)
     }
 
     func lyrics(for song: Song, allowNetwork: Bool = true) async -> LyricsDocument? {
-        if allowNetwork, let fresh = await fetchAndCache(song: song) {
-            return fresh
-        }
-
-        if let cached = try? database.cachedLyrics(serverKey: serverKey, songId: song.id) {
-            if cached.source == "none" {
-                return nil
+        if let entry = memory[song.id] {
+            switch entry {
+            case .hit(let document): return document
+            case .miss: return nil
             }
-            if Self.legacySources.contains(cached.source) {
-                guard allowNetwork else { return nil }
-                return await fetchAndCache(song: song)
-            }
-            return document(
-                from: cached.content,
-                synced: cached.synced,
-                source: cached.source,
-                songDuration: song.duration)
         }
         guard allowNetwork else { return nil }
-        return await fetchAndCache(song: song)
+        let fresh = await fetch(song: song)
+        remember(songId: song.id, document: fresh)
+        return fresh
     }
 
-    /// True if the song already has any cache entry (found or negative).
+    /// True if this session already resolved lyrics (hit or miss) for the song.
     func isCached(_ song: Song) -> Bool {
-        (try? database.cachedLyrics(serverKey: serverKey, songId: song.id)) != nil
+        memory[song.id] != nil
     }
 
-    /// Drops the cache entry and refetches (for a "reload lyrics" affordance).
+    /// Drops the session entry and refetches (for a "reload lyrics" affordance).
     func refetch(for song: Song) async -> LyricsDocument? {
-        try? database.storeLyrics(negativeEntry(for: song))
-        return await fetchAndCache(song: song)
+        forget(songId: song.id)
+        let fresh = await fetch(song: song)
+        remember(songId: song.id, document: fresh)
+        return fresh
     }
 
-    private func fetchAndCache(song: Song) async -> LyricsDocument? {
+    private func fetch(song: Song) async -> LyricsDocument? {
         // Unsynced Navidrome text used to short-circuit before LRCLIB — songs
         // with embedded plain lyrics (e.g. some Kanye tags) never got karaoke.
         // Only accept Navidrome as final when it has usable line timestamps;
@@ -131,7 +133,6 @@ actor LyricsService {
            sidecar.found,
            let content = sidecar.content, !content.isEmpty {
             let synced = sidecar.synced || LRCParser.isSynced(content)
-            store(song: song, synced: synced, content: content, source: Self.sidecarSource)
             return document(
                 from: content,
                 synced: synced,
@@ -149,7 +150,6 @@ actor LyricsService {
                 lines: lines.map { ($0.start, $0.value) },
                 offsetMs: offsetMs)
             if hasTiming {
-                store(song: song, synced: true, content: content, source: Self.navidromeSource)
                 return document(
                     from: content,
                     synced: true,
@@ -160,25 +160,13 @@ actor LyricsService {
             unsyncedFallback = (content, Self.navidromeSource, offsetMs)
         }
 
-        // 3. Warm cache after a network miss on server sources.
-        if let cached = try? database.cachedLyrics(serverKey: serverKey, songId: song.id),
-           cached.source != "none",
-           !Self.legacySources.contains(cached.source) {
-            return document(
-                from: cached.content,
-                synced: cached.synced,
-                source: cached.source,
-                songDuration: song.duration)
-        }
-
-        // 4. LRCLIB — prefer synced karaoke; plain only if we have nothing else.
+        // 3. LRCLIB — prefer synced karaoke; plain only if we have nothing else.
         if let artist = song.artist,
            let result = try? await lrclib.lyrics(
             artist: artist, title: song.title,
             album: song.album, duration: song.duration) {
             let matchedDuration = result.duration.map { Int($0.rounded()) }
             if let lrc = result.syncedLyrics, !lrc.isEmpty {
-                store(song: song, synced: true, content: lrc, source: Self.lrclibSource)
                 return document(
                     from: lrc,
                     synced: true,
@@ -188,7 +176,6 @@ actor LyricsService {
             }
             if unsyncedFallback == nil,
                let plain = result.plainLyrics, !plain.isEmpty {
-                store(song: song, synced: false, content: plain, source: Self.lrclibSource)
                 return document(
                     from: plain,
                     synced: false,
@@ -199,11 +186,6 @@ actor LyricsService {
         }
 
         if let fallback = unsyncedFallback {
-            store(
-                song: song,
-                synced: false,
-                content: fallback.content,
-                source: fallback.source)
             return document(
                 from: fallback.content,
                 synced: false,
@@ -212,8 +194,6 @@ actor LyricsService {
                 structuredOffsetMs: fallback.offsetMs)
         }
 
-        // Negative cache so the indexer and repeated plays don't refetch.
-        try? database.storeLyrics(negativeEntry(for: song))
         return nil
     }
 
@@ -225,17 +205,20 @@ actor LyricsService {
             ?? items.first
     }
 
-    private func store(song: Song, synced: Bool, content: String, source: String) {
-        try? database.storeLyrics(CachedLyrics(
-            serverKey: serverKey, songId: song.id, title: song.title,
-            artist: song.artist ?? "", album: song.album ?? "",
-            synced: synced, content: content, source: source))
+    private func remember(songId: String, document: LyricsDocument?) {
+        if memory[songId] == nil {
+            memoryOrder.append(songId)
+        }
+        memory[songId] = document.map { .hit($0) } ?? .miss
+        while memoryOrder.count > Self.memoryCap {
+            let evicted = memoryOrder.removeFirst()
+            memory.removeValue(forKey: evicted)
+        }
     }
 
-    private func negativeEntry(for song: Song) -> CachedLyrics {
-        CachedLyrics(serverKey: serverKey, songId: song.id, title: song.title,
-                     artist: song.artist ?? "", album: song.album ?? "",
-                     synced: false, content: "", source: "none")
+    private func forget(songId: String) {
+        memory.removeValue(forKey: songId)
+        memoryOrder.removeAll { $0 == songId }
     }
 
     private func document(
@@ -269,5 +252,4 @@ actor LyricsService {
             timingOffsetMs: structuredOffsetMs,
             matchedDurationSec: matchedDurationSec)
     }
-
 }
