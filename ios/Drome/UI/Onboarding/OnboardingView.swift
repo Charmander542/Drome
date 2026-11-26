@@ -22,6 +22,8 @@ struct OnboardingView: View {
     @State private var enterNowPlayingAtEnd = false
     /// Measured height of brand + title + caption + controls (excludes the phone mock).
     @State private var measuredCopyHeight: CGFloat = 180
+    /// Full onboarding window height (not the pageChrome leftover). SE ≈ 667; 18 Pro ≈ 874.
+    @State private var windowHeight: CGFloat = 800
 
     /// Grows with Dynamic Type so Large XXL captions aren’t clipped.
     @ScaledMetric(relativeTo: .body) private var captionBaseHeight: CGFloat = 72
@@ -30,6 +32,8 @@ struct OnboardingView: View {
 
     private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
     private var liveAccent: Color { accentStore.color }
+    /// True phone-size short screen — never the page content GeometryReader.
+    private var shortScreen: Bool { windowHeight < 700 }
 
     private let searchPageIndex = 2
     private let nowPlayingControlsPageIndex = 4
@@ -135,17 +139,21 @@ struct OnboardingView: View {
         .padding(.horizontal, 8)
         .padding(.top, 4)
         .padding(.bottom, 2)
-        // Fade into the ambient amber glow — no flat opaque band / hard seam.
-        .background {
+        // Start at the ambient glow colour and fade out — extends under the status bar
+        // so AX5 doesn’t get a hard dark seam ~62pt down.
+        .background(alignment: .top) {
             LinearGradient(
                 stops: [
-                    .init(color: DromeTheme.background.opacity(0.92), location: 0),
+                    .init(color: liveAccent.opacity(0.16), location: 0),
+                    .init(color: liveAccent.opacity(0.08), location: 0.22),
                     .init(color: DromeTheme.background.opacity(0.55), location: 0.55),
                     .init(color: DromeTheme.background.opacity(0), location: 1),
                 ],
                 startPoint: .top,
                 endPoint: .bottom)
-            .padding(.bottom, -22)
+            .frame(height: 96)
+            .frame(maxWidth: .infinity)
+            .ignoresSafeArea(edges: .top)
             .allowsHitTesting(false)
         }
         .zIndex(1)
@@ -175,6 +183,16 @@ struct OnboardingView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 bottomChrome
             }
+        }
+        .background {
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: OnboardingWindowHeightKey.self,
+                    value: geo.size.height)
+            }
+        }
+        .onPreferenceChange(OnboardingWindowHeightKey.self) { height in
+            if abs(height - windowHeight) > 1 { windowHeight = height }
         }
         .preferredColorScheme(.dark)
         .animation(chromeAnimation, value: page)
@@ -318,11 +336,12 @@ struct OnboardingView: View {
                 : OnboardingTourChrome.mockBottomSpacing
             let leftover = geo.size.height - measuredCopyHeight - chromePad - mockBottom
             // Mock only gets leftover space — never steal caption lines.
-            // Short screens (SE): hard-cap at ~42% so title/caption/swatches always fit.
-            // No 0.48×height floor (that was clipping captions on SE / xxxLarge).
-            let shortScreen = geo.size.height < 700
-            let shortCap = shortScreen ? geo.size.height * 0.42 : .infinity
-            let mockCap = min(hardCap, shortCap, max(160, leftover))
+            // 42% cap uses windowHeight (SE ≈ 667), not pageChrome geo (18 Pro content
+            // area is also < 700 and wrongly triggered the short-screen path).
+            let shortCap = shortScreen ? windowHeight * 0.42 : .infinity
+            // Accent / short screens need a lower floor so SE xxxLarge swatches clear the bar.
+            let minMock: CGFloat = (page == accentPageIndex || shortScreen) ? 104 : 160
+            let mockCap = min(hardCap, shortCap, max(minMock, leftover))
             let contentFits = (mockCap + measuredCopyHeight + chromePad + mockBottom)
                 <= geo.size.height + 1
             let showScrollIndicators = accessibilityLayout
@@ -630,6 +649,14 @@ private struct OnboardingReservedHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value += nextValue()
+    }
+}
+
+/// Full onboarding container height — used to detect SE vs Pro (not pageChrome leftover).
+private struct OnboardingWindowHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 800
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
