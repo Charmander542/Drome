@@ -23,6 +23,8 @@ struct OnboardingView: View {
 
     /// Grows with Dynamic Type so Large XXL captions aren’t clipped.
     @ScaledMetric(relativeTo: .body) private var captionBaseHeight: CGFloat = 72
+    /// Stable title slot so pages don’t shift ~20pt when titles wrap differently.
+    @ScaledMetric(relativeTo: .largeTitle) private var titleBaseHeight: CGFloat = 52
 
     private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
     private var liveAccent: Color { accentStore.color }
@@ -109,6 +111,43 @@ struct OnboardingView: View {
         return (tour + np).max(by: { $0.count < $1.count }) ?? displayedCaption
     }
 
+    private var longestTitle: String {
+        let tour = pages.map(\.title)
+        let np = OnboardingNowPlayingStep.allCases.map(\.title)
+        return (tour + np).max(by: { $0.count < $1.count }) ?? displayedTitle
+    }
+
+    private var skipHeader: some View {
+        HStack {
+            Spacer()
+            Button("Skip") { finish() }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.white.opacity(0.88))
+                .padding(.horizontal, 12)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+                // Survives parent screen ID — tests look up this button directly.
+                .accessibilityIdentifier("drome.onboarding.skip")
+                .accessibilityLabel("Skip onboarding")
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
+        .padding(.bottom, 2)
+        .background(DromeTheme.background)
+        // Soft fade under Skip so scrolled titles don’t hard-clip into the header (AX5).
+        .overlay(alignment: .bottom) {
+            LinearGradient(
+                colors: [DromeTheme.background, DromeTheme.background.opacity(0)],
+                startPoint: .top,
+                endPoint: .bottom)
+                .frame(height: 18)
+                .offset(y: 18)
+                .allowsHitTesting(false)
+        }
+        .zIndex(1)
+        .accessibilityElement(children: .contain)
+    }
+
     var body: some View {
         ZStack {
             DromeTheme.background.ignoresSafeArea()
@@ -117,22 +156,7 @@ struct OnboardingView: View {
                 .accessibilityHidden(true)
 
             VStack(spacing: 0) {
-                HStack {
-                    Spacer()
-                    Button("Skip") { finish() }
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.white.opacity(0.88))
-                        .padding(.horizontal, 12)
-                        .frame(minWidth: 44, minHeight: 44)
-                        .contentShape(Rectangle())
-                        // Survives parent screen ID — tests look up this button directly.
-                        .accessibilityIdentifier("drome.onboarding.skip")
-                        .accessibilityLabel("Skip onboarding")
-                }
-                .padding(.horizontal, 8)
-                .padding(.top, 4)
-                // Isolate Skip from the screen container’s identifier.
-                .accessibilityElement(children: .contain)
+                skipHeader
 
                 pageChrome
                     .id(page)
@@ -284,8 +308,15 @@ struct OnboardingView: View {
                         : (page == accentPageIndex
                             ? OnboardingTourChrome.mockMaxHeightAccent
                             : OnboardingTourChrome.mockMaxHeight))
-                // SE / short screens: keep title, caption, and controls on-screen.
-                return min(hardCap, max(geo.size.height * 0.5, 160))
+                // Grow the mock into leftover height so pages don’t leave a
+                // 100–150pt empty band above the dots.
+                var reserved: CGFloat = accessibilityLayout ? 200 : 150
+                if page == 0 { reserved += accessibilityLayout ? 36 : 44 }
+                if isNowPlayingLesson { reserved += 22 }
+                if page == accentPageIndex { reserved += accessibilityLayout ? 110 : 96 }
+                let fill = max(geo.size.height - reserved, 160)
+                // SE / short screens still keep title + caption on-screen.
+                return min(hardCap, max(fill, geo.size.height * 0.48))
             }()
 
             ScrollView {
@@ -325,19 +356,13 @@ struct OnboardingView: View {
                             .accessibilityHidden(true)
                     }
 
-                    Text(displayedTitle)
-                        .font(DromeTheme.titleFont)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.white)
-                        .lineLimit(accessibilityLayout ? 3 : 2)
-                        .minimumScaleFactor(0.85)
+                    titleBlock
                         .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
                         .padding(
                             .bottom,
                             accessibilityLayout
                                 ? OnboardingTourChrome.titleBottomSpacingAX
                                 : OnboardingTourChrome.titleBottomSpacing)
-                        .accessibilityAddTraits(.isHeader)
 
                     captionBlock
                         .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
@@ -358,16 +383,37 @@ struct OnboardingView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
-                .padding(.top, accessibilityLayout ? 2 : (page == 0 ? 2 : 6))
+                .padding(.top, accessibilityLayout ? 6 : 8)
                 // Keep last lines clear of the soft bottom chrome fade.
                 .padding(.bottom, accessibilityLayout ? 28 : 20)
                 .frame(
-                    minHeight: accessibilityLayout ? nil : max(geo.size.height - 8, 0),
-                    alignment: page == 0 ? .top : .center)
+                    minHeight: max(geo.size.height - 8, 0),
+                    alignment: .center)
             }
             .scrollIndicators(accessibilityLayout ? .visible : .automatic)
             .scrollBounceBehavior(.basedOnSize)
         }
+    }
+
+    /// Reserved height from the longest title so pages don’t jump.
+    private var titleBlock: some View {
+        ZStack {
+            Text(longestTitle)
+                .font(DromeTheme.titleFont)
+                .multilineTextAlignment(.center)
+                .lineLimit(accessibilityLayout ? 3 : 2)
+                .minimumScaleFactor(0.85)
+                .hidden()
+                .accessibilityHidden(true)
+            Text(displayedTitle)
+                .font(DromeTheme.titleFont)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.white)
+                .lineLimit(accessibilityLayout ? 3 : 2)
+                .minimumScaleFactor(0.85)
+                .accessibilityAddTraits(.isHeader)
+        }
+        .frame(maxWidth: .infinity, minHeight: titleBaseHeight)
     }
 
     /// Grows with Dynamic Type; reserves height from the longest caption so pages don’t jump.
@@ -456,21 +502,23 @@ struct OnboardingView: View {
             .padding(.horizontal, 24)
             .accessibilityIdentifier("onboarding-continue")
         }
-        .padding(.top, 4)
+        .padding(.top, 8)
         .padding(.bottom, 10)
-        .background(alignment: .top) {
-            // Soft fade so captions scrolling under the bar still feel continuous.
-            VStack(spacing: 0) {
-                LinearGradient(
-                    colors: [DromeTheme.background.opacity(0), DromeTheme.background],
-                    startPoint: .top,
-                    endPoint: .bottom)
-                    .frame(height: 28)
-                    .allowsHitTesting(false)
-                DromeTheme.background
-            }
-            .padding(.top, -28)
-            .ignoresSafeArea(edges: .bottom)
+        // Opaque fill over the whole chrome (including dots) so AX5 text can’t
+        // peek between dots; fade lives only above the bar.
+        .background {
+            DromeTheme.background
+                .ignoresSafeArea(edges: .bottom)
+                .padding(.top, -24)
+        }
+        .overlay(alignment: .top) {
+            LinearGradient(
+                colors: [DromeTheme.background.opacity(0), DromeTheme.background],
+                startPoint: .top,
+                endPoint: .bottom)
+                .frame(height: 24)
+                .offset(y: -24)
+                .allowsHitTesting(false)
         }
     }
 

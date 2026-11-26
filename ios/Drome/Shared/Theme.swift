@@ -60,17 +60,34 @@ enum DromeTheme {
         static let expand = Animation.spring(response: 0.38, dampingFraction: 0.84)
     }
 
-    /// Contrast-safe text/icon color on a wash derived from artwork.
+    /// Contrast-safe text/icon color on a wash — picks black or white by
+    /// whichever has the higher WCAG relative-luminance contrast (AA ≥ 4.5:1).
     static func contrastingInk(on wash: Color) -> Color {
         #if os(iOS)
         let ui = UIColor(wash)
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        ui.getRed(&r, green: &g, blue: &b, alpha: &a)
-        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
-        return luminance > 0.55 ? Color.black.opacity(0.88) : Color.white
+        guard ui.getRed(&r, green: &g, blue: &b, alpha: &a) else {
+            // Fallback for grayscale / wide-gamut representations.
+            var w: CGFloat = 0
+            ui.getWhite(&w, alpha: &a)
+            r = w; g = w; b = w
+        }
+        let L = relativeLuminance(r: Double(r), g: Double(g), b: Double(b))
+        // Contrast vs white (L=1) and black (L=0).
+        let vsWhite = (1.05) / (L + 0.05)
+        let vsBlack = (L + 0.05) / 0.05
+        return vsBlack >= vsWhite ? Color.black : Color.white
         #else
         return .white
         #endif
+    }
+
+    /// WCAG 2.x relative luminance for sRGB channels in 0…1.
+    static func relativeLuminance(r: Double, g: Double, b: Double) -> Double {
+        func linearize(_ c: Double) -> Double {
+            c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b)
     }
 }
 

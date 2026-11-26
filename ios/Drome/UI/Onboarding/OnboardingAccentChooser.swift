@@ -131,60 +131,62 @@ struct OnboardingAccentChooser: View {
     @State private var popped: DromeAccentColor?
     @State private var revealed = false
 
-    private let swatch: CGFloat = 40
+    private let swatch: CGFloat = 36
 
     var body: some View {
-        // Single horizontal row so swatches clear the Continue bar on SE + Pro.
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
-                ForEach(Array(DromeAccentColor.presets.enumerated()), id: \.element.id) { index, preset in
-                    Button {
-                        select(preset)
-                    } label: {
-                        swatchLabel(
-                            colour: preset.color(customRGB: store.customRGB),
-                            selected: store.preset == preset,
-                            popping: popped == preset)
-                    }
-                    .buttonStyle(.plain)
-                    .opacity(revealed ? 1 : 0)
-                    .offset(y: revealed ? 0 : 10)
-                    .animation(
-                        reduceMotion
-                            ? .easeOut(duration: 0.15)
-                            : .spring(response: 0.45, dampingFraction: 0.72)
-                                .delay(Double(index) * 0.03),
-                        value: revealed)
-                    .accessibilityLabel(preset.rawValue)
-                    .accessibilityAddTraits(store.preset == preset ? .isSelected : [])
+        // Two compact rows — every preset + Custom visible, no sideways scroll.
+        LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 6),
+            spacing: 10
+        ) {
+            ForEach(Array(DromeAccentColor.presets.enumerated()), id: \.element.id) { index, preset in
+                Button {
+                    select(preset)
+                } label: {
+                    swatchLabel(
+                        colour: preset.color(customRGB: store.customRGB),
+                        selected: store.preset == preset,
+                        popping: popped == preset)
                 }
-
-                ColorPicker(selection: customBinding, supportsOpacity: false) {
-                    Text("Custom colour")
-                }
-                .labelsHidden()
-                .frame(width: swatch, height: swatch)
-                .overlay {
-                    if store.preset == .custom {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.white)
-                            .allowsHitTesting(false)
-                    }
-                }
+                .buttonStyle(.plain)
                 .opacity(revealed ? 1 : 0)
                 .offset(y: revealed ? 0 : 10)
                 .animation(
                     reduceMotion
                         ? .easeOut(duration: 0.15)
                         : .spring(response: 0.45, dampingFraction: 0.72)
-                            .delay(Double(DromeAccentColor.presets.count) * 0.03),
+                            .delay(Double(index) * 0.03),
                     value: revealed)
-                .accessibilityAddTraits(store.preset == .custom ? .isSelected : [])
+                .accessibilityLabel(preset.rawValue)
+                .accessibilityAddTraits(store.preset == preset ? .isSelected : [])
             }
-            .padding(.horizontal, 4)
-            .padding(.vertical, 6)
+
+            ColorPicker(selection: customBinding, supportsOpacity: false) {
+                Text("Custom colour")
+            }
+            .labelsHidden()
+            .frame(width: swatch, height: swatch)
+            .overlay {
+                if store.preset == .custom {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .opacity(revealed ? 1 : 0)
+            .offset(y: revealed ? 0 : 10)
+            .animation(
+                reduceMotion
+                    ? .easeOut(duration: 0.15)
+                    : .spring(response: 0.45, dampingFraction: 0.72)
+                        .delay(Double(DromeAccentColor.presets.count) * 0.03),
+                value: revealed)
+            .accessibilityAddTraits(store.preset == .custom ? .isSelected : [])
         }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 4)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("drome.onboarding.accent")
         .onAppear {
@@ -211,17 +213,17 @@ struct OnboardingAccentChooser: View {
                 }
                 .shadow(
                     color: selected ? colour.opacity(0.55) : .clear,
-                    radius: selected ? 12 : 0,
-                    y: 3)
-                .scaleEffect(popping ? 1.2 : (selected ? 1.08 : 1))
+                    radius: selected ? 10 : 0,
+                    y: 2)
+                .scaleEffect(popping ? 1.18 : (selected ? 1.06 : 1))
 
             if selected {
                 Image(systemName: "checkmark")
-                    .font(.system(size: 13, weight: .bold))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(DromeTheme.contrastingInk(on: colour))
             }
         }
-        .frame(width: 44, height: 44)
+        .frame(maxWidth: .infinity, minHeight: 44)
         .contentShape(Rectangle())
     }
 
