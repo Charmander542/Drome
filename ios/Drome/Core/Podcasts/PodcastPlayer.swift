@@ -764,7 +764,10 @@ private final class PodcastNowPlayingCenter {
                   let http = response as? HTTPURLResponse,
                   (200...299).contains(http.statusCode),
                   let image = UIImage(data: data) else { return }
-            let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            let artwork = MPMediaItemArtwork(boundsSize: CGSize(width: 1024, height: 1024)) { requested in
+                let side = min(max(requested.width, requested.height, 1), 1024)
+                return NowPlayingCenter.squareFilled(image, side: side)
+            }
             await MainActor.run {
                 guard !Task.isCancelled else { return }
                 guard AudioFocus.shared.isOwner(.podcast) else { return }

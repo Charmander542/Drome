@@ -245,7 +245,6 @@ private struct MediumPlayingView: View {
             HStack(alignment: .center, spacing: 10) {
                 WidgetArtwork(file: nowPlaying.artworkFile, cornerRadius: WidgetColors.albumCornerRadius)
                     .frame(width: artSide, height: artSide)
-                    .fixedSize()
 
                 VStack(alignment: .leading, spacing: 0) {
                     DromeBarMark(size: 16, color: WidgetPalette.foreground(for: nowPlaying))
@@ -768,6 +767,8 @@ private struct WidgetArtwork: View {
                 }
             }
         }
+        .aspectRatio(1, contentMode: .fit)
+        .clipped()
         .id(file ?? "placeholder")
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
