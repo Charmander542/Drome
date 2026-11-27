@@ -488,7 +488,7 @@ final class DownloadManager: ObservableObject {
         }
     }
 
-    private static func safeFileComponent(_ raw: String) -> String {
+    nonisolated private static func safeFileComponent(_ raw: String) -> String {
         raw.replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: ":", with: "_")
             .replacingOccurrences(of: "?", with: "_")
