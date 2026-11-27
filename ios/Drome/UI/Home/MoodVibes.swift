@@ -241,7 +241,9 @@ struct MoodVibeCard: View {
             }
         }
         .frame(width: 100)
+        #if !os(tvOS)
         .hoverEffectDisabled()
+        #endif
     }
 }
 
@@ -286,7 +288,9 @@ struct MoodVibeTile: View {
                 .foregroundStyle(DromeTheme.muted)
                 .lineLimit(1)
         }
+        #if !os(tvOS)
         .hoverEffectDisabled()
+        #endif
         .scaleEffect(isSpinning ? 0.97 : 1)
         .animation(.easeInOut(duration: 0.15), value: isSpinning)
     }

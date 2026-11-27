@@ -129,7 +129,9 @@ struct ConnectDevicePicker: View {
             }
             #endif
         }
+        #if !os(tvOS)
         .scrollContentBackground(.hidden)
+        #endif
         .background(DromeTheme.background)
         #if os(iOS)
         .navigationTitle("Connect")
