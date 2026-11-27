@@ -60,6 +60,9 @@ struct SearchView: View {
     /// Block scroll-to-dismiss while browse→results layout settles (that offset
     /// jump was killing the keyboard the instant it appeared).
     @State private var ignoreScrollKeyboardDismissUntil: Date = .distantPast
+    /// Bumped on browse→text-search so the results List remounts at the top
+    /// (opacity-hidden lists otherwise keep their prior scroll offset).
+    @State private var resultsResetID: UInt = 0
     @State private var recentItems: [RecentSearchItem] = []
     @State private var matchedSongs: [String: Song] = [:]
     @State private var matchedAlbums: [String: Album] = [:]
@@ -124,6 +127,7 @@ struct SearchView: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
 
                 results
+                    .id(resultsResetID)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -272,7 +276,13 @@ struct SearchView: View {
         resultFilter = mode == .library ? filter : .all
         ignoreScrollKeyboardDismissUntil = Date().addingTimeInterval(0.75)
         // Instant content swap — let the system search field / keyboard animate alone.
+        let enteringFromBrowse = isBrowseMode
         setBrowseMode(false)
+        // Remount results at offset 0 when leaving browse (Close → reopen used
+        // to keep the prior scroll, tucking the first row under the chips).
+        if enteringFromBrowse {
+            resultsResetID &+= 1
+        }
         if focus, !isSearchPresented {
             DispatchQueue.main.async {
                 ignoreScrollKeyboardDismissUntil = Date().addingTimeInterval(0.75)
