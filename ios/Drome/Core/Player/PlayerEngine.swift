@@ -1862,6 +1862,9 @@ final class PlayerEngine: ObservableObject {
         PlaybackResilience.recoveryElapsed(accurate: accurateElapsed(), published: elapsed)
     }
 
+    /// True while an AVPlayer seek is outstanding (scrub, lyric tap, etc.).
+    var isSeekInFlight: Bool { seekEpoch != appliedSeekEpoch }
+
     /// High-resolution playhead for karaoke / scrubber UIs. Prefer this over
     /// the throttled `elapsed` publish when you need frame-smooth updates.
     func accurateElapsed() -> TimeInterval {
@@ -1879,6 +1882,27 @@ final class PlayerEngine: ObservableObject {
         let seconds = player.currentTime().seconds
         guard seconds.isFinite, seconds >= 0 else { return elapsed }
         return seconds
+    }
+
+    /// Playhead for lyric highlight / auto-scroll.
+    ///
+    /// During (and briefly after) a seek, `AVPlayer.currentTime()` often still
+    /// reports the pre-seek position or a transient ~0 — that made karaoke jump
+    /// to the top of the lyric sheet mid-scrub. Prefer the published target
+    /// playhead until the player catches up.
+    func karaokeElapsed() -> TimeInterval {
+        let published = elapsed
+        if isSeekInFlight {
+            return max(0, published)
+        }
+        let accurate = accurateElapsed()
+        if published > 2, accurate < 0.75 {
+            return max(0, published)
+        }
+        if abs(accurate - published) > 2.5 {
+            return max(0, published)
+        }
+        return max(0, accurate)
     }
 
     /// Drive mini / now-playing playhead from another Connect device's session.
