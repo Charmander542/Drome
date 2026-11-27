@@ -645,8 +645,8 @@ enum LRCParser {
             if let ms = line.startMs {
                 let m = ms / 60000
                 let s = (ms % 60000) / 1000
-                let hundredths = (ms % 1000) / 10
-                return String(format: "[%02d:%02d.%02d]%@", m, s, hundredths, line.text)
+                let millis = ms % 1000
+                return String(format: "[%02d:%02d.%03d]%@", m, s, millis, line.text)
             }
             return line.text
         }
@@ -660,8 +660,12 @@ enum LRCParser {
 /// `NowPlayingView.wordBrightness` — see NOTICE). Aura measured AirPods Pro 2
 /// and found `AVPlayer.currentTime` already reports presentation time, route
 /// delay included. Subtracting `AVAudioSession.outputLatency` again lights
-/// every word late. A glyph sweep across the syllable also read as sluggish
-/// no matter how short it was; a brief arrival centered on the stamp does not.
+/// every word late.
+///
+/// After end-to-end measurement against forced alignment, a lead *before* the
+/// stamp made correct cues feel early and late stamps still feel late. Spotify
+/// / Apple Music light the word on the vocal onset: full brightness at the
+/// cue, with only a one-to-two-frame ease so the flash does not strobe.
 enum LyricsClock {
     /// Listener nudge. Positive shows words earlier.
     static func syncMilliseconds(presentationSeconds: Double, userOffsetMs: Int) -> Int {
@@ -669,19 +673,21 @@ enum LyricsClock {
         return max(0, Int((presentationSeconds * 1000).rounded()) + userOffsetMs)
     }
 
-    /// Arrival ramp length. The ramp starts `wordLeadMs` before the stamp and
-    /// finishes `wordLeadMs` after, so the word is half-lit on the attack.
-    static let wordArrivalMs = 80
-    static let wordLeadMs = 40
+    /// Ease length after the stamp. Zero lead — the word is clearly lit on the
+    /// cue itself (see `wordOpacity`).
+    static let wordArrivalMs = 32
+    static let wordLeadMs = 0
+    /// Opacity the moment `elapsedMs >= 0` — already “clearly lit”.
+    static let attackOpacity = 0.88
     static let unsungOpacity = 0.32
     static let sungOpacity = 1.0
 
     /// `elapsedMs` is milliseconds since the cue (`Word.elapsed`). Negative
     /// means this pass has not reached the word yet.
     static func wordOpacity(elapsedMs: Int) -> Double {
-        let shifted = elapsedMs + wordLeadMs
-        if shifted <= 0 { return unsungOpacity }
-        let progress = min(1, Double(shifted) / Double(wordArrivalMs))
-        return unsungOpacity + (sungOpacity - unsungOpacity) * progress
+        if elapsedMs < 0 { return unsungOpacity }
+        if wordArrivalMs <= 0 { return sungOpacity }
+        let progress = min(1, Double(elapsedMs) / Double(wordArrivalMs))
+        return attackOpacity + (sungOpacity - attackOpacity) * progress
     }
 }

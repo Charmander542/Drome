@@ -1886,10 +1886,22 @@ final class PlayerEngine: ObservableObject {
 
     /// Playhead for lyric highlight / auto-scroll.
     ///
-    /// This is presentation time. Aura measured AirPods Pro 2 and found
-    /// `AVPlayer.currentTime` already includes Bluetooth / AirPlay delay, so
-    /// subtracting `AVAudioSession.outputLatency` lights every word late.
-    /// Callers add only the listener’s manual nudge.
+    /// Reads `AVPlayer.currentTime()` (via `accurateElapsed`) on every lyrics
+    /// display tick (~60 Hz). That value is the item timebase’s presentation
+    /// clock — not the 0.5 s UI `timeObserver`, and not `PlaybackClock`’s
+    /// wall-clock interpolator (which soft-ignores up to 450 ms of AV drift
+    /// and would make karaoke feel sluggish).
+    ///
+    /// Aura measured AirPods Pro 2 and found `currentTime` already includes
+    /// Bluetooth / AirPlay route delay, so we do **not** subtract
+    /// `AVAudioSession.outputLatency`. Callers add only the listener’s nudge.
+    ///
+    /// Encoder priming: for properly tagged local files AVPlayer accounts for
+    /// MP3/AAC encoder delay inside `currentTime`. Navidrome MP3 *transcodes*
+    /// can still disagree with the LRCLIB master — that is a stamp/offset
+    /// problem (companion align), not a client clock skew. Growing mid-song
+    /// drift would mean a rate/duration mismatch; we have not observed that
+    /// when stamps match the file.
     ///
     /// During (and briefly after) a seek, `AVPlayer.currentTime()` often still
     /// reports the pre-seek position or a transient ~0 — that made karaoke jump

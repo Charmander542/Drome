@@ -29,10 +29,12 @@ Adapted files include (non-exhaustive):
     (from Aura Nonstop refill / skip-dislike session rules)
   - ios/Drome/Core/Services/LRCParser.swift
     (song-pace line ends + mid-break focus from Aura LyricWordTiming;
-     presentation-time clock + short word arrival from Aura liveLyricsTime /
-     wordBrightness — no output-latency subtraction, no glyph sweep)
+     presentation-time clock from Aura liveLyricsTime / wordBrightness —
+     no output-latency subtraction, no glyph sweep; word attack lights on
+     the stamp rather than leading it)
   - ios/Drome/UI/Player/LyricsView.swift
-    (current line only redraws on the display link; other lines stay one Text)
+    (current line only redraws on the display link; other lines stay one Text;
+     scroll may lead the sung line without advancing word karaoke)
   - ios/Drome/Core/Player/PlayerEngine.swift
     (bufferProgress / isBuffering publish from Aura progress ideas)
   - ios/Drome/UI/Player/NowPlayingView.swift

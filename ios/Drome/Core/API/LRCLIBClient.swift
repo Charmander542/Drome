@@ -306,12 +306,12 @@ struct LRCLIBClient {
         return Int(s)
     }
 
+    /// Full millisecond precision — matches the companion sidecar writer.
     private static func formatLRCStamp(_ ms: Int) -> String {
         let clamped = max(0, ms)
-        let centi = clamped / 10
-        let m = centi / 6000
-        let s = (centi % 6000) / 100
-        let cs = centi % 100
-        return String(format: "%02d:%02d.%02d", m, s, cs)
+        let m = clamped / 60_000
+        let s = (clamped % 60_000) / 1_000
+        let frac = clamped % 1_000
+        return String(format: "%02d:%02d.%03d", m, s, frac)
     }
 }

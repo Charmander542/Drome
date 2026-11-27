@@ -48,6 +48,7 @@ type lyricsSyncConfig struct {
 	UserAgent     string
 	StateFile     string
 	MaxBackfill   int // 0 = unlimited
+	Align         lyricsAlignConfig
 }
 
 func lyricsSyncConfigFromEnv(musicDir, dbPath string) lyricsSyncConfig {
@@ -55,9 +56,9 @@ func lyricsSyncConfigFromEnv(musicDir, dbPath string) lyricsSyncConfig {
 	backfill := strings.ToLower(envOr("DROME_LYRICS_BACKFILL", "true"))
 	state := envOr("DROME_LYRICS_BACKFILL_STATE", "")
 	if state == "" {
-		// v2 re-walks the library so Word Synced lyricsfile hits can upgrade
-		// line-only .lrc sidecars written by v1 (which ignored lyricsfile).
-		state = filepath.Join(filepath.Dir(dbPath), "lyrics-backfill-v2.done")
+		// v3 re-walks so sidecars pick up millisecond stamps and optional
+		// forced-alignment [offset:] refinement (v2 only upgraded lyricsfile).
+		state = filepath.Join(filepath.Dir(dbPath), "lyrics-backfill-v3.done")
 	}
 	return lyricsSyncConfig{
 		Enabled:     enabled == "1" || enabled == "true" || enabled == "yes",
@@ -67,6 +68,7 @@ func lyricsSyncConfigFromEnv(musicDir, dbPath string) lyricsSyncConfig {
 		UserAgent:   envOr("DROME_LYRICS_USER_AGENT", "DromeServer/1.0 (LRCLIB sidecar sync)"),
 		StateFile:   state,
 		MaxBackfill: envInt("DROME_LYRICS_BACKFILL_MAX", 0),
+		Align:       lyricsAlignConfigFromEnv(),
 	}
 }
 
@@ -242,8 +244,20 @@ func (s *lyricsSyncer) syncAudioFile(ctx context.Context, audioPath, title, arti
 	if raw, err := os.ReadFile(lrcPath); err == nil {
 		existing = string(raw)
 	}
+	wrote := false
 	if lyricsQuality(existing) >= 3 {
-		return false, nil // already word-synced
+		// Already word-synced — still upgrade centisecond stamps to ms, and
+		// optionally snap a constant [offset:] to this library file's vocal.
+		if changed, err := rewriteSidecarPrecision(lrcPath); err != nil {
+			return false, err
+		} else if changed {
+			wrote = true
+			logf("lyrics sync upgraded stamp precision for %q — %q", artist, title)
+		}
+		if aligned := s.maybeAlign(ctx, audioPath, lrcPath); aligned {
+			wrote = true
+		}
+		return wrote, nil
 	}
 
 	hit, err := s.fetchBest(ctx, title, artist, album, durationSec)
@@ -260,6 +274,7 @@ func (s *lyricsSyncer) syncAudioFile(ctx context.Context, audioPath, title, arti
 	if lyricsQuality(content) <= lyricsQuality(existing) {
 		return false, nil
 	}
+	content = ensureMillisecondStamps(content)
 	if err := os.WriteFile(lrcPath, []byte(ensureTrailingNewline(content)), 0o644); err != nil {
 		return false, err
 	}
@@ -268,7 +283,29 @@ func (s *lyricsSyncer) syncAudioFile(ctx context.Context, audioPath, title, arti
 		kind = "word"
 	}
 	logf("lyrics sync wrote %s (%s) for %q — %q", filepath.Base(lrcPath), kind, artist, title)
+	_ = s.maybeAlign(ctx, audioPath, lrcPath)
 	return true, nil
+}
+
+func (s *lyricsSyncer) maybeAlign(ctx context.Context, audioPath, lrcPath string) bool {
+	if s == nil || !s.cfg.Align.Enabled {
+		return false
+	}
+	raw, err := os.ReadFile(lrcPath)
+	if err != nil || !hasWordSync(string(raw)) {
+		return false
+	}
+	res, err := refineLRCAgainstAudio(ctx, s.cfg.Align, audioPath, lrcPath)
+	if err != nil {
+		logf("lyrics align %s: %v", filepath.Base(audioPath), err)
+		return false
+	}
+	if res == nil {
+		return false
+	}
+	logf("lyrics align %s: offset=%dms before_med_abs=%.0f after_med_abs=%.0f pass=%v",
+		filepath.Base(lrcPath), res.AppliedOffsetMs, res.Before.MedianAbsMs, res.After.MedianAbsMs, res.After.Pass)
+	return res.Wrote || res.AppliedOffsetMs != 0
 }
 
 func ensureTrailingNewline(s string) string {

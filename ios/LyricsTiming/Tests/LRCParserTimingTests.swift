@@ -206,18 +206,17 @@ final class LRCParserTimingTests: XCTestCase {
             10)
     }
 
-    /// The flash is centered on the stamp: unsung 40ms before, half-lit on it,
-    /// fully lit 40ms after. No multi-hundred-millisecond latency shift.
-    func testWordArrivalIsCenteredOnTheStamp() {
-        XCTAssertEqual(LyricsClock.wordOpacity(elapsedMs: -40), LyricsClock.unsungOpacity)
-        let mid = LyricsClock.wordOpacity(elapsedMs: 0)
-        XCTAssertEqual(mid, (LyricsClock.unsungOpacity + LyricsClock.sungOpacity) / 2, accuracy: 0.001)
-        XCTAssertEqual(LyricsClock.wordOpacity(elapsedMs: 40), LyricsClock.sungOpacity)
+    /// Word is clearly lit on the stamp itself (attack opacity), then eases
+    /// to full over `wordArrivalMs`. No pre-stamp lead.
+    func testWordArrivalLightsOnTheStamp() {
+        XCTAssertEqual(LyricsClock.wordOpacity(elapsedMs: -1), LyricsClock.unsungOpacity)
+        XCTAssertEqual(LyricsClock.wordOpacity(elapsedMs: 0), LyricsClock.attackOpacity, accuracy: 0.001)
+        XCTAssertEqual(LyricsClock.wordOpacity(elapsedMs: LyricsClock.wordArrivalMs), LyricsClock.sungOpacity)
         XCTAssertEqual(LyricsClock.wordOpacity(elapsedMs: 400), LyricsClock.sungOpacity)
     }
 
-    /// Walk a word-synced line at display rate and require each word to cross
-    /// "clearly lit" within one frame of its own stamp.
+    /// Walk a word-synced line at display rate and require each word to be
+    /// clearly lit on its own stamp (within one 16ms frame).
     func testMeasuredWordsLockToStampsAtFrameRate() {
         let lines = LRCParser.parse("""
             [00:01.00] <00:01.00>Hello <00:01.40>there <00:01.90>world
@@ -225,7 +224,7 @@ final class LRCParserTimingTests: XCTestCase {
             """)
         let words = lines[0].words
         XCTAssertEqual(words.map(\.startMs), [1_000, 1_400, 1_900])
-        let clearlyLit = LyricsClock.unsungOpacity + (LyricsClock.sungOpacity - LyricsClock.unsungOpacity) * 0.8
+        let clearlyLit = LyricsClock.attackOpacity
         for word in words {
             var crossed: Int?
             var step = word.startMs - 80
@@ -244,10 +243,9 @@ final class LRCParserTimingTests: XCTestCase {
                 XCTFail("\(word.text) never reached a clear highlight")
                 continue
             }
-            // 16ms frame grid: the 80% point of an 80ms ramp centered on the
-            // stamp lands on the sample 32ms after the cue.
-            XCTAssertEqual(litAt, word.startMs + 32)
-            XCTAssertLessThan(abs(litAt - word.startMs), 50)
+            // Attack opacity is reached at the stamp (elapsed >= 0).
+            XCTAssertEqual(litAt, word.startMs)
+            XCTAssertLessThan(abs(litAt - word.startMs), 16)
         }
         let atHello = LyricsClock.syncMilliseconds(presentationSeconds: 1.0, userOffsetMs: 0)
         XCTAssertTrue(words[0].isLit(atMs: atHello))

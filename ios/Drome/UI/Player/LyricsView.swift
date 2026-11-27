@@ -13,6 +13,9 @@ struct LyricsView: View {
     @State private var isLoading = true
     @State private var error: String?
     @State private var activeIndex: Int = 0
+    /// Scroll can lead the sung line so the coming line is already centered
+    /// (Apple Music / Spotify feel). Word lighting still keys off `activeIndex`.
+    @State private var scrollIndex: Int = 0
     @State private var userOffsetMs: Int = 0
     /// Last presentation time, kept off `@State` so a 60 Hz poll does not
     /// rebuild the lyric sheet. Only a line change writes view state.
@@ -20,6 +23,8 @@ struct LyricsView: View {
     @State private var userScrolling = false
     @State private var reenableFollowTask: Task<Void, Never>?
     @State private var lastScrolledIndex: Int = -1
+    /// How far ahead of a line stamp we start scrolling it into place.
+    private let scrollLeadMs = 320
     /// True after a scrub/seek jump — auto-scroll snaps once without animating
     /// through every line between the old and new playhead.
     @State private var scrubSuppressScroll = false
@@ -64,6 +69,7 @@ struct LyricsView: View {
         }
         .task(id: song.id) {
             activeIndex = 0
+            scrollIndex = 0
             lastScrolledIndex = -1
             userScrolling = false
             scrubSuppressScroll = false
@@ -140,6 +146,10 @@ struct LyricsView: View {
         let idx = activeLineIndex(at: ms, in: document)
         if idx != activeIndex {
             activeIndex = idx
+        }
+        let scrollTo = scrollLineIndex(at: ms, in: document)
+        if scrollTo != scrollIndex {
+            scrollIndex = scrollTo
         }
     }
 
@@ -221,7 +231,7 @@ struct LyricsView: View {
                         }
                     }
             )
-            .onChange(of: activeIndex) { _, newValue in
+            .onChange(of: scrollIndex) { _, newValue in
                 let animate = !scrubSuppressScroll && !player.isSeekInFlight
                 scrollToActive(
                     proxy: proxy,
@@ -233,21 +243,23 @@ struct LyricsView: View {
                 scrollToActive(
                     proxy: proxy,
                     document: document,
-                    index: activeIndex,
+                    index: scrollIndex,
                     animated: false)
             }
             .onChange(of: document.lines.first?.id) { _, _ in
                 // New document identity (reload) — keep current playhead line,
                 // never snap to the top of the sheet.
                 lastScrolledIndex = -1
+                let ms = syncElapsedMs()
                 let idx = document.synced
-                    ? activeLineIndex(at: syncElapsedMs(), in: document)
+                    ? activeLineIndex(at: ms, in: document)
                     : activeIndex
                 activeIndex = idx
-                scrollToActive(proxy: proxy, document: document, index: idx, animated: false)
+                scrollIndex = document.synced ? scrollLineIndex(at: ms, in: document) : idx
+                scrollToActive(proxy: proxy, document: document, index: scrollIndex, animated: false)
             }
             .onAppear {
-                scrollToActive(proxy: proxy, document: document, index: activeIndex, animated: false)
+                scrollToActive(proxy: proxy, document: document, index: scrollIndex, animated: false)
             }
         }
         .overlay(alignment: .bottom) {
@@ -349,11 +361,16 @@ struct LyricsView: View {
         lastScrolledIndex = index
         let id = document.lines[index].id
         if animated {
-            withAnimation(.smooth(duration: 0.28)) {
+            // Short ease — long `.smooth` scrolls felt sluggish vs Apple Music.
+            withAnimation(.easeInOut(duration: 0.18)) {
                 proxy.scrollTo(id, anchor: UnitPoint(x: 0.5, y: 0.38))
             }
         } else {
-            proxy.scrollTo(id, anchor: UnitPoint(x: 0.5, y: 0.38))
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo(id, anchor: UnitPoint(x: 0.5, y: 0.38))
+            }
         }
     }
 
@@ -372,6 +389,7 @@ struct LyricsView: View {
         userScrolling = false
         lastScrolledIndex = index
         activeIndex = index
+        scrollIndex = index
         // Undo the sync nudge so audio lands where this stamp was authored.
         let seekTo = max(0, Double(start - userOffsetMs) / 1000.0)
         if session.connect?.isRemote == true {
@@ -384,9 +402,22 @@ struct LyricsView: View {
     }
 
     private func activeLineIndex(at elapsedMs: Int, in document: LyricsDocument) -> Int {
-        // Heard stamp + mid-break focus: scroll/scale onto the coming line during
-        // long instrumentals. Word lighting still waits on each cue’s start.
+        // Heard stamp + mid-break focus for scale / past-upcoming chrome.
+        // Word lighting still waits on each cue’s start.
         LRCParser.currentLineIndex(lines: document.lines, atMs: elapsedMs)
+    }
+
+    /// Scroll target may lead the sung line so the next lyric is centered
+    /// just before it starts — without advancing word karaoke early.
+    private func scrollLineIndex(at elapsedMs: Int, in document: LyricsDocument) -> Int {
+        let heard = LRCParser.activeLineIndex(lines: document.lines, atMs: elapsedMs)
+        if heard + 1 < document.lines.count,
+           let nextStart = document.lines[heard + 1].startMs,
+           nextStart > elapsedMs,
+           nextStart - elapsedMs <= scrollLeadMs {
+            return heard + 1
+        }
+        return activeLineIndex(at: elapsedMs, in: document)
     }
 
     private func sourceLabel(_ source: String) -> String {
@@ -425,7 +456,9 @@ struct LyricsView: View {
         if let fetched {
             let aligned = realignToPlayhead(fetched)
             if aligned.synced {
-                activeIndex = activeLineIndex(at: syncElapsedMs(), in: aligned)
+                let ms = syncElapsedMs()
+                activeIndex = activeLineIndex(at: ms, in: aligned)
+                scrollIndex = scrollLineIndex(at: ms, in: aligned)
             }
             lastScrolledIndex = -1
             document = aligned
@@ -478,8 +511,9 @@ struct LyricsView: View {
             .padding(.leading, line.side == .secondary ? 28 : 0)
             .padding(.trailing, line.side == .primary ? 28 : 0)
             // Scale does not affect layout — keeps scroll positions stable.
+            // No spring: spring settle made the active line feel late vs the vocal.
             .scaleEffect(state == .active ? 1.05 : 1.0, anchor: scaleAnchor)
-            .animation(.spring(response: 0.22, dampingFraction: 0.9), value: state == .active)
+            .animation(nil, value: state == .active)
         }
 
         @ViewBuilder
@@ -505,8 +539,8 @@ struct LyricsView: View {
             }
         }
 
-        /// One `Text` so wrapping stays natural. Each word arrives over ~80ms
-        /// centered on its stamp and stays lit — no trailing dim, no glyph sweep.
+        /// One `Text` so wrapping stays natural. Each word lights on its stamp
+        /// (short post-attack ease) and stays lit — no trailing dim, no glyph sweep.
         private func wordRun(atMs: Int) -> Text {
             line.words.enumerated().reduce(Text("")) { partial, item in
                 let word = item.element

@@ -1,0 +1,86 @@
+{
+  "date": "2026-11-27",
+  "method": "faster-whisper small.en word timestamps vs LRCLIB lyricsfile\u2192Enhanced LRC (ms stamps)",
+  "pass_bar": {
+    "median_abs_ms": 40,
+    "p90_abs_ms": 100,
+    "drift_ms_per_min": 30
+  },
+  "songs": {
+    "never-gonna-give-you-up": {
+      "audio": "YouTube full track (local eval only, not committed); duration 213.04s; LRCLIB id 31504660 dur 214.0",
+      "before": {
+        "n": 286,
+        "mean_ms": 726.7867132867133,
+        "median_ms": 1178.0,
+        "mean_abs_ms": 1181.43006993007,
+        "median_abs_ms": 1209.0,
+        "p90_abs_ms": 1527,
+        "drift_ms_per_min": -142.0322954347375,
+        "offset_kind": "drifting",
+        "after_offset_median_abs_ms": 166.0,
+        "after_offset_p90_abs_ms": 1986.0,
+        "pass": false,
+        "limits": {
+          "median_abs_ms": 40,
+          "p90_abs_ms": 100,
+          "drift_ms_per_min": 30
+        }
+      },
+      "after_constant_offset": {
+        "n": 315,
+        "mean_ms": 124.1047619047619,
+        "median_ms": 90,
+        "mean_abs_ms": 177.8825396825397,
+        "median_abs_ms": 118,
+        "p90_abs_ms": 396,
+        "drift_ms_per_min": 76.72674703186767,
+        "offset_kind": "drifting",
+        "after_offset_median_abs_ms": 119,
+        "after_offset_p90_abs_ms": 320,
+        "pass": false,
+        "limits": {
+          "median_abs_ms": 40,
+          "p90_abs_ms": 100,
+          "drift_ms_per_min": 30
+        }
+      },
+      "applied_offset_ms": -1211,
+      "interpretation": "Dominant error is a ~1.2s constant master/intro offset (LRC late vs this file). Drift is small (~0.14s/min). After [offset:-1211], median abs falls ~1210\u2192118ms. Residual above 40ms is mostly Whisper-on-music jitter + chorus repeat matching\u2014not progressive rate skew."
+    },
+    "wet-sand_deezer_preview_spacing": {
+      "note": "Deezer 30s preview is mid-song; measured relative spacing after text anchor",
+      "median_abs_spacing_ms": 82,
+      "p90_abs_ms": 101,
+      "interpretation": "Within-phrase stamp spacing looks good once master offset is removed."
+    },
+    "quantization_centisecond_truncation": {
+      "before_mean_ms": {
+        "wet-sand": -3.79,
+        "blinding-lights": -5.63,
+        "never-gonna": -3.18,
+        "take-on-me": -2.2,
+        "billie-jean": -4.1
+      },
+      "max_abs_ms": 9,
+      "fix": "sidecar writer now emits millisecond stamps"
+    }
+  },
+  "clock_audit": {
+    "karaoke_time_source": "AVPlayer.currentTime via accurateElapsed/karaokeElapsed (item timebase presentation clock)",
+    "periodic_observer": "0.5s \u2014 UI scrubbers only; karaoke does not use it",
+    "playback_clock_interpolator": "not used for karaoke (soft-correct tolerance 450ms would lag highlights)",
+    "route_latency": "not subtracted (Aura AirPods Pro 2 finding, PR #125)",
+    "transcode": "MP3/AAC priming handled by AVPlayer for tagged files; Navidrome transcode vs LRCLIB master mismatch addressed by companion align offset",
+    "not_tested": [
+      "real device speakers",
+      "Bluetooth/AirPlay A/B",
+      "Simulator frame-capture stamp\u2192pixel latency",
+      "gapless/crossfade mid-transition karaoke"
+    ]
+  },
+  "render_changes": {
+    "before": "80ms arrival centered on stamp (half-lit at cue, clearly lit ~32ms late); spring line scale; 280ms smooth scroll on active line",
+    "after": "attack opacity 0.88 at cue (lead=0, 32ms ease to 1.0); no spring; 180ms ease scroll; scrollLeadMs=320 without advancing word karaoke"
+  }
+}
