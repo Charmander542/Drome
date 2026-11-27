@@ -47,12 +47,13 @@ struct LyricsDocument {
 }
 
 /// Lyrics lookup pipeline, in priority order:
-/// 1. Companion library sidecar (raw `.lrc` next to the file — keeps word stamps)
-/// 2. Navidrome `getLyricsBySongId` when it has usable line timing
-/// 3. LRCLIB public API (matched by artist/title/duration; prefers word-synced)
+/// 1. Offline download companion `.lrc` (written when a track is downloaded)
+/// 2. Companion library sidecar (raw `.lrc` next to the file — keeps word stamps)
+/// 3. Navidrome `getLyricsBySongId` when it has usable line timing
+/// 4. LRCLIB public API (matched by artist/title/duration; prefers word-synced)
 ///
-/// Results stay in a small **session** memory cache only — nothing is written to
-/// phone SQLite. Backend sidecars + Navidrome are the durable store.
+/// Network hits stay in a small **session** memory cache — SQLite is not used.
+/// Offline downloads keep their own `.lrc` next to the audio file.
 ///
 /// Timestamps are aligned to the local file: LRC `[offset:]` tags, OpenSubsonic
 /// `offset`, and mild duration scaling when the matched master is a near-cut.
@@ -62,11 +63,22 @@ actor LyricsService {
     private let lrclib: LRCLIBClient
     private let wishlist: DromeWishlistClient?
     private let serverKey: String
+    /// Resolves a local offline `.lrc` path for a song id (DownloadManager).
+    private let offlineLyricsURL: (@Sendable (String) -> URL?)?
 
     /// Bumped when matching / alignment rules change so old hits refetch once.
     private static let lrclibSource = "lrclib.v5"
     private static let navidromeSource = "navidrome.v5"
     private static let sidecarSource = "sidecar.v1"
+    static let offlineSource = "offline.v1"
+
+    private struct FetchedLyrics {
+        var content: String
+        var synced: Bool
+        var source: String
+        var structuredOffsetMs: Int = 0
+        var matchedDurationSec: Int? = nil
+    }
 
     private enum MemoryEntry {
         case hit(LyricsDocument)
@@ -82,13 +94,15 @@ actor LyricsService {
         database: AppDatabase,
         client: SubsonicClient,
         serverKey: String,
-        wishlist: DromeWishlistClient? = nil
+        wishlist: DromeWishlistClient? = nil,
+        offlineLyricsURL: (@Sendable (String) -> URL?)? = nil
     ) {
         self.database = database
         self.client = client
         self.lrclib = LRCLIBClient(session: client.session)
         self.wishlist = wishlist
         self.serverKey = serverKey
+        self.offlineLyricsURL = offlineLyricsURL
         // Reclaim older on-disk lyrics / FTS rows for this server.
         try? database.clearLyrics(serverKey: serverKey)
     }
@@ -100,8 +114,22 @@ actor LyricsService {
             case .miss: return nil
             }
         }
+
+        if let offline = loadOffline(song: song) {
+            remember(songId: song.id, document: offline)
+            return offline
+        }
+
         guard allowNetwork else { return nil }
-        let fresh = await fetch(song: song)
+        let fresh = await fetch(song: song).map { payload in
+            document(
+                from: payload.content,
+                synced: payload.synced,
+                source: payload.source,
+                songDuration: song.duration,
+                structuredOffsetMs: payload.structuredOffsetMs,
+                matchedDurationSec: payload.matchedDurationSec)
+        }
         remember(songId: song.id, document: fresh)
         return fresh
     }
@@ -114,17 +142,52 @@ actor LyricsService {
     /// Drops the session entry and refetches (for a "reload lyrics" affordance).
     func refetch(for song: Song) async -> LyricsDocument? {
         forget(songId: song.id)
-        let fresh = await fetch(song: song)
-        remember(songId: song.id, document: fresh)
-        return fresh
+        return await lyrics(for: song, allowNetwork: true)
     }
 
-    private func fetch(song: Song) async -> LyricsDocument? {
+    /// Fetches lyrics (sidecar → Navidrome → LRCLIB) and writes raw LRC to `url`
+    /// for offline Now Playing. Returns false when nothing usable was found.
+    @discardableResult
+    func persistOfflineLyrics(for song: Song, to url: URL) async -> Bool {
+        if let existing = try? String(contentsOf: url, encoding: .utf8),
+           !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        guard let payload = await fetch(song: song) else { return false }
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+            try payload.content.write(to: url, atomically: true, encoding: .utf8)
+            forget(songId: song.id)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func loadOffline(song: Song) -> LyricsDocument? {
+        guard let url = offlineLyricsURL?(song.id),
+              let content = try? String(contentsOf: url, encoding: .utf8),
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        let synced = LRCParser.isSynced(content)
+        return document(
+            from: content,
+            synced: synced,
+            source: Self.offlineSource,
+            songDuration: song.duration)
+    }
+
+    private func fetch(song: Song) async -> FetchedLyrics? {
         // Unsynced Navidrome text used to short-circuit before LRCLIB — songs
         // with embedded plain lyrics (e.g. some Kanye tags) never got karaoke.
         // Only accept Navidrome as final when it has usable line timestamps;
         // otherwise keep plain as a fallback after trying LRCLIB synced LRC.
-        var unsyncedFallback: (content: String, source: String, offsetMs: Int)?
+        var unsyncedFallback: FetchedLyrics?
 
         // 1. Companion raw sidecar — preserves Enhanced LRC word stamps.
         if let wishlist,
@@ -133,11 +196,7 @@ actor LyricsService {
            sidecar.found,
            let content = sidecar.content, !content.isEmpty {
             let synced = sidecar.synced || LRCParser.isSynced(content)
-            return document(
-                from: content,
-                synced: synced,
-                source: Self.sidecarSource,
-                songDuration: song.duration)
+            return FetchedLyrics(content: content, synced: synced, source: Self.sidecarSource)
         }
 
         // 2. Navidrome structured lyrics — prefer timed; defer plain to after LRCLIB.
@@ -150,14 +209,17 @@ actor LyricsService {
                 lines: lines.map { ($0.start, $0.value) },
                 offsetMs: offsetMs)
             if hasTiming {
-                return document(
-                    from: content,
+                return FetchedLyrics(
+                    content: content,
                     synced: true,
                     source: Self.navidromeSource,
-                    songDuration: song.duration,
                     structuredOffsetMs: offsetMs)
             }
-            unsyncedFallback = (content, Self.navidromeSource, offsetMs)
+            unsyncedFallback = FetchedLyrics(
+                content: content,
+                synced: false,
+                source: Self.navidromeSource,
+                structuredOffsetMs: offsetMs)
         }
 
         // 3. LRCLIB — prefer synced karaoke; plain only if we have nothing else.
@@ -167,34 +229,23 @@ actor LyricsService {
             album: song.album, duration: song.duration) {
             let matchedDuration = result.duration.map { Int($0.rounded()) }
             if let lrc = result.syncedLyrics, !lrc.isEmpty {
-                return document(
-                    from: lrc,
+                return FetchedLyrics(
+                    content: lrc,
                     synced: true,
                     source: Self.lrclibSource,
-                    songDuration: song.duration,
                     matchedDurationSec: matchedDuration)
             }
             if unsyncedFallback == nil,
                let plain = result.plainLyrics, !plain.isEmpty {
-                return document(
-                    from: plain,
+                return FetchedLyrics(
+                    content: plain,
                     synced: false,
                     source: Self.lrclibSource,
-                    songDuration: song.duration,
                     matchedDurationSec: matchedDuration)
             }
         }
 
-        if let fallback = unsyncedFallback {
-            return document(
-                from: fallback.content,
-                synced: false,
-                source: fallback.source,
-                songDuration: song.duration,
-                structuredOffsetMs: fallback.offsetMs)
-        }
-
-        return nil
+        return unsyncedFallback
     }
 
     /// Prefer entries that actually carry line start times. A `synced: true`
