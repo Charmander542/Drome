@@ -116,7 +116,7 @@ enum OnboardingTourChrome {
     static let mockMaxHeight: CGFloat = 380
     /// Welcome page uses dead space above the dots for a larger hero.
     static let mockMaxHeightHero: CGFloat = 420
-    /// Accent page keeps the orb compact so swatches clear the Continue bar.
+    /// Accent page orb on roomy screens (18 Pro). Short screens clamp lower in OnboardingView.
     static let mockMaxHeightAccent: CGFloat = 220
     static let mockMaxHeightAX: CGFloat = 240
     static let mockHorizontalPadding: CGFloat = 28
@@ -246,13 +246,13 @@ struct OnboardingMockTabBar: View {
     }
 }
 
-/// Deterministic, copyright-free cover art — vivid gradients + simple shapes.
+/// Deterministic, copyright-free cover art — vivid gradients + abstract shapes.
+/// Never uses a music-note glyph.
 struct MockArtTile: View {
     var index: Int = 0
     var corner: CGFloat = 8
     /// Legacy two-stop override (search placeholders, etc.).
     var colors: [Color]? = nil
-    var symbol: String? = nil
 
     private var palette: [Color] {
         if let colors, !colors.isEmpty { return colors }
@@ -273,32 +273,24 @@ struct MockArtTile: View {
                     let h = geo.size.height
                     let seed = index & 7
                     ZStack {
+                        // Soft mesh blobs — abstract, not a ♪.
                         Circle()
-                            .fill(Color.white.opacity(0.18))
-                            .frame(width: w * 0.55, height: w * 0.55)
+                            .fill(Color.white.opacity(0.22))
+                            .frame(width: w * 0.62, height: w * 0.62)
+                            .blur(radius: 0.5)
                             .offset(
-                                x: seed % 2 == 0 ? w * 0.22 : -w * 0.18,
-                                y: seed < 4 ? -h * 0.2 : h * 0.16)
-                        RoundedRectangle(cornerRadius: corner * 0.6, style: .continuous)
-                            .fill(Color.white.opacity(0.12))
-                            .frame(width: w * 0.42, height: h * 0.28)
-                            .rotationEffect(.degrees(Double(seed) * 12 - 18))
-                            .offset(x: -w * 0.16, y: h * 0.22)
-                        if let symbol {
-                            Image(systemName: symbol)
-                                .font(.system(size: max(10, w * 0.22), weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.88))
-                        } else {
-                            // Soft glyph — not a flat ♪ on teal.
-                            Capsule()
-                                .fill(Color.white.opacity(0.28))
-                                .frame(width: w * 0.12, height: h * 0.42)
-                                .offset(y: h * 0.04)
-                            Circle()
-                                .fill(Color.white.opacity(0.35))
-                                .frame(width: w * 0.2, height: w * 0.2)
-                                .offset(x: -w * 0.06, y: h * 0.18)
-                        }
+                                x: seed % 2 == 0 ? w * 0.28 : -w * 0.22,
+                                y: seed < 4 ? -h * 0.24 : h * 0.18)
+                        RoundedRectangle(cornerRadius: max(corner * 0.8, 4), style: .continuous)
+                            .fill(hues.last?.opacity(0.55) ?? Color.white.opacity(0.15))
+                            .frame(width: w * 0.48, height: h * 0.34)
+                            .rotationEffect(.degrees(Double(seed) * 14 - 22))
+                            .offset(x: -w * 0.14, y: h * 0.2)
+                        Ellipse()
+                            .fill(Color.white.opacity(0.16))
+                            .frame(width: w * 0.4, height: h * 0.18)
+                            .rotationEffect(.degrees(Double(12 - seed * 5)))
+                            .offset(x: w * 0.18, y: h * 0.08)
                     }
                     .frame(width: w, height: h)
                 }
@@ -504,13 +496,21 @@ struct OnboardingBrowseMock: View {
             .opacity(0.55)
 
             VStack(spacing: 0) {
-                libraryRow("Downloaded", "arrow.down.circle.fill")
-                libraryRow("Top Rated", "star.fill")
-                libraryRow("Out of Rotation", "lock.fill")
-                libraryRow("Hidden Playlists", "eye.slash")
+                libraryRow("Downloaded", "arrow.down.circle.fill", art: 3)
+                libraryRow("Top Rated", "star.fill", art: 7)
+                libraryRow("Out of Rotation", "lock.fill", art: 1)
+                libraryRow("Hidden Playlists", "eye.slash", art: 9)
             }
             .padding(.horizontal, 8)
-            .opacity(0.55)
+
+            // Plausible playlists so the mock isn’t only grey chrome.
+            VStack(alignment: .leading, spacing: 5) {
+                playlistRow("Late Night Drives", "42 songs", art: 0)
+                playlistRow("Coastal Focus", "28 songs", art: 4)
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 4)
+            .opacity(0.9)
 
             Spacer(minLength: 0)
 
@@ -519,22 +519,46 @@ struct OnboardingBrowseMock: View {
         .background(DromeTheme.background)
     }
 
-    private func libraryRow(_ title: String, _ symbol: String, accent: Bool = false) -> some View {
+    private func libraryRow(_ title: String, _ symbol: String, art: Int) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: symbol)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(accent ? DromeTheme.accent : DromeTheme.muted)
-                .frame(width: 16)
+            ZStack {
+                MockArtTile(index: art, corner: 5)
+                    .frame(width: 28, height: 28)
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.45), radius: 1, y: 1)
+            }
             Text(title)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(accent ? DromeTheme.accent : .white)
+                .foregroundStyle(.white)
                 .lineLimit(1)
             Spacer()
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 7)
+        .padding(.vertical, 6)
         .background(DromeTheme.elevated, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         .padding(.bottom, 3)
+    }
+
+    private func playlistRow(_ title: String, _ subtitle: String, art: Int) -> some View {
+        HStack(spacing: 8) {
+            MockArtTile(index: art, corner: 5)
+                .frame(width: 32, height: 32)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(DromeTheme.muted)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
     }
 }
 
@@ -989,26 +1013,6 @@ enum OnboardingNowPlayingStep: Int, CaseIterable {
         }
     }
 
-    /// Focus point inside the mock (0…1) used to zoom toward the highlighted region.
-    var focusAnchor: UnitPoint {
-        switch self {
-        case .navigate: return UnitPoint(x: 0.5, y: 0.28)
-        case .playback: return UnitPoint(x: 0.5, y: 0.62)
-        case .lyrics: return UnitPoint(x: 0.5, y: 0.12)
-        case .tools: return UnitPoint(x: 0.5, y: 0.78)
-        case .more: return UnitPoint(x: 0.88, y: 0.42)
-        }
-    }
-
-    var focusScale: CGFloat {
-        switch self {
-        case .navigate: return 1.12
-        case .playback: return 1.18
-        case .lyrics: return 1.2
-        case .tools: return 1.22
-        case .more: return 1.16
-        }
-    }
 }
 
 /// Now Playing player chrome inside the shared phone-frame mock.
@@ -1029,24 +1033,20 @@ struct OnboardingNowPlayingControlsMock: View {
     private let artCount = 3
 
     var body: some View {
-        GeometryReader { geo in
-            playerChrome
-                .frame(width: OnboardingMockDesign.width, height: OnboardingMockDesign.height)
-                // Zoom toward the highlighted region so in-mock text stays readable.
-                .scaleEffect(reduceMotion ? 1 : step.focusScale, anchor: step.focusAnchor)
-                .frame(width: geo.size.width, height: geo.size.height)
-                .clipped()
-                .animation(
-                    reduceMotion ? nil : .easeInOut(duration: 0.28),
-                    value: step)
-        }
-        .background(DromeTheme.background)
-        .onAppear { restartSwipeHint() }
-        .onChange(of: step) { _, _ in
-            stopCoverMotion()
-            restartSwipeHint()
-        }
-        .onChange(of: reduceMotion) { _, _ in restartSwipeHint() }
+        // No scale/clip — zoom was clipping leading track titles and mode chips.
+        // Spotlight rings already call out the active control.
+        playerChrome
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(DromeTheme.background)
+            .animation(
+                reduceMotion ? nil : .easeInOut(duration: 0.28),
+                value: step)
+            .onAppear { restartSwipeHint() }
+            .onChange(of: step) { _, _ in
+                stopCoverMotion()
+                restartSwipeHint()
+            }
+            .onChange(of: reduceMotion) { _, _ in restartSwipeHint() }
     }
 
     private var playerChrome: some View {
@@ -1527,12 +1527,20 @@ struct OnboardingPlaylistsMock: View {
             .padding(.top, 14)
             .padding(.bottom, 4)
 
-            // Playlist detail sheet with real Share Playlist action.
+            // Playlist detail sheet with cover + real Share Playlist action.
             VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text("Road Trip")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.white)
+                HStack(spacing: 10) {
+                    MockArtTile(index: 6, corner: 8)
+                        .frame(width: 52, height: 52)
+                        .shadow(color: .black.opacity(0.35), radius: 6, y: 3)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Road Trip")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                        Text("18 songs · 1 hr 12 min")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(DromeTheme.muted)
+                    }
                     Spacer()
                     Image(systemName: "ellipsis")
                         .font(.system(size: 13, weight: .bold))
@@ -1540,8 +1548,7 @@ struct OnboardingPlaylistsMock: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 10)
-                .padding(.bottom, 6)
-                .opacity(0.55)
+                .padding(.bottom, 8)
 
                 Capsule()
                     .fill(Color.white.opacity(0.25))

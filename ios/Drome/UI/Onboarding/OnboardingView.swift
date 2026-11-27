@@ -20,12 +20,23 @@ struct OnboardingView: View {
     @State private var artCoverFrame: CGRect = .null
     /// When entering NP by swiping back from Playlists, land on the last tip.
     @State private var enterNowPlayingAtEnd = false
+    /// Measured height of brand + title + caption + controls (excludes the phone mock).
+    @State private var measuredCopyHeight: CGFloat = 180
+    /// Full onboarding window height (not the pageChrome leftover). SE ≈ 667; 18 Pro ≈ 874.
+    @State private var windowHeight: CGFloat = 800
+    /// Bumped once per overcrowded page to flash the scroll indicator.
+    @State private var scrollFlashToken = 0
+    @State private var scrolledFlashPage: Int? = nil
 
     /// Grows with Dynamic Type so Large XXL captions aren’t clipped.
     @ScaledMetric(relativeTo: .body) private var captionBaseHeight: CGFloat = 72
+    /// Stable title slot so pages don’t shift ~20pt when titles wrap differently.
+    @ScaledMetric(relativeTo: .largeTitle) private var titleBaseHeight: CGFloat = 52
 
     private var accessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
     private var liveAccent: Color { accentStore.color }
+    /// True phone-size short screen — never the page content GeometryReader.
+    private var shortScreen: Bool { windowHeight < 700 }
 
     private let searchPageIndex = 2
     private let nowPlayingControlsPageIndex = 4
@@ -109,6 +120,49 @@ struct OnboardingView: View {
         return (tour + np).max(by: { $0.count < $1.count }) ?? displayedCaption
     }
 
+    private var longestTitle: String {
+        let tour = pages.map(\.title)
+        let np = OnboardingNowPlayingStep.allCases.map(\.title)
+        return (tour + np).max(by: { $0.count < $1.count }) ?? displayedTitle
+    }
+
+    private var skipHeader: some View {
+        HStack {
+            Spacer()
+            Button("Skip") { finish() }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.white.opacity(0.88))
+                .padding(.horizontal, 12)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+                // Survives parent screen ID — tests look up this button directly.
+                .accessibilityIdentifier("drome.onboarding.skip")
+                .accessibilityLabel("Skip onboarding")
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
+        .padding(.bottom, 2)
+        // Start at the ambient glow colour and fade out — extends under the status bar
+        // so AX5 doesn’t get a hard dark seam ~62pt down.
+        .background(alignment: .top) {
+            LinearGradient(
+                stops: [
+                    .init(color: liveAccent.opacity(0.16), location: 0),
+                    .init(color: liveAccent.opacity(0.08), location: 0.22),
+                    .init(color: DromeTheme.background.opacity(0.55), location: 0.55),
+                    .init(color: DromeTheme.background.opacity(0), location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom)
+            .frame(height: 96)
+            .frame(maxWidth: .infinity)
+            .ignoresSafeArea(edges: .top)
+            .allowsHitTesting(false)
+        }
+        .zIndex(1)
+        .accessibilityElement(children: .contain)
+    }
+
     var body: some View {
         ZStack {
             DromeTheme.background.ignoresSafeArea()
@@ -117,22 +171,7 @@ struct OnboardingView: View {
                 .accessibilityHidden(true)
 
             VStack(spacing: 0) {
-                HStack {
-                    Spacer()
-                    Button("Skip") { finish() }
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.white.opacity(0.88))
-                        .padding(.horizontal, 12)
-                        .frame(minWidth: 44, minHeight: 44)
-                        .contentShape(Rectangle())
-                        // Survives parent screen ID — tests look up this button directly.
-                        .accessibilityIdentifier("drome.onboarding.skip")
-                        .accessibilityLabel("Skip onboarding")
-                }
-                .padding(.horizontal, 8)
-                .padding(.top, 4)
-                // Isolate Skip from the screen container’s identifier.
-                .accessibilityElement(children: .contain)
+                skipHeader
 
                 pageChrome
                     .id(page)
@@ -147,6 +186,16 @@ struct OnboardingView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 bottomChrome
             }
+        }
+        .background {
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: OnboardingWindowHeightKey.self,
+                    value: geo.size.height)
+            }
+        }
+        .onPreferenceChange(OnboardingWindowHeightKey.self) { height in
+            if abs(height - windowHeight) > 1 { windowHeight = height }
         }
         .preferredColorScheme(.dark)
         .animation(chromeAnimation, value: page)
@@ -276,17 +325,40 @@ struct OnboardingView: View {
 
     private var pageChrome: some View {
         GeometryReader { geo in
-            let mockCap: CGFloat = {
-                let hardCap = accessibilityLayout
-                    ? OnboardingTourChrome.mockMaxHeightAX
-                    : (page == 0
-                        ? OnboardingTourChrome.mockMaxHeightHero
-                        : (page == accentPageIndex
-                            ? OnboardingTourChrome.mockMaxHeightAccent
-                            : OnboardingTourChrome.mockMaxHeight))
-                // SE / short screens: keep title, caption, and controls on-screen.
-                return min(hardCap, max(geo.size.height * 0.5, 160))
+            let hardCap: CGFloat = {
+                if accessibilityLayout { return OnboardingTourChrome.mockMaxHeightAX }
+                if page == 0 { return OnboardingTourChrome.mockMaxHeightHero }
+                if page == accentPageIndex {
+                    // SE: lock the orb tiny so both swatch rows clear the bar.
+                    // Pro: roomy accent mock fills the empty band (~220).
+                    return shortScreen ? 88 : OnboardingTourChrome.mockMaxHeightAccent
+                }
+                return OnboardingTourChrome.mockMaxHeight
             }()
+            // Scroll padding + mock bottom spacing aren’t in the measured copy stack.
+            let chromePad: CGFloat = accessibilityLayout ? 46 : 36
+            let mockBottom: CGFloat = accessibilityLayout
+                ? OnboardingTourChrome.mockBottomSpacingAX
+                : OnboardingTourChrome.mockBottomSpacing
+            // Bottom fade (~24) + small safety — leftover was ~10pt optimistic on SE xxxLarge.
+            let fadeSafety: CGFloat = 32
+            let leftover = geo.size.height - measuredCopyHeight - chromePad - mockBottom - fadeSafety
+            // windowHeight only for shortScreen; shortCap uses pageChrome geo (≈235pt on SE).
+            let shortCap = shortScreen ? geo.size.height * 0.42 : .infinity
+            let minMock: CGFloat = {
+                if page == accentPageIndex { return shortScreen ? 88 : 160 }
+                return shortScreen ? 104 : 160
+            }()
+            let mockCap = min(hardCap, shortCap, max(minMock, leftover))
+            let contentFits = (mockCap + measuredCopyHeight + chromePad + mockBottom + fadeSafety)
+                <= geo.size.height + 1
+            // Safety net: if even minMock + copy won’t fit, force scrollable top-aligned layout.
+            let mustScroll = !contentFits
+                || (minMock + measuredCopyHeight + chromePad + mockBottom + fadeSafety)
+                    > geo.size.height + 1
+            let showScrollIndicators = accessibilityLayout
+                || dynamicTypeSize >= .xxxLarge
+                || mustScroll
 
             ScrollView {
                 VStack(spacing: 0) {
@@ -298,6 +370,7 @@ struct OnboardingView: View {
                             .padding(.bottom, accessibilityLayout ? 6 : 10)
                             .accessibilityAddTraits(.isHeader)
                             .accessibilityHidden(true)
+                            .onboardingReserveHeight()
                     }
 
                     phonePreview(for: page)
@@ -308,79 +381,128 @@ struct OnboardingView: View {
                         .frame(maxHeight: mockCap)
                         .frame(maxWidth: .infinity)
                         .padding(.horizontal, OnboardingTourChrome.mockHorizontalPadding)
-                        .padding(
-                            .bottom,
-                            accessibilityLayout
-                                ? OnboardingTourChrome.mockBottomSpacingAX
-                                : OnboardingTourChrome.mockBottomSpacing)
+                        .padding(.bottom, mockBottom)
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel(pageAccessibilityLabel)
 
-                    if isNowPlayingLesson {
-                        Text("NOW PLAYING")
-                            .font(DromeTheme.overlineFont)
-                            .tracking(1.4)
-                            .foregroundStyle(liveAccent.opacity(0.95))
-                            .padding(.bottom, 4)
-                            .accessibilityHidden(true)
-                    }
-
-                    Text(displayedTitle)
-                        .font(DromeTheme.titleFont)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.white)
-                        .lineLimit(accessibilityLayout ? 3 : 2)
-                        .minimumScaleFactor(0.85)
-                        .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
-                        .padding(
-                            .bottom,
-                            accessibilityLayout
-                                ? OnboardingTourChrome.titleBottomSpacingAX
-                                : OnboardingTourChrome.titleBottomSpacing)
-                        .accessibilityAddTraits(.isHeader)
-
-                    captionBlock
-                        .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            guard isNowPlayingLesson else { return }
-                            lockGesture()
-                            advance(allowFinish: false)
+                    VStack(spacing: 0) {
+                        if isNowPlayingLesson {
+                            Text("NOW PLAYING")
+                                .font(DromeTheme.overlineFont)
+                                .tracking(1.4)
+                                .foregroundStyle(liveAccent.opacity(0.95))
+                                .padding(.bottom, 4)
+                                .accessibilityHidden(true)
                         }
-                        .id(isNowPlayingLesson ? "np-cap-\(nowPlayingStep.rawValue)" : "tour-caption")
-                        .transition(stepTransition)
-                        .animation(chromeAnimation, value: nowPlayingStep)
 
-                    if page == accentPageIndex {
-                        OnboardingAccentChooser(reduceMotion: reduceMotion)
+                        titleBlock
                             .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
-                            .padding(.top, accessibilityLayout ? 10 : 6)
+                            .padding(
+                                .bottom,
+                                accessibilityLayout
+                                    ? OnboardingTourChrome.titleBottomSpacingAX
+                                    : OnboardingTourChrome.titleBottomSpacing)
+
+                        captionBlock
+                            .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                guard isNowPlayingLesson else { return }
+                                lockGesture()
+                                advance(allowFinish: false)
+                            }
+                            .id(isNowPlayingLesson ? "np-cap-\(nowPlayingStep.rawValue)" : "tour-caption")
+                            .transition(stepTransition)
+                            .animation(chromeAnimation, value: nowPlayingStep)
+
+                        if page == accentPageIndex {
+                            OnboardingAccentChooser(reduceMotion: reduceMotion)
+                                .padding(.horizontal, OnboardingTourChrome.captionHorizontalPadding)
+                                .padding(.top, accessibilityLayout ? 10 : 6)
+                        }
                     }
+                    .onboardingReserveHeight()
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
-                .padding(.top, accessibilityLayout ? 2 : (page == 0 ? 2 : 6))
+                .padding(.top, accessibilityLayout ? 6 : 8)
                 // Keep last lines clear of the soft bottom chrome fade.
                 .padding(.bottom, accessibilityLayout ? 28 : 20)
                 .frame(
-                    minHeight: accessibilityLayout ? nil : max(geo.size.height - 8, 0),
-                    alignment: page == 0 ? .top : .center)
+                    minHeight: max(geo.size.height - 8, 0),
+                    // Only center when everything fits — otherwise top-align so
+                    // captions scroll into view instead of sitting under the bar.
+                    alignment: mustScroll ? .top : .center)
             }
-            .scrollIndicators(accessibilityLayout ? .visible : .automatic)
+            .scrollIndicators(showScrollIndicators ? .visible : .automatic)
+            .scrollIndicatorsFlash(trigger: scrollFlashToken)
             .scrollBounceBehavior(.basedOnSize)
+            .onPreferenceChange(OnboardingReservedHeightKey.self) { height in
+                // Avoid feedback loops from sub-point noise.
+                if abs(height - measuredCopyHeight) > 1 {
+                    measuredCopyHeight = height
+                }
+            }
+            .onChange(of: page) { _, _ in
+                // Seed until the next preference pass; avoids one-frame oversize mock.
+                measuredCopyHeight = page == accentPageIndex ? 160 : 180
+                scrolledFlashPage = nil
+            }
+            .onChange(of: mustScroll) { _, needsScroll in
+                // Flash the indicator once per overcrowded page so cutoff isn’t silent.
+                guard needsScroll, scrolledFlashPage != page else { return }
+                scrolledFlashPage = page
+                scrollFlashToken &+= 1
+            }
+        }
+    }
+
+    /// Reserved height from the longest title so pages don’t jump.
+    /// Accent page sizes to its own one-line title — longest-title reservation was
+    /// wasting ~30pt that SE xxxLarge needed for the second swatch row.
+    @ViewBuilder
+    private var titleBlock: some View {
+        let title = Text(displayedTitle)
+            .font(DromeTheme.titleFont)
+            .multilineTextAlignment(.center)
+            .foregroundStyle(.white)
+            .lineLimit(accessibilityLayout ? 3 : 2)
+            .minimumScaleFactor(0.85)
+            .accessibilityAddTraits(.isHeader)
+
+        if page == accentPageIndex {
+            title
+                .frame(maxWidth: .infinity)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            ZStack {
+                Text(longestTitle)
+                    .font(DromeTheme.titleFont)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(accessibilityLayout ? 3 : 2)
+                    .minimumScaleFactor(0.85)
+                    .hidden()
+                    .accessibilityHidden(true)
+                title
+            }
+            .frame(maxWidth: .infinity, minHeight: titleBaseHeight)
         }
     }
 
     /// Grows with Dynamic Type; reserves height from the longest caption so pages don’t jump.
+    /// Accent page skips the longest-caption reservation for the same SE space reason.
     @ViewBuilder
     private var captionBlock: some View {
-        let style = captionText(displayedCaption)
-        ZStack(alignment: .top) {
-            captionText(longestCaption)
-                .hidden()
-                .accessibilityHidden(true)
-            style
+        if page == accentPageIndex {
+            captionText(displayedCaption)
+        } else {
+            ZStack(alignment: .top) {
+                captionText(longestCaption)
+                    .hidden()
+                    .accessibilityHidden(true)
+                captionText(displayedCaption)
+            }
+            .frame(maxWidth: .infinity, minHeight: captionBaseHeight, alignment: .top)
         }
-        .frame(maxWidth: .infinity, minHeight: captionBaseHeight, alignment: .top)
     }
 
     private func captionText(_ string: String) -> some View {
@@ -456,21 +578,23 @@ struct OnboardingView: View {
             .padding(.horizontal, 24)
             .accessibilityIdentifier("onboarding-continue")
         }
-        .padding(.top, 4)
+        .padding(.top, 8)
         .padding(.bottom, 10)
-        .background(alignment: .top) {
-            // Soft fade so captions scrolling under the bar still feel continuous.
-            VStack(spacing: 0) {
-                LinearGradient(
-                    colors: [DromeTheme.background.opacity(0), DromeTheme.background],
-                    startPoint: .top,
-                    endPoint: .bottom)
-                    .frame(height: 28)
-                    .allowsHitTesting(false)
-                DromeTheme.background
-            }
-            .padding(.top, -28)
-            .ignoresSafeArea(edges: .bottom)
+        // Opaque fill over the whole chrome (including dots) so AX5 text can’t
+        // peek between dots; fade lives only above the bar.
+        .background {
+            DromeTheme.background
+                .ignoresSafeArea(edges: .bottom)
+                .padding(.top, -24)
+        }
+        .overlay(alignment: .top) {
+            LinearGradient(
+                colors: [DromeTheme.background.opacity(0), DromeTheme.background],
+                startPoint: .top,
+                endPoint: .bottom)
+                .frame(height: 24)
+                .offset(y: -24)
+                .allowsHitTesting(false)
         }
     }
 
@@ -552,6 +676,35 @@ struct OnboardingArtCoverFrameKey: PreferenceKey {
     static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
         // Always take the latest report so leaving the art tip clears the hit target.
         value = nextValue()
+    }
+}
+
+/// Sums measured heights of brand + copy/controls so the mock only takes leftover space.
+private struct OnboardingReservedHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value += nextValue()
+    }
+}
+
+/// Full onboarding container height — used to detect SE vs Pro (not pageChrome leftover).
+private struct OnboardingWindowHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 800
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private extension View {
+    /// Reports this view’s laid-out height into `OnboardingReservedHeightKey`.
+    func onboardingReserveHeight() -> some View {
+        background {
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: OnboardingReservedHeightKey.self,
+                    value: geo.size.height)
+            }
+        }
     }
 }
 
