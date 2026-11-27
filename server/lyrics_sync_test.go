@@ -41,6 +41,45 @@ func TestPickBestPrefersWordSync(t *testing.T) {
 	}
 }
 
+func TestPickBestPrefersLyricsfileWordSync(t *testing.T) {
+	line := lrclibResult{
+		ID:           1,
+		TrackName:    "Wet Sand",
+		ArtistName:   "Red Hot Chili Peppers",
+		SyncedLyrics: "[00:11.17] My shadow side so amplified\n",
+		Duration:     floatPtr(310),
+	}
+	word := lrclibResult{
+		ID:          2,
+		TrackName:   "Wet Sand",
+		ArtistName:  "Red Hot Chili Peppers",
+		HasWordSync: boolPtr(true),
+		// Site "Word Synced" puts timings here — syncedLyrics stays line-only.
+		SyncedLyrics: "[00:11.17] My shadow side so amplified\n",
+		Lyricsfile: `version: '1.0'
+lines:
+- text: My shadow side so amplified
+  start_ms: 11160
+  words:
+  - text: 'My '
+    start_ms: 11160
+  - text: 'shadow '
+    start_ms: 11259
+  - text: amplified
+    start_ms: 12705
+`,
+		Duration: floatPtr(310),
+	}
+	best := pickBestLRCLIB([]lrclibResult{line, word}, "", 310)
+	if best == nil || best.ID != 2 {
+		t.Fatalf("expected lyricsfile word-sync hit, got %#v", best)
+	}
+	got := effectiveSyncedLyrics(*best)
+	if !hasWordSync(got) {
+		t.Fatalf("expected enhanced LRC from lyricsfile, got %q", got)
+	}
+}
+
 func TestSyncAudioFileUpgradesLineToWord(t *testing.T) {
 	dir := t.TempDir()
 	audio := filepath.Join(dir, "01 - Track.flac")

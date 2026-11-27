@@ -10,8 +10,12 @@ struct LRCLIBClient {
         var albumName: String?
         var duration: Double?
         var instrumental: Bool?
+        /// Site badge "Word Synced" — word timings live in `lyricsfile`, not
+        /// Enhanced LRC inside `syncedLyrics` (that field stays line-only).
+        var hasWordSync: Bool?
         var plainLyrics: String?
         var syncedLyrics: String?
+        var lyricsfile: String?
     }
 
     private let session: URLSession
@@ -26,7 +30,7 @@ struct LRCLIBClient {
         var candidates: [Result] = []
 
         if let exact = try? await get(artist: artist, title: title, album: album, duration: duration),
-           exact.syncedLyrics != nil || exact.plainLyrics != nil,
+           hasUsableLyrics(exact),
            identityMatches(requestedTitle: title, requestedArtist: artist, result: exact) {
             candidates.append(exact)
         }
@@ -34,11 +38,26 @@ struct LRCLIBClient {
         if let searched = try? await searchAll(artist: artist, title: title) {
             candidates.append(contentsOf: searched.filter {
                 identityMatches(requestedTitle: title, requestedArtist: artist, result: $0)
-                    && ($0.syncedLyrics?.isEmpty == false || $0.plainLyrics?.isEmpty == false)
+                    && hasUsableLyrics($0)
             })
         }
 
-        return pickBest(from: candidates, album: album, duration: duration)
+        guard var best = pickBest(from: candidates, album: album, duration: duration) else {
+            return nil
+        }
+        // Surface Word Synced lyricsfile as Enhanced LRC so LRCParser lights
+        // words; syncedLyrics alone is line karaoke even when hasWordSync.
+        if let enhanced = Self.effectiveSyncedLyrics(best) {
+            best.syncedLyrics = enhanced
+        }
+        return best
+    }
+
+    private func hasUsableLyrics(_ result: Result) -> Bool {
+        if result.syncedLyrics?.isEmpty == false { return true }
+        if result.plainLyrics?.isEmpty == false { return true }
+        if result.lyricsfile?.isEmpty == false { return true }
+        return false
     }
 
     private func get(artist: String, title: String, album: String?, duration: Int?) async throws -> Result? {
@@ -79,14 +98,14 @@ struct LRCLIBClient {
         var seen = Set<String>()
         let unique = results.filter { result in
             let key = result.id.map(String.init)
-                ?? "\(result.trackName ?? "")|\(result.artistName ?? "")|\(result.duration ?? 0)|\(result.syncedLyrics?.count ?? 0)"
+                ?? "\(result.trackName ?? "")|\(result.artistName ?? "")|\(result.duration ?? 0)|\(result.syncedLyrics?.count ?? 0)|\(result.lyricsfile?.count ?? 0)"
             return seen.insert(key).inserted
         }
 
         func score(_ result: Result) -> Double {
             var s = 0.0
-            if let synced = result.syncedLyrics, !synced.isEmpty {
-                // Enhanced LRC word stamps beat line-only karaoke.
+            if let synced = Self.effectiveSyncedLyrics(result), !synced.isEmpty {
+                // Enhanced LRC / lyricsfile word stamps beat line-only karaoke.
                 s += Self.hasWordSync(synced) ? 140 : 100
             } else if result.plainLyrics?.isEmpty == false {
                 s += 10
@@ -120,7 +139,7 @@ struct LRCLIBClient {
            let remote = best.duration,
            abs(remote - Double(duration)) > 3.5,
            let closer = ranked.first(where: {
-               $0.syncedLyrics?.isEmpty == false
+               Self.effectiveSyncedLyrics($0)?.isEmpty == false
                    && abs(($0.duration ?? 0) - Double(duration)) <= 3.0
            }) {
             return closer
@@ -129,11 +148,11 @@ struct LRCLIBClient {
         // wrong timing is worse than “no synced lyrics”.
         if let duration,
            let remote = best.duration,
-           best.syncedLyrics?.isEmpty == false,
+           Self.effectiveSyncedLyrics(best)?.isEmpty == false,
            abs(remote - Double(duration)) > 6.0 {
             if let plain = ranked.first(where: {
                 $0.plainLyrics?.isEmpty == false
-                    && ($0.syncedLyrics == nil || $0.syncedLyrics?.isEmpty == true)
+                    && Self.effectiveSyncedLyrics($0) == nil
             }) {
                 return plain
             }
@@ -172,5 +191,127 @@ struct LRCLIBClient {
     /// Enhanced LRC uses `<mm:ss.xx>` (or ms) stamps before each word.
     static func hasWordSync(_ lrc: String) -> Bool {
         lrc.range(of: #"<\d{1,2}:\d{1,2}(?:[.:]\d{1,3})?>"#, options: .regularExpression) != nil
+    }
+
+    /// Prefer Word Synced `lyricsfile` YAML converted to Enhanced LRC; else
+    /// line-level `syncedLyrics`.
+    static func effectiveSyncedLyrics(_ result: Result) -> String? {
+        if result.hasWordSync == true || !(result.lyricsfile?.isEmpty ?? true) {
+            if let enhanced = lyricsFileToEnhancedLRC(result.lyricsfile ?? ""), !enhanced.isEmpty {
+                return enhanced
+            }
+        }
+        if let synced = result.syncedLyrics, !synced.isEmpty {
+            return synced
+        }
+        return nil
+    }
+
+    /// Convert LRCLIB lyricsfile YAML into Enhanced LRC for `LRCParser`.
+    static func lyricsFileToEnhancedLRC(_ raw: String) -> String? {
+        let lines = parseLyricsFile(raw)
+        guard !lines.isEmpty else { return nil }
+        var out = ""
+        var wordCount = 0
+        for line in lines {
+            if line.words.isEmpty {
+                out += "[\(formatLRCStamp(line.startMs))] \(line.text.trimmingCharacters(in: .whitespaces))\n"
+                continue
+            }
+            out += "[\(formatLRCStamp(line.startMs))]"
+            for word in line.words where !word.text.isEmpty {
+                wordCount += 1
+                out += " <\(formatLRCStamp(word.startMs))>\(word.text)"
+            }
+            out += "\n"
+        }
+        return wordCount == 0 ? nil : out
+    }
+
+    private struct LyricsFileWord {
+        var text: String
+        var startMs: Int
+    }
+
+    private struct LyricsFileLine {
+        var text: String
+        var startMs: Int
+        var words: [LyricsFileWord]
+    }
+
+    private static func parseLyricsFile(_ raw: String) -> [LyricsFileLine] {
+        var out: [LyricsFileLine] = []
+        var inWords = false
+
+        for rawLine in raw.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n") {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            let indent = leadingSpaces(rawLine)
+
+            if trimmed.hasPrefix("- text:") {
+                let val = yamlScalar(String(trimmed.dropFirst("- text:".count)))
+                if indent == 0 {
+                    out.append(LyricsFileLine(text: val, startMs: 0, words: []))
+                    inWords = false
+                } else if inWords, !out.isEmpty {
+                    out[out.count - 1].words.append(LyricsFileWord(text: val, startMs: 0))
+                }
+            } else if trimmed.hasPrefix("start_ms:") {
+                guard let ms = yamlInt(String(trimmed.dropFirst("start_ms:".count))), !out.isEmpty else {
+                    continue
+                }
+                if inWords, indent >= 4, !out[out.count - 1].words.isEmpty {
+                    out[out.count - 1].words[out[out.count - 1].words.count - 1].startMs = ms
+                } else {
+                    out[out.count - 1].startMs = ms
+                }
+            } else if trimmed == "words:" || trimmed.hasPrefix("words:") {
+                if !out.isEmpty { inWords = true }
+            }
+        }
+        return out
+    }
+
+    private static func leadingSpaces(_ s: String) -> Int {
+        var n = 0
+        for ch in s {
+            if ch == " " { n += 1; continue }
+            if ch == "\t" { n += 2; continue }
+            break
+        }
+        return n
+    }
+
+    private static func yamlScalar(_ raw: String) -> String {
+        let s = raw.trimmingCharacters(in: .whitespaces)
+        if s.isEmpty || s == "null" || s == "~" { return "" }
+        if s.count >= 2, s.first == "'", s.last == "'" {
+            let inner = String(s.dropFirst().dropLast())
+            return inner.replacingOccurrences(of: "''", with: "'")
+        }
+        if s.count >= 2, s.first == "\"", s.last == "\"" {
+            var inner = String(s.dropFirst().dropLast())
+            inner = inner.replacingOccurrences(of: "\\\"", with: "\"")
+            inner = inner.replacingOccurrences(of: "\\\\", with: "\\")
+            return inner
+        }
+        return s
+    }
+
+    private static func yamlInt(_ raw: String) -> Int? {
+        var s = raw.trimmingCharacters(in: .whitespaces)
+        if let idx = s.firstIndex(where: { $0 == " " || $0 == "\t" || $0 == "#" }) {
+            s = String(s[..<idx])
+        }
+        return Int(s)
+    }
+
+    private static func formatLRCStamp(_ ms: Int) -> String {
+        let clamped = max(0, ms)
+        let centi = clamped / 10
+        let m = centi / 6000
+        let s = (centi % 6000) / 100
+        let cs = centi % 100
+        return String(format: "%02d:%02d.%02d", m, s, cs)
     }
 }
