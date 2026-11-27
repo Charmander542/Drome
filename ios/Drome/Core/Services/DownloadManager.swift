@@ -45,6 +45,9 @@ final class DownloadManager: ObservableObject {
     /// Cached download root — `directory(for:)` also mkdir's, which was wasteful
     /// on every `localURL` / play tap.
     private let downloadDirectory: URL
+    /// Same path as `downloadDirectory`, readable from LyricsService’s Sendable
+    /// offline-lyrics callback without hopping to the main actor.
+    nonisolated private let offlineRootURL: URL
     /// songId → relative path under `downloadDirectory` for finished downloads.
     private var localRelPathBySongId: [String: String] = [:]
     private var session: URLSession!
@@ -63,7 +66,9 @@ final class DownloadManager: ObservableObject {
         self.client = client
         self.database = database
         self.serverKey = serverKey
-        self.downloadDirectory = Self.directory(for: serverKey)
+        let directory = Self.directory(for: serverKey)
+        self.downloadDirectory = directory
+        self.offlineRootURL = directory
 
         sessionDelegate.manager = self
         sessionDelegate.trustedHost = client.account.allowSelfSigned ? client.account.serverURL.host : nil
@@ -203,13 +208,13 @@ final class DownloadManager: ObservableObject {
     }
 
     /// Offline lyrics sidecar written beside the audio file (`<songId>.lrc`).
-    func localLyricsURL(songId: String) -> URL? {
-        let url = lyricsURL(for: songId)
+    nonisolated func localLyricsURL(songId: String) -> URL? {
+        let url = offlineRootURL.appendingPathComponent("\(Self.safeFileComponent(songId)).lrc")
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     private func lyricsURL(for songId: String) -> URL {
-        downloadDirectory.appendingPathComponent("\(Self.safeFileComponent(songId)).lrc")
+        offlineRootURL.appendingPathComponent("\(Self.safeFileComponent(songId)).lrc")
     }
 
     /// Local album art for a cover id (shared across songs on the same album).
@@ -483,7 +488,7 @@ final class DownloadManager: ObservableObject {
         }
     }
 
-    private static func safeFileComponent(_ raw: String) -> String {
+    nonisolated private static func safeFileComponent(_ raw: String) -> String {
         raw.replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: ":", with: "_")
             .replacingOccurrences(of: "?", with: "_")
