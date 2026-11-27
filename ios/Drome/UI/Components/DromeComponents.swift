@@ -1,8 +1,5 @@
 import SwiftUI
-
-#if os(iOS)
 import UIKit
-#endif
 
 /// Full-bleed atmospheric wash from a dominant artwork color.
 struct ArtworkWash: View {
@@ -31,7 +28,6 @@ struct ArtworkWash: View {
 @MainActor
 enum ArtworkPalette {
     static func dominantColor(from image: UIImage?) -> Color? {
-        #if os(iOS)
         guard let image, let cg = image.cgImage else { return nil }
         let width = 16
         let height = 16
@@ -64,9 +60,6 @@ enum ArtworkPalette {
             green: Double(gSum) / Double(count) / 255,
             blue: Double(bSum) / Double(count) / 255
         )
-        #else
-        return nil
-        #endif
     }
 }
 
