@@ -1,0 +1,91 @@
+{
+  "stats": {
+    "n": 6,
+    "mean_ms": 58.333333333333336,
+    "median_ms": -40.0,
+    "mean_abs_ms": 168.33333333333334,
+    "median_abs_ms": 45.0,
+    "p90_abs_ms": 160,
+    "drift_ms_per_min": -2728.8546011416497,
+    "offset_kind": "drifting",
+    "after_offset_median_abs_ms": 5.0,
+    "after_offset_p90_abs_ms": 120.0,
+    "pass": false,
+    "limits": {
+      "median_abs_ms": 40,
+      "p90_abs_ms": 100,
+      "drift_ms_per_min": 30
+    }
+  },
+  "soft": {
+    "n": 6,
+    "mean_ms": 58.333333333333336,
+    "median_ms": -40.0,
+    "mean_abs_ms": 168.33333333333334,
+    "median_abs_ms": 45.0,
+    "p90_abs_ms": 160,
+    "drift_ms_per_min": -2728.8546011416497,
+    "offset_kind": "drifting",
+    "after_offset_median_abs_ms": 5.0,
+    "after_offset_p90_abs_ms": 120.0,
+    "pass": false,
+    "limits": {
+      "median_abs_ms": 40,
+      "p90_abs_ms": 100,
+      "drift_ms_per_min": 30
+    },
+    "constant_bias_ms": -40.0,
+    "after_bias_median_abs_ms": 5.0,
+    "after_bias_p90_abs_ms": 120.0
+  },
+  "sample": [
+    {
+      "text": "one",
+      "truth_ms": 820,
+      "ctc_ms": 980,
+      "err_ms": -160,
+      "score": 0.2942454346145193,
+      "ctc_ms_ref": 980
+    },
+    {
+      "text": "two",
+      "truth_ms": 1510,
+      "ctc_ms": 1560,
+      "err_ms": -50,
+      "score": 0.13993610464967787,
+      "ctc_ms_ref": 1560
+    },
+    {
+      "text": "three",
+      "truth_ms": 2235,
+      "ctc_ms": 1555,
+      "err_ms": 680,
+      "score": 0.270951846241951,
+      "ctc_ms_ref": 1555
+    },
+    {
+      "text": "four",
+      "truth_ms": 3100,
+      "ctc_ms": 3140,
+      "err_ms": -40,
+      "score": 0.31865824572741985,
+      "ctc_ms_ref": 3140
+    },
+    {
+      "text": "five",
+      "truth_ms": 4055,
+      "ctc_ms": 4095,
+      "err_ms": -40,
+      "score": 0.11325632873922586,
+      "ctc_ms_ref": 4095
+    },
+    {
+      "text": "six",
+      "truth_ms": 5200,
+      "ctc_ms": 5240,
+      "err_ms": -40,
+      "score": 0.16220085819562277,
+      "ctc_ms_ref": 5240
+    }
+  ]
+}

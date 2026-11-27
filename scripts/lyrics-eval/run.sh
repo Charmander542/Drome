@@ -2,8 +2,9 @@
 # Repeatable karaoke timing harness (CTC + Demucs, not Whisper).
 #   ./run.sh fixtures        # synthetic check-truth (no ML)
 #   ./run.sh measure ...
-#   ./run.sh refine-words ...
-#   ./run.sh validate-aligner ...
+#   ./run.sh generate-words ...
+#   ./run.sh refine-words ...   # alias → generate-words
+#   ./run.sh check-deps|benchmark|validate-aligner ...
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 PY="${PYTHON:-python3}"
@@ -26,13 +27,13 @@ case "$cmd" in
       --truth "$ROOT/fixtures/offset-demo/truth.json"
     echo "fixtures: PASS (perfect + [offset:] correction)"
     ;;
-  measure|refine-words|refine|synth-fixture|check-truth|validate-aligner|separate)
-    # `refine` kept as alias for older docs
-    if [[ "$cmd" == "refine" ]]; then cmd="refine-words"; fi
+  measure|generate-words|refine-words|refine|synth-fixture|check-truth|validate-aligner|separate|check-deps|benchmark)
+    # `refine` / `refine-words` kept as aliases for older docs
+    if [[ "$cmd" == "refine" || "$cmd" == "refine-words" ]]; then cmd="generate-words"; fi
     exec "$PY" "$ROOT/align_lyrics.py" "$cmd" "$@"
     ;;
   *)
-    echo "usage: $0 {fixtures|measure|refine-words|validate-aligner|synth-fixture|check-truth} ..." >&2
+    echo "usage: $0 {fixtures|measure|generate-words|check-deps|benchmark|validate-aligner|synth-fixture|check-truth} ..." >&2
     exit 2
     ;;
 esac

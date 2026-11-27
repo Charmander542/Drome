@@ -225,6 +225,48 @@ final class LRCParserTimingTests: XCTestCase {
         XCTAssertEqual(KaraokeResume.chooseElapsed(accurate: 0.05, published: 28, seekInFlight: true), 28)
     }
 
+    /// Stall-recovery rebuild: AV often reports ~0 before the resume seek —
+    /// prefer the published mid-song playhead so karaoke does not flash line 1.
+    func testKaraokeResumeUsesPublishedWhileRebuilding() {
+        XCTAssertEqual(
+            KaraokeResume.chooseElapsed(
+                accurate: 0.1,
+                published: 45,
+                seekInFlight: false,
+                rebuilding: true),
+            45)
+        // Rebuild flag wins even when accurate looks healthy.
+        XCTAssertEqual(
+            KaraokeResume.chooseElapsed(
+                accurate: 44.8,
+                published: 45,
+                seekInFlight: false,
+                rebuilding: true),
+            45)
+    }
+
+    /// Post-seek decode: item can still report ~0 for a short window after
+    /// `appliedSeekEpoch` lands — keep published until currentTime catches up.
+    func testKaraokeResumeHoldsPublishedBrieflyAfterSeekApplied() {
+        XCTAssertEqual(
+            KaraokeResume.chooseElapsed(
+                accurate: 0.05,
+                published: 120,
+                seekInFlight: false,
+                rebuilding: false,
+                sinceSeekApplied: 0.2),
+            120)
+        // Outside the window, trust accurate again (including a real near-zero).
+        XCTAssertEqual(
+            KaraokeResume.chooseElapsed(
+                accurate: 0.2,
+                published: 120,
+                seekInFlight: false,
+                rebuilding: false,
+                sinceSeekApplied: 1.0),
+            0.2)
+    }
+
     /// Foreground return: published UI playhead can sit ~1 s behind while
     /// `AVPlayer.currentTime` is already correct — karaoke must use accurate.
     func testKaraokeResumeForegroundSnapIgnoresStalePublished() {

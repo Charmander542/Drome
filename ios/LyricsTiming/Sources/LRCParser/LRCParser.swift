@@ -695,15 +695,24 @@ enum LyricsClock {
 enum KaraokeResume {
     /// Sticky fallbacks to the 0.5 Hz published playhead caused ~1 s lyrics lag
     /// after returning from background when `currentTime` briefly hiccupped.
+    ///
+    /// Narrow exceptions keep mid-song lyrics from flashing to line 1 while AV
+    /// still reports ~0 after a seek lands or during a stall-recovery rebuild.
     static func chooseElapsed(
         accurate: TimeInterval,
         published: TimeInterval,
-        seekInFlight: Bool
+        seekInFlight: Bool,
+        rebuilding: Bool = false,
+        sinceSeekApplied: TimeInterval = .infinity
     ) -> TimeInterval {
-        if seekInFlight {
+        if seekInFlight || rebuilding {
             return max(0, published)
         }
         guard accurate.isFinite, accurate >= 0 else {
+            return max(0, published)
+        }
+        // Item often still reports 0 until the post-seek decode catches up.
+        if sinceSeekApplied < 0.75, published > 2, accurate < 0.75 {
             return max(0, published)
         }
         return max(0, accurate)

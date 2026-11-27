@@ -10,6 +10,7 @@ struct LyricsView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var document: LyricsDocument?
     @State private var isLoading = true
@@ -34,6 +35,11 @@ struct LyricsView: View {
     /// Bumped when a seek settles so we re-anchor even if `activeIndex` was
     /// already updated while scroll was suppressed.
     @State private var seekSnapToken = 0
+    /// True while a foreground snap is writing scrollIndex — skip the animated
+    /// onChange(scrollIndex) path so only the instant seekSnapToken scroll runs.
+    @State private var snapPending = false
+    /// Stamp/source fingerprint the stored nudge was loaded for.
+    @State private var offsetStampKey: String = ""
 
     private enum LineState {
         case past, active, upcoming
@@ -77,7 +83,11 @@ struct LyricsView: View {
             scrubSuppressScroll = false
             wasSeekInFlight = false
             playhead.lastMs = -1
-            userOffsetMs = Self.loadOffset(songId: song.id)
+            offsetStampKey = ""
+            userOffsetMs = Self.loadOffset(
+                serverKey: session.account.serverKey,
+                songId: song.id,
+                source: nil)
             await load(force: false)
         }
         // AV often refines duration after the first buffer — re-align LRCLIB
@@ -92,6 +102,13 @@ struct LyricsView: View {
         }
         .onChange(of: userOffsetMs) { _, _ in
             refreshLineIndex()
+        }
+        .onChange(of: player.seekSettledToken) { _, _ in
+            // Seek can finish while paused — no Timeline tick would clear suppress.
+            refreshLineIndex()
+        }
+        .onChange(of: document?.source) { _, _ in
+            applyOffsetForCurrentDocument()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -111,7 +128,7 @@ struct LyricsView: View {
             TimelineView(
                 .animation(
                     minimumInterval: 1.0 / 60.0,
-                    paused: scenePhase != .active
+                    paused: scenePhase == .background
                         || (!player.isPlaying && !player.isSeekInFlight))
             ) { timeline in
                 Color.clear
@@ -141,8 +158,12 @@ struct LyricsView: View {
         reenableFollowTask?.cancel()
         playhead.lastMs = ms
         lastScrolledIndex = -1
+        snapPending = true
         seekSnapToken &+= 1
-        guard let document, document.synced else { return }
+        guard let document, document.synced else {
+            snapPending = false
+            return
+        }
         activeIndex = activeLineIndex(at: ms, in: document)
         scrollIndex = scrollLineIndex(at: ms, in: document)
     }
@@ -271,7 +292,8 @@ struct LyricsView: View {
                     }
             )
             .onChange(of: scrollIndex) { _, newValue in
-                let animate = !scrubSuppressScroll && !player.isSeekInFlight
+                let animate = !snapPending && !scrubSuppressScroll && !player.isSeekInFlight
+                snapPending = false
                 scrollToActive(
                     proxy: proxy,
                     document: document,
@@ -324,6 +346,8 @@ struct LyricsView: View {
                 Image(systemName: "minus.circle.fill")
                     .font(.title3)
                     .foregroundStyle(Color.white.opacity(0.75))
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Running early")
             .accessibilityHint(
@@ -335,6 +359,8 @@ struct LyricsView: View {
                 Text(offsetLabel(wordSynced: wordSynced))
                     .font(.caption.weight(.semibold).monospacedDigit())
                     .foregroundStyle(Color.white.opacity(0.85))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
                 if let timing = timingLabel(document) {
                     Text(timing)
                         .font(.caption2.weight(.semibold))
@@ -342,14 +368,24 @@ struct LyricsView: View {
                             document.wordTiming == .measured
                                 ? DromeTheme.accent.opacity(0.9)
                                 : Color.white.opacity(0.55))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                 }
-                Text(sourceLabel(document.source))
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(Color.white.opacity(0.4))
+                if !dynamicTypeSize.isAccessibilitySize {
+                    Text(sourceLabel(document.source))
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Color.white.opacity(0.4))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
             }
             .onLongPressGesture {
                 userOffsetMs = 0
-                Self.saveOffset(0, songId: song.id)
+                Self.saveOffset(
+                    0,
+                    serverKey: session.account.serverKey,
+                    songId: song.id,
+                    source: document.source)
                 refreshLineIndex()
             }
             .accessibilityHint("Long press to reset sync")
@@ -360,6 +396,8 @@ struct LyricsView: View {
                 Image(systemName: "plus.circle.fill")
                     .font(.title3)
                     .foregroundStyle(Color.white.opacity(0.75))
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Running late")
             .accessibilityHint(
@@ -373,6 +411,8 @@ struct LyricsView: View {
                 Image(systemName: "arrow.clockwise.circle.fill")
                     .font(.title3)
                     .foregroundStyle(Color.white.opacity(0.55))
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Reload lyrics")
         }
@@ -380,6 +420,7 @@ struct LyricsView: View {
         .padding(.vertical, 10)
         .background(.ultraThinMaterial, in: Capsule())
         .padding(.bottom, 12)
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
     }
 
     private func offsetLabel(wordSynced: Bool) -> String {
@@ -394,8 +435,27 @@ struct LyricsView: View {
     private func nudgeOffset(by delta: Int) {
         // Clamp to ±8s — beyond that the match is probably wrong.
         userOffsetMs = min(8_000, max(-8_000, userOffsetMs + delta))
-        Self.saveOffset(userOffsetMs, songId: song.id)
+        Self.saveOffset(
+            userOffsetMs,
+            serverKey: session.account.serverKey,
+            songId: song.id,
+            source: document?.source)
         refreshLineIndex()
+    }
+
+    /// Reload or clear the per-song nudge when lyrics stamps/source change.
+    private func applyOffsetForCurrentDocument() {
+        let source = document?.source
+        let key = Self.stampKey(
+            serverKey: session.account.serverKey,
+            songId: song.id,
+            source: source)
+        guard key != offsetStampKey else { return }
+        offsetStampKey = key
+        userOffsetMs = Self.loadOffset(
+            serverKey: session.account.serverKey,
+            songId: song.id,
+            source: source)
     }
 
     private func scrollToActive(proxy: ScrollViewProxy, document: LyricsDocument, index: Int, animated: Bool) {
@@ -504,31 +564,63 @@ struct LyricsView: View {
         }
         if let fetched {
             let aligned = realignToPlayhead(fetched)
+            lastScrolledIndex = -1
+            document = aligned
+            applyOffsetForCurrentDocument()
             if aligned.synced {
                 let ms = syncElapsedMs()
                 activeIndex = activeLineIndex(at: ms, in: aligned)
                 scrollIndex = scrollLineIndex(at: ms, in: aligned)
             }
-            lastScrolledIndex = -1
-            document = aligned
         } else if document == nil {
             document = nil
         }
     }
 
-    private static func offsetKey(songId: String) -> String {
-        "drome.lyricsSyncOffset.\(songId)"
+    private static func offsetKey(serverKey: String, songId: String) -> String {
+        "drome.lyricsSyncOffset.\(serverKey).\(songId)"
     }
 
-    private static func loadOffset(songId: String) -> Int {
-        UserDefaults.standard.integer(forKey: offsetKey(songId: songId))
+    private static func stampKey(serverKey: String, songId: String, source: String?) -> String {
+        "\(serverKey)|\(songId)|\(source ?? "")"
     }
 
-    private static func saveOffset(_ ms: Int, songId: String) {
+    private static func loadOffset(serverKey: String, songId: String, source: String?) -> Int {
+        let key = offsetKey(serverKey: serverKey, songId: songId)
+        guard let stored = UserDefaults.standard.dictionary(forKey: key) else {
+            // Legacy unscoped Int — migrate once, then drop.
+            let legacyKey = "drome.lyricsSyncOffset.\(songId)"
+            let legacy = UserDefaults.standard.integer(forKey: legacyKey)
+            if legacy != 0 {
+                saveOffset(legacy, serverKey: serverKey, songId: songId, source: source)
+                UserDefaults.standard.removeObject(forKey: legacyKey)
+            }
+            return legacy
+        }
+        let ms = stored["ms"] as? Int ?? 0
+        let savedSource = stored["source"] as? String
+        if let source, let savedSource, savedSource != source {
+            // Stamps changed (e.g. Demucs+CTC rewrite) — old nudge would double-correct.
+            return 0
+        }
+        return ms
+    }
+
+    private static func saveOffset(
+        _ ms: Int,
+        serverKey: String,
+        songId: String,
+        source: String?
+    ) {
+        let key = offsetKey(serverKey: serverKey, songId: songId)
         if ms == 0 {
-            UserDefaults.standard.removeObject(forKey: offsetKey(songId: songId))
+            UserDefaults.standard.removeObject(forKey: key)
         } else {
-            UserDefaults.standard.set(ms, forKey: offsetKey(songId: songId))
+            var payload: [String: Any] = ["ms": ms]
+            if let source {
+                payload["source"] = source
+            }
+            UserDefaults.standard.set(payload, forKey: key)
         }
     }
 
@@ -543,7 +635,9 @@ struct LyricsView: View {
         @Environment(\.scenePhase) private var scenePhase
 
         /// Same size for every line — only opacity / scale change, so neighbors don't jump.
-        private let baseSize: CGFloat = 24
+        /// Caps accessibility growth so scroll geometry stays stable.
+        @ScaledMetric(relativeTo: .title2) private var scaledBase: CGFloat = 24
+        private var baseSize: CGFloat { min(scaledBase, 34) }
 
         var body: some View {
             VStack(alignment: stackAlignment, spacing: 3) {
@@ -573,7 +667,7 @@ struct LyricsView: View {
                 TimelineView(
                     .animation(
                         minimumInterval: 1.0 / 60.0,
-                        paused: scenePhase != .active
+                        paused: scenePhase == .background
                             || (!player.isPlaying && !player.isSeekInFlight))
                 ) { _ in
                     wordRun(atMs: LyricsClock.syncMilliseconds(

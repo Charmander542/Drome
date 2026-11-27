@@ -77,7 +77,8 @@ func (q *lyricsAlignQueue) runWorker(ctx context.Context) {
 	if !alignScriptUsable(q.cfg) {
 		return
 	}
-	logf("lyrics align worker: started (gap %s, window %dms)", q.cfg.Gap, q.cfg.WindowMs)
+	logf("lyrics align worker: started (gap %s, line_search %dms, nice=%v)",
+		q.cfg.Gap, q.cfg.LineSearchMs, q.cfg.Nice)
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -119,9 +120,13 @@ func (q *lyricsAlignQueue) runOne(ctx context.Context, job lyricsAlignJob) {
 		}
 		return
 	}
-	logf("lyrics align %s: snapped=%d kept=%d before_med_abs=%.0f after_med_abs=%.0f wrote=%v (%.1fs)",
+	if res.Fallback == "keep_lrclib" {
+		logf("lyrics align %s: fallback keep_lrclib (%s)", filepath.Base(job.lrcPath), res.Reason)
+		return
+	}
+	logf("lyrics align %s: generated=%d interp=%d coverage=%.2f before_med_abs=%.0f after_med_abs=%.0f wrote=%v (%.1fs)",
 		filepath.Base(job.lrcPath),
-		res.NSnapped, res.NKept,
+		res.NGenerated, res.NInterp, res.Coverage,
 		res.Before.MedianAbsMs, res.After.MedianAbsMs,
 		res.Wrote, res.SecondsTotal)
 }

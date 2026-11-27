@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import Combine
 import MediaPlayer
+import QuartzCore
 import UIKit
 import GroupActivities
 
@@ -119,6 +120,12 @@ final class PlayerEngine: ObservableObject {
     private var volumeFadeGeneration = 0
     private var seekEpoch = 0
     private var appliedSeekEpoch = 0
+    /// `CACurrentMediaTime()` when the latest seek callback applied — karaoke
+    /// ignores a brief post-seek AV zero while decode catches up.
+    private var lastSeekAppliedAt: CFTimeInterval = -.infinity
+    /// Bumped when a seek finishes so paused lyrics can clear scrub-suppress
+    /// without waiting for the next playhead tick.
+    @Published private(set) var seekSettledToken: Int = 0
     private var autoplayTask: Task<Void, Never>?
     /// Bumped whenever in-flight autoplay work is cancelled so stale
     /// `nextBatch` results cannot rebuild the player window.
@@ -1331,7 +1338,7 @@ final class PlayerEngine: ObservableObject {
         player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.seekEpoch == epoch else { return }
-                self.appliedSeekEpoch = epoch
+                self.markSeekApplied(epoch: epoch)
                 self.setPlayhead(elapsed: 0)
                 self.pushNowPlayingInfo()
             }
@@ -1708,7 +1715,7 @@ final class PlayerEngine: ObservableObject {
             tvAudio.seek(to: seconds)
             setPlayhead(elapsed: seconds, duration: tvAudio.duration > 0 ? tvAudio.duration : duration)
             seekEpoch += 1
-            appliedSeekEpoch = seekEpoch
+            markSeekApplied(epoch: seekEpoch)
             if wantsToPlay { tvAudio.play() }
             pushNowPlayingInfo()
             return
@@ -1760,7 +1767,7 @@ final class PlayerEngine: ObservableObject {
         player.seek(to: target, toleranceBefore: slack, toleranceAfter: slack) { [weak self] finished in
             Task { @MainActor [weak self] in
                 guard let self, self.seekEpoch == epoch else { return }
-                self.appliedSeekEpoch = epoch
+                self.markSeekApplied(epoch: epoch)
                 let actual = self.player.currentTime().seconds
                 // Never publish ~0 when we asked for a mid-track seek — the item
                 // often still reports 0 until the seek finishes decoding.
@@ -1865,6 +1872,13 @@ final class PlayerEngine: ObservableObject {
     /// True while an AVPlayer seek is outstanding (scrub, lyric tap, etc.).
     var isSeekInFlight: Bool { seekEpoch != appliedSeekEpoch }
 
+    /// Records a finished seek for karaoke (zero-guard window + settled token).
+    private func markSeekApplied(epoch: Int) {
+        appliedSeekEpoch = epoch
+        lastSeekAppliedAt = CACurrentMediaTime()
+        seekSettledToken &+= 1
+    }
+
     /// High-resolution playhead for karaoke / scrubber UIs. Prefer this over
     /// the throttled `elapsed` publish when you need frame-smooth updates.
     func accurateElapsed() -> TimeInterval {
@@ -1911,7 +1925,9 @@ final class PlayerEngine: ObservableObject {
         KaraokeResume.chooseElapsed(
             accurate: accurateElapsed(),
             published: elapsed,
-            seekInFlight: isSeekInFlight)
+            seekInFlight: isSeekInFlight,
+            rebuilding: isRebuilding,
+            sinceSeekApplied: CACurrentMediaTime() - lastSeekAppliedAt)
     }
 
     /// Drive mini / now-playing playhead from another Connect device's session.

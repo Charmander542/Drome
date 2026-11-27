@@ -1,0 +1,262 @@
+[
+  {
+    "name": "bdkmv",
+    "origin_ms": 48000,
+    "preview_ms": 29988,
+    "n_lines": 13,
+    "n_words": 109,
+    "before": {
+      "n": 93,
+      "mean_ms": 587.1505376344086,
+      "median_ms": 703,
+      "mean_abs_ms": 711.1075268817204,
+      "median_abs_ms": 728,
+      "p90_abs_ms": 1263,
+      "drift_ms_per_min": 1246.8986803696293,
+      "offset_kind": "drifting",
+      "after_offset_median_abs_ms": 273,
+      "after_offset_p90_abs_ms": 683,
+      "pass": false,
+      "limits": {
+        "median_abs_ms": 40,
+        "p90_abs_ms": 100,
+        "drift_ms_per_min": 30
+      }
+    },
+    "after": {
+      "n": 69,
+      "mean_ms": 24.73913043478261,
+      "median_ms": 0,
+      "mean_abs_ms": 485.1159420289855,
+      "median_abs_ms": 260,
+      "p90_abs_ms": 1352,
+      "drift_ms_per_min": 822.7273020993262,
+      "offset_kind": "drifting",
+      "after_offset_median_abs_ms": 260,
+      "after_offset_p90_abs_ms": 1352,
+      "pass": false,
+      "limits": {
+        "median_abs_ms": 40,
+        "p90_abs_ms": 100,
+        "drift_ms_per_min": 30
+      }
+    },
+    "coverage": 0.4587,
+    "n_interp": 59,
+    "seconds_total": 12.2,
+    "realtime_factor": 0.407,
+    "peak_rss_mb": 2652.5,
+    "gen": {
+      "vocal_start_ms": 50,
+      "vocal_end_ms": 29950,
+      "n_lines": 13,
+      "n_words": 109,
+      "n_ctc": 50,
+      "n_interp": 59,
+      "n_skippable": 0,
+      "high_conf": 50,
+      "mean_line_score": 0.2299,
+      "coverage": 0.4587
+    },
+    "pass": false,
+    "rc": 1
+  },
+  {
+    "name": "humble",
+    "origin_ms": 2000,
+    "preview_ms": 29988,
+    "n_lines": 11,
+    "n_words": 94,
+    "before": {
+      "n": 36,
+      "mean_ms": 385.97222222222223,
+      "median_ms": 580.5,
+      "mean_abs_ms": 916.6944444444445,
+      "median_abs_ms": 873.5,
+      "p90_abs_ms": 1586,
+      "drift_ms_per_min": 632.8423745689926,
+      "offset_kind": "drifting",
+      "after_offset_median_abs_ms": 891.0,
+      "after_offset_p90_abs_ms": 1341.5,
+      "pass": false,
+      "limits": {
+        "median_abs_ms": 40,
+        "p90_abs_ms": 100,
+        "drift_ms_per_min": 30
+      }
+    },
+    "after": {
+      "n": 23,
+      "mean_ms": 103.82608695652173,
+      "median_ms": 0,
+      "mean_abs_ms": 202.8695652173913,
+      "median_abs_ms": 41,
+      "p90_abs_ms": 510,
+      "drift_ms_per_min": 697.686164567196,
+      "offset_kind": "drifting",
+      "after_offset_median_abs_ms": 41,
+      "after_offset_p90_abs_ms": 510,
+      "pass": false,
+      "limits": {
+        "median_abs_ms": 40,
+        "p90_abs_ms": 100,
+        "drift_ms_per_min": 30
+      }
+    },
+    "coverage": 0.2872,
+    "n_interp": 67,
+    "seconds_total": 10.94,
+    "realtime_factor": 0.365,
+    "peak_rss_mb": 2652.9,
+    "gen": {
+      "vocal_start_ms": 50,
+      "vocal_end_ms": 29950,
+      "n_lines": 11,
+      "n_words": 94,
+      "n_ctc": 27,
+      "n_interp": 67,
+      "n_skippable": 3,
+      "high_conf": 27,
+      "mean_line_score": 0.1622,
+      "coverage": 0.2872
+    },
+    "pass": false,
+    "rc": 1,
+    "dense": true,
+    "lrclib_id": 17958359
+  },
+  {
+    "name": "gods-plan",
+    "origin_ms": 46000,
+    "preview_ms": 29988,
+    "n_lines": 7,
+    "n_words": 54,
+    "before": {
+      "n": 33,
+      "mean_ms": 823.030303030303,
+      "median_ms": 1340,
+      "mean_abs_ms": 1251.2727272727273,
+      "median_abs_ms": 1380,
+      "p90_abs_ms": 1979,
+      "drift_ms_per_min": 3146.1640410073464,
+      "offset_kind": "drifting",
+      "after_offset_median_abs_ms": 683,
+      "after_offset_p90_abs_ms": 2211,
+      "pass": false,
+      "limits": {
+        "median_abs_ms": 40,
+        "p90_abs_ms": 100,
+        "drift_ms_per_min": 30
+      }
+    },
+    "after": {
+      "n": 22,
+      "mean_ms": 30.181818181818183,
+      "median_ms": 0.0,
+      "mean_abs_ms": 115.0909090909091,
+      "median_abs_ms": 20.0,
+      "p90_abs_ms": 290,
+      "drift_ms_per_min": 783.44026723549,
+      "offset_kind": "drifting",
+      "after_offset_median_abs_ms": 20.0,
+      "after_offset_p90_abs_ms": 290.0,
+      "pass": false,
+      "limits": {
+        "median_abs_ms": 40,
+        "p90_abs_ms": 100,
+        "drift_ms_per_min": 30
+      }
+    },
+    "coverage": 0.4444,
+    "n_interp": 32,
+    "seconds_total": 9.67,
+    "realtime_factor": 0.322,
+    "peak_rss_mb": 2652.8,
+    "gen": {
+      "vocal_start_ms": 50,
+      "vocal_end_ms": 29950,
+      "n_lines": 7,
+      "n_words": 54,
+      "n_ctc": 24,
+      "n_interp": 32,
+      "n_skippable": 2,
+      "high_conf": 24,
+      "mean_line_score": 0.1387,
+      "coverage": 0.4444
+    },
+    "pass": false,
+    "rc": 1,
+    "dense": true,
+    "lrclib_id": 7033242
+  },
+  {
+    "name": "someone-like-you",
+    "origin_ms": 46000,
+    "preview_ms": 29988,
+    "n_lines": 6,
+    "n_words": 52,
+    "before": {
+      "n": 38,
+      "mean_ms": 963.9473684210526,
+      "median_ms": 1470.0,
+      "mean_abs_ms": 1373.157894736842,
+      "median_abs_ms": 1470.0,
+      "p90_abs_ms": 1935,
+      "drift_ms_per_min": -3157.736496293464,
+      "offset_kind": "drifting",
+      "after_offset_median_abs_ms": 457.5,
+      "after_offset_p90_abs_ms": 2565.0,
+      "pass": false,
+      "limits": {
+        "median_abs_ms": 40,
+        "p90_abs_ms": 100,
+        "drift_ms_per_min": 30
+      }
+    },
+    "after": {
+      "n": 29,
+      "mean_ms": -89.20689655172414,
+      "median_ms": 0,
+      "mean_abs_ms": 142.51724137931035,
+      "median_abs_ms": 13,
+      "p90_abs_ms": 420,
+      "drift_ms_per_min": -641.8946043348317,
+      "offset_kind": "drifting",
+      "after_offset_median_abs_ms": 13,
+      "after_offset_p90_abs_ms": 420,
+      "pass": false,
+      "limits": {
+        "median_abs_ms": 40,
+        "p90_abs_ms": 100,
+        "drift_ms_per_min": 30
+      }
+    },
+    "coverage": 0.5962,
+    "n_interp": 21,
+    "seconds_total": 9.38,
+    "realtime_factor": 0.313,
+    "peak_rss_mb": 2652.8,
+    "gen": {
+      "vocal_start_ms": 0,
+      "vocal_end_ms": 29950,
+      "n_lines": 6,
+      "n_words": 52,
+      "n_ctc": 31,
+      "n_interp": 21,
+      "n_skippable": 0,
+      "high_conf": 31,
+      "mean_line_score": 0.4003,
+      "coverage": 0.5962
+    },
+    "pass": false,
+    "rc": 1,
+    "dense": false,
+    "lrclib_id": 7137504
+  },
+  {
+    "name": "skinny-love",
+    "error": "no local lines",
+    "dense": false,
+    "lrclib_id": 7153043
+  }
+]

@@ -29,15 +29,18 @@ func TestEnsureMillisecondStampsPreservesMillis(t *testing.T) {
 	}
 }
 
-func TestLrcAlreadyAlignedV2Marker(t *testing.T) {
-	raw := "[drome-aligned:v2-ctc-demucs]\n[00:01.000]<00:01.000>Hi\n"
+func TestLrcAlreadyAlignedV3Marker(t *testing.T) {
+	raw := "[drome-aligned:v3-ctc-seg]\n[00:01.000]<00:01.000>Hi\n"
 	if !lrcAlreadyAligned(raw) {
-		t.Fatal("expected v2 marker to be recognized")
+		t.Fatal("expected v3 marker to be recognized")
+	}
+	if lrcAlreadyAligned("[drome-aligned:v2-ctc-demucs]\n") {
+		t.Fatal("v2 marker should not count as current aligned version")
 	}
 	if lrcAlreadyAligned("[drome-aligned:v1]\n") {
 		t.Fatal("v1 marker should not count as current aligned version")
 	}
-	if alignedMarkerRe.FindStringSubmatch("[DROME-ALIGNED:v2-ctc-demucs]") == nil {
+	if alignedMarkerRe.FindStringSubmatch("[DROME-ALIGNED:v3-ctc-seg]") == nil {
 		t.Fatal("aligned marker regex should match case-insensitively")
 	}
 }

@@ -20,7 +20,7 @@ python3 scripts/lyrics-eval/align_lyrics.py validate-aligner \
 
 Pass bar: median abs word error ≤ 40 ms, p90 ≤ 100 ms, |drift| ≤ 30 ms/min.
 
-## Measure / refine a real track (local audio only — do not commit media)
+## Measure / generate a real track (local audio only — do not commit media)
 
 Audio must match the LRCLIB master (±0.5 s), or use a Deezer preview anchored
 to the lyric text (`--preview-anchor`).
@@ -28,22 +28,39 @@ to the lyric text (`--preview-anchor`).
 ```bash
 pip install -r server/scripts/requirements-lyrics-align.txt
 ./scripts/lyrics-eval/run.sh measure --audio /path/song.wav --lrc /path/song.lrc
-./scripts/lyrics-eval/run.sh refine-words --audio /path/song.wav --lrc /path/song.lrc --write
+python3 scripts/lyrics-eval/align_lyrics.py generate-words \
+  --audio /path/song.wav --lrc /path/song.lrc --write
+python3 scripts/lyrics-eval/align_lyrics.py check-deps
+python3 scripts/lyrics-eval/align_lyrics.py benchmark --audio /path/song.wav
 ```
 
-Refine is two-step: constant median offset, then per-word snap within ±300 ms
-when CTC confidence is high. Sidecars get `[drome-aligned:v2-ctc-demucs]`.
+`generate-words` (round 3) keeps LRCLIB **text + coarse line anchors**, then
+runs segment-constrained CTC inside each line (±`--line-search-ms`, default
+3000). High-conf words come from CTC; low-conf words interpolate; star / ad-lib
+/ intro lines stay skippable. Sidecars get `[drome-aligned:v3-ctc-seg]`.
 
-CPU cost: roughly 0.3–2× realtime (Demucs + MMS on CPU). Companion sets
-`OMP_NUM_THREADS=1` and optional `nice`.
+`refine-words` remains as an alias that forwards to `generate-words`.
+
+CPU cost (≈30 s preview benchmark): ~0.5× realtime, ~2.65 GB peak RSS (Demucs
+dominates). Companion sets `OMP_NUM_THREADS=1` and optional `nice`. Missing
+torch/demucs → keep LRCLIB (`check-deps` / `keep_lrclib` fallback).
+
+Round-3 preview numbers live in `results/e2e-report.json` and
+`results/round3/`. Dense rap (BDKMV) still misses the 40/100 bar on previews;
+production path is full-file companion align.
 
 ## Companion wiring
 
 `DROME_LYRICS_ALIGN` defaults to **true**. After writing or upgrading a
-word-synced `.lrc` sidecar, the Go companion enqueues `refine-words` (see
-`server/lyrics_align.go`, `server/lyrics_align_queue.go`).
+word-synced `.lrc` sidecar, the Go companion enqueues `generate-words` (see
+`server/lyrics_align.go`, `server/lyrics_align_queue.go`). Env:
+
+- `DROME_LYRICS_ALIGN_LINE_SEARCH_MS` (default 3000; legacy `WINDOW_MS` still accepted)
+- `DROME_LYRICS_ALIGN_GAP` (default 5s)
+- `DROME_LYRICS_ALIGN_NICE` (default true)
 
 ## Swift timing tests
 
-`ios/LyricsTiming` (KaraokeResume foreground snap, LyricsClock lead/arrival)
-runs on Mac CI / Xcode — this Linux VM has no Swift toolchain.
+`ios/LyricsTiming` (KaraokeResume foreground snap, rebuild/post-seek guards,
+LyricsClock lead/arrival) runs on Mac CI / Xcode — this Linux VM has no Swift
+toolchain.

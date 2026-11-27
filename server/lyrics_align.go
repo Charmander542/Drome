@@ -15,28 +15,31 @@ import (
 	"time"
 )
 
-// Per-word CTC forced alignment (torchaudio MMS_FA + Demucs vocals) for word-synced
-// LRCLIB sidecars. Runs from a background queue — see lyrics_align_queue.go.
+// Segment-constrained CTC word timing (torchaudio MMS_FA + Demucs vocals).
+// LRCLIB text + coarse line anchors only — word stamps are generated, not snapped.
+// Queue: lyrics_align_queue.go. Cached via [drome-aligned:v3-ctc-seg].
 //
-// CPU: roughly 0.3–2× realtime per track (Demucs + MMS on CPU). Limit threads via
-// OMP/MKL/OPENBLAS=1; optional nice -n 19 when DROME_LYRICS_ALIGN_NICE=true.
+// CPU: Demucs dominates; MMS is cheaper. Limit threads via OMP/MKL/OPENBLAS=1;
+// nice -n 19 when DROME_LYRICS_ALIGN_NICE=true. Missing torch/demucs → keep LRCLIB.
 
-const lyricsAlignedVersion = "v2-ctc-demucs"
+const lyricsAlignedVersion = "v3-ctc-seg"
 
 var (
-	alignedMarkerRe = regexp.MustCompile(`(?i)\[drome-aligned:([^\]]+)\]`)
+	alignedMarkerRe   = regexp.MustCompile(`(?i)\[drome-aligned:([^\]]+)\]`)
 	alignDepsWarnOnce sync.Once
+	alignDepsOnce     sync.Once
+	alignDepsCachedOK bool
 )
 
 type lyricsAlignConfig struct {
-	Enabled     bool
-	Python      string
-	Script      string
-	Timeout     time.Duration
-	WindowMs    int
-	DemucsModel string
-	Nice        bool
-	Gap         time.Duration
+	Enabled      bool
+	Python       string
+	Script       string
+	Timeout      time.Duration
+	LineSearchMs int
+	DemucsModel  string
+	Nice         bool
+	Gap          time.Duration
 }
 
 func lyricsAlignConfigFromEnv() lyricsAlignConfig {
@@ -57,15 +60,23 @@ func lyricsAlignConfigFromEnv() lyricsAlignConfig {
 		}
 	}
 	nice := strings.ToLower(envOr("DROME_LYRICS_ALIGN_NICE", "true"))
+	// Prefer LINE_SEARCH; fall back to legacy WINDOW_MS (snap era).
+	lineSearch := envInt("DROME_LYRICS_ALIGN_LINE_SEARCH_MS", 0)
+	if lineSearch <= 0 {
+		lineSearch = envInt("DROME_LYRICS_ALIGN_WINDOW_MS", 3000)
+		if lineSearch < 1000 {
+			lineSearch = 3000
+		}
+	}
 	return lyricsAlignConfig{
-		Enabled:     enabled == "1" || enabled == "true" || enabled == "yes",
-		Python:      envOr("DROME_LYRICS_ALIGN_PYTHON", "python3"),
-		Script:      script,
-		Timeout:     envDuration("DROME_LYRICS_ALIGN_TIMEOUT", 12*time.Minute),
-		WindowMs:    envInt("DROME_LYRICS_ALIGN_WINDOW_MS", 300),
-		DemucsModel: envOr("DROME_LYRICS_ALIGN_DEMUCS_MODEL", "htdemucs"),
-		Nice:        nice == "1" || nice == "true" || nice == "yes",
-		Gap:         envDuration("DROME_LYRICS_ALIGN_GAP", 2*time.Second),
+		Enabled:      enabled == "1" || enabled == "true" || enabled == "yes",
+		Python:       envOr("DROME_LYRICS_ALIGN_PYTHON", "python3"),
+		Script:       script,
+		Timeout:      envDuration("DROME_LYRICS_ALIGN_TIMEOUT", 20*time.Minute),
+		LineSearchMs: lineSearch,
+		DemucsModel:  envOr("DROME_LYRICS_ALIGN_DEMUCS_MODEL", "htdemucs"),
+		Nice:         nice == "1" || nice == "true" || nice == "yes",
+		Gap:          envDuration("DROME_LYRICS_ALIGN_GAP", 5*time.Second),
 	}
 }
 
@@ -81,12 +92,18 @@ type alignRefineResult struct {
 	Mode         string     `json:"mode"`
 	Skipped      bool       `json:"skipped"`
 	Reason       string     `json:"reason"`
+	Fallback     string     `json:"fallback"`
 	NSnapped     int        `json:"n_snapped"`
 	NKept        int        `json:"n_kept"`
+	NGenerated   int        `json:"n_generated"`
+	NInterp      int        `json:"n_interp"`
+	Coverage     float64    `json:"coverage"`
 	Before       alignStats `json:"before"`
 	After        alignStats `json:"after"`
 	Wrote        bool       `json:"wrote"`
 	SecondsTotal float64    `json:"seconds_total"`
+	Realtime     float64    `json:"realtime_factor"`
+	PeakRSSMB    float64    `json:"peak_rss_mb"`
 }
 
 func lrcAlreadyAligned(raw string) bool {
@@ -109,16 +126,50 @@ func alignScriptUsable(cfg lyricsAlignConfig) bool {
 		})
 		return false
 	}
-	return true
+	return alignPythonDepsOK(cfg)
 }
 
-// refineLRCAgainstAudio runs align_lyrics.py refine-words --write.
+// alignPythonDepsOK probes check-deps once; missing torch/demucs → keep LRCLIB.
+func alignPythonDepsOK(cfg lyricsAlignConfig) bool {
+	alignDepsOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, cfg.Python, cfg.Script, "check-deps") //nolint:gosec
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		ok := true
+		if err := cmd.Run(); err != nil {
+			ok = false
+			alignDepsWarnOnce.Do(func() {
+				logf("lyrics align: deps unavailable (%v); keeping LRCLIB stamps (%s)",
+					err, truncate(stderr.String(), 200))
+			})
+		} else {
+			var info struct {
+				OK      bool     `json:"ok"`
+				Missing []string `json:"missing"`
+			}
+			if json.Unmarshal(stdout.Bytes(), &info) == nil && !info.OK {
+				ok = false
+				alignDepsWarnOnce.Do(func() {
+					logf("lyrics align: missing %v — keeping LRCLIB (install torch/demucs or set DROME_LYRICS_ALIGN=false)",
+						info.Missing)
+				})
+			}
+		}
+		alignDepsCachedOK = ok
+	})
+	return alignDepsCachedOK
+}
+
+// refineLRCAgainstAudio runs align_lyrics.py generate-words --write.
 func refineLRCAgainstAudio(ctx context.Context, cfg lyricsAlignConfig, audioPath, lrcPath string) (*alignRefineResult, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
 	if !alignScriptUsable(cfg) {
-		return nil, nil
+		return &alignRefineResult{Skipped: true, Reason: "deps unavailable", Fallback: "keep_lrclib"}, nil
 	}
 	if _, err := os.Stat(audioPath); err != nil {
 		return nil, err
@@ -143,12 +194,12 @@ func refineLRCAgainstAudio(ctx context.Context, cfg lyricsAlignConfig, audioPath
 
 	args := []string{
 		cfg.Script,
-		"refine-words",
+		"generate-words",
 		"--audio", audioPath,
 		"--lrc", lrcPath,
 		"--write",
 		"--json", jsonPath,
-		"--window-ms", strconv.Itoa(cfg.WindowMs),
+		"--line-search-ms", strconv.Itoa(cfg.LineSearchMs),
 		"--demucs-model", cfg.DemucsModel,
 		"--aligned-version", lyricsAlignedVersion,
 	}
@@ -177,9 +228,9 @@ func refineLRCAgainstAudio(ctx context.Context, cfg lyricsAlignConfig, audioPath
 	resultRaw, err := os.ReadFile(jsonPath)
 	if err != nil {
 		alignDepsWarnOnce.Do(func() {
-			logf("lyrics align: refine failed (%s); check python deps (torch, demucs)", truncate(stderr.String(), 400))
+			logf("lyrics align: generate failed (%s); keeping LRCLIB", truncate(stderr.String(), 400))
 		})
-		return nil, fmt.Errorf("align missing result json: %w (%s)", err, truncate(stderr.String(), 300))
+		return &alignRefineResult{Skipped: true, Reason: "generate failed", Fallback: "keep_lrclib"}, nil
 	}
 	var out alignRefineResult
 	if err := json.Unmarshal(resultRaw, &out); err != nil {
