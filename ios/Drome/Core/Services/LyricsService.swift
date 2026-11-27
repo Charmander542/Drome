@@ -50,8 +50,11 @@ struct LyricsDocument {
 /// 1. Offline download companion `.lrc` (written when a track is downloaded)
 /// 2. Companion library sidecar (raw `.lrc` next to the file — keeps word stamps)
 /// 3. Navidrome `getLyricsBySongId` when it has usable line timing
-/// 4. LRCLIB public API (matched by artist/title/duration; prefers word-synced)
+/// 4. LRCLIB public API (matched by artist/title/duration; prefers word-synced
+///    `lyricsfile` → Enhanced LRC)
 ///
+/// Line-only sidecar / Navidrome hits do **not** short-circuit when online —
+/// LRCLIB Word Synced can still upgrade them to measured word karaoke.
 /// Network hits stay in a small **session** memory cache — SQLite is not used.
 /// Offline downloads keep their own `.lrc` next to the audio file.
 ///
@@ -116,8 +119,12 @@ actor LyricsService {
         }
 
         if let offline = loadOffline(song: song) {
-            remember(songId: song.id, document: offline)
-            return offline
+            // Keep measured offline karaoke. Line-only offline can still upgrade
+            // via network when Word Synced lyricsfile is available.
+            if offline.wordTiming == .measured || !allowNetwork {
+                remember(songId: song.id, document: offline)
+                return offline
+            }
         }
 
         guard allowNetwork else { return nil }
@@ -150,10 +157,19 @@ actor LyricsService {
     @discardableResult
     func persistOfflineLyrics(for song: Song, to url: URL) async -> Bool {
         if let existing = try? String(contentsOf: url, encoding: .utf8),
-           !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+           !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           LRCLIBClient.hasWordSync(existing) {
+            // Measured word karaoke already on disk.
             return true
         }
-        guard let payload = await fetch(song: song) else { return false }
+        guard let payload = await fetch(song: song) else {
+            // Keep a previously written line-only file if fetch fails.
+            if let existing = try? String(contentsOf: url, encoding: .utf8),
+               !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return true
+            }
+            return false
+        }
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(),
@@ -185,18 +201,29 @@ actor LyricsService {
     private func fetch(song: Song) async -> FetchedLyrics? {
         // Unsynced Navidrome text used to short-circuit before LRCLIB — songs
         // with embedded plain lyrics (e.g. some Kanye tags) never got karaoke.
-        // Only accept Navidrome as final when it has usable line timestamps;
-        // otherwise keep plain as a fallback after trying LRCLIB synced LRC.
+        // Line-synced sidecar / Navidrome also used to win before LRCLIB, which
+        // blocked Word Synced `lyricsfile` upgrades — keep those as fallbacks.
         var unsyncedFallback: FetchedLyrics?
+        var lineSyncedFallback: FetchedLyrics?
 
-        // 1. Companion raw sidecar — preserves Enhanced LRC word stamps.
+        // 1. Companion raw sidecar — accept immediately when it already has
+        // Enhanced LRC word stamps; otherwise keep for after LRCLIB.
         if let wishlist,
            let sidecar = try? await wishlist.trackLyrics(
             title: song.title, artist: song.artist ?? ""),
            sidecar.found,
            let content = sidecar.content, !content.isEmpty {
             let synced = sidecar.synced || LRCParser.isSynced(content)
-            return FetchedLyrics(content: content, synced: synced, source: Self.sidecarSource)
+            if synced, LRCLIBClient.hasWordSync(content) {
+                return FetchedLyrics(content: content, synced: true, source: Self.sidecarSource)
+            }
+            if synced {
+                lineSyncedFallback = FetchedLyrics(
+                    content: content, synced: true, source: Self.sidecarSource)
+            } else {
+                unsyncedFallback = FetchedLyrics(
+                    content: content, synced: false, source: Self.sidecarSource)
+            }
         }
 
         // 2. Navidrome structured lyrics — prefer timed; defer plain to after LRCLIB.
@@ -209,35 +236,42 @@ actor LyricsService {
                 lines: lines.map { ($0.start, $0.value) },
                 offsetMs: offsetMs)
             if hasTiming {
-                return FetchedLyrics(
+                // Structured lyrics are line-level — keep as fallback so LRCLIB
+                // Word Synced can still upgrade to measured word karaoke.
+                if lineSyncedFallback == nil {
+                    lineSyncedFallback = FetchedLyrics(
+                        content: content,
+                        synced: true,
+                        source: Self.navidromeSource,
+                        structuredOffsetMs: offsetMs)
+                }
+            } else if unsyncedFallback == nil {
+                unsyncedFallback = FetchedLyrics(
                     content: content,
-                    synced: true,
+                    synced: false,
                     source: Self.navidromeSource,
                     structuredOffsetMs: offsetMs)
             }
-            unsyncedFallback = FetchedLyrics(
-                content: content,
-                synced: false,
-                source: Self.navidromeSource,
-                structuredOffsetMs: offsetMs)
         }
 
-        // 3. LRCLIB — prefer synced karaoke; plain only if we have nothing else.
+        // 3. LRCLIB — Word Synced lyricsfile (as Enhanced LRC) wins; else line LRC.
         if let artist = song.artist,
            let result = try? await lrclib.lyrics(
             artist: artist, title: song.title,
             album: song.album, duration: song.duration) {
             let matchedDuration = result.duration.map { Int($0.rounded()) }
             if let lrc = result.syncedLyrics, !lrc.isEmpty {
-                return FetchedLyrics(
-                    content: lrc,
-                    synced: true,
-                    source: Self.lrclibSource,
-                    matchedDurationSec: matchedDuration)
+                if LRCLIBClient.hasWordSync(lrc) || lineSyncedFallback == nil {
+                    return FetchedLyrics(
+                        content: lrc,
+                        synced: true,
+                        source: Self.lrclibSource,
+                        matchedDurationSec: matchedDuration)
+                }
             }
             if unsyncedFallback == nil,
                let plain = result.plainLyrics, !plain.isEmpty {
-                return FetchedLyrics(
+                unsyncedFallback = FetchedLyrics(
                     content: plain,
                     synced: false,
                     source: Self.lrclibSource,
@@ -245,7 +279,7 @@ actor LyricsService {
             }
         }
 
-        return unsyncedFallback
+        return lineSyncedFallback ?? unsyncedFallback
     }
 
     /// Prefer entries that actually carry line start times. A `synced: true`
