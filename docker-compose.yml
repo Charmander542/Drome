@@ -55,6 +55,11 @@ services:
       - navidrome_default
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Host has no working IPv6 default route; Spotify AAAA answers cause
+    # ENETUNREACH / long hangs in search + Mornye metadata. Prefer IPv4.
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: "1"
+      net.ipv6.conf.default.disable_ipv6: "1"
 
   # Guest remote access (Cloudflare Tunnel). Start with:
   #   CLOUDFLARE_TUNNEL_TOKEN=... docker compose --profile cloudflare up -d

@@ -41,7 +41,7 @@ func newSpotifyClient(id, secret, market string) *spotifyClient {
 		clientID:     id,
 		clientSecret: secret,
 		market:       market,
-		http:         &http.Client{Timeout: 30 * time.Second},
+		http:         ipv4HTTPClient(30 * time.Second),
 	}
 }
 
@@ -166,7 +166,7 @@ func resolveSpotifyShortLink(ctx context.Context, httpClient *http.Client, raw s
 		return raw, nil
 	}
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 15 * time.Second}
+		httpClient = ipv4HTTPClient(15 * time.Second)
 	}
 	client := *httpClient
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -1246,8 +1246,8 @@ func (c *spotifyClient) fetchPublicHTML(ctx context.Context, pageURL string) (st
 	req.Header.Set("Cache-Control", "no-cache")
 	client := c.http
 	if client == nil || client.Timeout < 25*time.Second {
-		client = &http.Client{Timeout: 25 * time.Second}
-		if c.http != nil {
+		client = ipv4HTTPClient(25 * time.Second)
+		if c.http != nil && c.http.Transport != nil {
 			client.Transport = c.http.Transport
 		}
 	}
