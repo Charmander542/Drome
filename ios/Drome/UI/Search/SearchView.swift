@@ -60,9 +60,6 @@ struct SearchView: View {
     /// Block scroll-to-dismiss while browse→results layout settles (that offset
     /// jump was killing the keyboard the instant it appeared).
     @State private var ignoreScrollKeyboardDismissUntil: Date = .distantPast
-    /// Bumped when entering text-search so the results list pins under the
-    /// filter chrome (first keyboard open used to leave a large dead gap).
-    @State private var pinResultsToTopToken: UInt = 0
     @State private var recentItems: [RecentSearchItem] = []
     @State private var matchedSongs: [String: Song] = [:]
     @State private var matchedAlbums: [String: Album] = [:]
@@ -74,24 +71,8 @@ struct SearchView: View {
     /// system search field and makes typed text blink out.
     private var searchPrompt: String { "Artists, songs, albums, playlists…" }
 
-    private static let resultsTopID = "drome.search.results.top"
-
-    private func pinResultsToTop(_ proxy: ScrollViewProxy) {
-        ignoreScrollKeyboardDismissUntil = Date().addingTimeInterval(0.75)
-        var txn = Transaction()
-        txn.disablesAnimations = true
-        withTransaction(txn) {
-            proxy.scrollTo(Self.resultsTopID, anchor: .top)
-        }
-        // Keyboard + safeAreaInset settle a frame later on first focus.
-        DispatchQueue.main.async {
-            var late = Transaction()
-            late.disablesAnimations = true
-            withTransaction(late) {
-                proxy.scrollTo(Self.resultsTopID, anchor: .top)
-            }
-        }
-    }
+    /// Gap between filter chrome and the first list section (“Recently Searched”).
+    private static let resultsTopSpacing: CGFloat = 16
 
     private var filteredHits: [SearchHit] {
         switch resultFilter {
@@ -134,17 +115,27 @@ struct SearchView: View {
                 .accessibilityHidden(!isBrowseMode)
                 .zIndex(0)
 
-            results
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Solid fill behind list rows so empty regions stay opaque.
-                .background(DromeTheme.background)
-                // Don’t let the keyboard lift this cover — the system inset was
-                // sliding the dark blocker up and exposing categories beneath.
-                .ignoresSafeArea(.keyboard, edges: .bottom)
-                .opacity(isBrowseMode ? 0 : 1)
-                .allowsHitTesting(!isBrowseMode)
-                .accessibilityHidden(isBrowseMode)
-                .zIndex(1)
+            // VStack (not `.safeAreaInset`) keeps filter chrome at intrinsic
+            // height above the list. `searchable` + top safeAreaInset left a
+            // ~180pt dead band above “Recently Searched” on first keyboard.
+            VStack(spacing: 0) {
+                searchControls
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+
+                results
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            // Solid fill behind list rows so empty regions stay opaque.
+            .background(DromeTheme.background)
+            // Don’t let the keyboard lift this cover — the system inset was
+            // sliding the dark blocker up and exposing categories beneath.
+            .ignoresSafeArea(.keyboard, edges: .bottom)
+            .opacity(isBrowseMode ? 0 : 1)
+            .allowsHitTesting(!isBrowseMode)
+            .accessibilityHidden(isBrowseMode)
+            .zIndex(1)
         }
         // `.all` includes keyboard so any gap under the cover stays Drome black.
         .background(DromeTheme.background.ignoresSafeArea(.all))
@@ -172,17 +163,6 @@ struct SearchView: View {
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
         .background(SearchChromeOpaqueFix())
-        .safeAreaInset(edge: .top, spacing: 0) {
-            // Intrinsic height only — a fixed 160pt max left a dead gap above
-            // “Recently Searched”. `fixedSize` stops the chip ScrollView from
-            // expanding vertically on the first keyboard presentation.
-            if !isBrowseMode {
-                searchControls
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .background(DromeTheme.background)
-            }
-        }
         .onChange(of: query) { _, newValue in
             expandedSections = []
             scheduleSearch(newValue)
@@ -293,7 +273,6 @@ struct SearchView: View {
         ignoreScrollKeyboardDismissUntil = Date().addingTimeInterval(0.75)
         // Instant content swap — let the system search field / keyboard animate alone.
         setBrowseMode(false)
-        pinResultsToTopToken &+= 1
         if focus, !isSearchPresented {
             DispatchQueue.main.async {
                 ignoreScrollKeyboardDismissUntil = Date().addingTimeInterval(0.75)
@@ -367,7 +346,7 @@ struct SearchView: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 6)
-        .padding(.bottom, 4)
+        .padding(.bottom, 8)
         .frame(maxWidth: .infinity)
         .background(DromeTheme.background)
         .transaction { $0.animation = nil }
@@ -515,78 +494,59 @@ struct SearchView: View {
         let visibleHits = filteredHits
         let visibleRecents = filteredRecentItems
         let libraryEmpty = visibleHits.isEmpty
-        ScrollViewReader { proxy in
-            List {
-                // Zero-height pin target — first keyboard open can leave the
-                // list contentOffset below the filter inset; scroll back under.
-                Color.clear
-                    .frame(height: 0)
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                    .id(Self.resultsTopID)
-
-                if trimmed.isEmpty {
-                    if visibleRecents.isEmpty {
-                        Section {
-                            ContentUnavailableView(
-                                libraryEmptyTitle,
-                                systemImage: "magnifyingglass",
-                                description: Text(libraryEmptyMessage)
-                            )
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                            .listRowInsets(EdgeInsets(top: 48, leading: 16, bottom: 48, trailing: 16))
-                        }
-                    } else {
-                        recentSearchesSection(items: visibleRecents)
-                    }
-                } else if let error, libraryEmpty {
+        List {
+            if trimmed.isEmpty {
+                if visibleRecents.isEmpty {
                     Section {
-                        Text(error)
-                            .font(.subheadline)
-                            .foregroundStyle(DromeTheme.muted)
-                            .listRowBackground(DromeTheme.background)
+                        ContentUnavailableView(
+                            libraryEmptyTitle,
+                            systemImage: "magnifyingglass",
+                            description: Text(libraryEmptyMessage)
+                        )
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 48, leading: 16, bottom: 48, trailing: 16))
                     }
-                } else if libraryEmpty && hasCompletedSearch && !isSearching {
+                } else {
+                    recentSearchesSection(items: visibleRecents)
+                }
+            } else if let error, libraryEmpty {
+                Section {
+                    Text(error)
+                        .font(.subheadline)
+                        .foregroundStyle(DromeTheme.muted)
+                        .listRowBackground(DromeTheme.background)
+                }
+            } else if libraryEmpty && hasCompletedSearch && !isSearching {
+                Section {
+                    ContentUnavailableView.search(text: trimmed)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+            } else if !visibleHits.isEmpty {
+                if resultFilter == .all {
+                    groupedLibraryResults
+                } else {
                     Section {
-                        ContentUnavailableView.search(text: trimmed)
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                    }
-                } else if !visibleHits.isEmpty {
-                    if resultFilter == .all {
-                        groupedLibraryResults
-                    } else {
-                        Section {
-                            ForEach(visibleHits) { hit in
-                                hitRow(hit)
-                                    .listRowBackground(DromeTheme.background)
-                                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-                            }
+                        ForEach(visibleHits) { hit in
+                            hitRow(hit)
+                                .listRowBackground(DromeTheme.background)
+                                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                         }
                     }
                 }
             }
-            .listStyle(.plain)
-            .listSectionSpacing(6)
-            .environment(\.defaultMinListHeaderHeight, 0)
-            .contentMargins(.top, 0, for: .scrollContent)
-            .scrollContentBackground(.hidden)
-            .scrollDismissesKeyboard(.never)
-            .onChange(of: pinResultsToTopToken) { _, _ in
-                pinResultsToTop(proxy)
-            }
-            .onAppear {
-                if !isBrowseMode {
-                    pinResultsToTop(proxy)
-                }
-            }
-            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { oldY, newY in
-                // Ignore tiny layout settles; only real user scrolls dismiss the keyboard.
-                guard abs(newY - oldY) > 8 else { return }
-                dismissSearchKeyboardOnScroll()
-            }
+        }
+        .listStyle(.plain)
+        .listSectionSpacing(6)
+        .environment(\.defaultMinListHeaderHeight, 0)
+        .contentMargins(.top, Self.resultsTopSpacing, for: .scrollContent)
+        .scrollContentBackground(.hidden)
+        .scrollDismissesKeyboard(.never)
+        .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { oldY, newY in
+            // Ignore tiny layout settles; only real user scrolls dismiss the keyboard.
+            guard abs(newY - oldY) > 8 else { return }
+            dismissSearchKeyboardOnScroll()
         }
         .overlay {
             if !trimmed.isEmpty && libraryEmpty && isSearching {
@@ -697,7 +657,7 @@ struct SearchView: View {
             }
             .listStyle(.plain)
             .listSectionSpacing(8)
-            .contentMargins(.top, 0, for: .scrollContent)
+            .contentMargins(.top, Self.resultsTopSpacing, for: .scrollContent)
             .scrollContentBackground(.hidden)
             .scrollDismissesKeyboard(.never)
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { oldY, newY in
@@ -773,7 +733,7 @@ struct SearchView: View {
         }
         .listStyle(.plain)
         .listSectionSpacing(8)
-        .contentMargins(.top, 0, for: .scrollContent)
+        .contentMargins(.top, Self.resultsTopSpacing, for: .scrollContent)
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.never)
         .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { oldY, newY in
@@ -930,8 +890,6 @@ struct SearchView: View {
                     .foregroundStyle(DromeTheme.accent)
                     .textCase(nil)
                 }
-                // Keep flush under the filter inset — default header min-height
-                // + top padding was the big first-keyboard gap.
                 .padding(.top, 0)
                 .padding(.bottom, 2)
             }
