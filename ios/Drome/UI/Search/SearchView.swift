@@ -103,22 +103,29 @@ struct SearchView: View {
 
     var body: some View {
         ZStack {
-            // Always fully opaque — opacity 0 let LazyVGrid drop cells, so
-            // Cancel/keyboard-dismiss flashed black before tiles rebuilt.
+            // Genre grid stays mounted (eager tiles) but hidden while results
+            // cover it — otherwise a keyboard-safe-area shrink of the cover
+            // flash-reveals Browse Genres under the dark blocker.
             SearchBrowseLanding()
+                .opacity(isBrowseMode ? 1 : 0)
                 .allowsHitTesting(isBrowseMode)
                 .accessibilityHidden(!isBrowseMode)
                 .zIndex(0)
 
             results
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Solid fill behind list rows so empty regions stay opaque.
                 .background(DromeTheme.background)
+                // Don’t let the keyboard lift this cover — the system inset was
+                // sliding the dark blocker up and exposing categories beneath.
+                .ignoresSafeArea(.keyboard, edges: .bottom)
                 .opacity(isBrowseMode ? 0 : 1)
                 .allowsHitTesting(!isBrowseMode)
                 .accessibilityHidden(isBrowseMode)
                 .zIndex(1)
         }
-        .background(DromeTheme.background.ignoresSafeArea())
+        // `.all` includes keyboard so any gap under the cover stays Drome black.
+        .background(DromeTheme.background.ignoresSafeArea(.all))
         .transaction { $0.animation = nil }
         // Keep “Search” pinned — system `.searchable` hides the nav title on
         // focus; a principal toolbar label stays visible either way.
