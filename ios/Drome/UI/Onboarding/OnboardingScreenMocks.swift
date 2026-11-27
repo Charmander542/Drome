@@ -116,8 +116,8 @@ enum OnboardingTourChrome {
     static let mockMaxHeight: CGFloat = 380
     /// Welcome page uses dead space above the dots for a larger hero.
     static let mockMaxHeightHero: CGFloat = 420
-    /// Accent page keeps the orb compact so both swatch rows clear the Continue bar (SE).
-    static let mockMaxHeightAccent: CGFloat = 160
+    /// Accent page orb on roomy screens (18 Pro). Short screens clamp lower in OnboardingView.
+    static let mockMaxHeightAccent: CGFloat = 220
     static let mockMaxHeightAX: CGFloat = 240
     static let mockHorizontalPadding: CGFloat = 28
     static let mockBottomSpacing: CGFloat = 14

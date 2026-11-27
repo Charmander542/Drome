@@ -24,6 +24,9 @@ struct OnboardingView: View {
     @State private var measuredCopyHeight: CGFloat = 180
     /// Full onboarding window height (not the pageChrome leftover). SE ≈ 667; 18 Pro ≈ 874.
     @State private var windowHeight: CGFloat = 800
+    /// Bumped once per overcrowded page to flash the scroll indicator.
+    @State private var scrollFlashToken = 0
+    @State private var scrolledFlashPage: Int? = nil
 
     /// Grows with Dynamic Type so Large XXL captions aren’t clipped.
     @ScaledMetric(relativeTo: .body) private var captionBaseHeight: CGFloat = 72
@@ -322,31 +325,40 @@ struct OnboardingView: View {
 
     private var pageChrome: some View {
         GeometryReader { geo in
-            let hardCap = accessibilityLayout
-                ? OnboardingTourChrome.mockMaxHeightAX
-                : (page == 0
-                    ? OnboardingTourChrome.mockMaxHeightHero
-                    : (page == accentPageIndex
-                        ? OnboardingTourChrome.mockMaxHeightAccent
-                        : OnboardingTourChrome.mockMaxHeight))
+            let hardCap: CGFloat = {
+                if accessibilityLayout { return OnboardingTourChrome.mockMaxHeightAX }
+                if page == 0 { return OnboardingTourChrome.mockMaxHeightHero }
+                if page == accentPageIndex {
+                    // SE: lock the orb tiny so both swatch rows clear the bar.
+                    // Pro: roomy accent mock fills the empty band (~220).
+                    return shortScreen ? 88 : OnboardingTourChrome.mockMaxHeightAccent
+                }
+                return OnboardingTourChrome.mockMaxHeight
+            }()
             // Scroll padding + mock bottom spacing aren’t in the measured copy stack.
             let chromePad: CGFloat = accessibilityLayout ? 46 : 36
             let mockBottom: CGFloat = accessibilityLayout
                 ? OnboardingTourChrome.mockBottomSpacingAX
                 : OnboardingTourChrome.mockBottomSpacing
-            let leftover = geo.size.height - measuredCopyHeight - chromePad - mockBottom
-            // Mock only gets leftover space — never steal caption lines.
-            // 42% cap uses windowHeight (SE ≈ 667), not pageChrome geo (18 Pro content
-            // area is also < 700 and wrongly triggered the short-screen path).
-            let shortCap = shortScreen ? windowHeight * 0.42 : .infinity
-            // Accent / short screens need a lower floor so SE xxxLarge swatches clear the bar.
-            let minMock: CGFloat = (page == accentPageIndex || shortScreen) ? 104 : 160
+            // Bottom fade (~24) + small safety — leftover was ~10pt optimistic on SE xxxLarge.
+            let fadeSafety: CGFloat = 32
+            let leftover = geo.size.height - measuredCopyHeight - chromePad - mockBottom - fadeSafety
+            // windowHeight only for shortScreen; shortCap uses pageChrome geo (≈235pt on SE).
+            let shortCap = shortScreen ? geo.size.height * 0.42 : .infinity
+            let minMock: CGFloat = {
+                if page == accentPageIndex { return shortScreen ? 88 : 160 }
+                return shortScreen ? 104 : 160
+            }()
             let mockCap = min(hardCap, shortCap, max(minMock, leftover))
-            let contentFits = (mockCap + measuredCopyHeight + chromePad + mockBottom)
+            let contentFits = (mockCap + measuredCopyHeight + chromePad + mockBottom + fadeSafety)
                 <= geo.size.height + 1
+            // Safety net: if even minMock + copy won’t fit, force scrollable top-aligned layout.
+            let mustScroll = !contentFits
+                || (minMock + measuredCopyHeight + chromePad + mockBottom + fadeSafety)
+                    > geo.size.height + 1
             let showScrollIndicators = accessibilityLayout
                 || dynamicTypeSize >= .xxxLarge
-                || !contentFits
+                || mustScroll
 
             ScrollView {
                 VStack(spacing: 0) {
@@ -419,9 +431,10 @@ struct OnboardingView: View {
                     minHeight: max(geo.size.height - 8, 0),
                     // Only center when everything fits — otherwise top-align so
                     // captions scroll into view instead of sitting under the bar.
-                    alignment: contentFits ? .center : .top)
+                    alignment: mustScroll ? .top : .center)
             }
             .scrollIndicators(showScrollIndicators ? .visible : .automatic)
+            .scrollIndicatorsFlash(trigger: scrollFlashToken)
             .scrollBounceBehavior(.basedOnSize)
             .onPreferenceChange(OnboardingReservedHeightKey.self) { height in
                 // Avoid feedback loops from sub-point noise.
@@ -431,43 +444,65 @@ struct OnboardingView: View {
             }
             .onChange(of: page) { _, _ in
                 // Seed until the next preference pass; avoids one-frame oversize mock.
-                measuredCopyHeight = page == accentPageIndex ? 220 : 180
+                measuredCopyHeight = page == accentPageIndex ? 160 : 180
+                scrolledFlashPage = nil
+            }
+            .onChange(of: mustScroll) { _, needsScroll in
+                // Flash the indicator once per overcrowded page so cutoff isn’t silent.
+                guard needsScroll, scrolledFlashPage != page else { return }
+                scrolledFlashPage = page
+                scrollFlashToken &+= 1
             }
         }
     }
 
     /// Reserved height from the longest title so pages don’t jump.
+    /// Accent page sizes to its own one-line title — longest-title reservation was
+    /// wasting ~30pt that SE xxxLarge needed for the second swatch row.
+    @ViewBuilder
     private var titleBlock: some View {
-        ZStack {
-            Text(longestTitle)
-                .font(DromeTheme.titleFont)
-                .multilineTextAlignment(.center)
-                .lineLimit(accessibilityLayout ? 3 : 2)
-                .minimumScaleFactor(0.85)
-                .hidden()
-                .accessibilityHidden(true)
-            Text(displayedTitle)
-                .font(DromeTheme.titleFont)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.white)
-                .lineLimit(accessibilityLayout ? 3 : 2)
-                .minimumScaleFactor(0.85)
-                .accessibilityAddTraits(.isHeader)
+        let title = Text(displayedTitle)
+            .font(DromeTheme.titleFont)
+            .multilineTextAlignment(.center)
+            .foregroundStyle(.white)
+            .lineLimit(accessibilityLayout ? 3 : 2)
+            .minimumScaleFactor(0.85)
+            .accessibilityAddTraits(.isHeader)
+
+        if page == accentPageIndex {
+            title
+                .frame(maxWidth: .infinity)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            ZStack {
+                Text(longestTitle)
+                    .font(DromeTheme.titleFont)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(accessibilityLayout ? 3 : 2)
+                    .minimumScaleFactor(0.85)
+                    .hidden()
+                    .accessibilityHidden(true)
+                title
+            }
+            .frame(maxWidth: .infinity, minHeight: titleBaseHeight)
         }
-        .frame(maxWidth: .infinity, minHeight: titleBaseHeight)
     }
 
     /// Grows with Dynamic Type; reserves height from the longest caption so pages don’t jump.
+    /// Accent page skips the longest-caption reservation for the same SE space reason.
     @ViewBuilder
     private var captionBlock: some View {
-        let style = captionText(displayedCaption)
-        ZStack(alignment: .top) {
-            captionText(longestCaption)
-                .hidden()
-                .accessibilityHidden(true)
-            style
+        if page == accentPageIndex {
+            captionText(displayedCaption)
+        } else {
+            ZStack(alignment: .top) {
+                captionText(longestCaption)
+                    .hidden()
+                    .accessibilityHidden(true)
+                captionText(displayedCaption)
+            }
+            .frame(maxWidth: .infinity, minHeight: captionBaseHeight, alignment: .top)
         }
-        .frame(maxWidth: .infinity, minHeight: captionBaseHeight, alignment: .top)
     }
 
     private func captionText(_ string: String) -> some View {
