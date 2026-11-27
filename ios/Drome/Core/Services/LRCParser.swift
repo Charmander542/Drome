@@ -504,7 +504,7 @@ enum LRCParser {
     /// Focus line at `elapsedMs` (Aura `focusIndex`): after a real instrumental
     /// (>2s past finish), move halfway to the coming line so the sheet isn’t
     /// stuck on a finished line. Karaoke still keys off `Word.isLit`; the UI
-    /// paints a full-line highlight on that preview until the first word starts.
+    /// may scale the preview line, but words stay unlit until their starts.
     static func focusIndex(lines: [Line], after last: Int?, atMs elapsedMs: Int) -> Int? {
         guard let index = last, index + 1 < lines.count,
               let nextStart = lines[index + 1].startMs,

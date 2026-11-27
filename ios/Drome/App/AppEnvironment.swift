@@ -561,7 +561,11 @@ final class AppSession: ObservableObject, Identifiable {
                     baseURL: url,
                     session: subsonicClient.session,
                     authItems: { subsonicClient.authQueryItems() })
+            },
+            offlineLyricsURL: { [downloads] songId in
+                downloads.localLyricsURL(songId: songId)
             })
+        downloads.bindLyricsService(lyricsService)
         lyricsIndexer = LyricsIndexer(client: client, database: database,
                                       lyricsService: lyricsService, serverKey: account.serverKey)
         artistImages = ArtistImageStore(database: database, serverKey: account.serverKey)

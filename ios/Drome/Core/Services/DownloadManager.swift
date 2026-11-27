@@ -52,6 +52,9 @@ final class DownloadManager: ObservableObject {
     private var tasksBySongID: [String: URLSessionDownloadTask] = [:]
     private var coverInflight: Set<String> = []
     private var streamingSuspended = false
+    /// Fetches + writes `.lrc` next to offline audio (set from AppEnvironment).
+    private var lyricsService: LyricsService?
+    private var lyricsInflight: Set<String> = []
     /// safe filename → local cover. List rows ask for this on every body
     /// pass; scanning four extensions with fileExists each time was a scroll hitch.
     private var localCoversByComponent: [String: URL] = [:]
@@ -90,6 +93,12 @@ final class DownloadManager: ObservableObject {
             }
         }
         Task { await self.backfillMissingCoverArt() }
+    }
+
+    /// Wire lyrics after both managers exist (AppEnvironment init order).
+    func bindLyricsService(_ service: LyricsService) {
+        lyricsService = service
+        Task { await backfillMissingLyrics() }
     }
 
     func invalidate() {
@@ -191,6 +200,16 @@ final class DownloadManager: ObservableObject {
         guard let relPath = localRelPathBySongId[songId] else { return nil }
         let url = downloadDirectory.appendingPathComponent(relPath)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Offline lyrics sidecar written beside the audio file (`<songId>.lrc`).
+    func localLyricsURL(songId: String) -> URL? {
+        let url = lyricsURL(for: songId)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    private func lyricsURL(for songId: String) -> URL {
+        downloadDirectory.appendingPathComponent("\(Self.safeFileComponent(songId)).lrc")
     }
 
     /// Local album art for a cover id (shared across songs on the same album).
@@ -342,6 +361,7 @@ final class DownloadManager: ObservableObject {
         if let url = localURL(songId: songId) {
             try? FileManager.default.removeItem(at: url)
         }
+        try? FileManager.default.removeItem(at: lyricsURL(for: songId))
         try? database.deleteDownload(serverKey: serverKey, songId: songId)
         reload()
     }
@@ -352,6 +372,7 @@ final class DownloadManager: ObservableObject {
                 let url = downloadDirectory.appendingPathComponent(relPath)
                 try? FileManager.default.removeItem(at: url)
             }
+            try? FileManager.default.removeItem(at: lyricsURL(for: record.songId))
             try? database.deleteDownload(serverKey: serverKey, songId: record.songId)
         }
         try? FileManager.default.removeItem(at: artDirectory)
@@ -382,11 +403,15 @@ final class DownloadManager: ObservableObject {
         }
     }
 
-    // MARK: - Cover art
+    // MARK: - Cover art / lyrics
 
     func ensureCoverArt(for song: Song) {
         let coverId = song.coverArt ?? song.albumId ?? song.id
         Task { await downloadCoverIfNeeded(coverId: coverId) }
+    }
+
+    func ensureLyrics(for song: Song) {
+        Task { await downloadLyricsIfNeeded(for: song) }
     }
 
     private func backfillMissingCoverArt() async {
@@ -395,6 +420,26 @@ final class DownloadManager: ObservableObject {
             let coverId = song.coverArt ?? song.albumId ?? song.id
             await downloadCoverIfNeeded(coverId: coverId)
         }
+    }
+
+    private func backfillMissingLyrics() async {
+        // Wait a beat for doneSongsById decode after reload().
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        let songs = Array(doneSongsById.values)
+        for song in songs {
+            await downloadLyricsIfNeeded(for: song)
+        }
+    }
+
+    private func downloadLyricsIfNeeded(for song: Song) async {
+        guard !song.id.isEmpty else { return }
+        if localLyricsURL(songId: song.id) != nil { return }
+        guard !lyricsInflight.contains(song.id) else { return }
+        guard let lyricsService else { return }
+        lyricsInflight.insert(song.id)
+        defer { lyricsInflight.remove(song.id) }
+        let dest = lyricsURL(for: song.id)
+        _ = await lyricsService.persistOfflineLyrics(for: song, to: dest)
     }
 
     private func downloadCoverIfNeeded(coverId: String) async {
@@ -472,8 +517,13 @@ final class DownloadManager: ObservableObject {
         try? database.setDownloadState(serverKey: serverKey, songId: songId,
                                        state: "done", relPath: relPath, fileSize: fileSize)
         reload()
-        if let song = doneSongsById[songId] {
+        // `doneSongsById` decodes async after reload — fall back to the record JSON.
+        let song = doneSongsById[songId] ?? records
+            .first(where: { $0.songId == songId })
+            .flatMap { try? JSONDecoder().decode(Song.self, from: Data($0.songJSON.utf8)) }
+        if let song {
             ensureCoverArt(for: song)
+            ensureLyrics(for: song)
         }
     }
 

@@ -18,6 +18,13 @@ struct LyricsView: View {
     @State private var userScrolling = false
     @State private var reenableFollowTask: Task<Void, Never>?
     @State private var lastScrolledIndex: Int = -1
+    /// True after a scrub/seek jump — auto-scroll snaps once without animating
+    /// through every line between the old and new playhead.
+    @State private var scrubSuppressScroll = false
+    @State private var wasSeekInFlight = false
+    /// Bumped when a seek settles so we re-anchor even if `activeIndex` was
+    /// already updated while scroll was suppressed.
+    @State private var seekSnapToken = 0
 
     private enum LineState {
         case past, active, upcoming
@@ -29,12 +36,14 @@ struct LyricsView: View {
 
     var body: some View {
         Group {
-            if isLoading {
+            if isLoading && document == nil {
                 LoadingStateView(message: "Loading lyrics…")
-            } else if let error {
+            } else if let error, document == nil {
                 ErrorStateView(message: error) { Task { await load(force: true) } }
             } else if let document, !document.lines.isEmpty {
                 lyricsBody(document)
+            } else if isLoading {
+                LoadingStateView(message: "Loading lyrics…")
             } else {
                 EmptyStateView(
                     title: "No lyrics yet",
@@ -46,6 +55,8 @@ struct LyricsView: View {
             activeIndex = 0
             lastScrolledIndex = -1
             userScrolling = false
+            scrubSuppressScroll = false
+            wasSeekInFlight = false
             userOffsetMs = Self.loadOffset(songId: song.id)
             await load(force: false)
         }
@@ -63,9 +74,35 @@ struct LyricsView: View {
     }
 
     private func tick() {
-        // Round half-up so a stamp at exactly N ms isn’t missed for a frame.
-        let ms = Int((player.accurateElapsed() * 1000).rounded())
+        // Prefer sticky karaoke playhead so scrubbing doesn't flash ~0 / old time.
+        let ms = Int((player.karaokeElapsed() * 1000).rounded())
+        let jumpMs = abs(ms - elapsedMs)
+        let seeking = player.isSeekInFlight
         elapsedMs = ms
+
+        if seeking {
+            scrubSuppressScroll = true
+            wasSeekInFlight = true
+        } else if wasSeekInFlight {
+            // Seek finished — allow one instant re-anchor at the new line.
+            wasSeekInFlight = false
+            scrubSuppressScroll = false
+            lastScrolledIndex = -1
+            seekSnapToken &+= 1
+        } else if jumpMs > 1_400 {
+            // Large playhead jump without an in-flight seek flag (remote / clamp).
+            scrubSuppressScroll = true
+            lastScrolledIndex = -1
+            reenableFollowTask?.cancel()
+            reenableFollowTask = Task {
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                guard !Task.isCancelled else { return }
+                scrubSuppressScroll = false
+                lastScrolledIndex = -1
+                seekSnapToken &+= 1
+            }
+        }
+
         guard let document, document.synced else { return }
         let idx = activeLineIndex(at: syncElapsedMs, in: document)
         if idx != activeIndex {
@@ -139,11 +176,29 @@ struct LyricsView: View {
                     }
             )
             .onChange(of: activeIndex) { _, newValue in
-                scrollToActive(proxy: proxy, document: document, index: newValue, animated: true)
+                let animate = !scrubSuppressScroll && !player.isSeekInFlight
+                scrollToActive(
+                    proxy: proxy,
+                    document: document,
+                    index: newValue,
+                    animated: animate)
+            }
+            .onChange(of: seekSnapToken) { _, _ in
+                scrollToActive(
+                    proxy: proxy,
+                    document: document,
+                    index: activeIndex,
+                    animated: false)
             }
             .onChange(of: document.lines.first?.id) { _, _ in
+                // New document identity (reload) — keep current playhead line,
+                // never snap to the top of the sheet.
                 lastScrolledIndex = -1
-                scrollToActive(proxy: proxy, document: document, index: activeIndex, animated: false)
+                let idx = document.synced
+                    ? activeLineIndex(at: syncElapsedMs, in: document)
+                    : activeIndex
+                activeIndex = idx
+                scrollToActive(proxy: proxy, document: document, index: idx, animated: false)
             }
             .onAppear {
                 scrollToActive(proxy: proxy, document: document, index: activeIndex, animated: false)
@@ -236,6 +291,11 @@ struct LyricsView: View {
 
     private func scrollToActive(proxy: ScrollViewProxy, document: LyricsDocument, index: Int, animated: Bool) {
         guard document.synced, !userScrolling else { return }
+        // While scrubbing, update highlights but don't chase the list — a seek
+        // that flickers through 0 would yank the sheet to the first line.
+        if scrubSuppressScroll || player.isSeekInFlight {
+            return
+        }
         guard document.lines.indices.contains(index) else { return }
         guard index != lastScrolledIndex else { return }
         lastScrolledIndex = index
@@ -276,15 +336,15 @@ struct LyricsView: View {
     }
 
     private func activeLineIndex(at elapsedMs: Int, in document: LyricsDocument) -> Int {
-        // Aura current line: last started stamp, then mid-break focus so long
-        // instrumentals preview the coming line (words stay unlit until starts).
+        // Heard stamp + mid-break focus: scroll/scale onto the coming line during
+        // long instrumentals. Word lighting still waits on each cue’s start.
         LRCParser.currentLineIndex(lines: document.lines, atMs: elapsedMs)
     }
 
     private func sourceLabel(_ source: String) -> String {
         switch source {
         case "navidrome", "navidrome.v2", "navidrome.v3", "navidrome.v4", "navidrome.v5",
-             "sidecar", "sidecar.v1":
+             "sidecar", "sidecar.v1", "offline", "offline.v1":
             return "From your library"
         case "lrclib", "lrclib.v2", "lrclib.v3", "lrclib.v4", "lrclib.v5":
             return "From LRCLIB"
@@ -302,7 +362,10 @@ struct LyricsView: View {
     }
 
     private func load(force: Bool) async {
-        isLoading = true
+        // Keep showing the current sheet while refreshing — blanking the view
+        // reset scroll to the top and felt like the lyric connection "broke".
+        let showSpinner = document == nil
+        if showSpinner { isLoading = true }
         error = nil
         defer { isLoading = false }
         let fetched: LyricsDocument?
@@ -313,11 +376,12 @@ struct LyricsView: View {
         }
         if let fetched {
             let aligned = realignToPlayhead(fetched)
-            document = aligned
             if aligned.synced {
                 activeIndex = activeLineIndex(at: syncElapsedMs, in: aligned)
             }
-        } else {
+            lastScrolledIndex = -1
+            document = aligned
+        } else if document == nil {
             document = nil
         }
     }
@@ -442,12 +506,14 @@ struct LyricsView: View {
             case .upcoming:
                 return Color.white.opacity(0.24)
             case .active:
-                // Word karaoke when cues have started. Mid-break focus can mark
-                // the coming line active before any word start — fall back to a
-                // full-line highlight so the sheet never looks “stuck off”.
+                // Focus/scale can mark this line early (mid-break preview, or
+                // line stamp before the first word). Don't also paint it fully
+                // lit — that raced the word karaoke. Stay dim until a cue fires;
+                // scale alone shows focus. Plain lines (no words) still use
+                // `baseColor` via the non-word Text path.
                 let anyLit = line.words.contains { $0.isLit(atMs: elapsedMs) }
                 if !anyLit {
-                    return baseColor
+                    return Color.white.opacity(0.24)
                 }
                 // Aura elapsed-at-time (incl. x4 cycle restarts). Stay lit once
                 // reached this pass — no endMs dim. Soften words already passed
