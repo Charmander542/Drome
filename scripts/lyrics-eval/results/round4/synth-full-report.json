@@ -1,0 +1,153 @@
+{
+  "mode": "synth_full",
+  "pass_bar_hard": {
+    "median_abs_ms": 40,
+    "p90_abs_ms": 100,
+    "drift_ms_per_min": 30
+  },
+  "pass_bar_soft_p90_ms": 150,
+  "note": "Scores are LRC vs independent TTS onset truth \u2014 not CTC self-score, not Deezer previews.",
+  "variants": [
+    {
+      "variant": "standard",
+      "duration_ms": 62169,
+      "n_words": 47,
+      "rate": 140,
+      "before_vs_truth": {
+        "n": 47,
+        "mean_ms": 141.12765957446808,
+        "median_ms": 96,
+        "mean_abs_ms": 176.31914893617022,
+        "median_abs_ms": 135,
+        "p90_abs_ms": 400,
+        "drift_ms_per_min": -26.198214883288387,
+        "offset_kind": "constant",
+        "after_offset_median_abs_ms": 120,
+        "after_offset_p90_abs_ms": 304,
+        "pass": false,
+        "limits": {
+          "median_abs_ms": 40,
+          "p90_abs_ms": 100,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "after_vs_truth": {
+        "n": 47,
+        "mean_ms": -2422.872340425532,
+        "median_ms": -2286,
+        "mean_abs_ms": 2434.744680851064,
+        "median_abs_ms": 2286,
+        "p90_abs_ms": 4740,
+        "drift_ms_per_min": -522.0097753015101,
+        "offset_kind": "drifting",
+        "after_offset_median_abs_ms": 1424,
+        "after_offset_p90_abs_ms": 2454,
+        "pass": false,
+        "limits": {
+          "median_abs_ms": 40,
+          "p90_abs_ms": 100,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "soft_pass_p90_150": false,
+      "meets_hard_bar": false,
+      "meets_soft_p90_150": false
+    },
+    {
+      "variant": "fast",
+      "duration_ms": 32299,
+      "n_words": 33,
+      "rate": 180,
+      "before_vs_truth": {
+        "n": 33,
+        "mean_ms": 154.93939393939394,
+        "median_ms": 81,
+        "mean_abs_ms": 169.78787878787878,
+        "median_abs_ms": 115,
+        "p90_abs_ms": 400,
+        "drift_ms_per_min": 63.94241478740641,
+        "offset_kind": "drifting",
+        "after_offset_median_abs_ms": 81,
+        "after_offset_p90_abs_ms": 319,
+        "pass": false,
+        "limits": {
+          "median_abs_ms": 40,
+          "p90_abs_ms": 100,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "after_vs_truth": {
+        "n": 33,
+        "mean_ms": -939.1212121212121,
+        "median_ms": -658,
+        "mean_abs_ms": 1018.5757575757576,
+        "median_abs_ms": 740,
+        "p90_abs_ms": 2241,
+        "drift_ms_per_min": -3216.420964735938,
+        "offset_kind": "drifting",
+        "after_offset_median_abs_ms": 700,
+        "after_offset_p90_abs_ms": 1583,
+        "pass": false,
+        "limits": {
+          "median_abs_ms": 40,
+          "p90_abs_ms": 100,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "soft_pass_p90_150": false,
+      "meets_hard_bar": false,
+      "meets_soft_p90_150": false
+    },
+    {
+      "variant": "slow-long",
+      "duration_ms": 106757,
+      "n_words": 61,
+      "rate": 110,
+      "before_vs_truth": {
+        "n": 61,
+        "mean_ms": 147.85245901639345,
+        "median_ms": 108,
+        "mean_abs_ms": 189.2622950819672,
+        "median_abs_ms": 143,
+        "p90_abs_ms": 400,
+        "drift_ms_per_min": 31.618097022235226,
+        "offset_kind": "drifting",
+        "after_offset_median_abs_ms": 141,
+        "after_offset_p90_abs_ms": 292,
+        "pass": false,
+        "limits": {
+          "median_abs_ms": 40,
+          "p90_abs_ms": 100,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "after_vs_truth": {
+        "n": 61,
+        "mean_ms": -3465.8032786885246,
+        "median_ms": -3423,
+        "mean_abs_ms": 3506,
+        "median_abs_ms": 3423,
+        "p90_abs_ms": 7023,
+        "drift_ms_per_min": -1084.623700287741,
+        "offset_kind": "drifting",
+        "after_offset_median_abs_ms": 2243,
+        "after_offset_p90_abs_ms": 3679,
+        "pass": false,
+        "limits": {
+          "median_abs_ms": 40,
+          "p90_abs_ms": 100,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "soft_pass_p90_150": false,
+      "meets_hard_bar": false,
+      "meets_soft_p90_150": false
+    }
+  ]
+}

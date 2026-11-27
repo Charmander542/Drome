@@ -102,6 +102,8 @@ enum LRCParser {
         /// Milliseconds from `[offset:±NNNN]` (already applied to `lines` when
         /// `applyEmbeddedOffset` was true).
         var embeddedOffsetMs: Int
+        /// Companion refine marker, e.g. `[drome-aligned:v3-ctc-seg]`, if present.
+        var alignedMarker: String?
     }
 
     private static let bracketTime = try! NSRegularExpression(
@@ -110,6 +112,9 @@ enum LRCParser {
         pattern: #"<(\d{1,2}):(\d{1,2})(?:[.:](\d{1,3}))?>"#)
     private static let offsetTag = try! NSRegularExpression(
         pattern: #"\[offset:\s*([+-]?\d+)\s*\]"#,
+        options: .caseInsensitive)
+    private static let alignedTag = try! NSRegularExpression(
+        pattern: #"\[drome-aligned:([^\]]+)\]"#,
         options: .caseInsensitive)
 
     static func isSynced(_ raw: String) -> Bool {
@@ -124,11 +129,16 @@ enum LRCParser {
         var timed: [Line] = []
         var untimed: [Line] = []
         var embeddedOffsetMs = 0
+        var alignedMarker: String?
 
         for rawLine in raw.components(separatedBy: .newlines) {
             let trimmedMeta = rawLine.trimmingCharacters(in: .whitespaces)
             if let offset = parseOffsetTag(trimmedMeta) {
                 embeddedOffsetMs = offset
+                continue
+            }
+            if let marker = parseAlignedMarker(trimmedMeta) {
+                alignedMarker = marker
                 continue
             }
 
@@ -169,7 +179,25 @@ enum LRCParser {
         if applyEmbeddedOffset, embeddedOffsetMs != 0 {
             lines = shift(lines, byMs: embeddedOffsetMs)
         }
-        return ParseResult(lines: lines, embeddedOffsetMs: embeddedOffsetMs)
+        return ParseResult(
+            lines: lines,
+            embeddedOffsetMs: embeddedOffsetMs,
+            alignedMarker: alignedMarker)
+    }
+
+    /// Stable fingerprint of the first ~8 line starts plus any aligned marker.
+    /// Used so a listener nudge survives source-label bumps but resets when
+    /// companion rewrite changes the actual stamps.
+    static func timingStamp(lines: [Line], alignedMarker: String?) -> String {
+        var parts = lines.prefix(8).map { String($0.startMs ?? -1) }
+        parts.append(alignedMarker ?? "")
+        let raw = parts.joined(separator: "|")
+        // djb2 — stable across launches (unlike Swift Hasher).
+        var hash: UInt64 = 5381
+        for byte in raw.utf8 {
+            hash = ((hash &<< 5) &+ hash) &+ UInt64(byte)
+        }
+        return String(hash, radix: 16)
     }
 
     /// Shift every line / word timestamp by `deltaMs` (may be negative).
@@ -551,6 +579,14 @@ enum LRCParser {
         guard let match = offsetTag.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)),
               match.numberOfRanges >= 2 else { return nil }
         return Int(ns.substring(with: match.range(at: 1)))
+    }
+
+    private static func parseAlignedMarker(_ line: String) -> String? {
+        let ns = line as NSString
+        guard let match = alignedTag.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)),
+              match.numberOfRanges >= 2 else { return nil }
+        let version = ns.substring(with: match.range(at: 1))
+        return "[drome-aligned:\(version)]"
     }
 
     private static func milliseconds(in string: String, match: NSTextCheckingResult) -> Int {

@@ -20,6 +20,10 @@ struct LyricsDocument {
     var matchedDurationSec: Int?
     /// Whether karaoke uses real word stamps or paced approximations.
     var wordTiming: LyricsWordTiming
+    /// Companion `[drome-aligned:vN]` tag when present in the raw LRC.
+    var alignedMarker: String?
+    /// Fingerprint of line starts + aligned marker — drives nudge reset.
+    var timingStamp: String
 
     init(
         lines: [LRCParser.Line],
@@ -27,13 +31,16 @@ struct LyricsDocument {
         source: String,
         timingOffsetMs: Int = 0,
         matchedDurationSec: Int? = nil,
-        wordTiming: LyricsWordTiming? = nil
+        wordTiming: LyricsWordTiming? = nil,
+        alignedMarker: String? = nil
     ) {
         self.lines = lines
         self.synced = synced
         self.source = source
         self.timingOffsetMs = timingOffsetMs
         self.matchedDurationSec = matchedDurationSec
+        self.alignedMarker = alignedMarker
+        self.timingStamp = LRCParser.timingStamp(lines: lines, alignedMarker: alignedMarker)
         if let wordTiming {
             self.wordTiming = wordTiming
         } else if !synced {
@@ -402,7 +409,8 @@ actor LyricsService {
     ) -> LyricsDocument {
         // Embedded `[offset:]` is applied inside the parser. Structured offset
         // is also written into the serialized LRC when caching from Navidrome.
-        var lines = LRCParser.parse(content, applyEmbeddedOffset: true)
+        let parsed = LRCParser.parseDetailed(content, applyEmbeddedOffset: true)
+        var lines = parsed.lines
 
         // Duration scale only when we know the remote master's length (LRCLIB).
         // Never invent a scale from the last lyric stamp — sidecar / embedded
@@ -430,6 +438,7 @@ actor LyricsService {
             synced: synced,
             source: source,
             timingOffsetMs: structuredOffsetMs,
-            matchedDurationSec: alignedDurationSec)
+            matchedDurationSec: alignedDurationSec,
+            alignedMarker: parsed.alignedMarker)
     }
 }

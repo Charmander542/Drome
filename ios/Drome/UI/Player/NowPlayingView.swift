@@ -281,7 +281,8 @@ struct NowPlayingView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(Color.white.opacity(0.7))
                 .lineLimit(1)
-                .frame(height: 16)
+                .minimumScaleFactor(0.7)
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                 .opacity(player.context == nil ? 0 : 1)
         }
     }

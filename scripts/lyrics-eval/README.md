@@ -1,7 +1,8 @@
 # Karaoke timing harness
 
-Measures word-synced lyric stamps against **CTC forced alignment** (torchaudio
-MMS_FA) on **Demucs-separated vocals** — not Whisper ASR timestamps.
+Measures word-synced lyric stamps against **independent ground truth** (TTS
+onsets) or, for qualitative checks only, real masters. Do **not** treat
+CTC-vs-self scores as proof of karaoke quality.
 
 ## Quick self-check (CI-friendly)
 
@@ -9,58 +10,58 @@ MMS_FA) on **Demucs-separated vocals** — not Whisper ASR timestamps.
 ./scripts/lyrics-eval/run.sh fixtures
 ```
 
-Optional CTC self-test (needs torch / torchaudio / espeak):
+## Valid measurement (round 4)
+
+Full-length TTS vocals mixed over a synthetic music bed, with known per-word
+onsets. Tempo and length variants. Scores the LRCLIB-style prior and
+`generate-words` output **against the TTS truth JSON** — no Deezer previews,
+no guessed offsets, no CTC self-score.
+
+```bash
+python3 scripts/lyrics-eval/align_lyrics.py synth-full \
+  --out-dir /tmp/lyrics-eval/round4 --run-align \
+  --json /tmp/lyrics-eval/round4/report.json
+```
+
+Hard pass bar: median abs ≤ 40 ms, p90 ≤ 100 ms, |drift| ≤ 30 ms/min.
+Soft bar discussed for shipping: p90 ≲ 150 ms on valid truth.
+
+Results checked into `results/round4/synth-full-report.json`. As of round 4 the
+aligner **does not** meet the soft bar on valid truth (and often regresses vs
+the coarse prior). Companion align stays **off by default**.
+
+## Optional CTC tooling
 
 ```bash
 python3 scripts/lyrics-eval/align_lyrics.py synth-fixture --out-dir scripts/lyrics-eval/fixtures/speech
 python3 scripts/lyrics-eval/align_lyrics.py validate-aligner \
   --audio scripts/lyrics-eval/fixtures/speech/speech.wav \
   --truth scripts/lyrics-eval/fixtures/speech/speech.truth.json
-```
-
-Pass bar: median abs word error ≤ 40 ms, p90 ≤ 100 ms, |drift| ≤ 30 ms/min.
-
-## Measure / generate a real track (local audio only — do not commit media)
-
-Audio must match the LRCLIB master (±0.5 s), or use a Deezer preview anchored
-to the lyric text (`--preview-anchor`).
-
-```bash
-pip install -r server/scripts/requirements-lyrics-align.txt
-./scripts/lyrics-eval/run.sh measure --audio /path/song.wav --lrc /path/song.lrc
+python3 scripts/lyrics-eval/align_lyrics.py check-deps
 python3 scripts/lyrics-eval/align_lyrics.py generate-words \
   --audio /path/song.wav --lrc /path/song.lrc --write
-python3 scripts/lyrics-eval/align_lyrics.py check-deps
-python3 scripts/lyrics-eval/align_lyrics.py benchmark --audio /path/song.wav
 ```
 
-`generate-words` (round 3) keeps LRCLIB **text + coarse line anchors**, then
-runs segment-constrained CTC inside each line (±`--line-search-ms`, default
-3000). High-conf words come from CTC; low-conf words interpolate; star / ad-lib
-/ intro lines stay skippable. Sidecars get `[drome-aligned:v3-ctc-seg]`.
-
-`refine-words` remains as an alias that forwards to `generate-words`.
-
-CPU cost (≈30 s preview benchmark): ~0.5× realtime, ~2.65 GB peak RSS (Demucs
-dominates). Companion sets `OMP_NUM_THREADS=1` and optional `nice`. Missing
-torch/demucs → keep LRCLIB (`check-deps` / `keep_lrclib` fallback).
-
-Round-3 preview numbers live in `results/e2e-report.json` and
-`results/round3/`. Dense rap (BDKMV) still misses the 40/100 bar on previews;
-production path is full-file companion align.
+`generate-words` keeps LRCLIB **text + coarse line anchors**, then runs
+segment-constrained CTC (`[drome-aligned:v3-ctc-seg]`). A **quality gate**
+refuses to rewrite the sidecar unless coverage ≥ 0.6, median abs improves, and
+p90 is not worse vs the LRCLIB input (CTC self-check is only a relative gate —
+not a validity claim).
 
 ## Companion wiring
 
-`DROME_LYRICS_ALIGN` defaults to **true**. After writing or upgrading a
-word-synced `.lrc` sidecar, the Go companion enqueues `generate-words` (see
-`server/lyrics_align.go`, `server/lyrics_align_queue.go`). Env:
+`DROME_LYRICS_ALIGN` defaults to **false**. To opt in after installing
+torch/torchaudio/demucs and reviewing `results/round4/`:
 
-- `DROME_LYRICS_ALIGN_LINE_SEARCH_MS` (default 3000; legacy `WINDOW_MS` still accepted)
-- `DROME_LYRICS_ALIGN_GAP` (default 5s)
-- `DROME_LYRICS_ALIGN_NICE` (default true)
+```bash
+DROME_LYRICS_ALIGN=true
+# optional: DROME_LYRICS_ALIGN_LINE_SEARCH_MS=3000
+# optional: DROME_LYRICS_ALIGN_GAP=5s
+# optional: DROME_LYRICS_ALIGN_NICE=true
+```
+
+Missing deps → `keep_lrclib`. Gate failure → `keep_lrclib` (sidecar unchanged).
 
 ## Swift timing tests
 
-`ios/LyricsTiming` (KaraokeResume foreground snap, rebuild/post-seek guards,
-LyricsClock lead/arrival) runs on Mac CI / Xcode — this Linux VM has no Swift
-toolchain.
+`ios/LyricsTiming` runs on Mac CI / Xcode — this Linux VM has no Swift toolchain.

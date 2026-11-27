@@ -43,7 +43,9 @@ type lyricsAlignConfig struct {
 }
 
 func lyricsAlignConfigFromEnv() lyricsAlignConfig {
-	enabled := strings.ToLower(envOr("DROME_LYRICS_ALIGN", "true"))
+	// Off by default until a valid (non-circular) ground-truth eval clears the
+	// soft p90≈150 ms bar. Operators opt in explicitly after checking deps.
+	enabled := strings.ToLower(envOr("DROME_LYRICS_ALIGN", "false"))
 	script := envOr("DROME_LYRICS_ALIGN_SCRIPT", "")
 	if script == "" {
 		candidates := []string{

@@ -218,6 +218,27 @@ final class LRCParserTimingTests: XCTestCase {
         XCTAssertEqual(LyricsClock.wordOpacity(elapsedMs: 400), LyricsClock.sungOpacity)
     }
 
+    func testAlignedMarkerAndTimingStamp() {
+        let raw = """
+            [drome-aligned:v3-ctc-seg]
+            [00:01.000]<00:01.000>Hello <00:01.400>there
+            [00:03.000]<00:03.000>World
+            """
+        let result = LRCParser.parseDetailed(raw)
+        XCTAssertEqual(result.alignedMarker, "[drome-aligned:v3-ctc-seg]")
+        let stamp = LRCParser.timingStamp(lines: result.lines, alignedMarker: result.alignedMarker)
+        let again = LRCParser.timingStamp(lines: result.lines, alignedMarker: result.alignedMarker)
+        XCTAssertEqual(stamp, again)
+        let rewritten = LRCParser.timingStamp(
+            lines: result.lines,
+            alignedMarker: "[drome-aligned:v4-ctc-seg]")
+        XCTAssertNotEqual(stamp, rewritten)
+        let shifted = LRCParser.timingStamp(
+            lines: LRCParser.shift(result.lines, byMs: 50),
+            alignedMarker: result.alignedMarker)
+        XCTAssertNotEqual(stamp, shifted)
+    }
+
     func testKaraokeResumeTrustsAccurateExceptDuringSeek() {
         XCTAssertEqual(KaraokeResume.chooseElapsed(accurate: 12.5, published: 10, seekInFlight: false), 12.5)
         XCTAssertEqual(KaraokeResume.chooseElapsed(accurate: 0.2, published: 45, seekInFlight: false), 0.2)

@@ -1019,6 +1019,264 @@ def cmd_synth_fixture(args: argparse.Namespace) -> int:
     return 0
 
 
+def _espeak_word_pcm(word: str, *, sr: int, rate: int) -> list[float]:
+    """Render one word with espeak; return mono float samples at `sr`."""
+    with tempfile.TemporaryDirectory() as td:
+        wav_path = Path(td) / "w.wav"
+        subprocess.run(
+            ["espeak", "-w", str(wav_path), "-s", str(rate), word],
+            check=True,
+            capture_output=True,
+        )
+        with wave.open(str(wav_path), "rb") as w:
+            fr = w.getframerate()
+            import array
+
+            arr = array.array("h")
+            arr.frombytes(w.readframes(w.getnframes()))
+        if fr != sr:
+            ratio = sr / fr
+            new_len = int(len(arr) * ratio)
+            vals: list[float] = []
+            for i in range(new_len):
+                src = i / ratio
+                j = int(src)
+                f = src - j
+                a = arr[j] if j < len(arr) else 0
+                b = arr[j + 1] if j + 1 < len(arr) else 0
+                vals.append(a * (1 - f) + b * f)
+            return [v / 32768.0 for v in vals]
+        return [v / 32768.0 for v in arr]
+
+
+def _music_bed(n_samples: int, sr: int, seed: int = 7) -> list[float]:
+    """Simple deterministic pad under vocals — not a copyrighted bed."""
+    import math
+
+    out = [0.0] * n_samples
+    # Two slow sine layers + soft noise.
+    for i in range(n_samples):
+        t = i / sr
+        tone = 0.04 * math.sin(2 * math.pi * 110 * t) + 0.03 * math.sin(2 * math.pi * 164.8 * t)
+        # xorshift-ish noise from index
+        n = (seed * 1103515245 + i * 12345) & 0x7FFFFFFF
+        noise = ((n / 0x7FFFFFFF) * 2 - 1) * 0.008
+        out[i] = tone + noise
+    return out
+
+
+def _write_wav_mono(path: Path, samples: list[float], sr: int) -> None:
+    with wave.open(str(path), "w") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        frames = b"".join(
+            int(max(-1.0, min(1.0, s)) * 32767).to_bytes(2, "little", signed=True)
+            for s in samples
+        )
+        w.writeframes(frames)
+
+
+def _score_lrc_against_truth(lrc_raw: str, truth_words: list[dict[str, Any]]) -> dict[str, Any]:
+    """Score word starts vs independent ground truth (never CTC self-score)."""
+    words, _, _ = parse_lrc_words(lrc_raw)
+    pairs = []
+    n = min(len(words), len(truth_words))
+    for i in range(n):
+        w = words[i]
+        t = truth_words[i]
+        # Prefer text match when lengths diverge mid-list.
+        pairs.append(
+            {
+                "text": w["text"],
+                "truth_text": t["text"],
+                "lrc_ms": w["start_ms"],
+                "truth_ms": t["start_ms"],
+                "err_ms": w["start_ms"] - t["start_ms"],
+            }
+        )
+    stats = summarize_pairs(pairs) if pairs else {"n": 0, "pass": False, "median_abs_ms": None, "p90_abs_ms": None}
+    coverage = round(n / len(truth_words), 4) if truth_words else 0.0
+    stats["coverage"] = coverage
+    return {"stats": stats, "n_scored": n, "n_truth": len(truth_words), "sample": pairs[:8]}
+
+
+def cmd_synth_full(args: argparse.Namespace) -> int:
+    """Build full-length TTS vocals over a music bed with known per-word times.
+
+    Variants vary tempo (espeak rate) and length (line count / gaps). The
+    LRCLIB-style input uses true line starts but evenly spaced words inside
+    each line — a realistic coarse prior. Scoring is always vs the TTS truth
+    JSON, never CTC-vs-self.
+    """
+    out_root = Path(args.out_dir)
+    out_root.mkdir(parents=True, exist_ok=True)
+    sr = 16_000
+
+    # Multi-line lyric set — enough words for median/p90, full-ish length.
+    base_lines = [
+        ["hello", "world", "this", "is", "a", "timing", "fixture"],
+        ["singing", "words", "with", "known", "onset", "times"],
+        ["another", "line", "keeps", "the", "aligner", "honest"],
+        ["tempo", "changes", "should", "still", "lock", "the", "words"],
+        ["final", "chorus", "repeats", "the", "same", "idea", "clearly"],
+        ["bridge", "section", "adds", "length", "without", "new", "tricks"],
+        ["closing", "line", "ends", "the", "song", "on", "time"],
+    ]
+
+    variants = [
+        {"name": "standard", "rate": 140, "gap_ms": 900, "line_pause_ms": 650, "lines": base_lines},
+        {"name": "fast", "rate": 180, "gap_ms": 550, "line_pause_ms": 400, "lines": base_lines[:5]},
+        {"name": "slow-long", "rate": 110, "gap_ms": 1200, "line_pause_ms": 900, "lines": base_lines + [
+            ["encore", "verse", "extends", "duration", "for", "drift", "checks"],
+            ["last", "word", "lands", "exactly", "where", "truth", "says"],
+        ]},
+    ]
+
+    report: list[dict[str, Any]] = []
+    soft_p90_limit = 150  # honest round-4 bar for valid synthetic truth
+
+    for variant in variants:
+        vdir = out_root / variant["name"]
+        vdir.mkdir(parents=True, exist_ok=True)
+        rate = variant["rate"]
+        gap_ms = variant["gap_ms"]
+        line_pause_ms = variant["line_pause_ms"]
+        lines_words: list[list[str]] = variant["lines"]
+
+        truth_words: list[dict[str, Any]] = []
+        placed: list[tuple[int, str, list[float]]] = []
+        cursor_ms = 1500  # lead-in silence under the bed
+        line_starts: list[int] = []
+
+        for line in lines_words:
+            line_starts.append(cursor_ms)
+            for word in line:
+                pcm = _espeak_word_pcm(word, sr=sr, rate=rate)
+                placed.append((cursor_ms, word, pcm))
+                truth_words.append({"text": word, "start_ms": cursor_ms, "line": len(line_starts) - 1})
+                # Advance by spoken length + inter-word gap.
+                spoken_ms = int(1000 * len(pcm) / sr)
+                cursor_ms += max(spoken_ms, 180) + gap_ms // 4
+            cursor_ms += line_pause_ms
+
+        duration_ms = cursor_ms + 2000
+        n_samples = int(sr * duration_ms / 1000)
+        bed = _music_bed(n_samples, sr, seed=rate)
+        mix = list(bed)
+        for start_ms, _word, pcm in placed:
+            start = int(sr * start_ms / 1000)
+            for i, v in enumerate(pcm):
+                idx = start + i
+                if idx >= len(mix):
+                    break
+                mix[idx] += v * 0.85
+
+        wav_path = vdir / "mix.wav"
+        _write_wav_mono(wav_path, mix, sr)
+        (vdir / "truth.json").write_text(
+            json.dumps(
+                {
+                    "variant": variant["name"],
+                    "rate": rate,
+                    "duration_ms": duration_ms,
+                    "words": truth_words,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        # LRCLIB-style prior: true line starts, evenly spaced words inside the line.
+        lrc_lines: list[str] = ["[ti:synth-full-%s]" % variant["name"]]
+        for li, line in enumerate(lines_words):
+            # Words belonging to this line from truth
+            tw = [w for w in truth_words if w["line"] == li]
+            if not tw:
+                continue
+            line_start = tw[0]["start_ms"]
+            line_end = tw[-1]["start_ms"] + 400
+            if len(tw) == 1:
+                stamps = [line_start]
+            else:
+                step = (line_end - line_start) / (len(tw) - 1)
+                stamps = [int(line_start + i * step) for i in range(len(tw))]
+            bits = " ".join(f"<{format_stamp(stamps[i])}>{tw[i]['text']}" for i in range(len(tw)))
+            lrc_lines.append(f"[{format_stamp(line_start)}] {bits}")
+        lrc_lines.append("")
+        input_lrc = "\n".join(lrc_lines)
+        (vdir / "input.lrc").write_text(input_lrc, encoding="utf-8")
+
+        before = _score_lrc_against_truth(input_lrc, truth_words)
+        entry: dict[str, Any] = {
+            "variant": variant["name"],
+            "duration_ms": duration_ms,
+            "n_words": len(truth_words),
+            "rate": rate,
+            "before_vs_truth": before["stats"],
+            "wav": str(wav_path),
+        }
+
+        if args.run_align:
+            work = vdir / "work"
+            work.mkdir(exist_ok=True)
+            out_lrc = vdir / "aligned.lrc"
+            out_lrc.write_text(input_lrc, encoding="utf-8")
+            gen_json = vdir / "generate.json"
+            # Pure TTS mix — skip Demucs; score vs truth after generate.
+            ns = argparse.Namespace(
+                audio=str(wav_path),
+                lrc=str(out_lrc),
+                work_dir=str(work),
+                no_demucs=True,
+                allow_no_demucs=True,
+                demucs_model="htdemucs",
+                line_search_ms=args.line_search_ms,
+                min_score=DEFAULT_MIN_SCORE,
+                aligned_version=ALIGNED_VERSION,
+                force=True,
+                write=True,
+                force_write=True,  # eval always materializes output for scoring
+                min_coverage=0.0,
+                json=str(gen_json),
+            )
+            cmd_generate_words(ns)
+            aligned_raw = out_lrc.read_text(encoding="utf-8", errors="replace")
+            after = _score_lrc_against_truth(aligned_raw, truth_words)
+            entry["after_vs_truth"] = after["stats"]
+            entry["generate_json"] = str(gen_json)
+            a_p90 = after["stats"].get("p90_abs_ms")
+            entry["soft_pass_p90_150"] = (
+                a_p90 is not None and a_p90 <= soft_p90_limit and after["stats"].get("pass") is not None
+            )
+            entry["meets_hard_bar"] = bool(after["stats"].get("pass"))
+            entry["meets_soft_p90_150"] = bool(
+                a_p90 is not None
+                and a_p90 <= soft_p90_limit
+                and (after["stats"].get("median_abs_ms") or 999) <= 80
+            )
+
+        report.append(entry)
+
+    payload = {
+        "mode": "synth_full",
+        "pass_bar_hard": {
+            "median_abs_ms": MEDIAN_ABS_LIMIT_MS,
+            "p90_abs_ms": P90_ABS_LIMIT_MS,
+            "drift_ms_per_min": DRIFT_LIMIT_MS_PER_MIN,
+        },
+        "pass_bar_soft_p90_ms": soft_p90_limit,
+        "note": "Scores are LRC vs independent TTS onset truth — not CTC self-score, not Deezer previews.",
+        "variants": report,
+    }
+    _emit(payload, args.json)
+    if args.run_align:
+        any_soft = any(v.get("meets_soft_p90_150") for v in report)
+        return 0 if any_soft else 1
+    return 0
+
+
 def cmd_check_truth(args: argparse.Namespace) -> int:
     words, _, _ = parse_lrc_words(Path(args.lrc).read_text(encoding="utf-8", errors="replace"))
     truth = json.loads(Path(args.truth).read_text(encoding="utf-8"))
@@ -1245,11 +1503,28 @@ def cmd_generate_words(args: argparse.Namespace) -> int:
         else {"n": 0, "pass": False}
     )
 
+    coverage = float(gen_stats.get("coverage") or 0.0)
+    gate_ok, gate_reason = quality_gate_allows_write(
+        before=before,
+        after=after,
+        coverage=coverage,
+        min_coverage=getattr(args, "min_coverage", 0.6),
+    )
+
     wrote = False
+    fallback = None
+    reason = None
     if args.write and generated:
-        new_raw = rewrite_lrc_generated(raw, generated, aligned_version=args.aligned_version)
-        lrc_path.write_text(new_raw, encoding="utf-8")
-        wrote = True
+        if gate_ok or getattr(args, "force_write", False):
+            new_raw = rewrite_lrc_generated(raw, generated, aligned_version=args.aligned_version)
+            lrc_path.write_text(new_raw, encoding="utf-8")
+            wrote = True
+            if not gate_ok and getattr(args, "force_write", False):
+                reason = f"force_write despite gate: {gate_reason}"
+        else:
+            # Keep LRCLIB unchanged — do not rewrite the sidecar.
+            fallback = "keep_lrclib"
+            reason = f"quality_gate: {gate_reason}"
 
     peak_rss_mb = None
     try:
@@ -1278,18 +1553,51 @@ def cmd_generate_words(args: argparse.Namespace) -> int:
         "realtime_factor": round((time.time() - t0) / audio_dur_s, 3) if audio_dur_s > 0 else None,
         "peak_rss_mb": peak_rss_mb,
         "gen": gen_stats,
-        "coverage": gen_stats.get("coverage"),
+        "coverage": coverage,
         "before": before,
         "after": after,
+        "gate": {"ok": gate_ok, "reason": gate_reason, "min_coverage": getattr(args, "min_coverage", 0.6)},
         "n_snapped": 0,  # compatibility for Go logger
         "n_kept": 0,
         "n_generated": sum(len(g["words"]) for g in generated),
         "n_interp": gen_stats.get("n_interp", 0),
         "wrote": wrote,
         "skipped": False,
+        "fallback": fallback,
+        "reason": reason,
     }
     _emit(payload, args.json)
+    # Exit 0 when we kept LRCLIB via the gate — that is a successful safe outcome.
+    if fallback == "keep_lrclib":
+        return 0
     return 0 if after.get("pass") else 1
+
+
+def quality_gate_allows_write(
+    *,
+    before: dict[str, Any],
+    after: dict[str, Any],
+    coverage: float,
+    min_coverage: float = 0.6,
+) -> tuple[bool, str]:
+    """Only rewrite the sidecar when coverage is high and CTC self-check improves.
+
+    Relative to the LRCLIB input: median abs must improve, p90 must not worsen.
+    Absolute Spotify-bar pass is still measured separately against synthetic truth.
+    """
+    if coverage < min_coverage:
+        return False, f"coverage {coverage:.3f} < {min_coverage}"
+    b_med = before.get("median_abs_ms")
+    a_med = after.get("median_abs_ms")
+    b_p90 = before.get("p90_abs_ms")
+    a_p90 = after.get("p90_abs_ms")
+    if None in (b_med, a_med, b_p90, a_p90):
+        return False, "missing before/after median or p90"
+    if not (a_med < b_med):
+        return False, f"median did not improve ({a_med} >= {b_med})"
+    if a_p90 > b_p90:
+        return False, f"p90 worse ({a_p90} > {b_p90})"
+    return True, "ok"
 
 
 def cmd_benchmark(args: argparse.Namespace) -> int:
@@ -1407,6 +1715,12 @@ def main() -> int:
     g.add_argument("--aligned-version", default=ALIGNED_VERSION)
     g.add_argument("--force", action="store_true")
     g.add_argument("--write", action="store_true")
+    g.add_argument("--min-coverage", type=float, default=0.6)
+    g.add_argument(
+        "--force-write",
+        action="store_true",
+        help="Write even when the quality gate fails (eval / debug only)",
+    )
     g.add_argument("--json")
     g.set_defaults(func=cmd_generate_words)
 
@@ -1424,8 +1738,24 @@ def main() -> int:
     r.add_argument("--aligned-version", default=ALIGNED_VERSION)
     r.add_argument("--force", action="store_true")
     r.add_argument("--write", action="store_true")
+    r.add_argument("--min-coverage", type=float, default=0.6)
+    r.add_argument("--force-write", action="store_true")
     r.add_argument("--json")
     r.set_defaults(func=cmd_generate_words)
+
+    sf = sub.add_parser(
+        "synth-full",
+        help="Full-length TTS+music-bed ground truth with tempo/length variants",
+    )
+    sf.add_argument("--out-dir", required=True)
+    sf.add_argument(
+        "--run-align",
+        action="store_true",
+        help="Also run generate-words and score vs truth (not self-score)",
+    )
+    sf.add_argument("--line-search-ms", type=int, default=DEFAULT_LINE_SEARCH_MS)
+    sf.add_argument("--json")
+    sf.set_defaults(func=cmd_synth_full)
 
     b = sub.add_parser("benchmark", help="Demucs + align cost per audio minute")
     b.add_argument("--audio", required=True)

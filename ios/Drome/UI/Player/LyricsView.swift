@@ -84,10 +84,7 @@ struct LyricsView: View {
             wasSeekInFlight = false
             playhead.lastMs = -1
             offsetStampKey = ""
-            userOffsetMs = Self.loadOffset(
-                serverKey: session.account.serverKey,
-                songId: song.id,
-                source: nil)
+            userOffsetMs = 0
             await load(force: false)
         }
         // AV often refines duration after the first buffer — re-align LRCLIB
@@ -107,7 +104,7 @@ struct LyricsView: View {
             // Seek can finish while paused — no Timeline tick would clear suppress.
             refreshLineIndex()
         }
-        .onChange(of: document?.source) { _, _ in
+        .onChange(of: document?.timingStamp) { _, _ in
             applyOffsetForCurrentDocument()
         }
         .onChange(of: scenePhase) { _, phase in
@@ -243,7 +240,8 @@ struct LyricsView: View {
             source: document.source,
             timingOffsetMs: document.timingOffsetMs,
             matchedDurationSec: toSec,
-            wordTiming: document.wordTiming)
+            wordTiming: document.wordTiming,
+            alignedMarker: document.alignedMarker)
     }
 
     private func lyricsBody(_ document: LyricsDocument) -> some View {
@@ -306,6 +304,9 @@ struct LyricsView: View {
                     document: document,
                     index: scrollIndex,
                     animated: false)
+                // Same-line snaps never hit the scrollIndex path that clears
+                // snapPending — clear on the next turn so later line changes animate.
+                DispatchQueue.main.async { snapPending = false }
             }
             .onChange(of: document.lines.first?.id) { _, _ in
                 // New document identity (reload) — keep current playhead line,
@@ -385,7 +386,8 @@ struct LyricsView: View {
                     0,
                     serverKey: session.account.serverKey,
                     songId: song.id,
-                    source: document.source)
+                    source: document.source,
+                    stamp: document.timingStamp)
                 refreshLineIndex()
             }
             .accessibilityHint("Long press to reset sync")
@@ -439,23 +441,22 @@ struct LyricsView: View {
             userOffsetMs,
             serverKey: session.account.serverKey,
             songId: song.id,
-            source: document?.source)
+            source: document?.source,
+            stamp: document?.timingStamp)
         refreshLineIndex()
     }
 
-    /// Reload or clear the per-song nudge when lyrics stamps/source change.
+    /// Reload or clear the per-song nudge when the timing stamp changes.
     private func applyOffsetForCurrentDocument() {
-        let source = document?.source
-        let key = Self.stampKey(
-            serverKey: session.account.serverKey,
-            songId: song.id,
-            source: source)
+        guard let document else { return }
+        let key = "\(session.account.serverKey)|\(song.id)|\(document.timingStamp)"
         guard key != offsetStampKey else { return }
         offsetStampKey = key
         userOffsetMs = Self.loadOffset(
             serverKey: session.account.serverKey,
             songId: song.id,
-            source: source)
+            source: document.source,
+            stamp: document.timingStamp)
     }
 
     private func scrollToActive(proxy: ScrollViewProxy, document: LyricsDocument, index: Int, animated: Bool) {
@@ -581,28 +582,39 @@ struct LyricsView: View {
         "drome.lyricsSyncOffset.\(serverKey).\(songId)"
     }
 
-    private static func stampKey(serverKey: String, songId: String, source: String?) -> String {
-        "\(serverKey)|\(songId)|\(source ?? "")"
-    }
-
-    private static func loadOffset(serverKey: String, songId: String, source: String?) -> Int {
+    private static func loadOffset(
+        serverKey: String,
+        songId: String,
+        source: String?,
+        stamp: String
+    ) -> Int {
         let key = offsetKey(serverKey: serverKey, songId: songId)
         guard let stored = UserDefaults.standard.dictionary(forKey: key) else {
             // Legacy unscoped Int — migrate once, then drop.
             let legacyKey = "drome.lyricsSyncOffset.\(songId)"
             let legacy = UserDefaults.standard.integer(forKey: legacyKey)
             if legacy != 0 {
-                saveOffset(legacy, serverKey: serverKey, songId: songId, source: source)
+                saveOffset(
+                    legacy,
+                    serverKey: serverKey,
+                    songId: songId,
+                    source: source,
+                    stamp: stamp)
                 UserDefaults.standard.removeObject(forKey: legacyKey)
             }
             return legacy
         }
         let ms = stored["ms"] as? Int ?? 0
-        let savedSource = stored["source"] as? String
-        if let source, let savedSource, savedSource != source {
-            // Stamps changed (e.g. Demucs+CTC rewrite) — old nudge would double-correct.
-            return 0
+        guard ms != 0 else { return 0 }
+        if let savedStamp = stored["stamp"] as? String {
+            // Reset only when the stamp fingerprint changes (companion rewrite).
+            if savedStamp != stamp {
+                return 0
+            }
+            return ms
         }
+        // Migrated {ms, source} without stamp — keep once, then persist stamp.
+        saveOffset(ms, serverKey: serverKey, songId: songId, source: source, stamp: stamp)
         return ms
     }
 
@@ -610,7 +622,8 @@ struct LyricsView: View {
         _ ms: Int,
         serverKey: String,
         songId: String,
-        source: String?
+        source: String?,
+        stamp: String?
     ) {
         let key = offsetKey(serverKey: serverKey, songId: songId)
         if ms == 0 {
@@ -619,6 +632,9 @@ struct LyricsView: View {
             var payload: [String: Any] = ["ms": ms]
             if let source {
                 payload["source"] = source
+            }
+            if let stamp, !stamp.isEmpty {
+                payload["stamp"] = stamp
             }
             UserDefaults.standard.set(payload, forKey: key)
         }

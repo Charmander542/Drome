@@ -1,126 +1,72 @@
 {
   "date": "2026-11-27",
-  "method": "torchaudio MMS_FA CTC forced alignment on Demucs htdemucs vocals. Round 3: segment-constrained generate-words (line ±~3s search, in-segment word stamps; interpolate low-conf; skip star/ad-lib/intro). Marker [drome-aligned:v3-ctc-seg]. Round 2 snap (median offset + ±300 ms) retained only as history.",
-  "pass_bar": {
+  "round": 4,
+  "method": "Round 4 valid measurement: full-length TTS vocals mixed over a synthetic music bed with known per-word onsets (tempo + length variants). Score LRCLIB-style prior and generate-words output against the TTS truth JSON. Round 3 Deezer-preview / CTC-self scores are retained only as invalidated history.",
+  "pass_bar_hard": {
     "median_abs_ms": 40,
     "p90_abs_ms": 100,
     "drift_ms_per_min": 30
   },
+  "pass_bar_soft_p90_ms": 150,
   "invalidated": {
     "never-gonna-give-you-up_youtube_whisper": {
-      "reason": "YouTube file was 213.04 s vs LRCLIB master 214.0 s — wrong master. Whisper word timestamps (±100–200 ms) are also unfit for the 40 ms pass bar.",
-      "replaced_by": "kendrick_bdkmv_ctc_demucs"
+      "reason": "Wrong master + unfit Whisper timestamps."
     },
     "round2_snap_only": {
-      "reason": "Snapping LRCLIB word priors (±300 ms) left dense-rap residuals ~100–600 ms. Round 3 generates stamps from CTC inside each line window instead of snapping priors.",
-      "replaced_by": "round3_generate_words_v3_ctc_seg"
+      "reason": "Snapping LRCLIB word priors left dense-rap residuals ~100–600 ms."
+    },
+    "round3_deezer_preview_self_score": {
+      "reason": "~30 s Deezer previews with guessed text anchors; 'truth' was CTC scored against itself (circular). BDKMV word-start p90 ~1.2–1.35 s with 46–53% coverage is not valid evidence.",
+      "replaced_by": "round4_synth_full_tts_truth"
     }
   },
-  "songs": {
-    "kendrick_bdkmv_round3_generate": {
-      "title": "Bitch, Don't Kill My Vibe",
-      "artist": "Kendrick Lamar",
-      "album": "good kid, m.A.A.d city",
-      "lrclib_id": 565635,
-      "audio": "Deezer preview of album track 73196524; Demucs vocals; text-anchored origin_ms≈48000–50000",
-      "best_origin_ms": 50000,
-      "before_high_conf": {
-        "median_abs_ms": 1118,
-        "p90_abs_ms": 1519,
-        "pass": false
+  "round4_synth_full": {
+    "source": "scripts/lyrics-eval/results/round4/synth-full-report.json",
+    "note": "Independent TTS onset truth. generate-words run with --no-demucs on the TTS+bed mix.",
+    "variants": {
+      "standard": {
+        "duration_s": 62.2,
+        "n_words": 47,
+        "before_vs_truth_med_p90": [135, 400],
+        "after_vs_truth_med_p90": [2286, 4740],
+        "coverage": 1.0,
+        "meets_soft_p90_150": false
       },
-      "after_generate_words": {
-        "median_abs_ms": 230.5,
-        "p90_abs_ms": 1226,
-        "coverage": 0.531,
-        "pass": false
+      "fast": {
+        "duration_s": 32.3,
+        "n_words": 33,
+        "before_vs_truth_med_p90": [115, 400],
+        "after_vs_truth_med_p90": [740, 2241],
+        "coverage": 1.0,
+        "meets_soft_p90_150": false
       },
-      "summary_origin_48000": {
-        "before_median_abs_ms": 728,
-        "before_p90_abs_ms": 1263,
-        "after_median_abs_ms": 260,
-        "after_p90_abs_ms": 1352,
-        "coverage": 0.4587,
-        "realtime_factor": 0.407,
-        "peak_rss_mb": 2652.5
-      },
-      "interpretation": "Dense rap on a ~30 s preview still fails the 40/100 bar after generate-words. Median improves vs raw LRCLIB but p90 stays ~1.2 s. Production path is full-file companion align, not preview windows."
+      "slow-long": {
+        "duration_s": 106.8,
+        "n_words": 61,
+        "before_vs_truth_med_p90": [143, 400],
+        "after_vs_truth_med_p90": [3423, 7023],
+        "coverage": 1.0,
+        "meets_soft_p90_150": false
+      }
     },
-    "round3_multi_track_preview": {
-      "source": "scripts/lyrics-eval/results/round3/summary.json",
-      "tracks": {
-        "humble": {"before_med_p90": [873.5, 1586], "after_med_p90": [41, 510], "pass": false},
-        "gods-plan": {"before_med_p90": [1380, 1979], "after_med_p90": [20, 290], "pass": false},
-        "someone-like-you": {"before_med_p90": [1470, 1935], "after_med_p90": [13, 420], "pass": false},
-        "skinny-love": {"error": "no local lines / skipped"}
-      },
-      "note": "Slower tracks can hit ~40 ms median on preview CTC; none clear p90 ≤ 100 ms on these windows."
-    },
-    "aligner_selftest_tts": {
-      "note": "espeak words at known onsets; CTC shows ~one MMS frame lag",
-      "round3_raw_median_abs_ms": 45,
-      "round3_raw_p90_abs_ms": 160,
-      "after_bias_removal_median_abs_ms": 5,
-      "pass_raw": false
-    },
-    "quantization_centisecond_truncation": {
-      "max_abs_ms": 9,
-      "fix": "sidecar writer emits millisecond stamps"
-    }
+    "verdict": "Aligner does not reach p90 ≲ 150 ms on valid synthetic truth; generate-words regresses vs the coarse LRCLIB-style prior on these fixtures. Ship quality gate + client fixes; keep DROME_LYRICS_ALIGN=false by default."
   },
-  "cpu_cost": {
-    "source": "scripts/lyrics-eval/results/round3/benchmark.json",
-    "audio_duration_s": 29.99,
-    "seconds_demucs": 9.13,
-    "seconds_align": 4.8,
-    "seconds_total": 14.73,
-    "seconds_per_audio_minute": 29.47,
-    "realtime_factor": 0.491,
-    "peak_rss_mb": 2652.8,
-    "queue": "one track at a time, nice -n 19, gap 5s; missing torch/demucs → keep_lrclib"
-  },
-  "clock_audit": {
-    "karaoke_time_source": "AVPlayer.currentTime via accurateElapsed → KaraokeResume.chooseElapsed every TimelineView frame (~60 Hz)",
-    "periodic_observer": "0.5s — UI scrubbers only; karaoke does not use it",
-    "playback_clock_interpolator": "not used for karaoke (soft-correct tolerance 450ms would lag highlights)",
-    "foreground_snap": "scenePhase .active + willEnterForeground + TimelineView onAppear → snapToPlayerNow; snapPending disables scroll animation",
-    "zero_flash_guards": "rebuilding + sinceSeekApplied < 0.75 with published > 2 && accurate < 0.75 → published",
-    "seek_settled": "seekSettledToken clears scrub suppress while paused",
-    "timeline_pause": "scenePhase == .background || (!isPlaying && !isSeekInFlight)",
-    "route_latency": "not subtracted (Aura AirPods Pro 2 finding)",
-    "visual_lead_ms": 45,
-    "word_arrival_ms": 70,
-    "nudge_step_ms": "50 measured / 500 line",
-    "nudge_storage": "drome.lyricsSyncOffset.<serverKey>.<songId> = {ms, source}; reset when source/stamps change",
-    "not_tested": [
-      "real device speakers",
-      "Bluetooth/AirPlay A/B",
-      "Simulator frame-capture stamp→pixel latency",
-      "gapless/crossfade mid-transition karaoke"
-    ]
-  },
-  "client_mac_report_fixes": {
-    "at_commit": "post-55f8a94",
-    "passed_on_mac": [
-      "iOS/Watch/Messages/Widget builds",
-      "LyricsTiming 23/23 at 55f8a94",
-      "go test drome-server",
-      "foreground snap first live frame (video)",
-      "per-song nudge"
+  "quality_gate": {
+    "write_requires": [
+      "coverage >= 0.6",
+      "after.median_abs_ms < before.median_abs_ms",
+      "after.p90_abs_ms <= before.p90_abs_ms"
     ],
-    "fixes": [
-      "1 zero-flash: rebuilding + sinceSeekApplied guards",
-      "2 snapPending disables scroll animation",
-      "3 TimelineView pauses only on .background",
-      "4 seekSettledToken clears scrub suppress when paused",
-      "5 nudge keyed by serverKey + source stamp",
-      "6 sync pill 44pt targets + AX scale/hide source",
-      "7 optional ScaledMetric lyric baseSize capped at 34"
-    ]
+    "on_failure": "keep_lrclib (sidecar unchanged)"
   },
-  "render_changes": {
-    "before": "sticky published playhead after resume (~1 s catch-up); soft clock / 0.5 Hz observer risk",
-    "after": "KaraokeResume trusts currentTime every frame with narrow rebuild/post-seek guards; foreground snap; 45 ms lead + 70 ms arrival; ±50 ms nudge on measured word sync"
+  "companion_default": {
+    "DROME_LYRICS_ALIGN": false,
+    "enable_with": "DROME_LYRICS_ALIGN=true (needs torch/torchaudio/demucs)"
   },
-  "swift_ci": "ios/LyricsTiming (foreground snap + rebuilding + post-seek chooseElapsed) — Mac/Xcode only; not run on this Linux agent VM"
+  "client_round4": [
+    "seekSnapToken clears snapPending asynchronously so same-line snaps do not suppress the next line animation",
+    "nudge stores stamp fingerprint (first ~8 line starts + drome-aligned marker); reset only when stamp changes; migrate old entries once",
+    "NowPlaying 'Playing from' header: minimumScaleFactor 0.7 + dynamicTypeSize cap xxxLarge (no fixed height 16)"
+  ],
+  "swift_ci": "ios/LyricsTiming on Mac/Xcode — not run on this Linux agent VM"
 }

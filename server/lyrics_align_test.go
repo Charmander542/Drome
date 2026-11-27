@@ -29,6 +29,22 @@ func TestEnsureMillisecondStampsPreservesMillis(t *testing.T) {
 	}
 }
 
+func TestLyricsAlignDefaultsOff(t *testing.T) {
+	prev, had := os.LookupEnv("DROME_LYRICS_ALIGN")
+	os.Unsetenv("DROME_LYRICS_ALIGN")
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv("DROME_LYRICS_ALIGN", prev)
+		} else {
+			os.Unsetenv("DROME_LYRICS_ALIGN")
+		}
+	})
+	cfg := lyricsAlignConfigFromEnv()
+	if cfg.Enabled {
+		t.Fatal("DROME_LYRICS_ALIGN should default to false until a valid ground-truth eval passes")
+	}
+}
+
 func TestLrcAlreadyAlignedV3Marker(t *testing.T) {
 	raw := "[drome-aligned:v3-ctc-seg]\n[00:01.000]<00:01.000>Hi\n"
 	if !lrcAlreadyAligned(raw) {
