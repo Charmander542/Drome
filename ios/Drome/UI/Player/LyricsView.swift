@@ -30,9 +30,20 @@ struct LyricsView: View {
         case past, active, upcoming
     }
 
-    /// Playhead adjusted by the per-song sync nudge. Positive = lyrics were
-    /// late (highlight earlier); negative = lyrics were early.
-    private var syncElapsedMs: Int { max(0, elapsedMs + userOffsetMs) }
+    /// Playhead for line focus + word karaoke.
+    /// - `userOffsetMs`: per-song nudge (±). Positive = lyrics were late.
+    /// - Output delay: Bluetooth/AirPlay lag so lights match what you hear.
+    /// - Measured lead: tiny anticipatory bias so word-synced stamps feel on-beat.
+    private var syncElapsedMs: Int {
+        let leadMs = (document?.wordTiming == .measured) ? Self.measuredWordLeadMs : 0
+        let raw = Double(elapsedMs + userOffsetMs + leadMs)
+            - player.karaokeOutputDelaySeconds() * 1000
+        return max(0, Int(raw.rounded()))
+    }
+
+    /// Word-synced karaoke reads slightly early so highlights feel locked to
+    /// the vocal attack (stamps are often authored on the steady-state).
+    private static let measuredWordLeadMs = 55
 
     var body: some View {
         Group {
@@ -59,6 +70,16 @@ struct LyricsView: View {
             wasSeekInFlight = false
             userOffsetMs = Self.loadOffset(songId: song.id)
             await load(force: false)
+        }
+        // AV often refines duration after the first buffer — re-align LRCLIB
+        // stamps once the live length settles so mid-song words stay locked.
+        .onChange(of: player.duration) { _, newDuration in
+            guard newDuration > 1, let doc = document, doc.source.hasPrefix("lrclib") else { return }
+            let aligned = realignToPlayhead(doc)
+            if aligned.lines.map(\.startMs) != doc.lines.map(\.startMs)
+                || aligned.matchedDurationSec != doc.matchedDurationSec {
+                document = aligned
+            }
         }
         // Drive the playhead from a background ticker so the ScrollView itself
         // isn't rebuilt 20×/sec inside a TimelineView.
@@ -110,23 +131,36 @@ struct LyricsView: View {
         }
     }
 
-    /// When LRCLIB’s master duration differs slightly from the file actually
-    /// playing, re-scale once against `player.duration` (tighter than tag length).
+    /// When LRCLIB’s timed master differs slightly from the file actually
+    /// playing, re-scale once against `player.duration`.
+    ///
+    /// `matchedDurationSec` is the timebase the stamps already live on (master
+    /// or a prior library-duration align) — never re-stretch from the raw
+    /// LRCLIB length after `LyricsService` has already scaled.
     private func realignToPlayhead(_ document: LyricsDocument) -> LyricsDocument {
         guard document.source.hasPrefix("lrclib"),
               let fromSec = document.matchedDurationSec, fromSec > 0,
               player.duration > 1
         else { return document }
-        let toMs = Int((player.duration * 1000).rounded())
-        let fromMs = fromSec * 1000
-        let scaled = LRCParser.scale(document.lines, fromDurationMs: fromMs, toDurationMs: toMs)
-        guard scaled.map(\.startMs) != document.lines.map(\.startMs) else { return document }
+        let toSec = Int((player.duration).rounded())
+        guard toSec > 0, abs(toSec - fromSec) > 0 else { return document }
+        let scaled = LRCParser.scale(
+            document.lines,
+            fromDurationMs: fromSec * 1000,
+            toDurationMs: toSec * 1000)
+        guard scaled.map(\.startMs) != document.lines.map(\.startMs) else {
+            // Within the no-op band — still remember the live duration so a
+            // later duration refine doesn’t try to scale from a stale master.
+            var copy = document
+            copy.matchedDurationSec = toSec
+            return copy
+        }
         return LyricsDocument(
             lines: scaled,
             synced: document.synced,
             source: document.source,
             timingOffsetMs: document.timingOffsetMs,
-            matchedDurationSec: Int((player.duration).rounded()),
+            matchedDurationSec: toSec,
             wordTiming: document.wordTiming)
     }
 
@@ -217,9 +251,11 @@ struct LyricsView: View {
     }
 
     private func syncChrome(_ document: LyricsDocument) -> some View {
-        HStack(spacing: 14) {
+        // Word-synced tracks need finer nudges; line karaoke stays at ±0.5s.
+        let stepMs = document.wordTiming == .measured ? 100 : 500
+        return HStack(spacing: 14) {
             Button {
-                nudgeOffset(by: -500)
+                nudgeOffset(by: -stepMs)
             } label: {
                 Image(systemName: "minus.circle.fill")
                     .font(.title3)
@@ -252,7 +288,7 @@ struct LyricsView: View {
             .accessibilityHint("Long press to reset sync")
 
             Button {
-                nudgeOffset(by: 500)
+                nudgeOffset(by: stepMs)
             } label: {
                 Image(systemName: "plus.circle.fill")
                     .font(.title3)
