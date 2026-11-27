@@ -662,10 +662,10 @@ enum LRCParser {
 /// delay included. Subtracting `AVAudioSession.outputLatency` again lights
 /// every word late.
 ///
-/// After end-to-end measurement against forced alignment, a lead *before* the
-/// stamp made correct cues feel early and late stamps still feel late. Spotify
-/// / Apple Music light the word on the vocal onset: full brightness at the
-/// cue, with only a one-to-two-frame ease so the flash does not strobe.
+/// A short lead before the stamp (30–60 ms) makes highlights that land
+/// slightly early read as on-time — same feel as Spotify / Apple Music.
+/// Ramp from lead start through the stamp so the word is bright when the
+/// vocal lands, without a strobing hard step.
 enum LyricsClock {
     /// Listener nudge. Positive shows words earlier.
     static func syncMilliseconds(presentationSeconds: Double, userOffsetMs: Int) -> Int {
@@ -673,21 +673,39 @@ enum LyricsClock {
         return max(0, Int((presentationSeconds * 1000).rounded()) + userOffsetMs)
     }
 
-    /// Ease length after the stamp. Zero lead — the word is clearly lit on the
-    /// cue itself (see `wordOpacity`).
-    static let wordArrivalMs = 32
-    static let wordLeadMs = 0
-    /// Opacity the moment `elapsedMs >= 0` — already “clearly lit”.
-    static let attackOpacity = 0.88
+    /// Visual lead before the LRC stamp (see NOTICE / Aura pre-#127 tuning).
+    static let wordLeadMs = 45
+    /// Ease from lead start through and just past the stamp.
+    static let wordArrivalMs = 70
     static let unsungOpacity = 0.32
     static let sungOpacity = 1.0
 
     /// `elapsedMs` is milliseconds since the cue (`Word.elapsed`). Negative
     /// means this pass has not reached the word yet.
     static func wordOpacity(elapsedMs: Int) -> Double {
-        if elapsedMs < 0 { return unsungOpacity }
+        let shifted = elapsedMs + wordLeadMs
+        if shifted <= 0 { return unsungOpacity }
         if wordArrivalMs <= 0 { return sungOpacity }
-        let progress = min(1, Double(elapsedMs) / Double(wordArrivalMs))
-        return attackOpacity + (sungOpacity - attackOpacity) * progress
+        let progress = min(1, Double(shifted) / Double(wordArrivalMs))
+        return unsungOpacity + (sungOpacity - unsungOpacity) * progress
+    }
+}
+
+/// Karaoke playhead after resume — trust `AVPlayer.currentTime`, not UI observers.
+enum KaraokeResume {
+    /// Sticky fallbacks to the 0.5 Hz published playhead caused ~1 s lyrics lag
+    /// after returning from background when `currentTime` briefly hiccupped.
+    static func chooseElapsed(
+        accurate: TimeInterval,
+        published: TimeInterval,
+        seekInFlight: Bool
+    ) -> TimeInterval {
+        if seekInFlight {
+            return max(0, published)
+        }
+        guard accurate.isFinite, accurate >= 0 else {
+            return max(0, published)
+        }
+        return max(0, accurate)
     }
 }

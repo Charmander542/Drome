@@ -57,7 +57,7 @@ func lyricsSyncConfigFromEnv(musicDir, dbPath string) lyricsSyncConfig {
 	state := envOr("DROME_LYRICS_BACKFILL_STATE", "")
 	if state == "" {
 		// v3 re-walks so sidecars pick up millisecond stamps and optional
-		// forced-alignment [offset:] refinement (v2 only upgraded lyricsfile).
+		// per-word CTC alignment jobs (v2 only upgraded lyricsfile).
 		state = filepath.Join(filepath.Dir(dbPath), "lyrics-backfill-v3.done")
 	}
 	return lyricsSyncConfig{
@@ -77,16 +77,27 @@ type lyricsSyncer struct {
 	musicDir string
 	client   *http.Client
 	index    *lyricsIndex
+	alignQ   *lyricsAlignQueue
 }
 
 func newLyricsSyncer(cfg lyricsSyncConfig, musicDir string, index *lyricsIndex) *lyricsSyncer {
-	return &lyricsSyncer{
+	s := &lyricsSyncer{
 		cfg:      cfg,
 		musicDir: musicDir,
 		index:    index,
 		client: &http.Client{
 			Timeout: cfg.HTTPTimeout,
 		},
+	}
+	if cfg.Align.Enabled {
+		s.alignQ = newLyricsAlignQueue(cfg.Align)
+	}
+	return s
+}
+
+func (s *lyricsSyncer) runAlignWorker(ctx context.Context) {
+	if s != nil && s.alignQ != nil {
+		s.alignQ.runWorker(ctx)
 	}
 }
 
@@ -247,16 +258,14 @@ func (s *lyricsSyncer) syncAudioFile(ctx context.Context, audioPath, title, arti
 	wrote := false
 	if lyricsQuality(existing) >= 3 {
 		// Already word-synced — still upgrade centisecond stamps to ms, and
-		// optionally snap a constant [offset:] to this library file's vocal.
+		// enqueue per-word CTC refine against this library file.
 		if changed, err := rewriteSidecarPrecision(lrcPath); err != nil {
 			return false, err
 		} else if changed {
 			wrote = true
 			logf("lyrics sync upgraded stamp precision for %q — %q", artist, title)
 		}
-		if aligned := s.maybeAlign(ctx, audioPath, lrcPath); aligned {
-			wrote = true
-		}
+		s.maybeAlign(audioPath, lrcPath)
 		return wrote, nil
 	}
 
@@ -283,29 +292,15 @@ func (s *lyricsSyncer) syncAudioFile(ctx context.Context, audioPath, title, arti
 		kind = "word"
 	}
 	logf("lyrics sync wrote %s (%s) for %q — %q", filepath.Base(lrcPath), kind, artist, title)
-	_ = s.maybeAlign(ctx, audioPath, lrcPath)
+	s.maybeAlign(audioPath, lrcPath)
 	return true, nil
 }
 
-func (s *lyricsSyncer) maybeAlign(ctx context.Context, audioPath, lrcPath string) bool {
-	if s == nil || !s.cfg.Align.Enabled {
-		return false
+func (s *lyricsSyncer) maybeAlign(audioPath, lrcPath string) {
+	if s == nil || s.alignQ == nil {
+		return
 	}
-	raw, err := os.ReadFile(lrcPath)
-	if err != nil || !hasWordSync(string(raw)) {
-		return false
-	}
-	res, err := refineLRCAgainstAudio(ctx, s.cfg.Align, audioPath, lrcPath)
-	if err != nil {
-		logf("lyrics align %s: %v", filepath.Base(audioPath), err)
-		return false
-	}
-	if res == nil {
-		return false
-	}
-	logf("lyrics align %s: offset=%dms before_med_abs=%.0f after_med_abs=%.0f pass=%v",
-		filepath.Base(lrcPath), res.AppliedOffsetMs, res.Before.MedianAbsMs, res.After.MedianAbsMs, res.After.Pass)
-	return res.Wrote || res.AppliedOffsetMs != 0
+	s.alignQ.enqueueAlign(audioPath, lrcPath)
 }
 
 func ensureTrailingNewline(s string) string {

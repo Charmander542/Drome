@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Synced lyrics with duet left/right alignment.
 /// Layout stays fixed (same font size for every line) so highlighting and
@@ -8,6 +9,7 @@ struct LyricsView: View {
 
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var player: PlayerEngine
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var document: LyricsDocument?
     @State private var isLoading = true
@@ -91,21 +93,58 @@ struct LyricsView: View {
         .onChange(of: userOffsetMs) { _, _ in
             refreshLineIndex()
         }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                snapToPlayerNow()
+            }
+        }
+        // Belt-and-suspenders with scenePhase — some iOS versions deliver
+        // willEnterForeground before `.active`, and karaoke must not wait.
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.willEnterForegroundNotification)
+        ) { _ in
+            snapToPlayerNow()
+        }
         // Line changes only. Word lights live inside the current line so this
         // sheet is not rebuilt on every frame.
         .background {
             TimelineView(
                 .animation(
                     minimumInterval: 1.0 / 60.0,
-                    paused: !player.isPlaying && !player.isSeekInFlight)
+                    paused: scenePhase != .active
+                        || (!player.isPlaying && !player.isSeekInFlight))
             ) { timeline in
                 Color.clear
                     .onChange(of: timeline.date) { _, _ in
                         refreshLineIndex()
                     }
-                    .onAppear { refreshLineIndex() }
+                    .onAppear {
+                        // Restart the display tick after the view returns.
+                        snapToPlayerNow()
+                        refreshLineIndex()
+                    }
             }
         }
+    }
+
+    /// Re-anchor highlights from `AVPlayer.currentTime` — no cached/soft clock.
+    /// Runs on scenePhase `.active`, willEnterForeground, and TimelineView appear
+    /// so the first frame after returning matches the song time (no ~1 s catch-up).
+    private func snapToPlayerNow() {
+        let ms = LyricsClock.syncMilliseconds(
+            presentationSeconds: player.karaokeElapsed(),
+            userOffsetMs: userOffsetMs)
+        // Clear jump-suppress so a stale lastMs from background does not treat
+        // the real playhead as a scrub and delay scroll for 350 ms.
+        scrubSuppressScroll = false
+        wasSeekInFlight = false
+        reenableFollowTask?.cancel()
+        playhead.lastMs = ms
+        lastScrolledIndex = -1
+        seekSnapToken &+= 1
+        guard let document, document.synced else { return }
+        activeIndex = activeLineIndex(at: ms, in: document)
+        scrollIndex = scrollLineIndex(at: ms, in: document)
     }
 
     private func refreshLineIndex() {
@@ -275,8 +314,9 @@ struct LyricsView: View {
     }
 
     private func syncChrome(_ document: LyricsDocument) -> some View {
-        // Word-synced tracks need finer nudges; line karaoke stays at ±0.5s.
-        let stepMs = document.wordTiming == .measured ? 100 : 500
+        // Word-synced tracks need finer nudges (0.05 s); line karaoke stays at ±0.5 s.
+        let stepMs = document.wordTiming == .measured ? 50 : 500
+        let wordSynced = document.wordTiming == .measured
         return HStack(spacing: 14) {
             Button {
                 nudgeOffset(by: -stepMs)
@@ -286,10 +326,13 @@ struct LyricsView: View {
                     .foregroundStyle(Color.white.opacity(0.75))
             }
             .accessibilityLabel("Running early")
-            .accessibilityHint("Delay the highlight when lyrics appear ahead of the vocal")
+            .accessibilityHint(
+                wordSynced
+                    ? "Delay the highlight by 0.05 seconds when lyrics appear ahead of the vocal"
+                    : "Delay the highlight when lyrics appear ahead of the vocal")
 
             VStack(spacing: 2) {
-                Text(offsetLabel)
+                Text(offsetLabel(wordSynced: wordSynced))
                     .font(.caption.weight(.semibold).monospacedDigit())
                     .foregroundStyle(Color.white.opacity(0.85))
                 if let timing = timingLabel(document) {
@@ -319,7 +362,10 @@ struct LyricsView: View {
                     .foregroundStyle(Color.white.opacity(0.75))
             }
             .accessibilityLabel("Running late")
-            .accessibilityHint("Advance the highlight when lyrics lag behind the vocal")
+            .accessibilityHint(
+                wordSynced
+                    ? "Advance the highlight by 0.05 seconds when lyrics lag behind the vocal"
+                    : "Advance the highlight when lyrics lag behind the vocal")
 
             Button {
                 Task { await load(force: true) }
@@ -336,8 +382,11 @@ struct LyricsView: View {
         .padding(.bottom, 12)
     }
 
-    private var offsetLabel: String {
+    private func offsetLabel(wordSynced: Bool) -> String {
         if userOffsetMs == 0 { return "Sync" }
+        if wordSynced {
+            return String(format: "%+dms", userOffsetMs)
+        }
         let seconds = Double(userOffsetMs) / 1000.0
         return String(format: "%+.1fs", seconds)
     }
@@ -491,6 +540,7 @@ struct LyricsView: View {
         let userOffsetMs: Int
 
         @EnvironmentObject private var player: PlayerEngine
+        @Environment(\.scenePhase) private var scenePhase
 
         /// Same size for every line — only opacity / scale change, so neighbors don't jump.
         private let baseSize: CGFloat = 24
@@ -523,7 +573,8 @@ struct LyricsView: View {
                 TimelineView(
                     .animation(
                         minimumInterval: 1.0 / 60.0,
-                        paused: !player.isPlaying && !player.isSeekInFlight)
+                        paused: scenePhase != .active
+                            || (!player.isPlaying && !player.isSeekInFlight))
                 ) { _ in
                     wordRun(atMs: LyricsClock.syncMilliseconds(
                         presentationSeconds: player.karaokeElapsed(),
@@ -539,8 +590,8 @@ struct LyricsView: View {
             }
         }
 
-        /// One `Text` so wrapping stays natural. Each word lights on its stamp
-        /// (short post-attack ease) and stays lit — no trailing dim, no glyph sweep.
+        /// One `Text` so wrapping stays natural. Each word eases in on its stamp
+        /// (`LyricsClock` lead + arrival) and stays lit — no trailing dim, no glyph sweep.
         private func wordRun(atMs: Int) -> Text {
             line.words.enumerated().reduce(Text("")) { partial, item in
                 let word = item.element

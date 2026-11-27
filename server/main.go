@@ -107,6 +107,7 @@ func main() {
 	go planner.Run(ctx)
 	go lyrics.run(ctx.Done())
 	go lyricsSync.runBackfill(ctx)
+	go lyricsSync.runAlignWorker(ctx)
 
 	httpSrv := &http.Server{Addr: cfg.ListenAddr, Handler: srv.routes()}
 	go func() {

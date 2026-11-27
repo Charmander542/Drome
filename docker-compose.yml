@@ -45,6 +45,11 @@ services:
       DROME_LYRICS_BACKFILL: ${DROME_LYRICS_BACKFILL:-true}
       DROME_LYRICS_SYNC_DELAY: ${DROME_LYRICS_SYNC_DELAY:-400ms}
       DROME_LYRICS_BACKFILL_MAX: ${DROME_LYRICS_BACKFILL_MAX:-0}
+      # Per-word CTC karaoke align (Demucs + MMS_FA); queued, one track at a time.
+      DROME_LYRICS_ALIGN: ${DROME_LYRICS_ALIGN:-true}
+      DROME_LYRICS_ALIGN_WINDOW_MS: ${DROME_LYRICS_ALIGN_WINDOW_MS:-300}
+      DROME_LYRICS_ALIGN_GAP: ${DROME_LYRICS_ALIGN_GAP:-2s}
+      DROME_LYRICS_ALIGN_NICE: ${DROME_LYRICS_ALIGN_NICE:-true}
     volumes:
       - ./data/drome-server:/data
       # Persist Mornye extensions + signed sessions across recreates.

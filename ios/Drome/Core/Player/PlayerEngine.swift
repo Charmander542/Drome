@@ -1903,23 +1903,15 @@ final class PlayerEngine: ObservableObject {
     /// drift would mean a rate/duration mismatch; we have not observed that
     /// when stamps match the file.
     ///
-    /// During (and briefly after) a seek, `AVPlayer.currentTime()` often still
-    /// reports the pre-seek position or a transient ~0 — that made karaoke jump
-    /// to the top of the lyric sheet mid-scrub. Prefer the published target
-    /// playhead until the player catches up.
+    /// During a seek, `AVPlayer.currentTime()` often still reports the pre-seek
+    /// position — prefer the published target until the player catches up.
+    /// Otherwise use `currentTime` every frame (`KaraokeResume`); do not stick
+    /// to the 0.5 Hz UI observer after foreground resume.
     func karaokeElapsed() -> TimeInterval {
-        let published = elapsed
-        if isSeekInFlight {
-            return max(0, published)
-        }
-        let accurate = accurateElapsed()
-        if published > 2, accurate < 0.75 {
-            return max(0, published)
-        }
-        if abs(accurate - published) > 2.5 {
-            return max(0, published)
-        }
-        return max(0, accurate)
+        KaraokeResume.chooseElapsed(
+            accurate: accurateElapsed(),
+            published: elapsed,
+            seekInFlight: isSeekInFlight)
     }
 
     /// Drive mini / now-playing playhead from another Connect device's session.

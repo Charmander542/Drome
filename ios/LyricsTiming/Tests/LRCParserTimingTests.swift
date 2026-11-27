@@ -206,17 +206,44 @@ final class LRCParserTimingTests: XCTestCase {
             10)
     }
 
-    /// Word is clearly lit on the stamp itself (attack opacity), then eases
-    /// to full over `wordArrivalMs`. No pre-stamp lead.
+    /// Lead 45 ms, arrival 70 ms: unsung at −lead, mid-ramp on the stamp, full at +45 ms.
     func testWordArrivalLightsOnTheStamp() {
-        XCTAssertEqual(LyricsClock.wordOpacity(elapsedMs: -1), LyricsClock.unsungOpacity)
-        XCTAssertEqual(LyricsClock.wordOpacity(elapsedMs: 0), LyricsClock.attackOpacity, accuracy: 0.001)
-        XCTAssertEqual(LyricsClock.wordOpacity(elapsedMs: LyricsClock.wordArrivalMs), LyricsClock.sungOpacity)
+        let lead = LyricsClock.wordLeadMs
+        let mid = LyricsClock.unsungOpacity
+            + (LyricsClock.sungOpacity - LyricsClock.unsungOpacity)
+            * Double(lead) / Double(LyricsClock.wordArrivalMs)
+        XCTAssertEqual(LyricsClock.wordOpacity(elapsedMs: -lead), LyricsClock.unsungOpacity)
+        XCTAssertEqual(LyricsClock.wordOpacity(elapsedMs: 0), mid, accuracy: 0.001)
+        XCTAssertEqual(LyricsClock.wordOpacity(elapsedMs: 45), LyricsClock.sungOpacity, accuracy: 0.001)
         XCTAssertEqual(LyricsClock.wordOpacity(elapsedMs: 400), LyricsClock.sungOpacity)
     }
 
-    /// Walk a word-synced line at display rate and require each word to be
-    /// clearly lit on its own stamp (within one 16ms frame).
+    func testKaraokeResumeTrustsAccurateExceptDuringSeek() {
+        XCTAssertEqual(KaraokeResume.chooseElapsed(accurate: 12.5, published: 10, seekInFlight: false), 12.5)
+        XCTAssertEqual(KaraokeResume.chooseElapsed(accurate: 0.2, published: 45, seekInFlight: false), 0.2)
+        XCTAssertEqual(KaraokeResume.chooseElapsed(accurate: -1, published: 30, seekInFlight: false), 30)
+        XCTAssertEqual(KaraokeResume.chooseElapsed(accurate: 0.05, published: 28, seekInFlight: true), 28)
+    }
+
+    /// Foreground return: published UI playhead can sit ~1 s behind while
+    /// `AVPlayer.currentTime` is already correct — karaoke must use accurate.
+    func testKaraokeResumeForegroundSnapIgnoresStalePublished() {
+        let songTime = 97.4
+        let stalePublished = songTime - 1.05
+        let chosen = KaraokeResume.chooseElapsed(
+            accurate: songTime,
+            published: stalePublished,
+            seekInFlight: false)
+        XCTAssertEqual(chosen, songTime)
+        let ms = LyricsClock.syncMilliseconds(presentationSeconds: chosen, userOffsetMs: 0)
+        XCTAssertEqual(ms, 97_400)
+        // Stale published would light the previous line / word.
+        XCTAssertNotEqual(
+            LyricsClock.syncMilliseconds(presentationSeconds: stalePublished, userOffsetMs: 0),
+            ms)
+    }
+
+    /// Walk a word-synced line at display rate; ~80% lit should land within ~50 ms of the stamp.
     func testMeasuredWordsLockToStampsAtFrameRate() {
         let lines = LRCParser.parse("""
             [00:01.00] <00:01.00>Hello <00:01.40>there <00:01.90>world
@@ -224,7 +251,11 @@ final class LRCParserTimingTests: XCTestCase {
             """)
         let words = lines[0].words
         XCTAssertEqual(words.map(\.startMs), [1_000, 1_400, 1_900])
-        let clearlyLit = LyricsClock.attackOpacity
+        let rampFraction = 0.8
+        let clearlyLit = LyricsClock.unsungOpacity
+            + (LyricsClock.sungOpacity - LyricsClock.unsungOpacity) * rampFraction
+        let expectedLitAt = Int((Double(LyricsClock.wordArrivalMs) * rampFraction).rounded())
+            - LyricsClock.wordLeadMs
         for word in words {
             var crossed: Int?
             var step = word.startMs - 80
@@ -243,9 +274,8 @@ final class LRCParserTimingTests: XCTestCase {
                 XCTFail("\(word.text) never reached a clear highlight")
                 continue
             }
-            // Attack opacity is reached at the stamp (elapsed >= 0).
-            XCTAssertEqual(litAt, word.startMs)
-            XCTAssertLessThan(abs(litAt - word.startMs), 16)
+            XCTAssertLessThanOrEqual(abs(litAt - (word.startMs + expectedLitAt)), 16)
+            XCTAssertLessThan(abs(litAt - word.startMs), 50)
         }
         let atHello = LyricsClock.syncMilliseconds(presentationSeconds: 1.0, userOffsetMs: 0)
         XCTAssertTrue(words[0].isLit(atMs: atHello))

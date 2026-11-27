@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Repeatable karaoke timing harness.
-#   ./run.sh fixtures     # generate + check synthetic fixture (no Whisper)
-#   ./run.sh measure --audio X.wav --lrc X.lrc
-#   ./run.sh refine  --audio X.wav --lrc X.lrc [--write]
+# Repeatable karaoke timing harness (CTC + Demucs, not Whisper).
+#   ./run.sh fixtures        # synthetic check-truth (no ML)
+#   ./run.sh measure ...
+#   ./run.sh refine-words ...
+#   ./run.sh validate-aligner ...
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 PY="${PYTHON:-python3}"
@@ -12,7 +13,7 @@ shift || true
 
 case "$cmd" in
   fixtures)
-    "$PY" "$ROOT/align_lyrics.py" synth-fixture --out-dir "$ROOT/fixtures/perfect"
+    # check-truth only — do not regenerate wavs over committed fixtures
     "$PY" "$ROOT/align_lyrics.py" check-truth \
       --lrc "$ROOT/fixtures/perfect/perfect.lrc" \
       --truth "$ROOT/fixtures/perfect/perfect.truth.json"
@@ -25,11 +26,13 @@ case "$cmd" in
       --truth "$ROOT/fixtures/offset-demo/truth.json"
     echo "fixtures: PASS (perfect + [offset:] correction)"
     ;;
-  measure|refine|synth-fixture|check-truth)
+  measure|refine-words|refine|synth-fixture|check-truth|validate-aligner|separate)
+    # `refine` kept as alias for older docs
+    if [[ "$cmd" == "refine" ]]; then cmd="refine-words"; fi
     exec "$PY" "$ROOT/align_lyrics.py" "$cmd" "$@"
     ;;
   *)
-    echo "usage: $0 {fixtures|measure|refine|synth-fixture|check-truth} ..." >&2
+    echo "usage: $0 {fixtures|measure|refine-words|validate-aligner|synth-fixture|check-truth} ..." >&2
     exit 2
     ;;
 esac

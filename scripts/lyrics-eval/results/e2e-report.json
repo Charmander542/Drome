@@ -1,86 +1,93 @@
 {
   "date": "2026-11-27",
-  "method": "faster-whisper small.en word timestamps vs LRCLIB lyricsfile\u2192Enhanced LRC (ms stamps)",
+  "method": "torchaudio MMS_FA CTC forced alignment on Demucs htdemucs vocals vs LRCLIB lyricsfile → Enhanced LRC (ms stamps). Line-local CTC windows with wide pad; refine = median offset then ±300 ms per-word snap.",
   "pass_bar": {
     "median_abs_ms": 40,
     "p90_abs_ms": 100,
     "drift_ms_per_min": 30
   },
+  "invalidated": {
+    "never-gonna-give-you-up_youtube_whisper": {
+      "reason": "YouTube file was 213.04 s vs LRCLIB master 214.0 s — wrong master. Whisper word timestamps (±100–200 ms) are also unfit for the 40 ms pass bar. Do not use that ~1.2 s offset claim.",
+      "replaced_by": "kendrick_bdkmv_ctc_demucs"
+    }
+  },
   "songs": {
-    "never-gonna-give-you-up": {
-      "audio": "YouTube full track (local eval only, not committed); duration 213.04s; LRCLIB id 31504660 dur 214.0",
+    "kendrick_bdkmv_ctc_demucs": {
+      "title": "Bitch, Don't Kill My Vibe",
+      "artist": "Kendrick Lamar",
+      "album": "good kid, m.A.A.d city",
+      "lrclib_id": 565635,
+      "lrclib_duration_s": 311.0,
+      "audio": "Deezer preview of album track 73196524 (311 s master, ISRC USUM71210774); Demucs vocals; preview text-anchored at origin_ms=48000",
+      "stamp_structure": {
+        "words": 780,
+        "unique_start_pct": 99.49,
+        "shared_timestamp_starts": 4,
+        "zero_gap_words": 4,
+        "median_word_gap_ms": 186,
+        "interp_like_lines_heuristic": 11,
+        "verdict": "Mostly real per-word stamps (not phrase-grouped / shared timestamps). A minority of lines look evenly spaced; end-of-song dump is phrase-like. Large absolute CTC residuals → per-word snap is the right fix."
+      },
       "before": {
-        "n": 286,
-        "mean_ms": 726.7867132867133,
-        "median_ms": 1178.0,
-        "mean_abs_ms": 1181.43006993007,
-        "median_abs_ms": 1209.0,
-        "p90_abs_ms": 1527,
-        "drift_ms_per_min": -142.0322954347375,
-        "offset_kind": "drifting",
-        "after_offset_median_abs_ms": 166.0,
-        "after_offset_p90_abs_ms": 1986.0,
-        "pass": false,
-        "limits": {
-          "median_abs_ms": 40,
-          "p90_abs_ms": 100,
-          "drift_ms_per_min": 30
+        "n_high_conf": 96,
+        "median_abs_ms": 768.0,
+        "p90_abs_ms": 1263,
+        "median_ms": 698.5,
+        "after_constant_offset_median_abs_ms": 315.5,
+        "after_constant_offset_p90_abs_ms": 1183.5,
+        "pass": false
+      },
+      "after_refine_words": {
+        "base_offset_ms": 680,
+        "n_snapped": 50,
+        "n_shifted_only": 61,
+        "remeasure_high_conf": {
+          "n": 95,
+          "median_abs_ms": 106,
+          "p90_abs_ms": 605,
+          "median_ms": 0,
+          "pass": false
+        },
+        "refine_self_after": {
+          "median_abs_ms": 78,
+          "p90_abs_ms": 605,
+          "pass": false
         }
       },
-      "after_constant_offset": {
-        "n": 315,
-        "mean_ms": 124.1047619047619,
-        "median_ms": 90,
-        "mean_abs_ms": 177.8825396825397,
-        "median_abs_ms": 118,
-        "p90_abs_ms": 396,
-        "drift_ms_per_min": 76.72674703186767,
-        "offset_kind": "drifting",
-        "after_offset_median_abs_ms": 119,
-        "after_offset_p90_abs_ms": 320,
-        "pass": false,
-        "limits": {
-          "median_abs_ms": 40,
-          "p90_abs_ms": 100,
-          "drift_ms_per_min": 30
-        }
-      },
-      "applied_offset_ms": -1211,
-      "interpretation": "Dominant error is a ~1.2s constant master/intro offset (LRC late vs this file). Drift is small (~0.14s/min). After [offset:-1211], median abs falls ~1210\u2192118ms. Residual above 40ms is mostly Whisper-on-music jitter + chorus repeat matching\u2014not progressive rate skew."
+      "interpretation": "Album-duration LRCLIB word sync is hundreds of ms late vs Demucs+CTC vocals on a duration-matched Deezer preview window. Two-step refine (680 ms constant + ±300 ms snaps) cuts high-conf median abs ~768→106 ms (p90 1263→605). Still above the 40/100 bar on this dense-rap window; companion queue applies the same refine to full matching masters."
     },
-    "wet-sand_deezer_preview_spacing": {
-      "note": "Deezer 30s preview is mid-song; measured relative spacing after text anchor",
-      "median_abs_spacing_ms": 82,
-      "p90_abs_ms": 101,
-      "interpretation": "Within-phrase stamp spacing looks good once master offset is removed."
+    "aligner_selftest_tts": {
+      "note": "espeak words at known onsets; CTC shows ~40 ms systematic lag (one MMS frame)",
+      "median_abs_ms": 40,
+      "p90_abs_ms": 50,
+      "after_bias_removal_median_abs_ms": 0,
+      "pass_raw": false
     },
     "quantization_centisecond_truncation": {
-      "before_mean_ms": {
-        "wet-sand": -3.79,
-        "blinding-lights": -5.63,
-        "never-gonna": -3.18,
-        "take-on-me": -2.2,
-        "billie-jean": -4.1
-      },
       "max_abs_ms": 9,
-      "fix": "sidecar writer now emits millisecond stamps"
+      "fix": "sidecar writer emits millisecond stamps"
     }
   },
   "clock_audit": {
-    "karaoke_time_source": "AVPlayer.currentTime via accurateElapsed/karaokeElapsed (item timebase presentation clock)",
-    "periodic_observer": "0.5s \u2014 UI scrubbers only; karaoke does not use it",
+    "karaoke_time_source": "AVPlayer.currentTime via accurateElapsed → KaraokeResume.chooseElapsed every TimelineView frame (~60 Hz)",
+    "periodic_observer": "0.5s — UI scrubbers only; karaoke does not use it",
     "playback_clock_interpolator": "not used for karaoke (soft-correct tolerance 450ms would lag highlights)",
-    "route_latency": "not subtracted (Aura AirPods Pro 2 finding, PR #125)",
-    "transcode": "MP3/AAC priming handled by AVPlayer for tagged files; Navidrome transcode vs LRCLIB master mismatch addressed by companion align offset",
+    "foreground_snap": "scenePhase .active + willEnterForeground + TimelineView onAppear → snapToPlayerNow reads player time, clears jump-suppress, sets line/scroll with animations disabled",
+    "route_latency": "not subtracted (Aura AirPods Pro 2 finding)",
+    "visual_lead_ms": 45,
+    "word_arrival_ms": 70,
+    "nudge_step_ms": "50 measured / 500 line",
     "not_tested": [
       "real device speakers",
       "Bluetooth/AirPlay A/B",
-      "Simulator frame-capture stamp\u2192pixel latency",
+      "Simulator frame-capture stamp→pixel latency",
       "gapless/crossfade mid-transition karaoke"
     ]
   },
   "render_changes": {
-    "before": "80ms arrival centered on stamp (half-lit at cue, clearly lit ~32ms late); spring line scale; 280ms smooth scroll on active line",
-    "after": "attack opacity 0.88 at cue (lead=0, 32ms ease to 1.0); no spring; 180ms ease scroll; scrollLeadMs=320 without advancing word karaoke"
-  }
+    "before": "sticky published playhead after resume (~1 s catch-up); soft clock / 0.5 Hz observer risk",
+    "after": "KaraokeResume trusts currentTime every frame; foreground snap; 45 ms lead + 70 ms arrival; ±50 ms nudge on measured word sync"
+  },
+  "swift_ci": "ios/LyricsTiming (including testKaraokeResumeForegroundSnapIgnoresStalePublished) — Mac/Xcode only; not run on this Linux agent VM"
 }
