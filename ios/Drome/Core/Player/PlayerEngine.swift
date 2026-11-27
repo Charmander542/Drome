@@ -1905,6 +1905,21 @@ final class PlayerEngine: ObservableObject {
         return max(0, accurate)
     }
 
+    /// Delay from decoded sample to what the listener hears (Bluetooth / AirPlay
+    /// / buffer). Karaoke lights against `karaokeElapsed()`; subtract this so
+    /// words land with the audible vocal instead of the decoder playhead.
+    func karaokeOutputDelaySeconds() -> TimeInterval {
+        if remotePlayheadAnchor != nil {
+            // Connect mirror already tracks the remote device’s audible position.
+            return 0
+        }
+        let session = AVAudioSession.sharedInstance()
+        let delay = session.outputLatency + session.ioBufferDuration
+        // Wired ≈ 0–30ms; BT/AirPlay often 100–300ms. Cap so a bad route
+        // reading can’t shove lyrics seconds off.
+        return min(max(delay, 0), 0.40)
+    }
+
     /// Drive mini / now-playing playhead from another Connect device's session.
     func mirrorRemotePlayhead(elapsed: TimeInterval, duration: TimeInterval, isPlaying: Bool) {
         let safeElapsed = elapsed.isFinite ? max(0, elapsed) : 0

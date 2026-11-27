@@ -321,13 +321,22 @@ actor LyricsService {
         // Duration scale only when we know the remote master's length (LRCLIB).
         // Never invent a scale from the last lyric stamp — sidecar / embedded
         // LRC is already timed for this file and stretching it causes mid-song drift.
+        //
+        // After scaling, record the timebase stamps now live on (`songDuration`)
+        // so LyricsView’s playhead realign applies a *delta* scale instead of
+        // stretching from the LRCLIB master a second time (mid-song drift).
+        var alignedDurationSec = matchedDurationSec
         if synced,
            let songDuration, songDuration > 0,
            let fromSec = matchedDurationSec, fromSec > 0 {
-            lines = LRCParser.scale(
+            let scaled = LRCParser.scale(
                 lines,
                 fromDurationMs: fromSec * 1000,
                 toDurationMs: songDuration * 1000)
+            if scaled.map(\.startMs) != lines.map(\.startMs) {
+                lines = scaled
+                alignedDurationSec = songDuration
+            }
         }
 
         return LyricsDocument(
@@ -335,6 +344,6 @@ actor LyricsService {
             synced: synced,
             source: source,
             timingOffsetMs: structuredOffsetMs,
-            matchedDurationSec: matchedDurationSec)
+            matchedDurationSec: alignedDurationSec)
     }
 }
