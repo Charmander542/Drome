@@ -56,7 +56,9 @@ struct LyricsDocument {
 /// Line-only sidecar / Navidrome hits do **not** short-circuit when online —
 /// LRCLIB Word Synced can still upgrade them to measured word karaoke.
 /// Network hits stay in a small **session** memory cache — SQLite is not used.
-/// Offline downloads keep their own `.lrc` next to the audio file.
+/// The current song and the next one are fetched in full as soon as playback
+/// reaches them, parsed locally, then dropped about 90s after they leave the
+/// playhead. Offline downloads keep their own `.lrc` next to the audio file.
 ///
 /// Timestamps are aligned to the local file: LRC `[offset:]` tags, OpenSubsonic
 /// `offset`, and mild duration scaling when the matched master is a near-cut.
@@ -88,10 +90,19 @@ actor LyricsService {
         case miss
     }
 
-    /// Soft cap so flipping through many songs doesn't retain every LRC blob.
-    private static let memoryCap = 48
+    /// Soft cap. Playback only needs the current song, the next one, and a
+    /// couple just left — the rest expire.
+    private static let memoryCap = 8
+    /// How long a song that is no longer current or up next keeps its sheet.
+    private static let staleAfter: TimeInterval = 90
     private var memory: [String: MemoryEntry] = [:]
     private var memoryOrder: [String] = []
+    private var touched: [String: Date] = [:]
+    /// Current song and the immediate next one. Never expired while pinned.
+    private var pinned: Set<String> = []
+    private var epochs: [String: Int] = [:]
+    private var inflight: [String: (epoch: Int, task: Task<LyricsDocument?, Never>)] = [:]
+    private var expiryTask: Task<Void, Never>?
 
     init(
         database: AppDatabase,
@@ -118,13 +129,57 @@ actor LyricsService {
             }
         }
 
+        let epoch = epochs[song.id, default: 0]
+        if let running = inflight[song.id], running.epoch == epoch {
+            return await running.task.value
+        }
+        let task = Task { await self.resolve(song: song, allowNetwork: allowNetwork, epoch: epoch) }
+        inflight[song.id] = (epoch, task)
+        let document = await task.value
+        if inflight[song.id]?.epoch == epoch {
+            inflight[song.id] = nil
+        }
+        return document
+    }
+
+    /// Fetch and parse the whole sheet for the song that just started, and the
+    /// next one, so Now Playing reads a local document. Unpinned sheets expire
+    /// `staleAfter` later.
+    func noteNowPlaying(current: Song, upcoming: Song?) async {
+        let now = Date()
+        var pins: Set<String> = [current.id]
+        if let upcoming, upcoming.id != current.id {
+            pins.insert(upcoming.id)
+        }
+        for id in pinned where !pins.contains(id) {
+            touched[id] = now
+        }
+        pinned = pins
+        _ = await lyrics(for: current)
+        if let upcoming, upcoming.id != current.id {
+            _ = await lyrics(for: upcoming)
+        }
+        let fresh = Date()
+        for id in pins {
+            touched[id] = fresh
+        }
+        sweepExpired()
+        armExpiry()
+    }
+
+    private func resolve(song: Song, allowNetwork: Bool, epoch: Int) async -> LyricsDocument? {
+        if epochs[song.id, default: 0] != epoch { return nil }
+
+        var lineOnlyOffline: LyricsDocument?
         if let offline = loadOffline(song: song) {
             // Keep measured offline karaoke. Line-only offline can still upgrade
             // via network when Word Synced lyricsfile is available.
             if offline.wordTiming == .measured || !allowNetwork {
+                guard epochs[song.id, default: 0] == epoch else { return nil }
                 remember(songId: song.id, document: offline)
                 return offline
             }
+            lineOnlyOffline = offline
         }
 
         guard allowNetwork else { return nil }
@@ -137,6 +192,12 @@ actor LyricsService {
                 structuredOffsetMs: payload.structuredOffsetMs,
                 matchedDurationSec: payload.matchedDurationSec)
         }
+        guard epochs[song.id, default: 0] == epoch else { return nil }
+        // A failed upgrade must not throw away a line-synced sheet already on disk.
+        if fresh == nil, let lineOnlyOffline {
+            remember(songId: song.id, document: lineOnlyOffline)
+            return lineOnlyOffline
+        }
         remember(songId: song.id, document: fresh)
         return fresh
     }
@@ -148,6 +209,7 @@ actor LyricsService {
 
     /// Drops the session entry and refetches (for a "reload lyrics" affordance).
     func refetch(for song: Song) async -> LyricsDocument? {
+        epochs[song.id, default: 0] += 1
         forget(songId: song.id)
         return await lyrics(for: song, allowNetwork: true)
     }
@@ -295,15 +357,39 @@ actor LyricsService {
             memoryOrder.append(songId)
         }
         memory[songId] = document.map { .hit($0) } ?? .miss
+        touched[songId] = Date()
         while memoryOrder.count > Self.memoryCap {
-            let evicted = memoryOrder.removeFirst()
+            guard let idx = memoryOrder.firstIndex(where: { !pinned.contains($0) }) else { break }
+            let evicted = memoryOrder.remove(at: idx)
             memory.removeValue(forKey: evicted)
+            touched.removeValue(forKey: evicted)
         }
     }
 
     private func forget(songId: String) {
         memory.removeValue(forKey: songId)
         memoryOrder.removeAll { $0 == songId }
+        touched.removeValue(forKey: songId)
+    }
+
+    private func sweepExpired() {
+        let now = Date()
+        let stale = memory.keys.filter { id in
+            !pinned.contains(id)
+                && now.timeIntervalSince(touched[id] ?? .distantPast) >= Self.staleAfter
+        }
+        for id in stale {
+            forget(songId: id)
+        }
+    }
+
+    private func armExpiry() {
+        expiryTask?.cancel()
+        expiryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.staleAfter * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            await self.sweepExpired()
+        }
     }
 
     private func document(

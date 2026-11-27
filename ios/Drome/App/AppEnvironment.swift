@@ -612,6 +612,8 @@ final class AppSession: ObservableObject, Identifiable {
             }
             .store(in: &playbackSideEffectCancellables)
 
+        startLyricsWarmup()
+
         // Nested ObservableObject — bubble changes so alerts / UI bound to
         // `session.connect?.…` actually refresh (e.g. switch-device prompt).
         // Only the values views read through the session are forwarded: the
@@ -711,6 +713,34 @@ final class AppSession: ObservableObject, Identifiable {
         }
     }
     #endif
+
+    /// Fetch the full lyric sheet when the song starts, and the next song's
+    /// sheet with it. Unpinned sheets expire inside `LyricsService`.
+    private func startLyricsWarmup() {
+        let currentIds = player.$current.map { item -> String? in
+            item?.song.id
+        }
+        let nextIds = player.$userQueue
+            .combineLatest(player.$contextQueue)
+            .map { user, context -> String? in
+                user.first?.song.id ?? context.first?.song.id
+            }
+        currentIds.combineLatest(nextIds)
+            .removeDuplicates { previous, next in
+                previous.0 == next.0 && previous.1 == next.1
+            }
+            .debounce(for: .milliseconds(150), scheduler: RunLoop.main)
+            .sink { [weak self] currentId, _ in
+                guard let self, let currentId,
+                      let song = self.player.current?.song, song.id == currentId else { return }
+                let upcoming = self.player.userQueue.first?.song ?? self.player.contextQueue.first?.song
+                let lyrics = self.lyricsService
+                Task {
+                    await lyrics.noteNowPlaying(current: song, upcoming: upcoming)
+                }
+            }
+            .store(in: &playbackSideEffectCancellables)
+    }
 
     func teardown() {
         playbackSideEffectCancellables.removeAll()
