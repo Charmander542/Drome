@@ -52,7 +52,10 @@ ALIGNED_VERSION = "v4-ctc-line"
 DEFAULT_LINE_SEARCH_MS = 1500
 DEFAULT_MIN_SCORE = 0.08
 DEFAULT_MIN_COVERAGE = 0.7
-LINE_AGREE_MS = 1000  # first CTC word must land within this of LRCLIB line start
+# First high-conf CTC word must land within this of its LRCLIB prior (or the
+# line start when gating on the first non-skippable). 1000 ms was too loose —
+# empty/weak CTC lines still “agreed” and then drifted via interpolation.
+LINE_AGREE_MS = 300
 FRAME_MS = 20.0  # MMS_FA asymptotic hop (320 samples @ 16 kHz)
 # MMS_FA word starts are ~1–2 frames late on clean speech; pull CTC onsets
 # forward so karaoke lights with the vocal (still clamped ≥0). Client also
@@ -63,6 +66,10 @@ FRAME_MS = 20.0  # MMS_FA asymptotic hop (320 samples @ 16 kHz)
 # so selftest abs_tol is 40 ms — not 30.
 CTC_LAG_COMPENSATE_MS = 40
 TIMEBASE_ABS_TOL_MS = 40
+# Chunk MMS emission so peak RSS stays under ~3GB on long masters (full-clip
+# MMS on a 5+ min stem previously peaked ~9.7GB and exhausted swap on 16GB Mac).
+EMISSION_CHUNK_S = 45.0
+EMISSION_OVERLAP_S = 2.0
 _MMS_CHARS = set("abcdefghijklmnopqrstuvwxyz'")
 
 # Spoken forms MMS can actually emit (numbers / common contractions).
@@ -135,7 +142,12 @@ def mms_word(tok: str) -> str:
 
 
 def is_skippable_token(text: str) -> bool:
-    """Parentheticals / backing-vocal cues — soft: align if confident, else interp."""
+    """Parentheticals / backing-vocal cues — soft: align if confident, else keep LRCLIB.
+
+    Coverage note (round 6 / real masters): ad-libs and parentheticals dilute CTC
+    when forced into the token list. Prefer gating agreement on the first
+    non-skippable word; star-token MMS can absorb residual ad-libs in the window.
+    """
     t = text.strip()
     if not t:
         return True
@@ -145,7 +157,12 @@ def is_skippable_token(text: str) -> bool:
     if re.fullmatch(r"[*#@$%]+", t):
         return True
     low = normalize_token(t)
-    return low in {"yeah", "uh", "ooh", "ooo", "ah", "ha", "hey", "woah", "whoa", "oohh", "mmm"}
+    return low in {
+        "yeah", "yea", "yee", "uh", "uhh", "um", "umm",
+        "ooh", "ooo", "oooh", "ah", "ahh", "ha", "hah", "haha",
+        "hey", "ay", "aye", "yo", "woah", "whoa", "oohh", "mmm",
+        "huh", "hmm", "la", "da", "na", "nah", "naw",
+    }
 
 
 def emission_frame_ms(emission: "torch.Tensor", n_samples: int, sr: int = 16_000) -> float:
@@ -378,8 +395,7 @@ def _min_window_ms_for_tokens(tokens: list[str]) -> int:
     return max(1200, int(chars * FRAME_MS * 2.5) + 400)
 
 
-def compute_emission(waveform: "torch.Tensor", *, with_star: bool = True) -> "torch.Tensor":
-    """Full-clip MMS emission (T, C) on CPU — reuse for sliding line search."""
+def _compute_emission_once(waveform: "torch.Tensor", *, with_star: bool = True) -> "torch.Tensor":
     import torch
 
     bundle = get_mms(with_star=with_star)
@@ -388,6 +404,53 @@ def compute_emission(waveform: "torch.Tensor", *, with_star: bool = True) -> "to
         if emission.ndim == 3:
             emission = emission[0]
         return emission.cpu()
+
+
+def compute_emission(
+    waveform: "torch.Tensor",
+    *,
+    with_star: bool = True,
+    chunk_s: float = EMISSION_CHUNK_S,
+    overlap_s: float = EMISSION_OVERLAP_S,
+) -> "torch.Tensor":
+    """MMS emission (T, C) on CPU — chunked so peak RSS stays ~<3GB on long stems.
+
+    Full-clip MMS on a ~5 min vocal previously peaked ~9.7GB RSS (swap thrash on
+    16GB Mac). Chunk + overlap-stitch keeps each forward pass bounded.
+    """
+    import torch
+
+    sr = 16_000
+    n = int(waveform.shape[-1])
+    if n / sr <= chunk_s + 1.0 or chunk_s <= 0:
+        return _compute_emission_once(waveform, with_star=with_star)
+
+    chunk_n = int(chunk_s * sr)
+    overlap_n = max(0, int(overlap_s * sr))
+    hop = max(1, chunk_n - overlap_n)
+
+    # Run overlapping windows for context, but keep only the non-overlapping
+    # hop region from each chunk (last chunk keeps its remainder) so absolute
+    # frame→time mapping stays contiguous.
+    parts: list[Any] = []
+    start = 0
+    frames_per_sample: float | None = None
+    while start < n:
+        end = min(n, start + chunk_n)
+        piece = _compute_emission_once(waveform[..., start:end], with_star=with_star)
+        if frames_per_sample is None:
+            frames_per_sample = piece.shape[0] / max(1, end - start)
+        keep_samples = (end - start) if end >= n else hop
+        keep_frames = int(round(keep_samples * frames_per_sample))
+        keep_frames = max(1, min(int(piece.shape[0]), keep_frames))
+        parts.append(piece[:keep_frames])
+        if end >= n:
+            break
+        start += hop
+
+    if not parts:
+        return _compute_emission_once(waveform, with_star=with_star)
+    return torch.cat(parts, dim=0)
 
 
 def ctc_align_emission(
@@ -692,9 +755,13 @@ def interpolate_low_confidence(
     seg_start: int,
     seg_end: int,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Fill low-score / missing onsets by linear interp between confident neighbours."""
-    n = len(words)
-    if n == 0:
+    """Fill gaps only between confident CTC neighbours; otherwise keep LRCLIB.
+
+    Round 6: never invent whole-line timing (even-spread) or ±120ms steps that
+    drift away from a good LRCLIB prior. Write rule: only replace LRCLIB where
+    CTC actually beats it (high-conf source=ctc).
+    """
+    if not words:
         return words, 0
     confident = [
         i
@@ -714,7 +781,7 @@ def interpolate_low_confidence(
         if use_ctc:
             out.append({**w, "start_ms": int(w["ctc_ms"]), "source": "ctc"})
             continue
-        # Find neighbours
+        prior = int(w.get("prior_ms", seg_start))
         prev_i = next((j for j in reversed(confident) if j < i), None)
         next_i = next((j for j in confident if j > i), None)
         if prev_i is not None and next_i is not None:
@@ -722,19 +789,13 @@ def interpolate_low_confidence(
             t1 = words[next_i]["ctc_ms"]
             frac = (i - prev_i) / (next_i - prev_i)
             ms = int(round(t0 + (t1 - t0) * frac))
-        elif prev_i is not None:
-            # after last confident: step forward by mean gap or 120ms
-            ms = int(words[prev_i]["ctc_ms"]) + 120 * (i - prev_i)
-        elif next_i is not None:
-            ms = int(words[next_i]["ctc_ms"]) - 120 * (next_i - i)
+            ms = max(seg_start, min(seg_end, ms))
+            out.append({**w, "start_ms": ms, "source": "interp"})
+            interpolated += 1
         else:
-            # no confident hits — even spread across segment
-            frac = (i + 0.5) / n
-            ms = int(round(seg_start + (seg_end - seg_start) * frac))
-        ms = max(seg_start, min(seg_end, ms))
-        out.append({**w, "start_ms": ms, "source": "interp"})
-        interpolated += 1
-    # Enforce monotonic within the line
+            # No CTC bracket — keep LRCLIB prior (never whole-line invent).
+            out.append({**w, "start_ms": prior, "source": "lrclib"})
+    # Enforce monotonic within the line without inventing new timing.
     for i in range(1, len(out)):
         if out[i]["start_ms"] < out[i - 1]["start_ms"]:
             out[i]["start_ms"] = out[i - 1]["start_ms"]
@@ -885,11 +946,25 @@ def generate_word_timings(
                 if part and part[-1].get("end_ms") is not None:
                     cursor = max(cursor, int(part[-1]["end_ms"]))
 
-        # Non-circular line gate: first aligned word vs LRCLIB line start.
-        # Posterior threshold still decides CTC vs interp per word below.
-        first_hit = next((h for h in hits if h.get("ctc_ms") is not None), None)
-        if first_hit is None:
-            reason = "no_ctc_hit"
+        # Non-circular line gate: first *high-conf* CTC word vs its LRCLIB prior.
+        # Prefer the first non-skippable token so ad-lib intros don't fail the gate.
+        # Posterior threshold still decides CTC vs LRCLIB per word below.
+        def _gate_anchor() -> tuple[dict[str, Any], int] | None:
+            for h, w in zip(hits, usable):
+                if h.get("ctc_ms") is None or h.get("score", 0) < min_score:
+                    continue
+                if w.get("skippable"):
+                    continue
+                return h, int(w.get("prior_ms", prior))
+            for h, w in zip(hits, usable):
+                if h.get("ctc_ms") is None or h.get("score", 0) < min_score:
+                    continue
+                return h, int(w.get("prior_ms", prior))
+            return None
+
+        anchor = _gate_anchor()
+        if anchor is None:
+            reason = "no_high_conf_ctc"
             generated_lines.append(_keep_lrclib_line(ln, reason=reason))
             stats["n_line_fallback"] += 1
             last_prior = max(w["prior_ms"] for w in usable)
@@ -905,7 +980,8 @@ def generate_word_timings(
                 }
             )
             continue
-        agree_delta = int(first_hit["ctc_ms"]) - prior
+        first_hit, agree_prior = anchor
+        agree_delta = int(first_hit["ctc_ms"]) - agree_prior
         if abs(agree_delta) > line_agree_ms:
             reason = f"first_word_disagree_ms={agree_delta}"
             generated_lines.append(_keep_lrclib_line(ln, reason=reason))
@@ -943,8 +1019,33 @@ def generate_word_timings(
                 stats["n_ctc"] += 1
                 n_ctc_line += 1
 
-        scored = [h for h in hits if h.get("ctc_ms") is not None]
+        scored = [
+            h for h in hits
+            if h.get("ctc_ms") is not None and h.get("score", 0) >= min_score
+        ]
         mean_score = statistics.mean(h["score"] for h in scored) if scored else 0.0
+        # Never mark a line aligned when CTC is empty / near-zero mean score —
+        # those used to get whole-line interpolation and drift +100ms/min.
+        if n_ctc_line == 0 or mean_score < 1e-6:
+            reason = "n_ctc_zero" if n_ctc_line == 0 else f"mean_score≈0 ({mean_score:.4f})"
+            generated_lines.append(_keep_lrclib_line(ln, reason=reason))
+            stats["n_line_fallback"] += 1
+            last_prior = max(w["prior_ms"] for w in usable)
+            prev_end = max(prev_end, int(last_prior))
+            decisions.append(
+                {
+                    "line": i,
+                    "decision": "fallback_lrclib",
+                    "reason": reason,
+                    "prior_ms": prior,
+                    "mean_score": round(mean_score, 4),
+                    "n_ctc": n_ctc_line,
+                    "window_ms": [g0, g1],
+                    "text": preview,
+                }
+            )
+            continue
+
         line_scores.append(mean_score)
         seg_start = min(h["ctc_ms"] for h in scored) if scored else g0
         seg_end = max((h["end_ms"] or h["ctc_ms"]) for h in scored) if scored else g1
@@ -1003,9 +1104,13 @@ def rewrite_lrc_generated(
     *,
     aligned_version: str,
 ) -> str:
-    """Rewrite Enhanced LRC using generated word starts (drop old word stamps)."""
+    """Rewrite Enhanced LRC using generated word starts (drop old word stamps).
+
+    Only words with source=ctc (and bracketed interp between CTC anchors) differ
+    from LRCLIB; generate_word_timings keeps LRCLIB priors everywhere else.
+    """
     lines_out: list[str] = [f"[drome-aligned:{aligned_version}]"]
-    # Preserve non-timing tags
+    # Preserve non-timing tags (incl. drome-lrclib-id / duration provenance).
     for line in raw.splitlines():
         stripped = line.strip()
         if not stripped:
@@ -1015,7 +1120,7 @@ def rewrite_lrc_generated(
         if BRACKET_RE.search(line) or ANGLE_RE.search(line):
             continue
         if stripped.startswith("[") and stripped.endswith("]") and ":" in stripped:
-            # [ti:] / [ar:] etc.
+            # [ti:] / [ar:] / [drome-lrclib-…] etc.
             lines_out.append(stripped)
 
     for gl in generated_lines:
@@ -1227,10 +1332,12 @@ def _score_lrc_against_truth(lrc_raw: str, truth_words: list[dict[str, Any]]) ->
 
 
 def cmd_selftest_timebase(args: argparse.Namespace) -> int:
-    """Unit test: recover known onsets within 30 ms at 30s / 120s / 240s.
+    """Unit test: recover known onsets within TIMEBASE_ABS_TOL_MS (40 ms).
 
     Uses the full generate_word_timings path (neighbor-clamped line windows) so a
     regressing segment cap would fail here the way round 4 failed in production.
+    Honest floor is ~40 ms — a single lag compensate cannot null 30/120/240 s
+    at once (signed residuals go both ways); do not claim “within 30 ms”.
     """
     import torch
 
@@ -1848,12 +1955,24 @@ def quality_gate_allows_write(
     Per-line agreement / LRCLIB fallback already happened inside generate_word_timings.
     Here we require overall CTC coverage, at least one aligned line, and global
     monotonic word starts before rewriting the sidecar.
+
+    Write rule: only CTC (source=ctc) stamps replace LRCLIB; everything else keeps
+    the prior. Enabling alignment in production still requires a real-master
+    hand-label suite that beats plain LRCLIB — synthetic Demucs bars are not enough.
     """
     coverage = float(gen_stats.get("coverage") or 0.0)
     if coverage < min_coverage:
         return False, f"coverage {coverage:.3f} < {min_coverage}"
     if int(gen_stats.get("n_line_aligned") or 0) < 1:
         return False, "no lines passed first-word agreement"
+    n_ctc_words = sum(
+        1
+        for gl in generated_lines
+        for w in (gl.get("words") or [])
+        if w.get("source") == "ctc"
+    )
+    if n_ctc_words < 1:
+        return False, "no CTC words beat LRCLIB (nothing to write)"
     starts: list[int] = []
     for gl in generated_lines:
         for w in gl.get("words") or []:
@@ -2014,8 +2133,14 @@ def fetch_lrclib_enhanced(
     title: str,
     duration_s: int | None = None,
     album: str | None = None,
+    max_duration_delta_s: float = 3.0,
 ) -> tuple[str, dict[str, Any]]:
-    """Fetch word-synced Enhanced LRC from LRCLIB (lyricsfile preferred)."""
+    """Fetch word-synced Enhanced LRC from LRCLIB (lyricsfile preferred).
+
+    Prefers `/api/get` with duration; falls back to `/api/search` ranked by
+    duration closeness. Rejects synced hits whose duration differs by more than
+    `max_duration_delta_s` (radio edit vs album cut).
+    """
     import urllib.parse
     import urllib.request
 
@@ -2025,21 +2150,51 @@ def fetch_lrclib_enhanced(
     if album:
         params["album_name"] = album
     url = "https://lrclib.net/api/get?" + urllib.parse.urlencode(params)
-    meta: dict[str, Any] = {"url": url, "artist": artist, "title": title}
+    meta: dict[str, Any] = {"url": url, "artist": artist, "title": title, "track_duration_s": duration_s}
+    data: dict[str, Any] | None = None
     try:
         with urllib.request.urlopen(url, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
-        # Fall back to search.
-        q = urllib.parse.urlencode({"q": f"{artist} {title}"})
+        meta["get_error"] = str(exc)
+
+    if data is None or (
+        duration_s is not None
+        and data.get("duration") is not None
+        and abs(float(data["duration"]) - float(duration_s)) > max_duration_delta_s
+    ):
+        # Search ranked by duration closeness — never take hits[0] blindly.
+        q = urllib.parse.urlencode({"artist_name": artist, "track_name": title})
         search_url = f"https://lrclib.net/api/search?{q}"
         meta["search_url"] = search_url
         with urllib.request.urlopen(search_url, timeout=30) as resp:
             hits = json.loads(resp.read().decode("utf-8"))
-        if not hits:
-            raise RuntimeError(f"LRCLIB miss for {artist} — {title} ({exc})") from exc
-        data = hits[0]
-        meta["search_hit_id"] = data.get("id")
+        if not hits and data is None:
+            raise RuntimeError(f"LRCLIB miss for {artist} — {title}")
+        if hits:
+            def _dur_delta(h: dict[str, Any]) -> float:
+                if duration_s is None or h.get("duration") is None:
+                    return 1e9
+                return abs(float(h["duration"]) - float(duration_s))
+
+            hits = sorted(hits, key=_dur_delta)
+            pick = hits[0]
+            if duration_s is not None and _dur_delta(pick) > max_duration_delta_s:
+                raise RuntimeError(
+                    f"LRCLIB: no synced hit within ±{max_duration_delta_s}s of "
+                    f"{duration_s}s (closest Δ={_dur_delta(pick):.1f}s id={pick.get('id')})"
+                )
+            data = pick
+            meta["search_hit_id"] = data.get("id")
+
+    assert data is not None
+    if duration_s is not None and data.get("duration") is not None:
+        delta = abs(float(data["duration"]) - float(duration_s))
+        if delta > max_duration_delta_s:
+            raise RuntimeError(
+                f"LRCLIB id={data.get('id')} duration {data.get('duration')}s "
+                f"differs from track {duration_s}s by {delta:.1f}s (>{max_duration_delta_s}s)"
+            )
 
     meta["id"] = data.get("id")
     meta["duration"] = data.get("duration")
@@ -2050,10 +2205,22 @@ def fetch_lrclib_enhanced(
         enhanced = lyricsfile_to_enhanced_lrc(lyricsfile)
         if enhanced:
             meta["source"] = "lyricsfile"
-            return enhanced, meta
+            # Stamp provenance so sidecar invalidation works for align-track writes.
+            header = ""
+            if data.get("id"):
+                header += f"[drome-lrclib-id:{data['id']}]\n"
+            if data.get("duration"):
+                header += f"[drome-lrclib-duration:{float(data['duration']):.3f}]\n"
+            return header + enhanced, meta
     if synced and "<" in synced:
         meta["source"] = "syncedLyrics"
-        return synced if synced.endswith("\n") else synced + "\n", meta
+        body = synced if synced.endswith("\n") else synced + "\n"
+        header = ""
+        if data.get("id"):
+            header += f"[drome-lrclib-id:{data['id']}]\n"
+        if data.get("duration"):
+            header += f"[drome-lrclib-duration:{float(data['duration']):.3f}]\n"
+        return header + body, meta
     if synced:
         meta["source"] = "syncedLyrics_line_only"
         raise RuntimeError("LRCLIB hit is line-only (no word sync); provide --lrc")

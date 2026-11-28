@@ -241,7 +241,8 @@ struct LyricsView: View {
             timingOffsetMs: document.timingOffsetMs,
             matchedDurationSec: toSec,
             wordTiming: document.wordTiming,
-            alignedMarker: document.alignedMarker)
+            alignedMarker: document.alignedMarker,
+            lrclibId: document.lrclibId)
     }
 
     private func lyricsBody(_ document: LyricsDocument) -> some View {
