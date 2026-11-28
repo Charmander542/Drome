@@ -24,6 +24,30 @@ Pass bar (round 5): median abs ≤ 60 ms, p90 ≤ 150 ms, |drift| ≤ 30 ms/min.
 
 Results: `results/round5/`.
 
+## Align one real track (spot-check)
+
+```bash
+# With a local Enhanced LRC:
+python3 scripts/lyrics-eval/align_lyrics.py align-track \
+  --audio /path/to/master.flac \
+  --lrc /path/to/song.lrc \
+  --out-dir /tmp/align-report
+
+# Or fetch word-synced lyrics from LRCLIB:
+python3 scripts/lyrics-eval/align_lyrics.py align-track \
+  --audio /path/to/BDKMV.flac \
+  --artist 'Kendrick Lamar' \
+  --title "Bitch, Don't Kill My Vibe" \
+  --out-dir /tmp/bdkmv-align
+```
+
+Writes `input.lrc`, `aligned.lrc`, `generate.json`, and `report.json` with
+**per-line gate decisions** (aligned vs fallback_lrclib + reason). Uses Demucs
+unless `--no-demucs` / `--allow-no-demucs`.
+
+Timebase selftest abs tolerance is **40 ms** (honest floor — 30 ms is not
+achievable with a single lag compensate across 30/120/240 s).
+
 ## Companion
 
 `DROME_LYRICS_ALIGN` defaults to **false**. After reviewing round-5 numbers:

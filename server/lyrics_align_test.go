@@ -41,7 +41,9 @@ func TestLyricsAlignDefaultsOff(t *testing.T) {
 	})
 	cfg := lyricsAlignConfigFromEnv()
 	if cfg.Enabled {
-		t.Fatal("DROME_LYRICS_ALIGN should default to false until a valid ground-truth eval passes")
+		// Round-5 synthetic Demucs+truth clears 60/150/30, but enabling is still
+		// an explicit operator choice (Charles) — never default on.
+		t.Fatal("DROME_LYRICS_ALIGN should default to false; enable explicitly after review")
 	}
 }
 

@@ -1,7 +1,7 @@
 {
   "date": "2026-11-28",
   "round": 5,
-  "root_cause": "Round-4 multi-second p90 that grew with duration was caused by a len(words)*280 ms segment cap that crushed each line to ~1.4 s. Only the first word locked; the rest were interpolated early. Not an MMS frame-hop / resampling bug — absolute timebase at 30/120/240 s was already fine (~20–40 ms).",
+  "root_cause": "Round-4 multi-second p90 that grew with duration was caused by a len(words)*280 ms segment cap that crushed each line to ~1.4 s. Absolute MMS timebase at 30/120/240 s was already fine.",
   "fix": "Neighbor-clamped LRCLIB line windows (±1.5 s), emission frame_ms from tensor length, 40 ms MMS lag compensate, per-line first-word agreement gate with LRCLIB fallback, monotonic interp inside the line only. Marker [drome-aligned:v4-ctc-line].",
   "pass_bar": {
     "median_abs_ms": 60,
@@ -10,6 +10,9 @@
   },
   "timebase_selftest": {
     "source": "scripts/lyrics-eval/results/round5/timebase-selftest.json",
+    "ctc_lag_compensate_ms": 40,
+    "tolerance_ms": 40,
+    "tolerance_note": "30 ms not achievable with a single lag compensate across 30/120/240 s (signed residuals go both ways). Honest floor ~40 ms.",
     "positions_ms": [30000, 120000, 240000],
     "abs_err_ms": [22, 31, 39],
     "error_growth_ms": 17,
@@ -17,26 +20,25 @@
   },
   "round5_synth_full_demucs": {
     "source": "scripts/lyrics-eval/results/round5/synth-full-report.json",
-    "note": "Full-length TTS over music bed, run through Demucs, scored vs TTS truth. No previews, no CTC self-score.",
+    "generate_json_dir": "scripts/lyrics-eval/results/round5/generate/",
+    "note": "Full-length TTS over music bed, Demucs vocals, scored vs TTS truth. demucs=true only when generate.json reports demucs; seconds_demucs recorded per variant. No previews, no CTC self-score, no allow_no_demucs in official run.",
     "variants": {
-      "d60": {"before_med_p90_drift": [132, 400, 39.1], "after_med_p90_drift": [22, 41, -12.5], "meets_target": true},
-      "d120": {"before_med_p90_drift": [132, 400, -4.2], "after_med_p90_drift": [16, 51, 13.9], "meets_target": true},
-      "d214": {"before_med_p90_drift": [135, 400, -1.8], "after_med_p90_drift": [19, 46, 6.2], "meets_target": true},
-      "fast-rap": {"before_med_p90_drift": [218, 400, 28.4], "after_med_p90_drift": [10, 36, 29.2], "meets_target": true},
-      "slow": {"before_med_p90_drift": [97, 400, 9.2], "after_med_p90_drift": [28, 96, 9.2], "meets_target": true},
-      "gaps": {"before_med_p90_drift": [135, 400, -7.0], "after_med_p90_drift": [20, 41, 8.5], "meets_target": true}
+      "d60": {"after_med_p90_drift": [22, 41, -12.5], "seconds_demucs": 19.67, "meets_target": true},
+      "d120": {"after_med_p90_drift": [16, 51, 13.9], "seconds_demucs": 33.21, "meets_target": true},
+      "d214": {"after_med_p90_drift": [19, 46, 6.2], "seconds_demucs": 49.35, "meets_target": true},
+      "fast-rap": {"after_med_p90_drift": [10, 36, 29.2], "seconds_demucs": 21.9, "meets_target": true},
+      "slow": {"after_med_p90_drift": [28, 96, 9.2], "seconds_demucs": 32.83, "meets_target": true},
+      "gaps": {"after_med_p90_drift": [20, 41, 8.5], "seconds_demucs": 33.27, "meets_target": true}
     },
-    "verdict": "All six variants meet median≤60 / p90≤150 / |drift|≤30 on valid Demucs+truth eval. Propose enabling when Charles is ready; leave DROME_LYRICS_ALIGN default false."
+    "verdict": "All six variants meet median≤60 / p90≤150 / |drift|≤30. Align default remains false; Charles enables."
   },
-  "quality_gate": {
-    "per_line": "first CTC word within 1s of LRCLIB line start, else keep that line's LRCLIB stamps",
-    "per_word": "posterior >= min_score else interpolate monotonically inside the line",
-    "write_requires": ["coverage >= 0.7", ">=1 aligned line", "global monotonicity"],
-    "on_failure": "keep_lrclib (sidecar unchanged)"
+  "align_track": {
+    "command": "python3 scripts/lyrics-eval/align_lyrics.py align-track --audio MASTER --artist A --title T --out-dir DIR",
+    "or_lrc": "… --lrc song.lrc --out-dir DIR",
+    "writes": ["input.lrc", "aligned.lrc", "generate.json", "report.json with line_decisions"]
   },
   "companion_default": {
     "DROME_LYRICS_ALIGN": false,
-    "enable_with": "DROME_LYRICS_ALIGN=true (needs torch/torchaudio/demucs)"
-  },
-  "client": "Unchanged from round 4 (Mac-confirmed). Align remains opt-in."
+    "enable_with": "DROME_LYRICS_ALIGN=true"
+  }
 }

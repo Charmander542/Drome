@@ -5,8 +5,9 @@
     "p90_abs_ms": 150,
     "drift_ms_per_min": 30
   },
+  "demucs_requested": true,
   "demucs": true,
-  "note": "Scores are LRC vs independent TTS onset truth after Demucs vocals. No Deezer previews, no CTC self-score.",
+  "note": "Scores are LRC vs independent TTS onset truth. `demucs` is true only when every variant generate step actually ran Demucs. Per-variant seconds_demucs from generate.json. No Deezer previews, no CTC self-score.",
   "root_cause_fixed": "Removed len(words)*280 segment cap that crushed lines to ~1.4s; windows are now LRCLIB line span \u00b11.5s clamped to neighbors; emission frame_ms derived from tensor length; 40ms MMS lag compensate.",
   "variants": [
     {
@@ -53,7 +54,10 @@
         "coverage": 1.0
       },
       "demucs": true,
-      "meets_target": true
+      "meets_target": true,
+      "seconds_demucs": 19.67,
+      "seconds_align": 9.04,
+      "generate_json": "results/round5/generate/d60.generate.json"
     },
     {
       "variant": "d120",
@@ -99,7 +103,10 @@
         "coverage": 1.0
       },
       "demucs": true,
-      "meets_target": true
+      "meets_target": true,
+      "seconds_demucs": 33.21,
+      "seconds_align": 17.37,
+      "generate_json": "results/round5/generate/d120.generate.json"
     },
     {
       "variant": "d214",
@@ -145,7 +152,10 @@
         "coverage": 1.0
       },
       "demucs": true,
-      "meets_target": true
+      "meets_target": true,
+      "seconds_demucs": 49.35,
+      "seconds_align": 35.13,
+      "generate_json": "results/round5/generate/d214.generate.json"
     },
     {
       "variant": "fast-rap",
@@ -191,7 +201,10 @@
         "coverage": 1.0
       },
       "demucs": true,
-      "meets_target": true
+      "meets_target": true,
+      "seconds_demucs": 21.9,
+      "seconds_align": 8.85,
+      "generate_json": "results/round5/generate/fast-rap.generate.json"
     },
     {
       "variant": "slow",
@@ -237,7 +250,10 @@
         "coverage": 1.0
       },
       "demucs": true,
-      "meets_target": true
+      "meets_target": true,
+      "seconds_demucs": 32.83,
+      "seconds_align": 17.56,
+      "generate_json": "results/round5/generate/slow.generate.json"
     },
     {
       "variant": "gaps",
@@ -283,7 +299,10 @@
         "coverage": 1.0
       },
       "demucs": true,
-      "meets_target": true
+      "meets_target": true,
+      "seconds_demucs": 33.27,
+      "seconds_align": 18.8,
+      "generate_json": "results/round5/generate/gaps.generate.json"
     }
   ]
 }

@@ -57,7 +57,12 @@ FRAME_MS = 20.0  # MMS_FA asymptotic hop (320 samples @ 16 kHz)
 # MMS_FA word starts are ~1–2 frames late on clean speech; pull CTC onsets
 # forward so karaoke lights with the vocal (still clamped ≥0). Client also
 # applies a separate 45 ms visual lead.
+#
+# Honest floor: a constant lag cannot null all of 30/120/240 s at once (signed
+# residuals go both ways). Best max-abs on the timebase selftest is ~35–40 ms,
+# so selftest abs_tol is 40 ms — not 30.
 CTC_LAG_COMPENSATE_MS = 40
+TIMEBASE_ABS_TOL_MS = 40
 _MMS_CHARS = set("abcdefghijklmnopqrstuvwxyz'")
 
 # Spoken forms MMS can actually emit (numbers / common contractions).
@@ -765,7 +770,7 @@ def _line_window(
     return int(g0), int(g1)
 
 
-def _keep_lrclib_line(ln: dict[str, Any]) -> dict[str, Any]:
+def _keep_lrclib_line(ln: dict[str, Any], *, reason: str = "lrclib") -> dict[str, Any]:
     words = []
     for w in ln["words"]:
         words.append(
@@ -778,7 +783,12 @@ def _keep_lrclib_line(ln: dict[str, Any]) -> dict[str, Any]:
             }
         )
     start = words[0]["start_ms"] if words else int(ln["prior_ms"])
-    return {"start_ms": start, "words": words, "fallback": "lrclib"}
+    return {
+        "start_ms": start,
+        "words": words,
+        "fallback": "lrclib",
+        "gate_reason": reason,
+    }
 
 
 def generate_word_timings(
@@ -812,6 +822,7 @@ def generate_word_timings(
         "n_line_aligned": 0,
         "mean_line_score": 0.0,
         "frame_ms": FRAME_MS,
+        "line_decisions": [],
     }
     if not lines:
         stats["coverage"] = 0.0
@@ -820,6 +831,7 @@ def generate_word_timings(
     emission = compute_emission(waveform, with_star=True)
     fms = emission_frame_ms(emission, n, sr)
     stats["frame_ms"] = round(fms, 4)
+    decisions: list[dict[str, Any]] = []
 
     generated_lines: list[dict[str, Any]] = []
     line_scores: list[float] = []
@@ -827,9 +839,20 @@ def generate_word_timings(
 
     for i, ln in enumerate(lines):
         usable = [w for w in ln["words"] if w.get("mms")]
+        prior = int(ln["prior_ms"])
+        preview = " ".join(w["text"] for w in ln["words"][:6])
         if not usable:
-            generated_lines.append(_keep_lrclib_line(ln))
+            generated_lines.append(_keep_lrclib_line(ln, reason="no_mms_tokens"))
             stats["n_line_fallback"] += 1
+            decisions.append(
+                {
+                    "line": i,
+                    "decision": "fallback_lrclib",
+                    "reason": "no_mms_tokens",
+                    "prior_ms": prior,
+                    "text": preview,
+                }
+            )
             continue
 
         g0, g1 = _line_window(
@@ -865,17 +888,47 @@ def generate_word_timings(
         # Non-circular line gate: first aligned word vs LRCLIB line start.
         # Posterior threshold still decides CTC vs interp per word below.
         first_hit = next((h for h in hits if h.get("ctc_ms") is not None), None)
-        prior = int(ln["prior_ms"])
-        if first_hit is None or abs(int(first_hit["ctc_ms"]) - prior) > line_agree_ms:
-            generated_lines.append(_keep_lrclib_line(ln))
+        if first_hit is None:
+            reason = "no_ctc_hit"
+            generated_lines.append(_keep_lrclib_line(ln, reason=reason))
             stats["n_line_fallback"] += 1
-            # Advance neighbor clamp using LRCLIB span so the next window is sane.
             last_prior = max(w["prior_ms"] for w in usable)
             prev_end = max(prev_end, int(last_prior))
+            decisions.append(
+                {
+                    "line": i,
+                    "decision": "fallback_lrclib",
+                    "reason": reason,
+                    "prior_ms": prior,
+                    "window_ms": [g0, g1],
+                    "text": preview,
+                }
+            )
+            continue
+        agree_delta = int(first_hit["ctc_ms"]) - prior
+        if abs(agree_delta) > line_agree_ms:
+            reason = f"first_word_disagree_ms={agree_delta}"
+            generated_lines.append(_keep_lrclib_line(ln, reason=reason))
+            stats["n_line_fallback"] += 1
+            last_prior = max(w["prior_ms"] for w in usable)
+            prev_end = max(prev_end, int(last_prior))
+            decisions.append(
+                {
+                    "line": i,
+                    "decision": "fallback_lrclib",
+                    "reason": reason,
+                    "prior_ms": prior,
+                    "first_ctc_ms": int(first_hit["ctc_ms"]),
+                    "agree_delta_ms": agree_delta,
+                    "window_ms": [g0, g1],
+                    "text": preview,
+                }
+            )
             continue
 
         hit_i = 0
         merged = []
+        n_ctc_line = 0
         for w in ln["words"]:
             if not w.get("mms"):
                 merged.append({**w, "ctc_ms": None, "end_ms": None, "score": 0.0})
@@ -888,6 +941,7 @@ def generate_word_timings(
             if h.get("ctc_ms") is not None and h.get("score", 0) >= min_score:
                 stats["high_conf"] += 1
                 stats["n_ctc"] += 1
+                n_ctc_line += 1
 
         scored = [h for h in hits if h.get("ctc_ms") is not None]
         mean_score = statistics.mean(h["score"] for h in scored) if scored else 0.0
@@ -915,6 +969,22 @@ def generate_word_timings(
                 "start_ms": filled[0]["start_ms"] if filled else seg_start,
                 "words": filled,
                 "fallback": None,
+                "gate_reason": "aligned",
+            }
+        )
+        decisions.append(
+            {
+                "line": i,
+                "decision": "aligned",
+                "reason": "ok",
+                "prior_ms": prior,
+                "first_ctc_ms": int(first_hit["ctc_ms"]),
+                "agree_delta_ms": agree_delta,
+                "mean_score": round(mean_score, 4),
+                "n_ctc": n_ctc_line,
+                "n_interp": n_interp,
+                "window_ms": [g0, g1],
+                "text": preview,
             }
         )
         prev_end = max(prev_end, filled[-1]["start_ms"] if filled else seg_end)
@@ -923,6 +993,7 @@ def generate_word_timings(
         round(stats["high_conf"] / stats["n_words"], 4) if stats["n_words"] else 0.0
     )
     stats["mean_line_score"] = round(statistics.mean(line_scores), 4) if line_scores else 0.0
+    stats["line_decisions"] = decisions
     return generated_lines, stats
 
 
@@ -1205,9 +1276,10 @@ def cmd_selftest_timebase(args: argparse.Namespace) -> int:
     )
     results = []
     ok = True
-    # Absolute cap (~3 MMS frames) plus a no-growth check: round-4's segment
-    # crush produced multi-second errors that worsened with song position.
-    abs_tol = 60
+    # Honest floor ~40 ms: constant CTC_LAG_COMPENSATE_MS cannot null all three
+    # positions at once (signed residuals go both ways; best max-abs ≈35–40 ms).
+    # Plus a no-growth check — round-4's segment crush worsened with position.
+    abs_tol = TIMEBASE_ABS_TOL_MS
     for (ms, word), gl in zip(truth_first, generated):
         w0 = gl["words"][0]
         ctc = int(w0["start_ms"])
@@ -1231,7 +1303,12 @@ def cmd_selftest_timebase(args: argparse.Namespace) -> int:
     payload = {
         "mode": "selftest_timebase",
         "frame_ms": stats.get("frame_ms"),
+        "ctc_lag_compensate_ms": CTC_LAG_COMPENSATE_MS,
         "tolerance_ms": abs_tol,
+        "tolerance_note": (
+            "30 ms not achievable with a single lag compensate across 30/120/240 s; "
+            "floor is ~40 ms (MMS frame grain + onset variance)."
+        ),
         "max_error_growth_ms": 30,
         "error_growth_ms": growth,
         "gen": {
@@ -1426,7 +1503,8 @@ def cmd_synth_full(args: argparse.Namespace) -> int:
                 lrc=str(out_lrc),
                 work_dir=str(work),
                 no_demucs=not use_demucs,
-                allow_no_demucs=True,
+                # Official Demucs eval must not silently fall back to the mix.
+                allow_no_demucs=False if use_demucs else True,
                 demucs_model="htdemucs",
                 line_search_ms=args.line_search_ms,
                 min_score=DEFAULT_MIN_SCORE,
@@ -1437,23 +1515,43 @@ def cmd_synth_full(args: argparse.Namespace) -> int:
                 min_coverage=0.0,
                 json=str(gen_json),
             )
-            cmd_generate_words(ns)
-            aligned_raw = out_lrc.read_text(encoding="utf-8", errors="replace")
-            after = _score_lrc_against_truth(aligned_raw, truth_words)
-            entry["after_vs_truth"] = after["stats"]
-            entry["generate_json"] = str(gen_json)
-            entry["demucs"] = use_demucs
-            a = after["stats"]
-            entry["meets_target"] = bool(
-                a.get("median_abs_ms") is not None
-                and a.get("p90_abs_ms") is not None
-                and a["median_abs_ms"] <= MEDIAN_ABS_LIMIT_MS
-                and a["p90_abs_ms"] <= P90_ABS_LIMIT_MS
-                and abs(a.get("drift_ms_per_min") or 0) <= DRIFT_LIMIT_MS_PER_MIN
+            rc = cmd_generate_words(ns)
+            gen_payload: dict[str, Any] = {}
+            if gen_json.exists():
+                try:
+                    gen_payload = json.loads(gen_json.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    gen_payload = {}
+            # Only claim Demucs when the generate step actually separated vocals.
+            demucs_used = bool(gen_payload.get("demucs"))
+            entry["demucs"] = demucs_used
+            entry["seconds_demucs"] = (
+                gen_payload.get("seconds_demucs")
+                if demucs_used
+                else None
             )
+            entry["seconds_align"] = gen_payload.get("seconds_align")
+            entry["generate_json"] = str(gen_json)
+            if gen_payload.get("skipped") or not out_lrc.exists():
+                entry["after_vs_truth"] = {"n": 0, "pass": False, "reason": gen_payload.get("reason")}
+                entry["meets_target"] = False
+                entry["generate_rc"] = rc
+            else:
+                aligned_raw = out_lrc.read_text(encoding="utf-8", errors="replace")
+                after = _score_lrc_against_truth(aligned_raw, truth_words)
+                entry["after_vs_truth"] = after["stats"]
+                a = after["stats"]
+                entry["meets_target"] = bool(
+                    a.get("median_abs_ms") is not None
+                    and a.get("p90_abs_ms") is not None
+                    and a["median_abs_ms"] <= MEDIAN_ABS_LIMIT_MS
+                    and a["p90_abs_ms"] <= P90_ABS_LIMIT_MS
+                    and abs(a.get("drift_ms_per_min") or 0) <= DRIFT_LIMIT_MS_PER_MIN
+                )
 
         report.append(entry)
 
+    demucs_all = bool(report) and all(bool(v.get("demucs")) for v in report if args.run_align)
     payload = {
         "mode": "synth_full",
         "pass_bar": {
@@ -1461,10 +1559,12 @@ def cmd_synth_full(args: argparse.Namespace) -> int:
             "p90_abs_ms": P90_ABS_LIMIT_MS,
             "drift_ms_per_min": DRIFT_LIMIT_MS_PER_MIN,
         },
-        "demucs": use_demucs,
+        "demucs_requested": use_demucs,
+        "demucs": demucs_all if args.run_align else False,
         "note": (
-            "Scores are LRC vs independent TTS onset truth after Demucs vocals. "
-            "No Deezer previews, no CTC self-score."
+            "Scores are LRC vs independent TTS onset truth. "
+            "`demucs` is true only when every variant's generate step actually "
+            "ran Demucs (no silent mix fallback). No Deezer previews, no CTC self-score."
         ),
         "root_cause_fixed": (
             "Removed len(words)*280 segment cap that crushed lines to ~1.4s; "
@@ -1634,16 +1734,20 @@ def cmd_generate_words(args: argparse.Namespace) -> int:
     work.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     use_demucs = not args.no_demucs
+    demucs_used = False
     try:
         vocals = prepare_vocals(
             Path(args.audio), work, use_demucs=use_demucs, demucs_model=args.demucs_model
         )
+        demucs_used = use_demucs
     except Exception as exc:
         payload = {
             "mode": "generate_words",
             "skipped": True,
             "reason": f"demucs/prepare failed: {exc}",
             "fallback": "keep_lrclib",
+            "demucs": False,
+            "seconds_demucs": None,
         }
         _emit(payload, args.json)
         return 0
@@ -1700,14 +1804,16 @@ def cmd_generate_words(args: argparse.Namespace) -> int:
         "aligned_version": args.aligned_version,
         "line_search_ms": args.line_search_ms,
         "min_score": args.min_score,
-        "demucs": use_demucs,
-        "seconds_separate": round(sep_s, 2),
+        "demucs": demucs_used,
+        "seconds_demucs": round(sep_s, 2) if demucs_used else None,
+        "seconds_separate": round(sep_s, 2),  # alias; demucs or ffmpeg prep
         "seconds_align": round(align_s, 2),
         "seconds_total": round(time.time() - t0, 2),
         "audio_duration_s": round(audio_dur_s, 2),
         "realtime_factor": round((time.time() - t0) / audio_dur_s, 3) if audio_dur_s > 0 else None,
         "peak_rss_mb": peak_rss_mb,
         "gen": gen_stats,
+        "line_decisions": gen_stats.get("line_decisions", []),
         "coverage": coverage,
         "gate": {
             "ok": gate_ok,
@@ -1823,6 +1929,267 @@ def cmd_separate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _yaml_scalar(raw: str) -> str:
+    s = raw.strip()
+    if not s or s in {"null", "~"}:
+        return ""
+    if len(s) >= 2 and s[0] == "'" and s[-1] == "'":
+        return s[1:-1].replace("''", "'")
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        return s[1:-1].replace(r"\"", '"').replace(r"\\", "\\")
+    return s
+
+
+def _yaml_int(raw: str) -> int | None:
+    s = raw.strip()
+    for i, ch in enumerate(s):
+        if ch in " \t#":
+            s = s[:i]
+            break
+    try:
+        return int(s)
+    except ValueError:
+        return None
+
+
+def lyricsfile_to_enhanced_lrc(raw: str) -> str | None:
+    """Port of server/lyricsfile.go — LRCLIB lyricsfile YAML → Enhanced LRC."""
+    lines_out: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = None
+    in_words = False
+    for line in raw.replace("\r\n", "\n").split("\n"):
+        trimmed = line.strip()
+        if not trimmed or trimmed.startswith("#"):
+            continue
+        indent = 0
+        for ch in line:
+            if ch == " ":
+                indent += 1
+            elif ch == "\t":
+                indent += 2
+            else:
+                break
+        if trimmed.startswith("- text:"):
+            val = _yaml_scalar(trimmed[len("- text:") :])
+            if indent == 0:
+                cur = {"text": val, "start_ms": 0, "words": []}
+                lines_out.append(cur)
+                in_words = False
+            elif cur is not None and in_words:
+                cur["words"].append({"text": val, "start_ms": 0})
+        elif trimmed.startswith("start_ms:"):
+            ms = _yaml_int(trimmed[len("start_ms:") :])
+            if ms is None or cur is None:
+                continue
+            if in_words and cur["words"] and indent >= 4:
+                cur["words"][-1]["start_ms"] = ms
+            else:
+                cur["start_ms"] = ms
+        elif trimmed == "words:" or trimmed.startswith("words:"):
+            if cur is not None:
+                in_words = True
+    if not lines_out:
+        return None
+    word_count = 0
+    out_lines = []
+    for ln in lines_out:
+        if not ln["words"]:
+            out_lines.append(f"[{format_stamp(ln['start_ms'])}] {ln['text'].strip()}")
+            continue
+        bits = [f"[{format_stamp(ln['start_ms'])}]"]
+        for w in ln["words"]:
+            if not w["text"]:
+                continue
+            word_count += 1
+            bits.append(f"<{format_stamp(w['start_ms'])}>{w['text']}")
+        out_lines.append(" ".join(bits))
+    if word_count == 0:
+        return None
+    return "\n".join(out_lines) + "\n"
+
+
+def fetch_lrclib_enhanced(
+    *,
+    artist: str,
+    title: str,
+    duration_s: int | None = None,
+    album: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Fetch word-synced Enhanced LRC from LRCLIB (lyricsfile preferred)."""
+    import urllib.parse
+    import urllib.request
+
+    params = {"artist_name": artist, "track_name": title}
+    if duration_s is not None:
+        params["duration"] = str(int(duration_s))
+    if album:
+        params["album_name"] = album
+    url = "https://lrclib.net/api/get?" + urllib.parse.urlencode(params)
+    meta: dict[str, Any] = {"url": url, "artist": artist, "title": title}
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        # Fall back to search.
+        q = urllib.parse.urlencode({"q": f"{artist} {title}"})
+        search_url = f"https://lrclib.net/api/search?{q}"
+        meta["search_url"] = search_url
+        with urllib.request.urlopen(search_url, timeout=30) as resp:
+            hits = json.loads(resp.read().decode("utf-8"))
+        if not hits:
+            raise RuntimeError(f"LRCLIB miss for {artist} — {title} ({exc})") from exc
+        data = hits[0]
+        meta["search_hit_id"] = data.get("id")
+
+    meta["id"] = data.get("id")
+    meta["duration"] = data.get("duration")
+    meta["hasWordSync"] = data.get("hasWordSync")
+    lyricsfile = (data.get("lyricsfile") or "").strip()
+    synced = (data.get("syncedLyrics") or "").strip()
+    if lyricsfile:
+        enhanced = lyricsfile_to_enhanced_lrc(lyricsfile)
+        if enhanced:
+            meta["source"] = "lyricsfile"
+            return enhanced, meta
+    if synced and "<" in synced:
+        meta["source"] = "syncedLyrics"
+        return synced if synced.endswith("\n") else synced + "\n", meta
+    if synced:
+        meta["source"] = "syncedLyrics_line_only"
+        raise RuntimeError("LRCLIB hit is line-only (no word sync); provide --lrc")
+    raise RuntimeError("LRCLIB hit has no synced lyrics")
+
+
+def probe_audio_duration_s(audio: Path) -> float | None:
+    try:
+        out = subprocess.check_output(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(audio),
+            ],
+            text=True,
+        ).strip()
+        return float(out)
+    except Exception:
+        return None
+
+
+def cmd_align_track(args: argparse.Namespace) -> int:
+    """One-command real-track align: audio + (.lrc | LRCLIB fetch) → report.
+
+    Example:
+      python3 align_lyrics.py align-track \\
+        --audio /music/Kendrick/BDKMV.flac \\
+        --artist 'Kendrick Lamar' --title \"Bitch, Don't Kill My Vibe\" \\
+        --out-dir /tmp/bdkmv-align
+    """
+    audio = Path(args.audio)
+    if not audio.is_file():
+        print(f"audio not found: {audio}", file=sys.stderr)
+        return 2
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    lrclib_meta: dict[str, Any] | None = None
+    if args.lrc:
+        lrc_src = Path(args.lrc)
+        raw = lrc_src.read_text(encoding="utf-8", errors="replace")
+        input_lrc_path = out_dir / "input.lrc"
+        input_lrc_path.write_text(raw, encoding="utf-8")
+        lyrics_source = f"file:{lrc_src}"
+    else:
+        if not args.artist or not args.title:
+            print("align-track needs --lrc or both --artist and --title", file=sys.stderr)
+            return 2
+        dur = args.duration
+        if dur is None:
+            probed = probe_audio_duration_s(audio)
+            dur = int(round(probed)) if probed else None
+        raw, lrclib_meta = fetch_lrclib_enhanced(
+            artist=args.artist,
+            title=args.title,
+            duration_s=dur,
+            album=args.album,
+        )
+        input_lrc_path = out_dir / "input.lrc"
+        input_lrc_path.write_text(raw, encoding="utf-8")
+        lyrics_source = f"lrclib:{lrclib_meta.get('id')}"
+        (out_dir / "lrclib.json").write_text(json.dumps(lrclib_meta, indent=2) + "\n", encoding="utf-8")
+
+    aligned_path = out_dir / "aligned.lrc"
+    aligned_path.write_text(input_lrc_path.read_text(encoding="utf-8"), encoding="utf-8")
+    gen_json = out_dir / "generate.json"
+    work = out_dir / "work"
+    work.mkdir(exist_ok=True)
+
+    ns = argparse.Namespace(
+        audio=str(audio),
+        lrc=str(aligned_path),
+        work_dir=str(work),
+        no_demucs=bool(args.no_demucs),
+        allow_no_demucs=bool(args.allow_no_demucs),
+        demucs_model=args.demucs_model,
+        line_search_ms=args.line_search_ms,
+        min_score=args.min_score,
+        aligned_version=ALIGNED_VERSION,
+        force=True,
+        write=True,
+        force_write=bool(args.force_write),
+        min_coverage=args.min_coverage,
+        json=str(gen_json),
+    )
+    rc = cmd_generate_words(ns)
+    gen_payload: dict[str, Any] = {}
+    if gen_json.exists():
+        try:
+            gen_payload = json.loads(gen_json.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            gen_payload = {}
+
+    decisions = gen_payload.get("line_decisions") or (gen_payload.get("gen") or {}).get("line_decisions") or []
+    report = {
+        "mode": "align_track",
+        "audio": str(audio),
+        "lyrics_source": lyrics_source,
+        "lrclib": lrclib_meta,
+        "input_lrc": str(input_lrc_path),
+        "aligned_lrc": str(aligned_path),
+        "generate_json": str(gen_json),
+        "demucs": bool(gen_payload.get("demucs")),
+        "seconds_demucs": gen_payload.get("seconds_demucs"),
+        "seconds_align": gen_payload.get("seconds_align"),
+        "seconds_total": gen_payload.get("seconds_total"),
+        "coverage": gen_payload.get("coverage"),
+        "gate": gen_payload.get("gate"),
+        "wrote": gen_payload.get("wrote"),
+        "fallback": gen_payload.get("fallback"),
+        "reason": gen_payload.get("reason"),
+        "n_line_aligned": (gen_payload.get("gen") or {}).get("n_line_aligned"),
+        "n_line_fallback": (gen_payload.get("gen") or {}).get("n_line_fallback"),
+        "line_decisions": decisions,
+        "generate_rc": rc,
+    }
+    report_path = out_dir / "report.json"
+    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    # Human-readable per-line gate table on stderr.
+    print(f"align-track report → {report_path}", file=sys.stderr)
+    print(
+        f"demucs={report['demucs']} coverage={report['coverage']} "
+        f"aligned_lines={report['n_line_aligned']} fallback_lines={report['n_line_fallback']} "
+        f"wrote={report['wrote']}",
+        file=sys.stderr,
+    )
+    for d in decisions:
+        print(
+            f"  line {d.get('line')}: {d.get('decision')} ({d.get('reason')}) — {d.get('text', '')[:60]}",
+            file=sys.stderr,
+        )
+    _emit(report, args.json)
+    return 0 if not gen_payload.get("skipped") else 1
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1904,7 +2271,7 @@ def main() -> int:
 
     st = sub.add_parser(
         "selftest-timebase",
-        help="Recover known onsets within 30ms at 30s/120s/240s",
+        help="Recover known onsets at 30s/120s/240s (abs_tol ~40ms floor)",
     )
     st.add_argument("--json")
     st.set_defaults(func=cmd_selftest_timebase)
@@ -1927,6 +2294,31 @@ def main() -> int:
     sf.add_argument("--line-search-ms", type=int, default=DEFAULT_LINE_SEARCH_MS)
     sf.add_argument("--json")
     sf.set_defaults(func=cmd_synth_full)
+
+    at = sub.add_parser(
+        "align-track",
+        help="Align one real track (audio + .lrc or LRCLIB fetch) with per-line gate report",
+    )
+    at.add_argument("--audio", required=True)
+    at.add_argument("--out-dir", required=True)
+    at.add_argument("--lrc", help="Existing Enhanced LRC (skip LRCLIB fetch)")
+    at.add_argument("--artist", help="LRCLIB artist (with --title)")
+    at.add_argument("--title", help="LRCLIB title (with --artist)")
+    at.add_argument("--album", help="Optional LRCLIB album")
+    at.add_argument("--duration", type=int, help="Optional duration seconds for LRCLIB get")
+    at.add_argument("--no-demucs", action="store_true")
+    at.add_argument("--allow-no-demucs", action="store_true")
+    at.add_argument("--demucs-model", default="htdemucs")
+    at.add_argument("--line-search-ms", type=int, default=DEFAULT_LINE_SEARCH_MS)
+    at.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE)
+    at.add_argument("--min-coverage", type=float, default=DEFAULT_MIN_COVERAGE)
+    at.add_argument(
+        "--force-write",
+        action="store_true",
+        help="Write aligned.lrc even if the coverage gate fails",
+    )
+    at.add_argument("--json", help="Also emit the report JSON to this path")
+    at.set_defaults(func=cmd_align_track)
 
     b = sub.add_parser("benchmark", help="Demucs + align cost per audio minute")
     b.add_argument("--audio", required=True)

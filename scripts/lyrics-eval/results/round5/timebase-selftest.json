@@ -1,7 +1,9 @@
 {
   "mode": "selftest_timebase",
   "frame_ms": 20.0016,
-  "tolerance_ms": 60,
+  "ctc_lag_compensate_ms": 40,
+  "tolerance_ms": 40,
+  "tolerance_note": "30 ms not achievable with a single lag compensate across 30/120/240 s; floor is ~40 ms (MMS frame grain + onset variance).",
   "max_error_growth_ms": 30,
   "error_growth_ms": 17,
   "gen": {
