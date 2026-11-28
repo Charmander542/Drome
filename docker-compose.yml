@@ -49,7 +49,7 @@ services:
       # a valid synthetic ground-truth eval clears the soft p90≈150 ms bar.
       # Opt in: DROME_LYRICS_ALIGN=true (needs torch/demucs; else keep_lrclib).
       DROME_LYRICS_ALIGN: ${DROME_LYRICS_ALIGN:-false}
-      DROME_LYRICS_ALIGN_LINE_SEARCH_MS: ${DROME_LYRICS_ALIGN_LINE_SEARCH_MS:-3000}
+      DROME_LYRICS_ALIGN_LINE_SEARCH_MS: ${DROME_LYRICS_ALIGN_LINE_SEARCH_MS:-1500}
       DROME_LYRICS_ALIGN_GAP: ${DROME_LYRICS_ALIGN_GAP:-5s}
       DROME_LYRICS_ALIGN_NICE: ${DROME_LYRICS_ALIGN_NICE:-true}
     volumes:

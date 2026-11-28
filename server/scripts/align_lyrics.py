@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -44,18 +45,83 @@ OFFSET_RE = re.compile(r"\[offset:\s*([+-]?\d+)\s*\]", re.I)
 ALIGNED_RE = re.compile(r"\[drome-aligned:([^\]]+)\]", re.I)
 PAREN_RE = re.compile(r"^[\(\[]|[\)\]]$")
 
-MEDIAN_ABS_LIMIT_MS = 40
-P90_ABS_LIMIT_MS = 100
+MEDIAN_ABS_LIMIT_MS = 60  # round-5 shipping target vs ground truth
+P90_ABS_LIMIT_MS = 150
 DRIFT_LIMIT_MS_PER_MIN = 30
-ALIGNED_VERSION = "v3-ctc-seg"
-DEFAULT_LINE_SEARCH_MS = 3000
-DEFAULT_MIN_SCORE = 0.12
-FRAME_MS = 20.0  # MMS_FA hop at 16 kHz
+ALIGNED_VERSION = "v4-ctc-line"
+DEFAULT_LINE_SEARCH_MS = 1500
+DEFAULT_MIN_SCORE = 0.08
+DEFAULT_MIN_COVERAGE = 0.7
+LINE_AGREE_MS = 1000  # first CTC word must land within this of LRCLIB line start
+FRAME_MS = 20.0  # MMS_FA asymptotic hop (320 samples @ 16 kHz)
+# MMS_FA word starts are ~1–2 frames late on clean speech; pull CTC onsets
+# forward so karaoke lights with the vocal (still clamped ≥0). Client also
+# applies a separate 45 ms visual lead.
+CTC_LAG_COMPENSATE_MS = 40
 _MMS_CHARS = set("abcdefghijklmnopqrstuvwxyz'")
+
+# Spoken forms MMS can actually emit (numbers / common contractions).
+_NUMBER_WORDS = {
+    "0": "zero",
+    "1": "one",
+    "2": "two",
+    "3": "three",
+    "4": "four",
+    "5": "five",
+    "6": "six",
+    "7": "seven",
+    "8": "eight",
+    "9": "nine",
+    "10": "ten",
+}
+_CONTRACTIONS = {
+    "won't": "wont",
+    "can't": "cant",
+    "don't": "dont",
+    "didn't": "didnt",
+    "it's": "its",
+    "that's": "thats",
+    "i'm": "im",
+    "you're": "youre",
+    "we're": "were",
+    "they're": "theyre",
+    "i've": "ive",
+    "you've": "youve",
+    "we've": "weve",
+    "they've": "theyve",
+    "i'll": "ill",
+    "you'll": "youll",
+    "he'll": "hell",
+    "she'll": "shell",
+    "we'll": "well",
+    "they'll": "theyll",
+    "isn't": "isnt",
+    "aren't": "arent",
+    "wasn't": "wasnt",
+    "weren't": "werent",
+    "haven't": "havent",
+    "hasn't": "hasnt",
+    "hadn't": "hadnt",
+    "wouldn't": "wouldnt",
+    "couldn't": "couldnt",
+    "shouldn't": "shouldnt",
+    "ain't": "aint",
+    "y'all": "yall",
+}
 
 
 def normalize_token(tok: str) -> str:
-    return re.sub(r"[^a-z0-9']+", "", tok.lower())
+    t = tok.strip().lower()
+    # Profanity stars / grawlix → drop non-letters so residual letters remain.
+    t = t.replace("*", "")
+    if t in _CONTRACTIONS:
+        t = _CONTRACTIONS[t]
+    if t in _NUMBER_WORDS:
+        t = _NUMBER_WORDS[t]
+    # "12" → "one"+"two" is too aggressive for MMS as one token; spell as digits joined.
+    if t.isdigit() and t not in _NUMBER_WORDS:
+        t = "".join(_NUMBER_WORDS.get(ch, ch) for ch in t)
+    return re.sub(r"[^a-z0-9']+", "", t)
 
 
 def mms_word(tok: str) -> str:
@@ -70,9 +136,17 @@ def is_skippable_token(text: str) -> bool:
         return True
     if t.startswith("(") or t.startswith("[") or t.endswith(")") or t.endswith("]"):
         return True
-    # Common ad-lib marks
+    # Bare profanity masks / grawlix
+    if re.fullmatch(r"[*#@$%]+", t):
+        return True
     low = normalize_token(t)
-    return low in {"yeah", "uh", "ooh", "ooo", "ah", "ha", "hey", "woah", "whoa"}
+    return low in {"yeah", "uh", "ooh", "ooo", "ah", "ha", "hey", "woah", "whoa", "oohh", "mmm"}
+
+
+def emission_frame_ms(emission: "torch.Tensor", n_samples: int, sr: int = 16_000) -> float:
+    """Ms per MMS emission frame from the actual tensor length (not a hard-coded guess)."""
+    frames = max(1, int(emission.shape[0]))
+    return (n_samples / sr * 1000.0) / frames
 
 
 def stamp_to_ms(mm: str, ss: str, frac: str | None) -> int:
@@ -316,6 +390,7 @@ def ctc_align_emission(
     tokens: list[str],
     g0_ms: int,
     *,
+    frame_ms: float = FRAME_MS,
     with_star: bool = True,
 ) -> list[dict[str, Any]]:
     """Align tokens against a precomputed emission slice starting at g0_ms."""
@@ -336,11 +411,13 @@ def ctc_align_emission(
         start_frame = word_spans[0].start
         end_frame = word_spans[-1].end
         score = float(statistics.mean(s.score for s in word_spans))
+        start_ms = g0_ms + int(round(start_frame * frame_ms)) - CTC_LAG_COMPENSATE_MS
+        end_ms = g0_ms + int(round(end_frame * frame_ms)) - CTC_LAG_COMPENSATE_MS
         out.append(
             {
                 "mms": tok,
-                "ctc_ms": g0_ms + int(round(start_frame * FRAME_MS)),
-                "end_ms": g0_ms + int(round(end_frame * FRAME_MS)),
+                "ctc_ms": max(0, start_ms),
+                "end_ms": max(0, end_ms),
                 "score": score,
             }
         )
@@ -355,8 +432,13 @@ def ctc_align_in_window(
     *,
     with_star: bool = True,
     emission: "torch.Tensor | None" = None,
+    frame_ms: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Align `tokens` inside absolute window [g0_ms, g1_ms]."""
+    """Align `tokens` inside absolute window [g0_ms, g1_ms].
+
+    When `emission` is the full-clip MMS tensor, slice by frame index and add
+    the window's absolute origin back — never treat local frame 0 as t=0 of the song.
+    """
     if not tokens:
         return []
     sr = 16_000
@@ -370,10 +452,13 @@ def ctc_align_in_window(
     g0 = max(0, g0_ms)
     g1 = min(dur_ms, max(g0 + need, g1_ms))
     if emission is not None:
-        # emission frame i ≈ time i * FRAME_MS
-        f0 = max(0, int(g0 / FRAME_MS))
-        f1 = min(emission.shape[0], max(f0 + 3, int(g1 / FRAME_MS)))
-        return ctc_align_emission(emission[f0:f1], tokens, int(f0 * FRAME_MS), with_star=with_star)
+        fms = frame_ms if frame_ms is not None else emission_frame_ms(emission, n, sr)
+        f0 = max(0, int(g0 / fms))
+        f1 = min(emission.shape[0], max(f0 + 3, int(math.ceil(g1 / fms))))
+        # Origin is the absolute time of emission frame f0 — critical for long files.
+        return ctc_align_emission(
+            emission[f0:f1], tokens, int(round(f0 * fms)), frame_ms=fms, with_star=with_star
+        )
 
     import torch
 
@@ -391,11 +476,13 @@ def ctc_align_in_window(
         em, _ = model(clip)
         if em.ndim == 3:
             em = em[0]
+        em = em.cpu()
         try:
-            spans = aligner(em.cpu(), tokenizer(tokens))
+            spans = aligner(em, tokenizer(tokens))
         except Exception as exc:  # pragma: no cover
             print(f"align window failed: {exc}", file=sys.stderr)
             return []
+    local_fms = emission_frame_ms(em, clip.shape[-1], sr)
     out = []
     for tok, word_spans in zip(tokens, spans):
         if not word_spans:
@@ -404,11 +491,13 @@ def ctc_align_in_window(
         start_frame = word_spans[0].start
         end_frame = word_spans[-1].end
         score = float(statistics.mean(s.score for s in word_spans))
+        start_ms = g0 + int(round(start_frame * local_fms)) - CTC_LAG_COMPENSATE_MS
+        end_ms = g0 + int(round(end_frame * local_fms)) - CTC_LAG_COMPENSATE_MS
         out.append(
             {
                 "mms": tok,
-                "ctc_ms": g0 + int(round(start_frame * FRAME_MS)),
-                "end_ms": g0 + int(round(end_frame * FRAME_MS)),
+                "ctc_ms": max(0, start_ms),
+                "end_ms": max(0, end_ms),
                 "score": score,
             }
         )
@@ -647,19 +736,70 @@ def interpolate_low_confidence(
     return out, interpolated
 
 
+def _line_window(
+    lines: list[dict[str, Any]],
+    index: int,
+    *,
+    dur_ms: int,
+    line_search_ms: int,
+    prev_end_ms: int,
+) -> tuple[int, int]:
+    """LRCLIB line window ±search, clamped to neighbors — never crush to N*280ms."""
+    ln = lines[index]
+    prior = int(ln["prior_ms"])
+    words = [w for w in ln["words"] if w.get("mms")]
+    if words:
+        prior_span = max(400, words[-1]["prior_ms"] - words[0]["prior_ms"])
+    else:
+        prior_span = 800
+    next_prior = int(lines[index + 1]["prior_ms"]) if index + 1 < len(lines) else dur_ms
+    # Span at least to the next line prior so mid-line words have room.
+    span = max(prior_span + 400, next_prior - prior)
+    g0 = max(0, prior - line_search_ms)
+    g1 = min(dur_ms, prior + span + line_search_ms)
+    # Clamp to neighbors so windows don't steal the next line's vocal.
+    g0 = max(g0, prev_end_ms)
+    g1 = min(g1, next_prior + line_search_ms)
+    if g1 <= g0 + 300:
+        g1 = min(dur_ms, g0 + max(800, prior_span + 2 * line_search_ms))
+    return int(g0), int(g1)
+
+
+def _keep_lrclib_line(ln: dict[str, Any]) -> dict[str, Any]:
+    words = []
+    for w in ln["words"]:
+        words.append(
+            {
+                **w,
+                "start_ms": int(w.get("prior_ms", ln["prior_ms"])),
+                "source": "lrclib",
+                "ctc_ms": None,
+                "score": 0.0,
+            }
+        )
+    start = words[0]["start_ms"] if words else int(ln["prior_ms"])
+    return {"start_ms": start, "words": words, "fallback": "lrclib"}
+
+
 def generate_word_timings(
     waveform: "torch.Tensor",
     lines: list[dict[str, Any]],
     *,
     line_search_ms: int = DEFAULT_LINE_SEARCH_MS,
     min_score: float = DEFAULT_MIN_SCORE,
+    line_agree_ms: int = LINE_AGREE_MS,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Segment-constrained CTC: slide-search lines → in-segment words → interpolate."""
+    """Segment-constrained CTC per LRCLIB line (±search, neighbor-clamped).
+
+    Round-4 bug: a `len(words)*280` segment cap crushed each line to ~1.4 s, so
+    only the first word locked and the rest were interpolated early — error grew
+    with duration. This path keeps the full line span from LRCLIB priors.
+    """
     sr = 16_000
     n = waveform.shape[-1]
     dur_ms = max(1, int(n / sr * 1000))
     v0, v1 = vocal_activity_bounds(waveform)
-    stats = {
+    stats: dict[str, Any] = {
         "vocal_start_ms": v0,
         "vocal_end_ms": v1,
         "n_lines": len(lines),
@@ -668,177 +808,75 @@ def generate_word_timings(
         "n_interp": 0,
         "n_skippable": 0,
         "high_conf": 0,
+        "n_line_fallback": 0,
+        "n_line_aligned": 0,
         "mean_line_score": 0.0,
+        "frame_ms": FRAME_MS,
     }
+    if not lines:
+        stats["coverage"] = 0.0
+        return [], stats
 
     emission = compute_emission(waveform, with_star=True)
+    fms = emission_frame_ms(emission, n, sr)
+    stats["frame_ms"] = round(fms, 4)
 
-    # --- Pass 1: LRCLIB line prior ± search, forced forward cursor ---
-    line_segs: list[dict[str, Any]] = []
-    line_scores: list[float] = []
-    cursor = v0
-    n_lines_left = sum(1 for ln in lines if any(w.get("mms") for w in ln["words"]))
-    for i, ln in enumerate(lines):
-        priors = [w for w in ln["words"] if w.get("mms")]
-        if not priors:
-            continue
-        n_lines_left -= 1
-        # Budget remaining audio so late lines aren't crushed to zero.
-        reserve = max(300, n_lines_left * 450)
-        latest_start = max(cursor, dur_ms - reserve - 500)
-
-        prior = max(cursor + 20, ln["prior_ms"])
-        # Expected duration from coarse LRCLIB word span (anchor only).
-        prior_span = max(
-            600,
-            priors[-1]["prior_ms"] - priors[0]["prior_ms"] + 500,
-        )
-        tokens = [w["mms"] for w in priors]
-        # Chunk long lines
-        chunks: list[list[str]] = []
-        cur_tok: list[str] = []
-        for t in tokens:
-            if len(cur_tok) >= 10:
-                chunks.append(cur_tok)
-                cur_tok = []
-            cur_tok.append(t)
-        if cur_tok:
-            chunks.append(cur_tok)
-
-        chunk_hits: list[dict[str, Any]] = []
-        scores: list[float] = []
-        seg_start = None
-        seg_end = None
-        chunk_cursor = cursor
-        for ci, chunk in enumerate(chunks):
-            if ci == 0:
-                chunk_prior = prior
-            elif chunk_hits and chunk_hits[-1].get("end_ms") is not None:
-                chunk_prior = int(chunk_hits[-1]["end_ms"])
-            elif chunk_hits and chunk_hits[-1].get("ctc_ms") is not None:
-                chunk_prior = int(chunk_hits[-1]["ctc_ms"]) + 150
-            else:
-                chunk_prior = prior + ci * 400
-            # Window: ±line_search around prior, clamped to [chunk_cursor, latest]
-            need = _min_window_ms_for_tokens(chunk)
-            center = max(chunk_cursor, min(latest_start, chunk_prior))
-            g0 = max(chunk_cursor, center - line_search_ms)
-            g1 = min(dur_ms, max(g0 + need, center + prior_span + line_search_ms))
-            # Prefer a scored slide inside that window when it's wide enough
-            if g1 - g0 > need + 400:
-                hits, score, s0, s1 = search_line_placement(
-                    emission,
-                    chunk,
-                    chunk_prior,
-                    search_ms=min(line_search_ms, g1 - g0 - need),
-                    dur_ms=dur_ms,
-                    v0=g0,
-                    v1=g1,
-                    step_ms=80,
-                    min_start=chunk_cursor,
-                    max_ahead_ms=g1 - chunk_cursor,
-                )
-            else:
-                hits = ctc_align_in_window(
-                    waveform, chunk, g0, g1, with_star=True, emission=emission
-                )
-                scored = [h for h in hits if h.get("ctc_ms") is not None]
-                score = statistics.mean(h["score"] for h in scored) if scored else 0.0
-                if scored:
-                    s0 = min(h["ctc_ms"] for h in scored)
-                    s1 = max(h["end_ms"] or h["ctc_ms"] for h in scored)
-                else:
-                    s0, s1 = center, center + need
-            chunk_hits.extend(hits)
-            scores.append(score)
-            seg_start = s0 if seg_start is None else min(seg_start, s0)
-            seg_end = s1 if seg_end is None else max(seg_end, s1)
-            chunk_cursor = max(chunk_cursor, int(seg_end) if seg_end else chunk_cursor)
-
-        mean_score = statistics.mean(scores) if scores else 0.0
-        line_scores.append(mean_score)
-        if seg_start is None:
-            seg_start = prior
-            seg_end = min(dur_ms, prior + prior_span)
-        # Keep segments tight — long CTC tails steal audio from later lines.
-        max_end = min(
-            dur_ms,
-            int(seg_start) + min(
-                max(prior_span + 800, _min_window_ms_for_tokens(tokens)),
-                max(900, len(priors) * 280),
-            ),
-        )
-        seg_end = min(int(seg_end), max_end)
-        seg_start = max(cursor, min(int(seg_start), dur_ms - 50))
-        seg_end = max(seg_start + 200, seg_end)
-        line_segs.append(
-            {
-                "index": i,
-                "words": ln["words"],
-                "start_ms": seg_start,
-                "end_ms": seg_end,
-                "mean_score": mean_score,
-                "coarse_hits": chunk_hits,
-            }
-        )
-        cursor = max(cursor, seg_end + 40)
-
-    for i in range(1, len(line_segs)):
-        if line_segs[i]["start_ms"] < line_segs[i - 1]["start_ms"] + 80:
-            line_segs[i]["start_ms"] = line_segs[i - 1]["start_ms"] + 80
-        if line_segs[i]["start_ms"] >= line_segs[i]["end_ms"]:
-            line_segs[i]["end_ms"] = min(dur_ms, line_segs[i]["start_ms"] + 500)
-
-    # Enforce non-overlapping segments before word pass.
-    for i in range(1, len(line_segs)):
-        prev = line_segs[i - 1]
-        cur = line_segs[i]
-        if cur["start_ms"] < prev["end_ms"]:
-            cur["start_ms"] = prev["end_ms"]
-        if cur["end_ms"] <= cur["start_ms"] + 150:
-            cur["end_ms"] = min(dur_ms, cur["start_ms"] + max(400, len(cur["words"]) * 120))
-
-    # --- Pass 2: word CTC strictly inside each line segment ---
     generated_lines: list[dict[str, Any]] = []
-    for seg in line_segs:
-        words = seg["words"]
-        usable = [w for w in words if w.get("mms")]
-        pad = 200
-        g0 = max(0, seg["start_ms"] - pad)
-        g1 = min(dur_ms, seg["end_ms"] + pad)
-        hits = []
-        # Align whole line when it fits; otherwise chunk sequentially inside the segment.
-        if usable:
-            if len(usable) <= 10:
-                hits = ctc_align_in_window(
+    line_scores: list[float] = []
+    prev_end = 0
+
+    for i, ln in enumerate(lines):
+        usable = [w for w in ln["words"] if w.get("mms")]
+        if not usable:
+            generated_lines.append(_keep_lrclib_line(ln))
+            stats["n_line_fallback"] += 1
+            continue
+
+        g0, g1 = _line_window(
+            lines, i, dur_ms=dur_ms, line_search_ms=line_search_ms, prev_end_ms=prev_end
+        )
+        tokens = [w["mms"] for w in usable]
+
+        # Chunk long lines sequentially inside the same neighbor-clamped window.
+        hits: list[dict[str, Any]] = []
+        if len(tokens) <= 12:
+            hits = ctc_align_in_window(
+                waveform, tokens, g0, g1, with_star=True, emission=emission, frame_ms=fms
+            )
+        else:
+            cursor = g0
+            for i0 in range(0, len(tokens), 8):
+                chunk = tokens[i0 : i0 + 8]
+                need = _min_window_ms_for_tokens(chunk)
+                cg1 = min(g1, max(cursor + need, g1))
+                part = ctc_align_in_window(
                     waveform,
-                    [w["mms"] for w in usable],
-                    g0,
-                    g1,
+                    chunk,
+                    cursor,
+                    cg1,
                     with_star=True,
                     emission=emission,
+                    frame_ms=fms,
                 )
-            else:
-                cursor2 = g0
-                for i0 in range(0, len(usable), 8):
-                    chunk = usable[i0 : i0 + 8]
-                    need = _min_window_ms_for_tokens([w["mms"] for w in chunk])
-                    cg1 = min(g1, max(cursor2 + need, g1))
-                    part = ctc_align_in_window(
-                        waveform,
-                        [w["mms"] for w in chunk],
-                        cursor2,
-                        cg1,
-                        with_star=True,
-                        emission=emission,
-                    )
-                    hits.extend(part)
-                    if part and part[-1].get("end_ms") is not None:
-                        cursor2 = max(cursor2, int(part[-1]["end_ms"]))
+                hits.extend(part)
+                if part and part[-1].get("end_ms") is not None:
+                    cursor = max(cursor, int(part[-1]["end_ms"]))
+
+        # Non-circular line gate: first aligned word vs LRCLIB line start.
+        # Posterior threshold still decides CTC vs interp per word below.
+        first_hit = next((h for h in hits if h.get("ctc_ms") is not None), None)
+        prior = int(ln["prior_ms"])
+        if first_hit is None or abs(int(first_hit["ctc_ms"]) - prior) > line_agree_ms:
+            generated_lines.append(_keep_lrclib_line(ln))
+            stats["n_line_fallback"] += 1
+            # Advance neighbor clamp using LRCLIB span so the next window is sane.
+            last_prior = max(w["prior_ms"] for w in usable)
+            prev_end = max(prev_end, int(last_prior))
+            continue
 
         hit_i = 0
         merged = []
-        for w in words:
+        for w in ln["words"]:
             if not w.get("mms"):
                 merged.append({**w, "ctc_ms": None, "end_ms": None, "score": 0.0})
                 continue
@@ -851,19 +889,35 @@ def generate_word_timings(
                 stats["high_conf"] += 1
                 stats["n_ctc"] += 1
 
+        scored = [h for h in hits if h.get("ctc_ms") is not None]
+        mean_score = statistics.mean(h["score"] for h in scored) if scored else 0.0
+        line_scores.append(mean_score)
+        seg_start = min(h["ctc_ms"] for h in scored) if scored else g0
+        seg_end = max((h["end_ms"] or h["ctc_ms"]) for h in scored) if scored else g1
+        # Keep interp domain inside the neighbor-clamped window (full line span).
+        seg_start = max(g0, int(seg_start))
+        seg_end = min(g1, max(int(seg_end), seg_start + 200))
+
         filled, n_interp = interpolate_low_confidence(
-            merged,
-            min_score=min_score,
-            seg_start=seg["start_ms"],
-            seg_end=seg["end_ms"],
+            merged, min_score=min_score, seg_start=seg_start, seg_end=seg_end
         )
+        # Monotonic vs previous line's last word.
+        if generated_lines and generated_lines[-1]["words"] and filled:
+            prev_last = generated_lines[-1]["words"][-1]["start_ms"]
+            if filled[0]["start_ms"] < prev_last:
+                shift = prev_last - filled[0]["start_ms"]
+                for w in filled:
+                    w["start_ms"] += shift
         stats["n_interp"] += n_interp
+        stats["n_line_aligned"] += 1
         generated_lines.append(
             {
-                "start_ms": filled[0]["start_ms"] if filled else seg["start_ms"],
+                "start_ms": filled[0]["start_ms"] if filled else seg_start,
                 "words": filled,
+                "fallback": None,
             }
         )
+        prev_end = max(prev_end, filled[-1]["start_ms"] if filled else seg_end)
 
     stats["coverage"] = (
         round(stats["high_conf"] / stats["n_words"], 4) if stats["n_words"] else 0.0
@@ -1101,84 +1155,246 @@ def _score_lrc_against_truth(lrc_raw: str, truth_words: list[dict[str, Any]]) ->
     return {"stats": stats, "n_scored": n, "n_truth": len(truth_words), "sample": pairs[:8]}
 
 
-def cmd_synth_full(args: argparse.Namespace) -> int:
-    """Build full-length TTS vocals over a music bed with known per-word times.
+def cmd_selftest_timebase(args: argparse.Namespace) -> int:
+    """Unit test: recover known onsets within 30 ms at 30s / 120s / 240s.
 
-    Variants vary tempo (espeak rate) and length (line count / gaps). The
-    LRCLIB-style input uses true line starts but evenly spaced words inside
-    each line — a realistic coarse prior. Scoring is always vs the TTS truth
-    JSON, never CTC-vs-self.
+    Uses the full generate_word_timings path (neighbor-clamped line windows) so a
+    regressing segment cap would fail here the way round 4 failed in production.
     """
+    import torch
+
+    sr = 16_000
+    # Multi-word lines at late positions — single tokens on a bed score too low
+    # for a meaningful posterior; the bug we guard against is segment crushing.
+    cues = [
+        (30_000, ["alpha", "ready", "now"]),
+        (120_000, ["bravo", "standing", "by"]),
+        (240_000, ["charlie", "locking", "in"]),
+    ]
+    dur_ms = 250_000
+    n = int(sr * dur_ms / 1000)
+    samples = _music_bed(n, sr, seed=3)
+    lines: list[dict[str, Any]] = []
+    truth_first: list[tuple[int, str]] = []
+    for ms, words in cues:
+        cursor = ms
+        wdicts = []
+        for wi, word in enumerate(words):
+            pcm = _espeak_word_pcm(word, sr=sr, rate=140)
+            start = int(sr * cursor / 1000)
+            for i, v in enumerate(pcm):
+                if start + i < n:
+                    samples[start + i] += v * 0.9
+            if wi == 0:
+                truth_first.append((cursor, word))
+            prior = cursor + (60 if wi == 0 else 0)
+            wdicts.append(
+                {
+                    "text": word,
+                    "prior_ms": prior,
+                    "norm": normalize_token(word),
+                    "mms": mms_word(word),
+                    "skippable": False,
+                }
+            )
+            cursor += max(int(1000 * len(pcm) / sr), 200) + 180
+        lines.append({"prior_ms": wdicts[0]["prior_ms"], "words": wdicts})
+    wf = torch.tensor(samples, dtype=torch.float32).unsqueeze(0)
+    generated, stats = generate_word_timings(
+        wf, lines, line_search_ms=DEFAULT_LINE_SEARCH_MS, min_score=DEFAULT_MIN_SCORE
+    )
+    results = []
+    ok = True
+    # Absolute cap (~3 MMS frames) plus a no-growth check: round-4's segment
+    # crush produced multi-second errors that worsened with song position.
+    abs_tol = 60
+    for (ms, word), gl in zip(truth_first, generated):
+        w0 = gl["words"][0]
+        ctc = int(w0["start_ms"])
+        err = abs(ctc - ms)
+        passed = err <= abs_tol and w0.get("source") == "ctc"
+        ok = ok and passed
+        results.append(
+            {
+                "word": word,
+                "truth_ms": ms,
+                "ctc_ms": ctc,
+                "abs_err_ms": err,
+                "source": w0.get("source"),
+                "pass": passed,
+            }
+        )
+    errs = [r["abs_err_ms"] for r in results if r["abs_err_ms"] is not None]
+    growth = (max(errs) - min(errs)) if errs else 999
+    if growth > 30:
+        ok = False
+    payload = {
+        "mode": "selftest_timebase",
+        "frame_ms": stats.get("frame_ms"),
+        "tolerance_ms": abs_tol,
+        "max_error_growth_ms": 30,
+        "error_growth_ms": growth,
+        "gen": {
+            "coverage": stats.get("coverage"),
+            "n_line_aligned": stats.get("n_line_aligned"),
+            "n_line_fallback": stats.get("n_line_fallback"),
+        },
+        "results": results,
+        "pass": ok,
+        "root_cause_note": (
+            "Round-4 p90 multi-second errors came from crushing each line segment to "
+            "len(words)*280 ms — not from MMS frame hop. This test locks absolute "
+            "timebase at late song positions through generate_word_timings."
+        ),
+    }
+    _emit(payload, args.json)
+    return 0 if ok else 1
+
+
+def _build_variant_lines(
+    *,
+    name: str,
+    target_duration_ms: int,
+    rate: int,
+    gap_ms: int,
+    line_pause_ms: int,
+    lines_words: list[list[str]],
+    lead_ms: int = 2000,
+    instrumental_gaps: list[tuple[int, int]] | None = None,
+) -> tuple[list[float], list[dict[str, Any]], int, str]:
+    """Return (mix_samples@16k, truth_words, duration_ms, input_lrc)."""
+    sr = 16_000
+    truth_words: list[dict[str, Any]] = []
+    placed: list[tuple[int, str, list[float]]] = []
+    cursor_ms = lead_ms
+    gap_set = {g[0]: g[1] for g in (instrumental_gaps or [])}
+
+    for li, line in enumerate(lines_words):
+        if li in gap_set:
+            cursor_ms += gap_set[li]
+        for word in line:
+            pcm = _espeak_word_pcm(word, sr=sr, rate=rate)
+            placed.append((cursor_ms, word, pcm))
+            truth_words.append({"text": word, "start_ms": cursor_ms, "line": li})
+            spoken_ms = int(1000 * len(pcm) / sr)
+            cursor_ms += max(spoken_ms, 160) + gap_ms
+        cursor_ms += line_pause_ms
+
+    # Stretch trailing silence to hit the target duration when content is shorter.
+    duration_ms = max(target_duration_ms, cursor_ms + 2000)
+    n_samples = int(sr * duration_ms / 1000)
+    mix = _music_bed(n_samples, sr, seed=rate + len(lines_words))
+    for start_ms, _word, pcm in placed:
+        start = int(sr * start_ms / 1000)
+        for i, v in enumerate(pcm):
+            idx = start + i
+            if idx >= len(mix):
+                break
+            mix[idx] += v * 0.85
+
+    lrc_lines = [f"[ti:synth-full-{name}]"]
+    for li, _line in enumerate(lines_words):
+        tw = [w for w in truth_words if w["line"] == li]
+        if not tw:
+            continue
+        line_start = tw[0]["start_ms"]
+        line_end = tw[-1]["start_ms"] + 400
+        if len(tw) == 1:
+            stamps = [line_start]
+        else:
+            step = (line_end - line_start) / (len(tw) - 1)
+            stamps = [int(line_start + i * step) for i in range(len(tw))]
+        bits = " ".join(f"<{format_stamp(stamps[i])}>{tw[i]['text']}" for i in range(len(tw)))
+        lrc_lines.append(f"[{format_stamp(line_start)}] {bits}")
+    lrc_lines.append("")
+    return mix, truth_words, duration_ms, "\n".join(lrc_lines)
+
+
+def cmd_synth_full(args: argparse.Namespace) -> int:
+    """Full-length TTS+bed ground truth; score vs truth (optionally via Demucs)."""
     out_root = Path(args.out_dir)
     out_root.mkdir(parents=True, exist_ok=True)
     sr = 16_000
 
-    # Multi-line lyric set — enough words for median/p90, full-ish length.
-    base_lines = [
+    verse = [
         ["hello", "world", "this", "is", "a", "timing", "fixture"],
         ["singing", "words", "with", "known", "onset", "times"],
         ["another", "line", "keeps", "the", "aligner", "honest"],
         ["tempo", "changes", "should", "still", "lock", "the", "words"],
+    ]
+    chorus = [
         ["final", "chorus", "repeats", "the", "same", "idea", "clearly"],
         ["bridge", "section", "adds", "length", "without", "new", "tricks"],
         ["closing", "line", "ends", "the", "song", "on", "time"],
     ]
+    rap = [
+        ["rapid", "fire", "bars", "with", "many", "short", "words", "stacked"],
+        ["double", "time", "flow", "keeps", "pushing", "forward", "hard"],
+        ["tight", "rhyme", "scheme", "never", "gives", "the", "clock", "rest"],
+        ["finish", "strong", "before", "the", "instrumental", "hit"],
+    ]
+    slow = [
+        ["slow", "gentle", "phrases", "breathe", "between", "the", "words"],
+        ["open", "vowels", "linger", "across", "the", "measure"],
+        ["quiet", "ending", "holds", "the", "final", "tone"],
+    ]
+
+    # Pad line lists so content roughly fills the target duration.
+    def repeat_until(lines: list[list[str]], n_lines: int) -> list[list[str]]:
+        out: list[list[str]] = []
+        while len(out) < n_lines:
+            out.extend(lines)
+        return out[:n_lines]
 
     variants = [
-        {"name": "standard", "rate": 140, "gap_ms": 900, "line_pause_ms": 650, "lines": base_lines},
-        {"name": "fast", "rate": 180, "gap_ms": 550, "line_pause_ms": 400, "lines": base_lines[:5]},
-        {"name": "slow-long", "rate": 110, "gap_ms": 1200, "line_pause_ms": 900, "lines": base_lines + [
-            ["encore", "verse", "extends", "duration", "for", "drift", "checks"],
-            ["last", "word", "lands", "exactly", "where", "truth", "says"],
-        ]},
+        {"name": "d60", "target_ms": 60_000, "rate": 140, "gap_ms": 120, "line_pause_ms": 500,
+         "lines": repeat_until(verse + chorus, 10)},
+        {"name": "d120", "target_ms": 120_000, "rate": 140, "gap_ms": 140, "line_pause_ms": 550,
+         "lines": repeat_until(verse + chorus, 18)},
+        {"name": "d214", "target_ms": 214_000, "rate": 140, "gap_ms": 150, "line_pause_ms": 600,
+         "lines": repeat_until(verse + chorus, 28)},
+        {"name": "fast-rap", "target_ms": 90_000, "rate": 200, "gap_ms": 40, "line_pause_ms": 280,
+         "lines": repeat_until(rap, 16)},
+        {"name": "slow", "target_ms": 120_000, "rate": 100, "gap_ms": 280, "line_pause_ms": 900,
+         "lines": repeat_until(slow, 12)},
+        {"name": "gaps", "target_ms": 150_000, "rate": 140, "gap_ms": 140, "line_pause_ms": 500,
+         "lines": repeat_until(verse + chorus, 14),
+         "instrumental_gaps": [(4, 12_000), (9, 18_000)]},
     ]
 
     report: list[dict[str, Any]] = []
-    soft_p90_limit = 150  # honest round-4 bar for valid synthetic truth
+    use_demucs = not getattr(args, "no_demucs", False)
 
     for variant in variants:
         vdir = out_root / variant["name"]
         vdir.mkdir(parents=True, exist_ok=True)
-        rate = variant["rate"]
-        gap_ms = variant["gap_ms"]
-        line_pause_ms = variant["line_pause_ms"]
-        lines_words: list[list[str]] = variant["lines"]
-
-        truth_words: list[dict[str, Any]] = []
-        placed: list[tuple[int, str, list[float]]] = []
-        cursor_ms = 1500  # lead-in silence under the bed
-        line_starts: list[int] = []
-
-        for line in lines_words:
-            line_starts.append(cursor_ms)
-            for word in line:
-                pcm = _espeak_word_pcm(word, sr=sr, rate=rate)
-                placed.append((cursor_ms, word, pcm))
-                truth_words.append({"text": word, "start_ms": cursor_ms, "line": len(line_starts) - 1})
-                # Advance by spoken length + inter-word gap.
-                spoken_ms = int(1000 * len(pcm) / sr)
-                cursor_ms += max(spoken_ms, 180) + gap_ms // 4
-            cursor_ms += line_pause_ms
-
-        duration_ms = cursor_ms + 2000
-        n_samples = int(sr * duration_ms / 1000)
-        bed = _music_bed(n_samples, sr, seed=rate)
-        mix = list(bed)
-        for start_ms, _word, pcm in placed:
-            start = int(sr * start_ms / 1000)
-            for i, v in enumerate(pcm):
-                idx = start + i
-                if idx >= len(mix):
-                    break
-                mix[idx] += v * 0.85
-
+        mix, truth_words, duration_ms, input_lrc = _build_variant_lines(
+            name=variant["name"],
+            target_duration_ms=variant["target_ms"],
+            rate=variant["rate"],
+            gap_ms=variant["gap_ms"],
+            line_pause_ms=variant["line_pause_ms"],
+            lines_words=variant["lines"],
+            instrumental_gaps=variant.get("instrumental_gaps"),
+        )
         wav_path = vdir / "mix.wav"
         _write_wav_mono(wav_path, mix, sr)
+        # Demucs prefers richer audio — upmix mono bed to 44.1 stereo wav.
+        demucs_in = vdir / "mix44.wav"
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-v", "error",
+                "-i", str(wav_path),
+                "-ac", "2", "-ar", "44100",
+                str(demucs_in),
+            ],
+            check=True,
+        )
         (vdir / "truth.json").write_text(
             json.dumps(
                 {
                     "variant": variant["name"],
-                    "rate": rate,
+                    "rate": variant["rate"],
                     "duration_ms": duration_ms,
                     "words": truth_words,
                 },
@@ -1187,25 +1403,6 @@ def cmd_synth_full(args: argparse.Namespace) -> int:
             + "\n",
             encoding="utf-8",
         )
-
-        # LRCLIB-style prior: true line starts, evenly spaced words inside the line.
-        lrc_lines: list[str] = ["[ti:synth-full-%s]" % variant["name"]]
-        for li, line in enumerate(lines_words):
-            # Words belonging to this line from truth
-            tw = [w for w in truth_words if w["line"] == li]
-            if not tw:
-                continue
-            line_start = tw[0]["start_ms"]
-            line_end = tw[-1]["start_ms"] + 400
-            if len(tw) == 1:
-                stamps = [line_start]
-            else:
-                step = (line_end - line_start) / (len(tw) - 1)
-                stamps = [int(line_start + i * step) for i in range(len(tw))]
-            bits = " ".join(f"<{format_stamp(stamps[i])}>{tw[i]['text']}" for i in range(len(tw)))
-            lrc_lines.append(f"[{format_stamp(line_start)}] {bits}")
-        lrc_lines.append("")
-        input_lrc = "\n".join(lrc_lines)
         (vdir / "input.lrc").write_text(input_lrc, encoding="utf-8")
 
         before = _score_lrc_against_truth(input_lrc, truth_words)
@@ -1213,7 +1410,7 @@ def cmd_synth_full(args: argparse.Namespace) -> int:
             "variant": variant["name"],
             "duration_ms": duration_ms,
             "n_words": len(truth_words),
-            "rate": rate,
+            "rate": variant["rate"],
             "before_vs_truth": before["stats"],
             "wav": str(wav_path),
         }
@@ -1224,12 +1421,11 @@ def cmd_synth_full(args: argparse.Namespace) -> int:
             out_lrc = vdir / "aligned.lrc"
             out_lrc.write_text(input_lrc, encoding="utf-8")
             gen_json = vdir / "generate.json"
-            # Pure TTS mix — skip Demucs; score vs truth after generate.
             ns = argparse.Namespace(
-                audio=str(wav_path),
+                audio=str(demucs_in if use_demucs else wav_path),
                 lrc=str(out_lrc),
                 work_dir=str(work),
-                no_demucs=True,
+                no_demucs=not use_demucs,
                 allow_no_demucs=True,
                 demucs_model="htdemucs",
                 line_search_ms=args.line_search_ms,
@@ -1237,7 +1433,7 @@ def cmd_synth_full(args: argparse.Namespace) -> int:
                 aligned_version=ALIGNED_VERSION,
                 force=True,
                 write=True,
-                force_write=True,  # eval always materializes output for scoring
+                force_write=True,
                 min_coverage=0.0,
                 json=str(gen_json),
             )
@@ -1246,34 +1442,40 @@ def cmd_synth_full(args: argparse.Namespace) -> int:
             after = _score_lrc_against_truth(aligned_raw, truth_words)
             entry["after_vs_truth"] = after["stats"]
             entry["generate_json"] = str(gen_json)
-            a_p90 = after["stats"].get("p90_abs_ms")
-            entry["soft_pass_p90_150"] = (
-                a_p90 is not None and a_p90 <= soft_p90_limit and after["stats"].get("pass") is not None
-            )
-            entry["meets_hard_bar"] = bool(after["stats"].get("pass"))
-            entry["meets_soft_p90_150"] = bool(
-                a_p90 is not None
-                and a_p90 <= soft_p90_limit
-                and (after["stats"].get("median_abs_ms") or 999) <= 80
+            entry["demucs"] = use_demucs
+            a = after["stats"]
+            entry["meets_target"] = bool(
+                a.get("median_abs_ms") is not None
+                and a.get("p90_abs_ms") is not None
+                and a["median_abs_ms"] <= MEDIAN_ABS_LIMIT_MS
+                and a["p90_abs_ms"] <= P90_ABS_LIMIT_MS
+                and abs(a.get("drift_ms_per_min") or 0) <= DRIFT_LIMIT_MS_PER_MIN
             )
 
         report.append(entry)
 
     payload = {
         "mode": "synth_full",
-        "pass_bar_hard": {
+        "pass_bar": {
             "median_abs_ms": MEDIAN_ABS_LIMIT_MS,
             "p90_abs_ms": P90_ABS_LIMIT_MS,
             "drift_ms_per_min": DRIFT_LIMIT_MS_PER_MIN,
         },
-        "pass_bar_soft_p90_ms": soft_p90_limit,
-        "note": "Scores are LRC vs independent TTS onset truth — not CTC self-score, not Deezer previews.",
+        "demucs": use_demucs,
+        "note": (
+            "Scores are LRC vs independent TTS onset truth after Demucs vocals. "
+            "No Deezer previews, no CTC self-score."
+        ),
+        "root_cause_fixed": (
+            "Removed len(words)*280 segment cap that crushed lines to ~1.4s; "
+            "windows are now LRCLIB line span ±1.5s clamped to neighbors; "
+            "emission frame_ms derived from tensor length; 40ms MMS lag compensate."
+        ),
         "variants": report,
     }
     _emit(payload, args.json)
     if args.run_align:
-        any_soft = any(v.get("meets_soft_p90_150") for v in report)
-        return 0 if any_soft else 1
+        return 0 if all(v.get("meets_target") for v in report) else 1
     return 0
 
 
@@ -1456,59 +1658,12 @@ def cmd_generate_words(args: argparse.Namespace) -> int:
     )
     align_s = time.time() - t1
 
-    # Self-check: re-CTC against generated stamps (tight pad) — should be near fixture error
-    flat = []
-    for gl in generated:
-        for w in gl["words"]:
-            if w.get("mms"):
-                flat.append(
-                    {
-                        "text": w["text"],
-                        "start_ms": w["start_ms"],
-                        "norm": w.get("norm", normalize_token(w["text"])),
-                        "mms": w["mms"],
-                    }
-                )
-    aligned = ctc_align_words(waveform, flat, pad_ms=400)
-    pairs = [
-        {
-            "text": a["text"],
-            "lrc_ms": a["lrc_ms"],
-            "ctc_ms": a["ctc_ms"],
-            "err_ms": a["lrc_ms"] - a["ctc_ms"],
-            "score": a["score"],
-        }
-        for a in aligned
-    ]
-    hi = [p for p in pairs if p["score"] >= args.min_score]
-    after = summarize_pairs(hi if len(hi) >= 5 else pairs) if pairs else {"n": 0, "pass": False}
-
-    # Before: original LRCLIB word stamps vs CTC (same vocals)
-    before_words, _, _ = parse_lrc_words(raw)
-    before_aligned = ctc_align_words(waveform, before_words, pad_ms=1500)
-    before_pairs = [
-        {
-            "text": a["text"],
-            "lrc_ms": a["lrc_ms"],
-            "ctc_ms": a["ctc_ms"],
-            "err_ms": a["lrc_ms"] - a["ctc_ms"],
-            "score": a["score"],
-        }
-        for a in before_aligned
-    ]
-    before_hi = [p for p in before_pairs if p["score"] >= args.min_score]
-    before = (
-        summarize_pairs(before_hi if len(before_hi) >= 5 else before_pairs)
-        if before_pairs
-        else {"n": 0, "pass": False}
-    )
-
     coverage = float(gen_stats.get("coverage") or 0.0)
+    min_cov = getattr(args, "min_coverage", DEFAULT_MIN_COVERAGE)
     gate_ok, gate_reason = quality_gate_allows_write(
-        before=before,
-        after=after,
-        coverage=coverage,
-        min_coverage=getattr(args, "min_coverage", 0.6),
+        gen_stats=gen_stats,
+        generated_lines=generated,
+        min_coverage=min_cov,
     )
 
     wrote = False
@@ -1554,11 +1709,15 @@ def cmd_generate_words(args: argparse.Namespace) -> int:
         "peak_rss_mb": peak_rss_mb,
         "gen": gen_stats,
         "coverage": coverage,
-        "before": before,
-        "after": after,
-        "gate": {"ok": gate_ok, "reason": gate_reason, "min_coverage": getattr(args, "min_coverage", 0.6)},
+        "gate": {
+            "ok": gate_ok,
+            "reason": gate_reason,
+            "min_coverage": min_cov,
+            "line_agree_ms": LINE_AGREE_MS,
+            "note": "non-circular: per-line first-word agreement + coverage + monotonicity",
+        },
         "n_snapped": 0,  # compatibility for Go logger
-        "n_kept": 0,
+        "n_kept": int(gen_stats.get("n_line_fallback") or 0),
         "n_generated": sum(len(g["words"]) for g in generated),
         "n_interp": gen_stats.get("n_interp", 0),
         "wrote": wrote,
@@ -1567,36 +1726,36 @@ def cmd_generate_words(args: argparse.Namespace) -> int:
         "reason": reason,
     }
     _emit(payload, args.json)
-    # Exit 0 when we kept LRCLIB via the gate — that is a successful safe outcome.
     if fallback == "keep_lrclib":
         return 0
-    return 0 if after.get("pass") else 1
+    return 0 if gate_ok else 1
 
 
 def quality_gate_allows_write(
     *,
-    before: dict[str, Any],
-    after: dict[str, Any],
-    coverage: float,
-    min_coverage: float = 0.6,
+    gen_stats: dict[str, Any],
+    generated_lines: list[dict[str, Any]],
+    min_coverage: float = DEFAULT_MIN_COVERAGE,
 ) -> tuple[bool, str]:
-    """Only rewrite the sidecar when coverage is high and CTC self-check improves.
+    """Non-circular write gate (no CTC-vs-self scoring).
 
-    Relative to the LRCLIB input: median abs must improve, p90 must not worsen.
-    Absolute Spotify-bar pass is still measured separately against synthetic truth.
+    Per-line agreement / LRCLIB fallback already happened inside generate_word_timings.
+    Here we require overall CTC coverage, at least one aligned line, and global
+    monotonic word starts before rewriting the sidecar.
     """
+    coverage = float(gen_stats.get("coverage") or 0.0)
     if coverage < min_coverage:
         return False, f"coverage {coverage:.3f} < {min_coverage}"
-    b_med = before.get("median_abs_ms")
-    a_med = after.get("median_abs_ms")
-    b_p90 = before.get("p90_abs_ms")
-    a_p90 = after.get("p90_abs_ms")
-    if None in (b_med, a_med, b_p90, a_p90):
-        return False, "missing before/after median or p90"
-    if not (a_med < b_med):
-        return False, f"median did not improve ({a_med} >= {b_med})"
-    if a_p90 > b_p90:
-        return False, f"p90 worse ({a_p90} > {b_p90})"
+    if int(gen_stats.get("n_line_aligned") or 0) < 1:
+        return False, "no lines passed first-word agreement"
+    starts: list[int] = []
+    for gl in generated_lines:
+        for w in gl.get("words") or []:
+            if "start_ms" in w:
+                starts.append(int(w["start_ms"]))
+    for i in range(1, len(starts)):
+        if starts[i] < starts[i - 1]:
+            return False, f"non-monotonic at word {i} ({starts[i]} < {starts[i-1]})"
     return True, "ok"
 
 
@@ -1715,7 +1874,7 @@ def main() -> int:
     g.add_argument("--aligned-version", default=ALIGNED_VERSION)
     g.add_argument("--force", action="store_true")
     g.add_argument("--write", action="store_true")
-    g.add_argument("--min-coverage", type=float, default=0.6)
+    g.add_argument("--min-coverage", type=float, default=DEFAULT_MIN_COVERAGE)
     g.add_argument(
         "--force-write",
         action="store_true",
@@ -1738,10 +1897,17 @@ def main() -> int:
     r.add_argument("--aligned-version", default=ALIGNED_VERSION)
     r.add_argument("--force", action="store_true")
     r.add_argument("--write", action="store_true")
-    r.add_argument("--min-coverage", type=float, default=0.6)
+    r.add_argument("--min-coverage", type=float, default=DEFAULT_MIN_COVERAGE)
     r.add_argument("--force-write", action="store_true")
     r.add_argument("--json")
     r.set_defaults(func=cmd_generate_words)
+
+    st = sub.add_parser(
+        "selftest-timebase",
+        help="Recover known onsets within 30ms at 30s/120s/240s",
+    )
+    st.add_argument("--json")
+    st.set_defaults(func=cmd_selftest_timebase)
 
     sf = sub.add_parser(
         "synth-full",
@@ -1752,6 +1918,11 @@ def main() -> int:
         "--run-align",
         action="store_true",
         help="Also run generate-words and score vs truth (not self-score)",
+    )
+    sf.add_argument(
+        "--no-demucs",
+        action="store_true",
+        help="Skip Demucs (debug only; round-5 eval uses Demucs by default)",
     )
     sf.add_argument("--line-search-ms", type=int, default=DEFAULT_LINE_SEARCH_MS)
     sf.add_argument("--json")

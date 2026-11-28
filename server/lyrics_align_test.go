@@ -45,10 +45,13 @@ func TestLyricsAlignDefaultsOff(t *testing.T) {
 	}
 }
 
-func TestLrcAlreadyAlignedV3Marker(t *testing.T) {
-	raw := "[drome-aligned:v3-ctc-seg]\n[00:01.000]<00:01.000>Hi\n"
+func TestLrcAlreadyAlignedV4Marker(t *testing.T) {
+	raw := "[drome-aligned:v4-ctc-line]\n[00:01.000]<00:01.000>Hi\n"
 	if !lrcAlreadyAligned(raw) {
-		t.Fatal("expected v3 marker to be recognized")
+		t.Fatal("expected v4 marker to be recognized")
+	}
+	if lrcAlreadyAligned("[drome-aligned:v3-ctc-seg]\n") {
+		t.Fatal("v3 marker should not count as current aligned version")
 	}
 	if lrcAlreadyAligned("[drome-aligned:v2-ctc-demucs]\n") {
 		t.Fatal("v2 marker should not count as current aligned version")
@@ -56,7 +59,7 @@ func TestLrcAlreadyAlignedV3Marker(t *testing.T) {
 	if lrcAlreadyAligned("[drome-aligned:v1]\n") {
 		t.Fatal("v1 marker should not count as current aligned version")
 	}
-	if alignedMarkerRe.FindStringSubmatch("[DROME-ALIGNED:v3-ctc-seg]") == nil {
+	if alignedMarkerRe.FindStringSubmatch("[DROME-ALIGNED:v4-ctc-line]") == nil {
 		t.Fatal("aligned marker regex should match case-insensitively")
 	}
 }

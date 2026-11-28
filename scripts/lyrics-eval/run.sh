@@ -27,13 +27,13 @@ case "$cmd" in
       --truth "$ROOT/fixtures/offset-demo/truth.json"
     echo "fixtures: PASS (perfect + [offset:] correction)"
     ;;
-  measure|generate-words|refine-words|refine|synth-fixture|synth-full|check-truth|validate-aligner|separate|check-deps|benchmark)
+  measure|generate-words|refine-words|refine|synth-fixture|synth-full|selftest-timebase|check-truth|validate-aligner|separate|check-deps|benchmark)
     # `refine` / `refine-words` kept as aliases for older docs
     if [[ "$cmd" == "refine" || "$cmd" == "refine-words" ]]; then cmd="generate-words"; fi
     exec "$PY" "$ROOT/align_lyrics.py" "$cmd" "$@"
     ;;
   *)
-    echo "usage: $0 {fixtures|measure|generate-words|synth-full|check-deps|benchmark|validate-aligner|synth-fixture|check-truth} ..." >&2
+    echo "usage: $0 {fixtures|measure|generate-words|synth-full|selftest-timebase|check-deps|benchmark|validate-aligner|synth-fixture|check-truth} ..." >&2
     exit 2
     ;;
 esac

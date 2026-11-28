@@ -1,0 +1,40 @@
+{
+  "mode": "selftest_timebase",
+  "frame_ms": 20.0016,
+  "tolerance_ms": 60,
+  "max_error_growth_ms": 30,
+  "error_growth_ms": 17,
+  "gen": {
+    "coverage": 1.0,
+    "n_line_aligned": 3,
+    "n_line_fallback": 0
+  },
+  "results": [
+    {
+      "word": "alpha",
+      "truth_ms": 30000,
+      "ctc_ms": 30022,
+      "abs_err_ms": 22,
+      "source": "ctc",
+      "pass": true
+    },
+    {
+      "word": "bravo",
+      "truth_ms": 120000,
+      "ctc_ms": 119969,
+      "abs_err_ms": 31,
+      "source": "ctc",
+      "pass": true
+    },
+    {
+      "word": "charlie",
+      "truth_ms": 240000,
+      "ctc_ms": 240039,
+      "abs_err_ms": 39,
+      "source": "ctc",
+      "pass": true
+    }
+  ],
+  "pass": true,
+  "root_cause_note": "Round-4 p90 multi-second errors came from crushing each line segment to len(words)*280 ms \u2014 not from MMS frame hop. This test locks absolute timebase at late song positions through generate_word_timings."
+}

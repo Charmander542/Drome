@@ -17,12 +17,14 @@ import (
 
 // Segment-constrained CTC word timing (torchaudio MMS_FA + Demucs vocals).
 // LRCLIB text + coarse line anchors only — word stamps are generated, not snapped.
-// Queue: lyrics_align_queue.go. Cached via [drome-aligned:v3-ctc-seg].
+// Queue: lyrics_align_queue.go. Cached via [drome-aligned:v4-ctc-line].
 //
-// CPU: Demucs dominates; MMS is cheaper. Limit threads via OMP/MKL/OPENBLAS=1;
-// nice -n 19 when DROME_LYRICS_ALIGN_NICE=true. Missing torch/demucs → keep LRCLIB.
+// Off by default (DROME_LYRICS_ALIGN=false) until an operator opts in after a
+// valid ground-truth eval. CPU: Demucs dominates; MMS is cheaper. Limit threads
+// via OMP/MKL/OPENBLAS=1; nice -n 19 when DROME_LYRICS_ALIGN_NICE=true.
+// Missing torch/demucs or quality-gate failure → keep LRCLIB.
 
-const lyricsAlignedVersion = "v3-ctc-seg"
+const lyricsAlignedVersion = "v4-ctc-line"
 
 var (
 	alignedMarkerRe   = regexp.MustCompile(`(?i)\[drome-aligned:([^\]]+)\]`)
@@ -65,9 +67,9 @@ func lyricsAlignConfigFromEnv() lyricsAlignConfig {
 	// Prefer LINE_SEARCH; fall back to legacy WINDOW_MS (snap era).
 	lineSearch := envInt("DROME_LYRICS_ALIGN_LINE_SEARCH_MS", 0)
 	if lineSearch <= 0 {
-		lineSearch = envInt("DROME_LYRICS_ALIGN_WINDOW_MS", 3000)
-		if lineSearch < 1000 {
-			lineSearch = 3000
+		lineSearch = envInt("DROME_LYRICS_ALIGN_WINDOW_MS", 1500)
+		if lineSearch < 500 {
+			lineSearch = 1500
 		}
 	}
 	return lyricsAlignConfig{

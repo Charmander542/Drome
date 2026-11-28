@@ -1,0 +1,289 @@
+{
+  "mode": "synth_full",
+  "pass_bar": {
+    "median_abs_ms": 60,
+    "p90_abs_ms": 150,
+    "drift_ms_per_min": 30
+  },
+  "demucs": true,
+  "note": "Scores are LRC vs independent TTS onset truth after Demucs vocals. No Deezer previews, no CTC self-score.",
+  "root_cause_fixed": "Removed len(words)*280 segment cap that crushed lines to ~1.4s; windows are now LRCLIB line span \u00b11.5s clamped to neighbors; emission frame_ms derived from tensor length; 40ms MMS lag compensate.",
+  "variants": [
+    {
+      "variant": "d60",
+      "duration_ms": 77983,
+      "n_words": 66,
+      "rate": 140,
+      "before_vs_truth": {
+        "n": 66,
+        "mean_ms": 152.15151515151516,
+        "median_ms": 99.0,
+        "mean_abs_ms": 178.6060606060606,
+        "median_abs_ms": 132.5,
+        "p90_abs_ms": 400,
+        "drift_ms_per_min": 39.087693885832564,
+        "offset_kind": "drifting",
+        "after_offset_median_abs_ms": 121.0,
+        "after_offset_p90_abs_ms": 301.0,
+        "pass": false,
+        "limits": {
+          "median_abs_ms": 60,
+          "p90_abs_ms": 150,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "after_vs_truth": {
+        "n": 66,
+        "mean_ms": 4.212121212121212,
+        "median_ms": 18.5,
+        "mean_abs_ms": 33.18181818181818,
+        "median_abs_ms": 22.0,
+        "p90_abs_ms": 41,
+        "drift_ms_per_min": -12.518433812906485,
+        "offset_kind": "constant",
+        "after_offset_median_abs_ms": 11.5,
+        "after_offset_p90_abs_ms": 38.5,
+        "pass": true,
+        "limits": {
+          "median_abs_ms": 60,
+          "p90_abs_ms": 150,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "demucs": true,
+      "meets_target": true
+    },
+    {
+      "variant": "d120",
+      "duration_ms": 141745,
+      "n_words": 120,
+      "rate": 140,
+      "before_vs_truth": {
+        "n": 120,
+        "mean_ms": 141.20833333333334,
+        "median_ms": 96.0,
+        "mean_abs_ms": 175.425,
+        "median_abs_ms": 132.5,
+        "p90_abs_ms": 400,
+        "drift_ms_per_min": -4.247933948105533,
+        "offset_kind": "constant",
+        "after_offset_median_abs_ms": 120.0,
+        "after_offset_p90_abs_ms": 304.0,
+        "pass": false,
+        "limits": {
+          "median_abs_ms": 60,
+          "p90_abs_ms": 150,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "after_vs_truth": {
+        "n": 120,
+        "mean_ms": 2.8916666666666666,
+        "median_ms": 8.0,
+        "mean_abs_ms": 32.958333333333336,
+        "median_abs_ms": 16.0,
+        "p90_abs_ms": 51,
+        "drift_ms_per_min": 13.915698582859655,
+        "offset_kind": "constant",
+        "after_offset_median_abs_ms": 13.0,
+        "after_offset_p90_abs_ms": 59.0,
+        "pass": true,
+        "limits": {
+          "median_abs_ms": 60,
+          "p90_abs_ms": 150,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "demucs": true,
+      "meets_target": true
+    },
+    {
+      "variant": "d214",
+      "duration_ms": 223176,
+      "n_words": 188,
+      "rate": 140,
+      "before_vs_truth": {
+        "n": 188,
+        "mean_ms": 141.12765957446808,
+        "median_ms": 96.0,
+        "mean_abs_ms": 176.31914893617022,
+        "median_abs_ms": 135.0,
+        "p90_abs_ms": 400,
+        "drift_ms_per_min": -1.7832332656912155,
+        "offset_kind": "constant",
+        "after_offset_median_abs_ms": 120.0,
+        "after_offset_p90_abs_ms": 304.0,
+        "pass": false,
+        "limits": {
+          "median_abs_ms": 60,
+          "p90_abs_ms": 150,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "after_vs_truth": {
+        "n": 188,
+        "mean_ms": 19.835106382978722,
+        "median_ms": 15.0,
+        "mean_abs_ms": 26.920212765957448,
+        "median_abs_ms": 19.0,
+        "p90_abs_ms": 46,
+        "drift_ms_per_min": 6.201290384008402,
+        "offset_kind": "constant",
+        "after_offset_median_abs_ms": 12.0,
+        "after_offset_p90_abs_ms": 40.0,
+        "pass": true,
+        "limits": {
+          "median_abs_ms": 60,
+          "p90_abs_ms": 150,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "demucs": true,
+      "meets_target": true
+    },
+    {
+      "variant": "fast-rap",
+      "duration_ms": 90000,
+      "n_words": 116,
+      "rate": 200,
+      "before_vs_truth": {
+        "n": 116,
+        "mean_ms": 229.20689655172413,
+        "median_ms": 218.0,
+        "mean_abs_ms": 229.20689655172413,
+        "median_abs_ms": 218.0,
+        "p90_abs_ms": 400,
+        "drift_ms_per_min": 28.437371892228665,
+        "offset_kind": "constant",
+        "after_offset_median_abs_ms": 154.0,
+        "after_offset_p90_abs_ms": 218.0,
+        "pass": false,
+        "limits": {
+          "median_abs_ms": 60,
+          "p90_abs_ms": 150,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "after_vs_truth": {
+        "n": 116,
+        "mean_ms": -10.879310344827585,
+        "median_ms": -4.0,
+        "mean_abs_ms": 18.879310344827587,
+        "median_abs_ms": 10.5,
+        "p90_abs_ms": 36,
+        "drift_ms_per_min": 29.23753299467539,
+        "offset_kind": "constant",
+        "after_offset_median_abs_ms": 10.0,
+        "after_offset_p90_abs_ms": 32.0,
+        "pass": true,
+        "limits": {
+          "median_abs_ms": 60,
+          "p90_abs_ms": 150,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "demucs": true,
+      "meets_target": true
+    },
+    {
+      "variant": "slow",
+      "duration_ms": 143728,
+      "n_words": 76,
+      "rate": 100,
+      "before_vs_truth": {
+        "n": 76,
+        "mean_ms": 153,
+        "median_ms": 97.0,
+        "mean_abs_ms": 153,
+        "median_abs_ms": 97.0,
+        "p90_abs_ms": 400,
+        "drift_ms_per_min": 9.197065949646682,
+        "offset_kind": "constant",
+        "after_offset_median_abs_ms": 78.0,
+        "after_offset_p90_abs_ms": 303.0,
+        "pass": false,
+        "limits": {
+          "median_abs_ms": 60,
+          "p90_abs_ms": 150,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "after_vs_truth": {
+        "n": 76,
+        "mean_ms": 26.736842105263158,
+        "median_ms": 24.0,
+        "mean_abs_ms": 36.3421052631579,
+        "median_abs_ms": 28.0,
+        "p90_abs_ms": 96,
+        "drift_ms_per_min": 9.249117209614674,
+        "offset_kind": "constant",
+        "after_offset_median_abs_ms": 16.0,
+        "after_offset_p90_abs_ms": 72.0,
+        "pass": true,
+        "limits": {
+          "median_abs_ms": 60,
+          "p90_abs_ms": 150,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "demucs": true,
+      "meets_target": true
+    },
+    {
+      "variant": "gaps",
+      "duration_ms": 150000,
+      "n_words": 94,
+      "rate": 140,
+      "before_vs_truth": {
+        "n": 94,
+        "mean_ms": 141.12765957446808,
+        "median_ms": 96.0,
+        "mean_abs_ms": 176.31914893617022,
+        "median_abs_ms": 135.0,
+        "p90_abs_ms": 400,
+        "drift_ms_per_min": -6.967034298873913,
+        "offset_kind": "constant",
+        "after_offset_median_abs_ms": 120.0,
+        "after_offset_p90_abs_ms": 304.0,
+        "pass": false,
+        "limits": {
+          "median_abs_ms": 60,
+          "p90_abs_ms": 150,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "after_vs_truth": {
+        "n": 94,
+        "mean_ms": 14.22340425531915,
+        "median_ms": 16.0,
+        "mean_abs_ms": 22.095744680851062,
+        "median_abs_ms": 19.5,
+        "p90_abs_ms": 41,
+        "drift_ms_per_min": 8.540514465798042,
+        "offset_kind": "constant",
+        "after_offset_median_abs_ms": 11.0,
+        "after_offset_p90_abs_ms": 39.0,
+        "pass": true,
+        "limits": {
+          "median_abs_ms": 60,
+          "p90_abs_ms": 150,
+          "drift_ms_per_min": 30
+        },
+        "coverage": 1.0
+      },
+      "demucs": true,
+      "meets_target": true
+    }
+  ]
+}
