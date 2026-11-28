@@ -102,6 +102,8 @@ enum LRCParser {
         /// Milliseconds from `[offset:±NNNN]` (already applied to `lines` when
         /// `applyEmbeddedOffset` was true).
         var embeddedOffsetMs: Int
+        /// Companion refine marker, e.g. `[drome-aligned:v3-ctc-seg]`, if present.
+        var alignedMarker: String?
     }
 
     private static let bracketTime = try! NSRegularExpression(
@@ -110,6 +112,9 @@ enum LRCParser {
         pattern: #"<(\d{1,2}):(\d{1,2})(?:[.:](\d{1,3}))?>"#)
     private static let offsetTag = try! NSRegularExpression(
         pattern: #"\[offset:\s*([+-]?\d+)\s*\]"#,
+        options: .caseInsensitive)
+    private static let alignedTag = try! NSRegularExpression(
+        pattern: #"\[drome-aligned:([^\]]+)\]"#,
         options: .caseInsensitive)
 
     static func isSynced(_ raw: String) -> Bool {
@@ -124,11 +129,16 @@ enum LRCParser {
         var timed: [Line] = []
         var untimed: [Line] = []
         var embeddedOffsetMs = 0
+        var alignedMarker: String?
 
         for rawLine in raw.components(separatedBy: .newlines) {
             let trimmedMeta = rawLine.trimmingCharacters(in: .whitespaces)
             if let offset = parseOffsetTag(trimmedMeta) {
                 embeddedOffsetMs = offset
+                continue
+            }
+            if let marker = parseAlignedMarker(trimmedMeta) {
+                alignedMarker = marker
                 continue
             }
 
@@ -169,7 +179,25 @@ enum LRCParser {
         if applyEmbeddedOffset, embeddedOffsetMs != 0 {
             lines = shift(lines, byMs: embeddedOffsetMs)
         }
-        return ParseResult(lines: lines, embeddedOffsetMs: embeddedOffsetMs)
+        return ParseResult(
+            lines: lines,
+            embeddedOffsetMs: embeddedOffsetMs,
+            alignedMarker: alignedMarker)
+    }
+
+    /// Stable fingerprint of the first ~8 line starts plus any aligned marker.
+    /// Used so a listener nudge survives source-label bumps but resets when
+    /// companion rewrite changes the actual stamps.
+    static func timingStamp(lines: [Line], alignedMarker: String?) -> String {
+        var parts = lines.prefix(8).map { String($0.startMs ?? -1) }
+        parts.append(alignedMarker ?? "")
+        let raw = parts.joined(separator: "|")
+        // djb2 — stable across launches (unlike Swift Hasher).
+        var hash: UInt64 = 5381
+        for byte in raw.utf8 {
+            hash = ((hash &<< 5) &+ hash) &+ UInt64(byte)
+        }
+        return String(hash, radix: 16)
     }
 
     /// Shift every line / word timestamp by `deltaMs` (may be negative).
@@ -553,6 +581,14 @@ enum LRCParser {
         return Int(ns.substring(with: match.range(at: 1)))
     }
 
+    private static func parseAlignedMarker(_ line: String) -> String? {
+        let ns = line as NSString
+        guard let match = alignedTag.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)),
+              match.numberOfRanges >= 2 else { return nil }
+        let version = ns.substring(with: match.range(at: 1))
+        return "[drome-aligned:\(version)]"
+    }
+
     private static func milliseconds(in string: String, match: NSTextCheckingResult) -> Int {
         func group(_ idx: Int) -> String {
             let range = match.range(at: idx)
@@ -645,8 +681,8 @@ enum LRCParser {
             if let ms = line.startMs {
                 let m = ms / 60000
                 let s = (ms % 60000) / 1000
-                let hundredths = (ms % 1000) / 10
-                return String(format: "[%02d:%02d.%02d]%@", m, s, hundredths, line.text)
+                let millis = ms % 1000
+                return String(format: "[%02d:%02d.%03d]%@", m, s, millis, line.text)
             }
             return line.text
         }
@@ -660,8 +696,12 @@ enum LRCParser {
 /// `NowPlayingView.wordBrightness` — see NOTICE). Aura measured AirPods Pro 2
 /// and found `AVPlayer.currentTime` already reports presentation time, route
 /// delay included. Subtracting `AVAudioSession.outputLatency` again lights
-/// every word late. A glyph sweep across the syllable also read as sluggish
-/// no matter how short it was; a brief arrival centered on the stamp does not.
+/// every word late.
+///
+/// A short lead before the stamp (30–60 ms) makes highlights that land
+/// slightly early read as on-time — same feel as Spotify / Apple Music.
+/// Ramp from lead start through the stamp so the word is bright when the
+/// vocal lands, without a strobing hard step.
 enum LyricsClock {
     /// Listener nudge. Positive shows words earlier.
     static func syncMilliseconds(presentationSeconds: Double, userOffsetMs: Int) -> Int {
@@ -669,10 +709,10 @@ enum LyricsClock {
         return max(0, Int((presentationSeconds * 1000).rounded()) + userOffsetMs)
     }
 
-    /// Arrival ramp length. The ramp starts `wordLeadMs` before the stamp and
-    /// finishes `wordLeadMs` after, so the word is half-lit on the attack.
-    static let wordArrivalMs = 80
-    static let wordLeadMs = 40
+    /// Visual lead before the LRC stamp (see NOTICE / Aura pre-#127 tuning).
+    static let wordLeadMs = 45
+    /// Ease from lead start through and just past the stamp.
+    static let wordArrivalMs = 70
     static let unsungOpacity = 0.32
     static let sungOpacity = 1.0
 
@@ -681,7 +721,36 @@ enum LyricsClock {
     static func wordOpacity(elapsedMs: Int) -> Double {
         let shifted = elapsedMs + wordLeadMs
         if shifted <= 0 { return unsungOpacity }
+        if wordArrivalMs <= 0 { return sungOpacity }
         let progress = min(1, Double(shifted) / Double(wordArrivalMs))
         return unsungOpacity + (sungOpacity - unsungOpacity) * progress
+    }
+}
+
+/// Karaoke playhead after resume — trust `AVPlayer.currentTime`, not UI observers.
+enum KaraokeResume {
+    /// Sticky fallbacks to the 0.5 Hz published playhead caused ~1 s lyrics lag
+    /// after returning from background when `currentTime` briefly hiccupped.
+    ///
+    /// Narrow exceptions keep mid-song lyrics from flashing to line 1 while AV
+    /// still reports ~0 after a seek lands or during a stall-recovery rebuild.
+    static func chooseElapsed(
+        accurate: TimeInterval,
+        published: TimeInterval,
+        seekInFlight: Bool,
+        rebuilding: Bool = false,
+        sinceSeekApplied: TimeInterval = .infinity
+    ) -> TimeInterval {
+        if seekInFlight || rebuilding {
+            return max(0, published)
+        }
+        guard accurate.isFinite, accurate >= 0 else {
+            return max(0, published)
+        }
+        // Item often still reports 0 until the post-seek decode catches up.
+        if sinceSeekApplied < 0.75, published > 2, accurate < 0.75 {
+            return max(0, published)
+        }
+        return max(0, accurate)
     }
 }

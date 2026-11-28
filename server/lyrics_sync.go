@@ -19,9 +19,15 @@ import (
 
 const lrclibBase = "https://lrclib.net/api"
 
+// Reject synced LRCLIB hits whose duration differs from the library file by
+// more than this — radio edits vs album cuts (e.g. BDKMV 214s vs 311s).
+const lrclibMaxDurationDeltaSec = 3.0
+
 var (
 	enhancedWordStampRe = regexp.MustCompile(`<\d{1,2}:\d{1,2}(?:[.:]\d{1,3})?>`)
 	lineStampRe         = regexp.MustCompile(`\[\d{1,2}:\d{1,2}(?:[.:]\d{1,3})?\]`)
+	dromeLrclibIDRe     = regexp.MustCompile(`(?i)\[drome-lrclib-id:(\d+)\]`)
+	dromeLrclibDurRe    = regexp.MustCompile(`(?i)\[drome-lrclib-duration:([0-9]+(?:\.[0-9]+)?)\]`)
 	audioExtsForLyrics  = map[string]bool{
 		".flac": true, ".m4a": true, ".mp3": true, ".ogg": true, ".opus": true, ".wav": true, ".aiff": true,
 	}
@@ -48,6 +54,7 @@ type lyricsSyncConfig struct {
 	UserAgent     string
 	StateFile     string
 	MaxBackfill   int // 0 = unlimited
+	Align         lyricsAlignConfig
 }
 
 func lyricsSyncConfigFromEnv(musicDir, dbPath string) lyricsSyncConfig {
@@ -55,9 +62,9 @@ func lyricsSyncConfigFromEnv(musicDir, dbPath string) lyricsSyncConfig {
 	backfill := strings.ToLower(envOr("DROME_LYRICS_BACKFILL", "true"))
 	state := envOr("DROME_LYRICS_BACKFILL_STATE", "")
 	if state == "" {
-		// v2 re-walks the library so Word Synced lyricsfile hits can upgrade
-		// line-only .lrc sidecars written by v1 (which ignored lyricsfile).
-		state = filepath.Join(filepath.Dir(dbPath), "lyrics-backfill-v2.done")
+		// v3 re-walks so sidecars pick up millisecond stamps and optional
+		// per-word CTC alignment jobs (v2 only upgraded lyricsfile).
+		state = filepath.Join(filepath.Dir(dbPath), "lyrics-backfill-v3.done")
 	}
 	return lyricsSyncConfig{
 		Enabled:     enabled == "1" || enabled == "true" || enabled == "yes",
@@ -67,6 +74,7 @@ func lyricsSyncConfigFromEnv(musicDir, dbPath string) lyricsSyncConfig {
 		UserAgent:   envOr("DROME_LYRICS_USER_AGENT", "DromeServer/1.0 (LRCLIB sidecar sync)"),
 		StateFile:   state,
 		MaxBackfill: envInt("DROME_LYRICS_BACKFILL_MAX", 0),
+		Align:       lyricsAlignConfigFromEnv(),
 	}
 }
 
@@ -75,16 +83,27 @@ type lyricsSyncer struct {
 	musicDir string
 	client   *http.Client
 	index    *lyricsIndex
+	alignQ   *lyricsAlignQueue
 }
 
 func newLyricsSyncer(cfg lyricsSyncConfig, musicDir string, index *lyricsIndex) *lyricsSyncer {
-	return &lyricsSyncer{
+	s := &lyricsSyncer{
 		cfg:      cfg,
 		musicDir: musicDir,
 		index:    index,
 		client: &http.Client{
 			Timeout: cfg.HTTPTimeout,
 		},
+	}
+	if cfg.Align.Enabled {
+		s.alignQ = newLyricsAlignQueue(cfg.Align)
+	}
+	return s
+}
+
+func (s *lyricsSyncer) runAlignWorker(ctx context.Context) {
+	if s != nil && s.alignQ != nil {
+		s.alignQ.runWorker(ctx)
 	}
 }
 
@@ -242,8 +261,25 @@ func (s *lyricsSyncer) syncAudioFile(ctx context.Context, audioPath, title, arti
 	if raw, err := os.ReadFile(lrcPath); err == nil {
 		existing = string(raw)
 	}
+	wrote := false
+	// Sidecar stamped for a different cut (e.g. 214s radio vs 311s album) must
+	// not short-circuit — force a duration-aware refetch.
+	if lyricsQuality(existing) >= 3 && !sidecarDurationMatchesTrack(existing, durationSec) {
+		logf("lyrics sync invalidating mismatched-duration sidecar for %q — %q (track %ds)",
+			artist, title, durationSec)
+		existing = ""
+	}
 	if lyricsQuality(existing) >= 3 {
-		return false, nil // already word-synced
+		// Already word-synced for this duration — upgrade stamp precision and
+		// optionally enqueue per-word CTC refine.
+		if changed, err := rewriteSidecarPrecision(lrcPath); err != nil {
+			return false, err
+		} else if changed {
+			wrote = true
+			logf("lyrics sync upgraded stamp precision for %q — %q", artist, title)
+		}
+		s.maybeAlign(audioPath, lrcPath)
+		return wrote, nil
 	}
 
 	hit, err := s.fetchBest(ctx, title, artist, album, durationSec)
@@ -260,6 +296,8 @@ func (s *lyricsSyncer) syncAudioFile(ctx context.Context, audioPath, title, arti
 	if lyricsQuality(content) <= lyricsQuality(existing) {
 		return false, nil
 	}
+	content = ensureMillisecondStamps(content)
+	content = stampLrclibProvenance(content, hit)
 	if err := os.WriteFile(lrcPath, []byte(ensureTrailingNewline(content)), 0o644); err != nil {
 		return false, err
 	}
@@ -267,8 +305,77 @@ func (s *lyricsSyncer) syncAudioFile(ctx context.Context, audioPath, title, arti
 	if hasWordSync(content) {
 		kind = "word"
 	}
-	logf("lyrics sync wrote %s (%s) for %q — %q", filepath.Base(lrcPath), kind, artist, title)
+	logf("lyrics sync wrote %s (%s, id=%d, dur=%.0fs) for %q — %q",
+		filepath.Base(lrcPath), kind, hit.ID, derefFloat(hit.Duration), artist, title)
+	s.maybeAlign(audioPath, lrcPath)
 	return true, nil
+}
+
+func derefFloat(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// stampLrclibProvenance records id + source duration so a later cut change
+// invalidates the sidecar instead of lighting the wrong edit.
+func stampLrclibProvenance(content string, hit *lrclibResult) string {
+	if hit == nil {
+		return content
+	}
+	var b strings.Builder
+	if hit.ID > 0 {
+		b.WriteString(fmt.Sprintf("[drome-lrclib-id:%d]\n", hit.ID))
+	}
+	if hit.Duration != nil && *hit.Duration > 0 {
+		b.WriteString(fmt.Sprintf("[drome-lrclib-duration:%.3f]\n", *hit.Duration))
+	}
+	if b.Len() == 0 {
+		return content
+	}
+	// Drop prior provenance tags, keep the rest.
+	var kept []string
+	for _, line := range strings.Split(content, "\n") {
+		trim := strings.TrimSpace(line)
+		if dromeLrclibIDRe.MatchString(trim) || dromeLrclibDurRe.MatchString(trim) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return b.String() + strings.Join(kept, "\n")
+}
+
+func parseSidecarLrclibDuration(raw string) (float64, bool) {
+	m := dromeLrclibDurRe.FindStringSubmatch(raw)
+	if len(m) < 2 {
+		return 0, false
+	}
+	var v float64
+	if _, err := fmt.Sscanf(m[1], "%f", &v); err != nil || v <= 0 {
+		return 0, false
+	}
+	return v, true
+}
+
+func sidecarDurationMatchesTrack(raw string, trackDurationSec int) bool {
+	if trackDurationSec <= 0 {
+		return true // can't judge — keep existing
+	}
+	src, ok := parseSidecarLrclibDuration(raw)
+	if !ok {
+		// Legacy unstamped synced sidecar — force a duration-aware refetch
+		// rather than trusting a 45s last-stamp heuristic that kept wrong cuts.
+		return false
+	}
+	return absFloat(src-float64(trackDurationSec)) <= lrclibMaxDurationDeltaSec
+}
+
+func (s *lyricsSyncer) maybeAlign(audioPath, lrcPath string) {
+	if s == nil || s.alignQ == nil {
+		return
+	}
+	s.alignQ.enqueueAlign(audioPath, lrcPath)
 }
 
 func ensureTrailingNewline(s string) string {
@@ -370,8 +477,9 @@ func pickBestLRCLIB(results []lrclibResult, album string, durationSec int) *lrcl
 	score := func(r lrclibResult) float64 {
 		var s float64
 		content := effectiveSyncedLyrics(r)
+		word := hasWordSync(content)
 		switch {
-		case hasWordSync(content):
+		case word:
 			s += 140
 		case strings.TrimSpace(content) != "":
 			s += 100
@@ -380,19 +488,22 @@ func pickBestLRCLIB(results []lrclibResult, album string, durationSec int) *lrcl
 		}
 		if durationSec > 0 && r.Duration != nil && *r.Duration > 0 {
 			delta := absFloat(*r.Duration - float64(durationSec))
+			// Hard preference for ±2s; reject path below drops >3s synced hits.
 			switch {
 			case delta <= 1:
-				s += 50
+				s += 80
 			case delta <= 2:
-				s += 35
-			case delta <= 3.5:
-				s += 15
-			case delta <= 5:
-				s += 2
+				s += 55
+			case delta <= lrclibMaxDurationDeltaSec:
+				s += 20
 			default:
-				s -= 60
+				s -= 200 // different cut — never beat a duration-matched hit
 			}
-			s -= delta * 2.5
+			s -= delta * 4
+			// Duration-OK word-sync beats duration-OK line-only (Adele 7137504 vs 15850).
+			if delta <= lrclibMaxDurationDeltaSec && word {
+				s += 50
+			}
 		}
 		if strings.TrimSpace(album) != "" && lrclibTitlesMatch(album, r.AlbumName) {
 			s += 12
@@ -410,12 +521,60 @@ func pickBestLRCLIB(results []lrclibResult, album string, durationSec int) *lrcl
 			best, bestScore = r, sc
 		}
 	}
+	// Prefer a duration-matched word-sync over a duration-matched line-only GET
+	// (Adele: id 15850 line @285s must lose to id 7137504 word @285s).
+	if durationSec > 0 && !hasWordSync(effectiveSyncedLyrics(best)) {
+		var wordBest *lrclibResult
+		wordScore := -1e18
+		for i := range unique {
+			r := &unique[i]
+			if !hasWordSync(effectiveSyncedLyrics(*r)) || r.Duration == nil {
+				continue
+			}
+			if absFloat(*r.Duration-float64(durationSec)) > lrclibMaxDurationDeltaSec {
+				continue
+			}
+			if sc := score(*r); sc > wordScore {
+				wordBest = r
+				wordScore = sc
+			}
+		}
+		if wordBest != nil {
+			best = *wordBest
+		}
+	}
 	if effectiveSyncedLyrics(best) == "" {
 		return nil
 	}
+	// Refuse synced lyrics for a clearly different cut (radio vs album).
+	// Never borrow word stamps from a wrong-duration edit when a duration-
+	// matched cut exists (even if that match is line-only).
 	if durationSec > 0 && best.Duration != nil {
 		delta := absFloat(*best.Duration - float64(durationSec))
-		if delta > 6 {
+		if delta > lrclibMaxDurationDeltaSec {
+			// Prefer any duration-OK synced (line-only OK) over wrong-cut words.
+			for _, r := range unique {
+				if r.Duration == nil {
+					continue
+				}
+				if absFloat(*r.Duration-float64(durationSec)) > lrclibMaxDurationDeltaSec {
+					continue
+				}
+				if strings.TrimSpace(effectiveSyncedLyrics(r)) != "" {
+					cp := r
+					return &cp
+				}
+			}
+			// Fall back to plain text if available; otherwise no lyrics.
+			for _, r := range unique {
+				if strings.TrimSpace(effectiveSyncedLyrics(r)) != "" {
+					continue
+				}
+				if strings.TrimSpace(r.PlainLyrics) != "" {
+					cp := r
+					return &cp
+				}
+			}
 			return nil
 		}
 	}

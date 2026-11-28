@@ -1,0 +1,3 @@
+# Karaoke per-word CTC refine (CPU wheels installed separately in Dockerfile).
+demucs
+numpy

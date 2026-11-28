@@ -74,15 +74,16 @@ func lyricsFileToEnhancedLRC(raw string) (string, bool) {
 	return b.String(), true
 }
 
+// formatLRCStamp keeps full millisecond precision. Centisecond truncation used
+// to throw away up to 9ms per cue (mean ~3–5ms late across LRCLIB masters).
 func formatLRCStamp(ms int) string {
 	if ms < 0 {
 		ms = 0
 	}
-	centi := ms / 10
-	m := centi / 6000
-	s := (centi % 6000) / 100
-	cs := centi % 100
-	return fmt.Sprintf("%02d:%02d.%02d", m, s, cs)
+	m := ms / 60000
+	s := (ms % 60000) / 1000
+	frac := ms % 1000
+	return fmt.Sprintf("%02d:%02d.%03d", m, s, frac)
 }
 
 // parseLyricsFile reads the LRCLIB lyricsfile YAML subset we care about.

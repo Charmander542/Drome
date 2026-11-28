@@ -3,7 +3,11 @@ import Foundation
 /// Minimal client for the public LRCLIB API (https://lrclib.net), used as the
 /// fallback source for synced lyrics when Navidrome has none.
 struct LRCLIBClient {
-    struct Result: Decodable {
+    /// Refuse synced hits whose duration differs from the library file by more
+    /// than this — radio edits vs album cuts (e.g. BDKMV 214s vs 311s).
+    static let maxDurationDeltaSec: Double = 3.0
+
+    struct Result: Decodable, Equatable {
         var id: Int?
         var trackName: String?
         var artistName: String?
@@ -24,11 +28,12 @@ struct LRCLIBClient {
         self.session = session
     }
 
-    /// Exact match by artist/title/duration; falls back to a scored search that
-    /// still requires a title/artist identity match (never “first result wins”).
+    /// Exact match by artist/title/duration (`/api/get`); falls back to a scored
+    /// `/api/search` ranked by duration closeness. Never “first result wins”.
     func lyrics(artist: String, title: String, album: String?, duration: Int?) async throws -> Result? {
         var candidates: [Result] = []
 
+        // Prefer /api/get with duration (±~2s LRCLIB tolerance on their side).
         if let exact = try? await get(artist: artist, title: title, album: album, duration: duration),
            hasUsableLyrics(exact),
            identityMatches(requestedTitle: title, requestedArtist: artist, result: exact) {
@@ -42,7 +47,7 @@ struct LRCLIBClient {
             })
         }
 
-        guard var best = pickBest(from: candidates, album: album, duration: duration) else {
+        guard var best = Self.pickBest(from: candidates, album: album, duration: duration) else {
             return nil
         }
         // Surface Word Synced lyricsfile as Enhanced LRC so LRCParser lights
@@ -89,9 +94,9 @@ struct LRCLIBClient {
         return try JSONDecoder().decode([Result].self, from: data)
     }
 
-    /// Prefer synced + closest duration + album match. Reject wild duration
-    /// mismatches when a better alternative exists (radio edit vs album cut).
-    private func pickBest(from results: [Result], album: String?, duration: Int?) -> Result? {
+    /// Prefer synced + closest duration + album match. Hard-reject synced hits
+    /// whose duration differs from the track by more than `maxDurationDeltaSec`.
+    static func pickBest(from results: [Result], album: String?, duration: Int?) -> Result? {
         guard !results.isEmpty else { return nil }
 
         // De-dupe by id / content fingerprint.
@@ -104,22 +109,25 @@ struct LRCLIBClient {
 
         func score(_ result: Result) -> Double {
             var s = 0.0
-            if let synced = Self.effectiveSyncedLyrics(result), !synced.isEmpty {
+            let synced = Self.effectiveSyncedLyrics(result)
+            let word = synced.map(Self.hasWordSync) ?? false
+            if let synced, !synced.isEmpty {
                 // Enhanced LRC / lyricsfile word stamps beat line-only karaoke.
-                s += Self.hasWordSync(synced) ? 140 : 100
+                s += word ? 140 : 100
             } else if result.plainLyrics?.isEmpty == false {
                 s += 10
             }
 
             if let duration, let remote = result.duration, remote > 0 {
                 let delta = abs(remote - Double(duration))
-                // Tight duration match — loose hits “sometimes” sync, then drift.
-                if delta <= 1.0 { s += 50 }
-                else if delta <= 2.0 { s += 35 }
-                else if delta <= 3.5 { s += 15 }
-                else if delta <= 5.0 { s += 2 }
-                else { s -= 60 }
-                s -= delta * 2.5
+                // Tight ±2s preferred; >3s is a different cut.
+                if delta <= 1.0 { s += 80 }
+                else if delta <= 2.0 { s += 55 }
+                else if delta <= maxDurationDeltaSec { s += 20 }
+                else { s -= 200 }
+                s -= delta * 4
+                // Duration-OK word-sync beats duration-OK line-only (Adele 7137504 vs 15850).
+                if delta <= maxDurationDeltaSec, word { s += 50 }
             }
 
             if let album, !album.isEmpty,
@@ -132,42 +140,96 @@ struct LRCLIBClient {
         }
 
         let ranked = unique.sorted { score($0) > score($1) }
-        guard let best = ranked.first else { return nil }
+        guard var best = ranked.first else { return nil }
 
-        // Prefer a closer synced hit whenever the winner’s duration is soft.
+        // Prefer duration-matched word-sync over duration-matched line-only GET.
+        if let duration,
+           let synced = Self.effectiveSyncedLyrics(best),
+           !Self.hasWordSync(synced),
+           let wordOk = ranked.first(where: {
+               guard let s = Self.effectiveSyncedLyrics($0), Self.hasWordSync(s) else { return false }
+               return abs(($0.duration ?? 0) - Double(duration)) <= maxDurationDeltaSec
+           }) {
+            best = wordOk
+        }
+
+        // Prefer a closer synced hit whenever the winner’s duration is soft —
+        // never borrow word stamps from a different-duration edit when a
+        // duration-matched cut (even line-only) exists.
         if let duration,
            let remote = best.duration,
-           abs(remote - Double(duration)) > 3.5,
+           abs(remote - Double(duration)) > maxDurationDeltaSec,
            let closer = ranked.first(where: {
                Self.effectiveSyncedLyrics($0)?.isEmpty == false
-                   && abs(($0.duration ?? 0) - Double(duration)) <= 3.0
+                   && abs(($0.duration ?? 0) - Double(duration)) <= maxDurationDeltaSec
            }) {
             return closer
         }
-        // Refuse synced lyrics that are clearly a different cut — constant
-        // wrong timing is worse than “no synced lyrics”.
+        // Refuse synced lyrics for a clearly different cut — constant wrong
+        // timing is worse than “no synced lyrics”.
         if let duration,
            let remote = best.duration,
            Self.effectiveSyncedLyrics(best)?.isEmpty == false,
-           abs(remote - Double(duration)) > 6.0 {
+           abs(remote - Double(duration)) > maxDurationDeltaSec {
             if let plain = ranked.first(where: {
                 $0.plainLyrics?.isEmpty == false
                     && Self.effectiveSyncedLyrics($0) == nil
             }) {
                 return plain
             }
+            return nil
         }
         return best
     }
 
+    /// Sidecar / offline LRC stamped with `[drome-lrclib-duration:…]`.
+    static func parseProvenanceDurationSec(_ raw: String) -> Double? {
+        guard let match = raw.range(
+            of: #"\[drome-lrclib-duration:([0-9]+(?:\.[0-9]+)?)\]"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) else { return nil }
+        let tag = String(raw[match])
+        let num = tag
+            .replacingOccurrences(of: "[", with: "")
+            .replacingOccurrences(of: "]", with: "")
+            .split(separator: ":").last
+            .map(String.init)
+        return num.flatMap(Double.init)
+    }
+
+    static func parseProvenanceId(_ raw: String) -> Int? {
+        guard let match = raw.range(
+            of: #"\[drome-lrclib-id:(\d+)\]"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) else { return nil }
+        let tag = String(raw[match])
+        let num = tag
+            .replacingOccurrences(of: "[", with: "")
+            .replacingOccurrences(of: "]", with: "")
+            .split(separator: ":").last
+            .map(String.init)
+        return num.flatMap(Int.init)
+    }
+
+    /// True when stamped source duration is within tolerance of the track.
+    /// Legacy unstamped synced lyrics are invalidated so a duration-aware
+    /// refetch can restamp them (the old 45s last-stamp heuristic kept wrong cuts).
+    static func provenanceDurationMatchesTrack(_ raw: String, trackDurationSec: Int?) -> Bool {
+        guard let track = trackDurationSec, track > 0 else { return true }
+        if let src = parseProvenanceDurationSec(raw) {
+            return abs(src - Double(track)) <= maxDurationDeltaSec
+        }
+        return false
+    }
+
     private func identityMatches(requestedTitle: String, requestedArtist: String, result: Result) -> Bool {
-        titlesMatch(requestedTitle, result.trackName ?? "")
-            && (requestedArtist.isEmpty || titlesMatch(requestedArtist, result.artistName ?? ""))
+        Self.titlesMatch(requestedTitle, result.trackName ?? "")
+            && (requestedArtist.isEmpty || Self.titlesMatch(requestedArtist, result.artistName ?? ""))
     }
 
     /// Identity compare: ignore case / diacritics / punctuation. Require near-
     /// equal length so short titles don’t match longer remixes via `contains`.
-    private func titlesMatch(_ a: String, _ b: String) -> Bool {
+    static func titlesMatch(_ a: String, _ b: String) -> Bool {
         let na = normalize(a)
         let nb = normalize(b)
         guard !na.isEmpty, !nb.isEmpty else { return false }
@@ -182,7 +244,7 @@ struct LRCLIBClient {
         return Double(shorter.count) / Double(longer.count) >= 0.72
     }
 
-    private func normalize(_ raw: String) -> String {
+    private static func normalize(_ raw: String) -> String {
         raw.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .joined()
@@ -306,12 +368,12 @@ struct LRCLIBClient {
         return Int(s)
     }
 
+    /// Full millisecond precision — matches the companion sidecar writer.
     private static func formatLRCStamp(_ ms: Int) -> String {
         let clamped = max(0, ms)
-        let centi = clamped / 10
-        let m = centi / 6000
-        let s = (centi % 6000) / 100
-        let cs = centi % 100
-        return String(format: "%02d:%02d.%02d", m, s, cs)
+        let m = clamped / 60_000
+        let s = (clamped % 60_000) / 1_000
+        let frac = clamped % 1_000
+        return String(format: "%02d:%02d.%03d", m, s, frac)
     }
 }

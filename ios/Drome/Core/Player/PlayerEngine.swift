@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import Combine
 import MediaPlayer
+import QuartzCore
 import UIKit
 import GroupActivities
 
@@ -119,6 +120,12 @@ final class PlayerEngine: ObservableObject {
     private var volumeFadeGeneration = 0
     private var seekEpoch = 0
     private var appliedSeekEpoch = 0
+    /// `CACurrentMediaTime()` when the latest seek callback applied — karaoke
+    /// ignores a brief post-seek AV zero while decode catches up.
+    private var lastSeekAppliedAt: CFTimeInterval = -.infinity
+    /// Bumped when a seek finishes so paused lyrics can clear scrub-suppress
+    /// without waiting for the next playhead tick.
+    @Published private(set) var seekSettledToken: Int = 0
     private var autoplayTask: Task<Void, Never>?
     /// Bumped whenever in-flight autoplay work is cancelled so stale
     /// `nextBatch` results cannot rebuild the player window.
@@ -1331,7 +1338,7 @@ final class PlayerEngine: ObservableObject {
         player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.seekEpoch == epoch else { return }
-                self.appliedSeekEpoch = epoch
+                self.markSeekApplied(epoch: epoch)
                 self.setPlayhead(elapsed: 0)
                 self.pushNowPlayingInfo()
             }
@@ -1708,7 +1715,7 @@ final class PlayerEngine: ObservableObject {
             tvAudio.seek(to: seconds)
             setPlayhead(elapsed: seconds, duration: tvAudio.duration > 0 ? tvAudio.duration : duration)
             seekEpoch += 1
-            appliedSeekEpoch = seekEpoch
+            markSeekApplied(epoch: seekEpoch)
             if wantsToPlay { tvAudio.play() }
             pushNowPlayingInfo()
             return
@@ -1760,7 +1767,7 @@ final class PlayerEngine: ObservableObject {
         player.seek(to: target, toleranceBefore: slack, toleranceAfter: slack) { [weak self] finished in
             Task { @MainActor [weak self] in
                 guard let self, self.seekEpoch == epoch else { return }
-                self.appliedSeekEpoch = epoch
+                self.markSeekApplied(epoch: epoch)
                 let actual = self.player.currentTime().seconds
                 // Never publish ~0 when we asked for a mid-track seek — the item
                 // often still reports 0 until the seek finishes decoding.
@@ -1865,6 +1872,13 @@ final class PlayerEngine: ObservableObject {
     /// True while an AVPlayer seek is outstanding (scrub, lyric tap, etc.).
     var isSeekInFlight: Bool { seekEpoch != appliedSeekEpoch }
 
+    /// Records a finished seek for karaoke (zero-guard window + settled token).
+    private func markSeekApplied(epoch: Int) {
+        appliedSeekEpoch = epoch
+        lastSeekAppliedAt = CACurrentMediaTime()
+        seekSettledToken &+= 1
+    }
+
     /// High-resolution playhead for karaoke / scrubber UIs. Prefer this over
     /// the throttled `elapsed` publish when you need frame-smooth updates.
     func accurateElapsed() -> TimeInterval {
@@ -1886,28 +1900,34 @@ final class PlayerEngine: ObservableObject {
 
     /// Playhead for lyric highlight / auto-scroll.
     ///
-    /// This is presentation time. Aura measured AirPods Pro 2 and found
-    /// `AVPlayer.currentTime` already includes Bluetooth / AirPlay delay, so
-    /// subtracting `AVAudioSession.outputLatency` lights every word late.
-    /// Callers add only the listener’s manual nudge.
+    /// Reads `AVPlayer.currentTime()` (via `accurateElapsed`) on every lyrics
+    /// display tick (~60 Hz). That value is the item timebase’s presentation
+    /// clock — not the 0.5 s UI `timeObserver`, and not `PlaybackClock`’s
+    /// wall-clock interpolator (which soft-ignores up to 450 ms of AV drift
+    /// and would make karaoke feel sluggish).
     ///
-    /// During (and briefly after) a seek, `AVPlayer.currentTime()` often still
-    /// reports the pre-seek position or a transient ~0 — that made karaoke jump
-    /// to the top of the lyric sheet mid-scrub. Prefer the published target
-    /// playhead until the player catches up.
+    /// Aura measured AirPods Pro 2 and found `currentTime` already includes
+    /// Bluetooth / AirPlay route delay, so we do **not** subtract
+    /// `AVAudioSession.outputLatency`. Callers add only the listener’s nudge.
+    ///
+    /// Encoder priming: for properly tagged local files AVPlayer accounts for
+    /// MP3/AAC encoder delay inside `currentTime`. Navidrome MP3 *transcodes*
+    /// can still disagree with the LRCLIB master — that is a stamp/offset
+    /// problem (companion align), not a client clock skew. Growing mid-song
+    /// drift would mean a rate/duration mismatch; we have not observed that
+    /// when stamps match the file.
+    ///
+    /// During a seek, `AVPlayer.currentTime()` often still reports the pre-seek
+    /// position — prefer the published target until the player catches up.
+    /// Otherwise use `currentTime` every frame (`KaraokeResume`); do not stick
+    /// to the 0.5 Hz UI observer after foreground resume.
     func karaokeElapsed() -> TimeInterval {
-        let published = elapsed
-        if isSeekInFlight {
-            return max(0, published)
-        }
-        let accurate = accurateElapsed()
-        if published > 2, accurate < 0.75 {
-            return max(0, published)
-        }
-        if abs(accurate - published) > 2.5 {
-            return max(0, published)
-        }
-        return max(0, accurate)
+        KaraokeResume.chooseElapsed(
+            accurate: accurateElapsed(),
+            published: elapsed,
+            seekInFlight: isSeekInFlight,
+            rebuilding: isRebuilding,
+            sinceSeekApplied: CACurrentMediaTime() - lastSeekAppliedAt)
     }
 
     /// Drive mini / now-playing playhead from another Connect device's session.

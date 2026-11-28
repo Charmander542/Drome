@@ -33,22 +33,20 @@ final class AppEnvironment: ObservableObject {
         sleepTimer.bind(
             pauseMusic: { [weak self] in self?.session?.player.pause() },
             pausePodcast: { [weak self] in self?.podcastPlayer.pause() })
+        #if os(iOS)
+        // XCUITest: unsigned sim builds can't use the App Group keychain, so
+        // activate(password from Keychain) returns early and LoginView wins.
+        // Build the offline fixture session in memory — never touch Keychain.
+        if Self.isUITestLaunch {
+            installUITestOfflineSession()
+        } else if let account = accounts.activeAccount {
+            activate(account)
+        }
+        PhoneWatchSession.shared.pushFromStoredSnapshot()
+        #else
         if let account = accounts.activeAccount {
             activate(account)
         }
-        #if os(iOS)
-        // Simulator screenshot hook: land on MainTabView with podcast mini chrome
-        // even when no real Navidrome account is saved on the device.
-        if session == nil,
-           ProcessInfo.processInfo.arguments.contains("-UITestPodcastMini")
-            || ProcessInfo.processInfo.arguments.contains("-UITestWalk") {
-            let account = Account(
-                serverURL: URL(string: "http://127.0.0.1:9")!,
-                username: "uitest",
-                allowSelfSigned: true)
-            signIn(account: account, password: "uitest")
-        }
-        PhoneWatchSession.shared.pushFromStoredSnapshot()
         #endif
 
         // Music ↔ podcast exclusivity on the shared audio session.
@@ -91,6 +89,50 @@ final class AppEnvironment: ObservableObject {
 
     func activate(_ account: Account) {
         guard let password = accounts.password(for: account) else { return }
+        bindSession(account: account, password: password)
+    }
+
+    func signIn(account: Account, password: String) {
+        accounts.add(account, password: password)
+        activate(account)
+    }
+
+    /// Launch arguments that request a signed-in offline fixture (no Keychain).
+    /// Guarded: `installUITestOfflineSession` refuses to run without these.
+    #if os(iOS)
+    private static let uiTestLaunchFlags = [
+        "-UITestPodcastMini",
+        "-UITestWalk",
+        "-UITestShowOnboarding",
+    ]
+
+    static var isUITestLaunch: Bool {
+        let args = ProcessInfo.processInfo.arguments
+        return uiTestLaunchFlags.contains { args.contains($0) }
+    }
+
+    /// In-memory `AppSession` for XCUITest / `simctl launch` with UITest flags.
+    /// Works on a fresh install and when a stale saved account exists — Keychain
+    /// access-group writes fail in unsigned simulator test builds, so we never
+    /// round-trip the password through Keychain.
+    private func installUITestOfflineSession() {
+        guard Self.isUITestLaunch else {
+            assertionFailure("UITest offline session requires a -UITest* launch flag")
+            return
+        }
+        let account = Account(
+            serverURL: URL(string: "http://127.0.0.1:9")!,
+            username: "uitest",
+            allowSelfSigned: true)
+        // Best-effort metadata only — Keychain.set may fail; session does not
+        // depend on a subsequent Keychain.get.
+        accounts.add(account, password: "uitest")
+        bindSession(account: account, password: "uitest")
+    }
+    #endif
+
+    /// Binds `AppSession` with an explicit password (no Keychain read).
+    private func bindSession(account: Account, password: String) {
         session?.teardown()
         session = AppSession(account: account, password: password, database: database)
         SharePlayRuntime.shared.bind(session?.player)
@@ -115,11 +157,6 @@ final class AppEnvironment: ObservableObject {
         PhoneWatchSession.shared.pushFromStoredSnapshot()
         consumePendingDeepLink()
         #endif
-    }
-
-    func signIn(account: Account, password: String) {
-        accounts.add(account, password: password)
-        activate(account)
     }
 
     func signOut() {

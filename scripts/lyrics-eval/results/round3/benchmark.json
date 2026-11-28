@@ -1,0 +1,11 @@
+{
+  "mode": "benchmark",
+  "audio_duration_s": 29.99,
+  "seconds_demucs": 9.13,
+  "seconds_align": 4.8,
+  "seconds_total": 14.73,
+  "seconds_per_audio_minute": 29.47,
+  "realtime_factor": 0.491,
+  "peak_rss_mb": 2652.8,
+  "demucs": true
+}

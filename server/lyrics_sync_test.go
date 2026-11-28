@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -77,6 +78,172 @@ lines:
 	got := effectiveSyncedLyrics(*best)
 	if !hasWordSync(got) {
 		t.Fatalf("expected enhanced LRC from lyricsfile, got %q", got)
+	}
+}
+
+// Round 6: BDKMV album master is ~310.7s. LRCLIB has both a ~214s shorter
+// edit and the correct ~311s cut (id 565635). Word-sync on the wrong cut must
+// never win — mistimed karaoke is worse than no synced lyrics.
+func TestPickBestPrefersDurationMatchedAlbumCut(t *testing.T) {
+	const trackSec = 311 // 310.72s FLAC rounded
+	radio := lrclibResult{
+		ID:        214000,
+		TrackName: "Bitch, Don't Kill My Vibe",
+		ArtistName: "Kendrick Lamar",
+		HasWordSync: boolPtr(true),
+		SyncedLyrics: "[00:01.00] radio edit line\n",
+		Lyricsfile: `version: '1.0'
+lines:
+- text: radio edit line
+  start_ms: 1000
+  words:
+  - text: 'radio '
+    start_ms: 1000
+  - text: edit
+    start_ms: 1400
+`,
+		Duration: floatPtr(214),
+	}
+	album := lrclibResult{
+		ID:        565635,
+		TrackName: "Bitch, Don't Kill My Vibe",
+		ArtistName: "Kendrick Lamar",
+		HasWordSync: boolPtr(true),
+		SyncedLyrics: "[00:01.00] album cut line\n",
+		Lyricsfile: `version: '1.0'
+lines:
+- text: album cut line
+  start_ms: 1000
+  words:
+  - text: 'album '
+    start_ms: 1000
+  - text: cut
+    start_ms: 1400
+`,
+		Duration: floatPtr(311),
+	}
+
+	best := pickBestLRCLIB([]lrclibResult{radio, album}, "good kid, m.A.A.d city", trackSec)
+	if best == nil || best.ID != 565635 {
+		t.Fatalf("expected album cut id 565635, got %#v", best)
+	}
+
+	// Radio-only candidate must be rejected (Δ≈97s >> 3s).
+	if got := pickBestLRCLIB([]lrclibResult{radio}, "", trackSec); got != nil {
+		if effectiveSyncedLyrics(*got) != "" {
+			t.Fatalf("expected reject of 214s synced hit for 311s track, got id=%d dur=%v",
+				got.ID, got.Duration)
+		}
+	}
+}
+
+func TestPickBestRejectsSyncedBeyondDurationTolerance(t *testing.T) {
+	hit := lrclibResult{
+		ID:           9,
+		TrackName:    "Song",
+		ArtistName:   "Artist",
+		SyncedLyrics: "[00:01.00] <00:01.00>hello\n",
+		Duration:     floatPtr(200),
+	}
+	if got := pickBestLRCLIB([]lrclibResult{hit}, "", 210); got != nil {
+		t.Fatalf("Δ=10s should reject synced, got %#v", got)
+	}
+	hit.Duration = floatPtr(208) // within ±3s of 210
+	if got := pickBestLRCLIB([]lrclibResult{hit}, "", 210); got == nil || got.ID != 9 {
+		t.Fatalf("Δ=2s should accept synced, got %#v", got)
+	}
+}
+
+func TestSidecarDurationMatchAndProvenance(t *testing.T) {
+	raw := stampLrclibProvenance(
+		"[00:01.000] <00:01.000>hello <00:01.400>world\n",
+		&lrclibResult{ID: 565635, Duration: floatPtr(311)},
+	)
+	if !strings.Contains(raw, "[drome-lrclib-id:565635]") {
+		t.Fatalf("missing id stamp: %q", raw)
+	}
+	if !strings.Contains(raw, "[drome-lrclib-duration:311") {
+		t.Fatalf("missing duration stamp: %q", raw)
+	}
+	if !sidecarDurationMatchesTrack(raw, 311) {
+		t.Fatal("311s track should match 311s sidecar")
+	}
+	if sidecarDurationMatchesTrack(raw, 214) {
+		t.Fatal("214s track must invalidate 311s sidecar")
+	}
+
+	// Legacy unstamped synced sidecar — always invalidate for duration-aware refetch.
+	legacy := "[00:01.00] <00:01.00>a\n[05:05.00] <05:05.00>b\n"
+	if sidecarDurationMatchesTrack(legacy, 311) {
+		t.Fatal("unstamped synced sidecar must be invalidated")
+	}
+}
+
+// Adele 285s: /api/get returns line-only id 15850; search has word-sync 7137504
+// at the same duration. pickBest must prefer the word-synced entry.
+func TestPickBestPrefersWordSyncAtMatchingDuration(t *testing.T) {
+	lineOnly := lrclibResult{
+		ID:           15850,
+		TrackName:    "Someone Like You",
+		ArtistName:   "Adele",
+		AlbumName:    "21",
+		SyncedLyrics: "[00:14.08] I heard that you're settled down\n",
+		Lyricsfile: `version: '1.0'
+lines:
+- text: I heard that you're settled down
+  start_ms: 14080
+`,
+		Duration: floatPtr(285),
+	}
+	word := lrclibResult{
+		ID:          7137504,
+		TrackName:   "Someone Like You",
+		ArtistName:  "Adele",
+		AlbumName:   "21",
+		HasWordSync: boolPtr(true),
+		SyncedLyrics: "[00:14.32] I heard that you're settled down\n",
+		Lyricsfile: `version: '1.0'
+lines:
+- text: I heard that you're settled down
+  start_ms: 14320
+  words:
+  - text: 'I '
+    start_ms: 14320
+  - text: heard
+    start_ms: 15030
+`,
+		Duration: floatPtr(285),
+	}
+	// GET-first order — same as production candidate list.
+	best := pickBestLRCLIB([]lrclibResult{lineOnly, word}, "21", 285)
+	if best == nil || best.ID != 7137504 {
+		t.Fatalf("expected word-sync id 7137504, got %#v", best)
+	}
+}
+
+// Matching cut is line-only; a shorter word-sync edit must not win.
+func TestPickBestNeverBorrowsWrongDurationWordSync(t *testing.T) {
+	lineMatched := lrclibResult{
+		ID:           314000,
+		TrackName:    "Swimming Pools",
+		ArtistName:   "Kendrick Lamar",
+		SyncedLyrics: "[00:01.00] extended line\n",
+		Duration:     floatPtr(314),
+	}
+	wordShort := lrclibResult{
+		ID:           248000,
+		TrackName:    "Swimming Pools",
+		ArtistName:   "Kendrick Lamar",
+		HasWordSync:  boolPtr(true),
+		SyncedLyrics: "[00:01.00] <00:01.00>short <00:01.40>edit\n",
+		Duration:     floatPtr(248),
+	}
+	best := pickBestLRCLIB([]lrclibResult{wordShort, lineMatched}, "", 314)
+	if best == nil || best.ID != 314000 {
+		t.Fatalf("expected duration-matched line id 314000, got %#v", best)
+	}
+	if hasWordSync(effectiveSyncedLyrics(*best)) {
+		t.Fatal("must not borrow word stamps from the 248s edit")
 	}
 }
 

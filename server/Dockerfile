@@ -38,6 +38,12 @@ COPY genre_tag.py /usr/local/bin/drome-genre-tag
 COPY list-playlist.py /usr/local/bin/drome-list-playlist
 COPY scripts/cleanup_library.py /usr/local/bin/drome-cleanup-library
 COPY scripts/bootstrap-spotiflac-extensions.py /usr/local/bin/drome-bootstrap-spotiflac
+# Optional karaoke force-align (Demucs + MMS_FA). ~2GB PyTorch CPU wheels; disable with DROME_LYRICS_ALIGN=false.
+COPY scripts/align_lyrics.py /usr/local/share/drome/align_lyrics.py
+COPY scripts/requirements-lyrics-align.txt /tmp/requirements-lyrics-align.txt
+RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
+ && pip install --no-cache-dir -r /tmp/requirements-lyrics-align.txt \
+ && rm -f /tmp/requirements-lyrics-align.txt
 RUN chmod 755 /usr/local/bin/drome-download /usr/local/bin/drome-entrypoint /usr/local/bin/drome-retag /usr/local/bin/drome-genre-tag /usr/local/bin/drome-list-playlist /usr/local/bin/drome-cleanup-library /usr/local/bin/drome-bootstrap-spotiflac \
  && sed -i '1s|^#!.*|#!/usr/bin/env python3|' /usr/local/bin/drome-retag /usr/local/bin/drome-genre-tag /usr/local/bin/drome-list-playlist /usr/local/bin/drome-cleanup-library /usr/local/bin/drome-bootstrap-spotiflac
 
@@ -61,6 +67,7 @@ ENV DROME_DB_PATH=/data/drome.db \
     MORNYE_DATA_DIR=/home/drome/.mornye \
     MORNYE_REGISTRIES=https://raw.githubusercontent.com/mornyeapp/Mornye-Extension/main/registry.json,https://raw.githubusercontent.com/mornyeapp/Mornye-Extension/main/registry-python.json \
     DROME_SPOTIFLAC_EXTENSIONS=utilities,tidal-web,qobuz-web,amazon,deezer,ytmusic-spotiflac \
+    DROME_LYRICS_ALIGN_SCRIPT=/usr/local/share/drome/align_lyrics.py \
     HOME=/home/drome
 EXPOSE 4534
 VOLUME ["/data", "/music"]

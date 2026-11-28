@@ -48,13 +48,13 @@ lines:
 	if !hasWordSync(out) {
 		t.Fatalf("expected <> word stamps, got:\n%s", out)
 	}
-	if !strings.Contains(out, "[00:11.16]") {
-		t.Fatalf("expected line stamp for 11160ms, got:\n%s", out)
+	if !strings.Contains(out, "[00:11.160]") {
+		t.Fatalf("expected millisecond line stamp for 11160ms, got:\n%s", out)
 	}
-	if !strings.Contains(out, "<00:11.16>My ") {
+	if !strings.Contains(out, "<00:11.160>My ") {
 		t.Fatalf("expected first word stamp, got:\n%s", out)
 	}
-	if !strings.Contains(out, "<00:11.25>shadow ") {
+	if !strings.Contains(out, "<00:11.259>shadow ") {
 		t.Fatalf("expected second word stamp, got:\n%s", out)
 	}
 	if !strings.Contains(out, "I'm ") {
@@ -93,10 +93,13 @@ func TestEffectiveSyncedLyricsPrefersLyricsfile(t *testing.T) {
 }
 
 func TestFormatLRCStamp(t *testing.T) {
-	if got := formatLRCStamp(11160); got != "00:11.16" {
+	if got := formatLRCStamp(11160); got != "00:11.160" {
 		t.Fatalf("got %s", got)
 	}
-	if got := formatLRCStamp(0); got != "00:00.00" {
+	if got := formatLRCStamp(11259); got != "00:11.259" {
+		t.Fatalf("got %s", got)
+	}
+	if got := formatLRCStamp(0); got != "00:00.000" {
 		t.Fatalf("got %s", got)
 	}
 }

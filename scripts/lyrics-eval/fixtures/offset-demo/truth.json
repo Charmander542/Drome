@@ -1,0 +1,28 @@
+{
+  "words": [
+    {
+      "text": "one",
+      "start_ms": 820
+    },
+    {
+      "text": "two",
+      "start_ms": 1510
+    },
+    {
+      "text": "three",
+      "start_ms": 2235
+    },
+    {
+      "text": "four",
+      "start_ms": 3100
+    },
+    {
+      "text": "five",
+      "start_ms": 4055
+    },
+    {
+      "text": "six",
+      "start_ms": 5200
+    }
+  ]
+}

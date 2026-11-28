@@ -20,6 +20,12 @@ struct LyricsDocument {
     var matchedDurationSec: Int?
     /// Whether karaoke uses real word stamps or paced approximations.
     var wordTiming: LyricsWordTiming
+    /// Companion `[drome-aligned:vN]` tag when present in the raw LRC.
+    var alignedMarker: String?
+    /// LRCLIB entry id when known (from live fetch or `[drome-lrclib-id:]`).
+    var lrclibId: Int?
+    /// Fingerprint of line starts + aligned marker + provenance — drives nudge reset.
+    var timingStamp: String
 
     init(
         lines: [LRCParser.Line],
@@ -27,13 +33,26 @@ struct LyricsDocument {
         source: String,
         timingOffsetMs: Int = 0,
         matchedDurationSec: Int? = nil,
-        wordTiming: LyricsWordTiming? = nil
+        wordTiming: LyricsWordTiming? = nil,
+        alignedMarker: String? = nil,
+        lrclibId: Int? = nil
     ) {
         self.lines = lines
         self.synced = synced
         self.source = source
         self.timingOffsetMs = timingOffsetMs
         self.matchedDurationSec = matchedDurationSec
+        self.alignedMarker = alignedMarker
+        self.lrclibId = lrclibId
+        // Include duration + id so a wrong-cut cache entry invalidates nudge state.
+        var marker = alignedMarker ?? ""
+        if let matchedDurationSec {
+            marker += "|dur:\(matchedDurationSec)"
+        }
+        if let lrclibId {
+            marker += "|id:\(lrclibId)"
+        }
+        self.timingStamp = LRCParser.timingStamp(lines: lines, alignedMarker: marker.isEmpty ? nil : marker)
         if let wordTiming {
             self.wordTiming = wordTiming
         } else if !synced {
@@ -72,10 +91,11 @@ actor LyricsService {
     private let offlineLyricsURL: (@Sendable (String) -> URL?)?
 
     /// Bumped when matching / alignment rules change so old hits refetch once.
-    private static let lrclibSource = "lrclib.v5"
-    private static let navidromeSource = "navidrome.v5"
-    private static let sidecarSource = "sidecar.v1"
-    static let offlineSource = "offline.v1"
+    /// v6: hard duration reject (~3s) + provenance stamps invalidate wrong cuts.
+    private static let lrclibSource = "lrclib.v6"
+    private static let navidromeSource = "navidrome.v6"
+    private static let sidecarSource = "sidecar.v2"
+    static let offlineSource = "offline.v2"
 
     private struct FetchedLyrics {
         var content: String
@@ -83,6 +103,7 @@ actor LyricsService {
         var source: String
         var structuredOffsetMs: Int = 0
         var matchedDurationSec: Int? = nil
+        var lrclibId: Int? = nil
     }
 
     private enum MemoryEntry {
@@ -190,7 +211,8 @@ actor LyricsService {
                 source: payload.source,
                 songDuration: song.duration,
                 structuredOffsetMs: payload.structuredOffsetMs,
-                matchedDurationSec: payload.matchedDurationSec)
+                matchedDurationSec: payload.matchedDurationSec,
+                lrclibId: payload.lrclibId)
         }
         guard epochs[song.id, default: 0] == epoch else { return nil }
         // A failed upgrade must not throw away a line-synced sheet already on disk.
@@ -220,8 +242,9 @@ actor LyricsService {
     func persistOfflineLyrics(for song: Song, to url: URL) async -> Bool {
         if let existing = try? String(contentsOf: url, encoding: .utf8),
            !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           LRCLIBClient.hasWordSync(existing) {
-            // Measured word karaoke already on disk.
+           LRCLIBClient.hasWordSync(existing),
+           LRCLIBClient.provenanceDurationMatchesTrack(existing, trackDurationSec: song.duration) {
+            // Measured word karaoke already on disk for this cut.
             return true
         }
         guard let payload = await fetch(song: song) else {
@@ -252,12 +275,22 @@ actor LyricsService {
               let content = try? String(contentsOf: url, encoding: .utf8),
               !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return nil }
+        // Wrong-cut offline LRC (e.g. 214s radio stamps on a 311s album file)
+        // must not short-circuit measured karaoke.
+        if LRCParser.isSynced(content),
+           !LRCLIBClient.provenanceDurationMatchesTrack(content, trackDurationSec: song.duration) {
+            return nil
+        }
         let synced = LRCParser.isSynced(content)
+        let matched = LRCLIBClient.parseProvenanceDurationSec(content).map { Int($0.rounded()) }
+        let id = LRCLIBClient.parseProvenanceId(content)
         return document(
             from: content,
             synced: synced,
             source: Self.offlineSource,
-            songDuration: song.duration)
+            songDuration: song.duration,
+            matchedDurationSec: matched,
+            lrclibId: id)
     }
 
     private func fetch(song: Song) async -> FetchedLyrics? {
@@ -269,23 +302,38 @@ actor LyricsService {
         var lineSyncedFallback: FetchedLyrics?
 
         // 1. Companion raw sidecar — accept immediately when it already has
-        // Enhanced LRC word stamps; otherwise keep for after LRCLIB.
+        // Enhanced LRC word stamps *for this duration*; otherwise keep for after
+        // LRCLIB (or drop if stamped for a different cut).
         if let wishlist,
            let sidecar = try? await wishlist.trackLyrics(
             title: song.title, artist: song.artist ?? ""),
            sidecar.found,
            let content = sidecar.content, !content.isEmpty {
             let synced = sidecar.synced || LRCParser.isSynced(content)
-            if synced, LRCLIBClient.hasWordSync(content) {
-                return FetchedLyrics(content: content, synced: true, source: Self.sidecarSource)
+            let durationOk = LRCLIBClient.provenanceDurationMatchesTrack(
+                content, trackDurationSec: song.duration)
+            let matched = LRCLIBClient.parseProvenanceDurationSec(content).map { Int($0.rounded()) }
+            let id = LRCLIBClient.parseProvenanceId(content)
+            if synced, LRCLIBClient.hasWordSync(content), durationOk {
+                return FetchedLyrics(
+                    content: content,
+                    synced: true,
+                    source: Self.sidecarSource,
+                    matchedDurationSec: matched,
+                    lrclibId: id)
             }
-            if synced {
+            if synced, durationOk {
                 lineSyncedFallback = FetchedLyrics(
-                    content: content, synced: true, source: Self.sidecarSource)
-            } else {
+                    content: content,
+                    synced: true,
+                    source: Self.sidecarSource,
+                    matchedDurationSec: matched,
+                    lrclibId: id)
+            } else if !synced {
                 unsyncedFallback = FetchedLyrics(
                     content: content, synced: false, source: Self.sidecarSource)
             }
+            // Mismatched-duration word/line sidecar: fall through to LRCLIB.
         }
 
         // 2. Navidrome structured lyrics — prefer timed; defer plain to after LRCLIB.
@@ -317,6 +365,7 @@ actor LyricsService {
         }
 
         // 3. LRCLIB — Word Synced lyricsfile (as Enhanced LRC) wins; else line LRC.
+        // Match uses song.duration (/api/get + ranked search); rejects Δ>~3s.
         if let artist = song.artist,
            let result = try? await lrclib.lyrics(
             artist: artist, title: song.title,
@@ -328,7 +377,8 @@ actor LyricsService {
                         content: lrc,
                         synced: true,
                         source: Self.lrclibSource,
-                        matchedDurationSec: matchedDuration)
+                        matchedDurationSec: matchedDuration,
+                        lrclibId: result.id)
                 }
             }
             if unsyncedFallback == nil,
@@ -337,7 +387,8 @@ actor LyricsService {
                     content: plain,
                     synced: false,
                     source: Self.lrclibSource,
-                    matchedDurationSec: matchedDuration)
+                    matchedDurationSec: matchedDuration,
+                    lrclibId: result.id)
             }
         }
 
@@ -398,11 +449,16 @@ actor LyricsService {
         source: String,
         songDuration: Int?,
         structuredOffsetMs: Int = 0,
-        matchedDurationSec: Int? = nil
+        matchedDurationSec: Int? = nil,
+        lrclibId: Int? = nil
     ) -> LyricsDocument {
         // Embedded `[offset:]` is applied inside the parser. Structured offset
         // is also written into the serialized LRC when caching from Navidrome.
-        var lines = LRCParser.parse(content, applyEmbeddedOffset: true)
+        let parsed = LRCParser.parseDetailed(content, applyEmbeddedOffset: true)
+        var lines = parsed.lines
+        let resolvedId = lrclibId ?? LRCLIBClient.parseProvenanceId(content)
+        let resolvedMatched = matchedDurationSec
+            ?? LRCLIBClient.parseProvenanceDurationSec(content).map { Int($0.rounded()) }
 
         // Duration scale only when we know the remote master's length (LRCLIB).
         // Never invent a scale from the last lyric stamp — sidecar / embedded
@@ -411,10 +467,10 @@ actor LyricsService {
         // After scaling, record the timebase stamps now live on (`songDuration`)
         // so LyricsView’s playhead realign applies a *delta* scale instead of
         // stretching from the LRCLIB master a second time (mid-song drift).
-        var alignedDurationSec = matchedDurationSec
+        var alignedDurationSec = resolvedMatched
         if synced,
            let songDuration, songDuration > 0,
-           let fromSec = matchedDurationSec, fromSec > 0 {
+           let fromSec = resolvedMatched, fromSec > 0 {
             let scaled = LRCParser.scale(
                 lines,
                 fromDurationMs: fromSec * 1000,
@@ -430,6 +486,8 @@ actor LyricsService {
             synced: synced,
             source: source,
             timingOffsetMs: structuredOffsetMs,
-            matchedDurationSec: alignedDurationSec)
+            matchedDurationSec: alignedDurationSec,
+            alignedMarker: parsed.alignedMarker,
+            lrclibId: resolvedId)
     }
 }
