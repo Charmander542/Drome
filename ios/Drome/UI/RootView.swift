@@ -43,14 +43,13 @@ struct RootView: View {
     }
 
     private func evaluateOnboarding(for session: AppSession) {
-        #if DEBUG
-        // Pair with `-UITestPodcastMini` to land signed-in and force the tour
-        // regardless of the per-account completion flag.
+        // Force the tour for UI tests regardless of build config, saved
+        // account, or per-account completion flag.
         if ProcessInfo.processInfo.arguments.contains("-UITestShowOnboarding") {
+            OnboardingPreference.reset(userKey: session.account.userKey)
             showOnboarding = true
             return
         }
-        #endif
         showOnboarding = !OnboardingPreference.hasCompleted(userKey: session.account.userKey)
     }
 }

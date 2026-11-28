@@ -66,10 +66,10 @@ FRAME_MS = 20.0  # MMS_FA asymptotic hop (320 samples @ 16 kHz)
 # so selftest abs_tol is 40 ms — not 30.
 CTC_LAG_COMPENSATE_MS = 40
 TIMEBASE_ABS_TOL_MS = 40
-# Chunk MMS emission so peak RSS stays under ~3GB on long masters (full-clip
-# MMS on a 5+ min stem previously peaked ~9.7GB and exhausted swap on 16GB Mac).
-EMISSION_CHUNK_S = 45.0
-EMISSION_OVERLAP_S = 2.0
+# Chunk MMS emission so peak RSS stays well under ~3GB on long masters
+# (full-clip MMS on a ~5 min stem peaked ~9.7GB; 45s chunks still hit ~3.0–3.5GB).
+EMISSION_CHUNK_S = 20.0
+EMISSION_OVERLAP_S = 1.5
 _MMS_CHARS = set("abcdefghijklmnopqrstuvwxyz'")
 
 # Spoken forms MMS can actually emit (numbers / common contractions).
@@ -1605,6 +1605,7 @@ def cmd_synth_full(args: argparse.Namespace) -> int:
             out_lrc = vdir / "aligned.lrc"
             out_lrc.write_text(input_lrc, encoding="utf-8")
             gen_json = vdir / "generate.json"
+            truth_path = vdir / "truth.json"
             ns = argparse.Namespace(
                 audio=str(demucs_in if use_demucs else wav_path),
                 lrc=str(out_lrc),
@@ -1620,6 +1621,7 @@ def cmd_synth_full(args: argparse.Namespace) -> int:
                 write=True,
                 force_write=True,
                 min_coverage=0.0,
+                truth=str(truth_path),
                 json=str(gen_json),
             )
             rc = cmd_generate_words(ns)
@@ -1871,10 +1873,19 @@ def cmd_generate_words(args: argparse.Namespace) -> int:
 
     coverage = float(gen_stats.get("coverage") or 0.0)
     min_cov = getattr(args, "min_coverage", DEFAULT_MIN_COVERAGE)
+    reference_ms: list[int] | None = None
+    truth_path = getattr(args, "truth", None) or getattr(args, "reference", None)
+    if truth_path:
+        try:
+            truth = json.loads(Path(truth_path).read_text(encoding="utf-8"))
+            reference_ms = [int(w["start_ms"]) for w in truth.get("words") or []]
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            print(f"reference load failed: {exc}", file=sys.stderr)
     gate_ok, gate_reason = quality_gate_allows_write(
         gen_stats=gen_stats,
         generated_lines=generated,
         min_coverage=min_cov,
+        reference_ms=reference_ms,
     )
 
     wrote = False
@@ -1944,21 +1955,51 @@ def cmd_generate_words(args: argparse.Namespace) -> int:
     return 0 if gate_ok else 1
 
 
+def _abs_timing_stats(pred_ms: list[int], ref_ms: list[int]) -> dict[str, Any]:
+    n = min(len(pred_ms), len(ref_ms))
+    if n < 5:
+        return {
+            "n": n,
+            "median_abs_ms": None,
+            "p90_abs_ms": None,
+            "max_abs_ms": None,
+            "reason": "too_few_pairs",
+        }
+    abs_e = [abs(int(pred_ms[i]) - int(ref_ms[i])) for i in range(n)]
+    return {
+        "n": n,
+        "median_abs_ms": statistics.median(abs_e),
+        "p90_abs_ms": sorted(abs_e)[int(0.9 * (n - 1))],
+        "max_abs_ms": max(abs_e),
+    }
+
+
+def _flat_starts_from_generated(generated_lines: list[dict[str, Any]]) -> tuple[list[int], list[int]]:
+    """Return (aligned_starts, lrclib_prior_starts) in word order."""
+    aligned: list[int] = []
+    priors: list[int] = []
+    for gl in generated_lines:
+        for w in gl.get("words") or []:
+            if "start_ms" not in w and "prior_ms" not in w:
+                continue
+            priors.append(int(w.get("prior_ms", w.get("start_ms", 0))))
+            aligned.append(int(w.get("start_ms", w.get("prior_ms", 0))))
+    return aligned, priors
+
+
 def quality_gate_allows_write(
     *,
     gen_stats: dict[str, Any],
     generated_lines: list[dict[str, Any]],
     min_coverage: float = DEFAULT_MIN_COVERAGE,
+    reference_ms: list[int] | None = None,
 ) -> tuple[bool, str]:
-    """Non-circular write gate (no CTC-vs-self scoring).
+    """Write only when alignment empirically beats LRCLIB on a reference.
 
-    Per-line agreement / LRCLIB fallback already happened inside generate_word_timings.
-    Here we require overall CTC coverage, at least one aligned line, and global
-    monotonic word starts before rewriting the sidecar.
-
-    Write rule: only CTC (source=ctc) stamps replace LRCLIB; everything else keeps
-    the prior. Enabling alignment in production still requires a real-master
-    hand-label suite that beats plain LRCLIB — synthetic Demucs bars are not enough.
+    Soft gates (coverage / monotonicity) still apply, but without a reference
+    (hand labels or synth truth) we keep LRCLIB — never rewrite on coverage alone.
+    With a reference: median and p90 abs error must improve, and max abs must
+    not get worse. Do not loosen LINE_AGREE_MS to chase coverage.
     """
     coverage = float(gen_stats.get("coverage") or 0.0)
     if coverage < min_coverage:
@@ -1981,7 +2022,29 @@ def quality_gate_allows_write(
     for i in range(1, len(starts)):
         if starts[i] < starts[i - 1]:
             return False, f"non-monotonic at word {i} ({starts[i]} < {starts[i-1]})"
-    return True, "ok"
+
+    if not reference_ms:
+        return False, "no reference to prove beat-LRCLIB (keep LRCLIB)"
+
+    aligned_ms, prior_ms = _flat_starts_from_generated(generated_lines)
+    aligned_stats = _abs_timing_stats(aligned_ms, reference_ms)
+    lrclib_stats = _abs_timing_stats(prior_ms, reference_ms)
+    if aligned_stats.get("median_abs_ms") is None or lrclib_stats.get("median_abs_ms") is None:
+        return False, "too few reference pairs to compare vs LRCLIB"
+
+    a_med, l_med = aligned_stats["median_abs_ms"], lrclib_stats["median_abs_ms"]
+    a_p90, l_p90 = aligned_stats["p90_abs_ms"], lrclib_stats["p90_abs_ms"]
+    a_max, l_max = aligned_stats["max_abs_ms"], lrclib_stats["max_abs_ms"]
+    if a_med >= l_med:
+        return False, f"median abs {a_med:.0f}ms does not beat LRCLIB {l_med:.0f}ms"
+    if a_p90 >= l_p90:
+        return False, f"p90 abs {a_p90:.0f}ms does not beat LRCLIB {l_p90:.0f}ms"
+    if a_max > l_max:
+        return False, f"max abs {a_max:.0f}ms worse than LRCLIB {l_max:.0f}ms"
+    return True, (
+        f"beats LRCLIB vs reference "
+        f"(med {l_med:.0f}→{a_med:.0f}, p90 {l_p90:.0f}→{a_p90:.0f}, max {l_max:.0f}→{a_max:.0f})"
+    )
 
 
 def cmd_benchmark(args: argparse.Namespace) -> int:
@@ -2127,6 +2190,87 @@ def lyricsfile_to_enhanced_lrc(raw: str) -> str | None:
     return "\n".join(out_lines) + "\n"
 
 
+def _lrclib_hit_has_word_sync(hit: dict[str, Any]) -> bool:
+    if hit.get("hasWordSync") is True:
+        return True
+    lf = (hit.get("lyricsfile") or "").strip()
+    if lf and "words:" in lf:
+        enhanced = lyricsfile_to_enhanced_lrc(lf)
+        if enhanced and "<" in enhanced:
+            return True
+    synced = hit.get("syncedLyrics") or ""
+    return "<" in synced
+
+
+def _lrclib_pick_best(
+    candidates: list[dict[str, Any]],
+    *,
+    duration_s: int | None,
+    album: str | None = None,
+    max_duration_delta_s: float = 3.0,
+) -> dict[str, Any] | None:
+    """Mirror Go/iOS pickBest: duration-OK first, then prefer word-sync.
+
+    Never borrows word stamps from a different-duration edit when a
+    duration-matched (even line-only) hit exists.
+    """
+    if not candidates:
+        return None
+
+    def dur_delta(h: dict[str, Any]) -> float:
+        if duration_s is None or h.get("duration") is None:
+            return 1e9
+        return abs(float(h["duration"]) - float(duration_s))
+
+    def score(h: dict[str, Any]) -> float:
+        s = 0.0
+        word = _lrclib_hit_has_word_sync(h)
+        synced = bool((h.get("syncedLyrics") or "").strip() or (h.get("lyricsfile") or "").strip())
+        if word:
+            s += 140
+        elif synced:
+            s += 100
+        elif (h.get("plainLyrics") or "").strip():
+            s += 10
+        delta = dur_delta(h)
+        if duration_s is not None and h.get("duration") is not None:
+            if delta <= 1:
+                s += 80
+            elif delta <= 2:
+                s += 55
+            elif delta <= max_duration_delta_s:
+                s += 20
+            else:
+                s -= 200
+            s -= delta * 4
+        if album and (h.get("albumName") or "").lower() == album.lower():
+            s += 12
+        # Explicit tie-break: duration-OK word-sync ≫ duration-OK line-only.
+        if duration_s is not None and delta <= max_duration_delta_s and word:
+            s += 50
+        return s
+
+    ranked = sorted(candidates, key=score, reverse=True)
+    best = ranked[0]
+    # Prefer closer duration-OK word-sync when the top hit is line-only.
+    if duration_s is not None and not _lrclib_hit_has_word_sync(best):
+        word_ok = next(
+            (
+                h
+                for h in ranked
+                if _lrclib_hit_has_word_sync(h) and dur_delta(h) <= max_duration_delta_s
+            ),
+            None,
+        )
+        if word_ok is not None:
+            best = word_ok
+    if duration_s is not None and best.get("duration") is not None:
+        if dur_delta(best) > max_duration_delta_s:
+            # Different cut — never return its word stamps.
+            return None
+    return best
+
+
 def fetch_lrclib_enhanced(
     *,
     artist: str,
@@ -2137,9 +2281,9 @@ def fetch_lrclib_enhanced(
 ) -> tuple[str, dict[str, Any]]:
     """Fetch word-synced Enhanced LRC from LRCLIB (lyricsfile preferred).
 
-    Prefers `/api/get` with duration; falls back to `/api/search` ranked by
-    duration closeness. Rejects synced hits whose duration differs by more than
-    `max_duration_delta_s` (radio edit vs album cut).
+    Always combines `/api/get` (with duration) and `/api/search`, then pickBest
+    preferring word-sync at a matching duration. A duration-OK line-only GET
+    must not skip a same-duration word-synced search hit (Adele 15850 vs 7137504).
     """
     import urllib.parse
     import urllib.request
@@ -2151,79 +2295,73 @@ def fetch_lrclib_enhanced(
         params["album_name"] = album
     url = "https://lrclib.net/api/get?" + urllib.parse.urlencode(params)
     meta: dict[str, Any] = {"url": url, "artist": artist, "title": title, "track_duration_s": duration_s}
-    data: dict[str, Any] | None = None
+    candidates: list[dict[str, Any]] = []
     try:
         with urllib.request.urlopen(url, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            got = json.loads(resp.read().decode("utf-8"))
+            if isinstance(got, dict):
+                candidates.append(got)
+                meta["get_id"] = got.get("id")
     except Exception as exc:
         meta["get_error"] = str(exc)
 
-    if data is None or (
-        duration_s is not None
-        and data.get("duration") is not None
-        and abs(float(data["duration"]) - float(duration_s)) > max_duration_delta_s
-    ):
-        # Search ranked by duration closeness — never take hits[0] blindly.
-        q = urllib.parse.urlencode({"artist_name": artist, "track_name": title})
-        search_url = f"https://lrclib.net/api/search?{q}"
-        meta["search_url"] = search_url
+    # Always search too — GET may return a duration-OK line-only entry.
+    q = urllib.parse.urlencode({"artist_name": artist, "track_name": title})
+    search_url = f"https://lrclib.net/api/search?{q}"
+    meta["search_url"] = search_url
+    try:
         with urllib.request.urlopen(search_url, timeout=30) as resp:
             hits = json.loads(resp.read().decode("utf-8"))
-        if not hits and data is None:
-            raise RuntimeError(f"LRCLIB miss for {artist} — {title}")
-        if hits:
-            def _dur_delta(h: dict[str, Any]) -> float:
-                if duration_s is None or h.get("duration") is None:
-                    return 1e9
-                return abs(float(h["duration"]) - float(duration_s))
+        if isinstance(hits, list):
+            candidates.extend(hits)
+    except Exception as exc:
+        meta["search_error"] = str(exc)
 
-            hits = sorted(hits, key=_dur_delta)
-            pick = hits[0]
-            if duration_s is not None and _dur_delta(pick) > max_duration_delta_s:
-                raise RuntimeError(
-                    f"LRCLIB: no synced hit within ±{max_duration_delta_s}s of "
-                    f"{duration_s}s (closest Δ={_dur_delta(pick):.1f}s id={pick.get('id')})"
-                )
-            data = pick
-            meta["search_hit_id"] = data.get("id")
+    # De-dupe by id.
+    seen: set[int] = set()
+    unique: list[dict[str, Any]] = []
+    for h in candidates:
+        hid = h.get("id")
+        if isinstance(hid, int):
+            if hid in seen:
+                continue
+            seen.add(hid)
+        unique.append(h)
 
-    assert data is not None
-    if duration_s is not None and data.get("duration") is not None:
-        delta = abs(float(data["duration"]) - float(duration_s))
-        if delta > max_duration_delta_s:
-            raise RuntimeError(
-                f"LRCLIB id={data.get('id')} duration {data.get('duration')}s "
-                f"differs from track {duration_s}s by {delta:.1f}s (>{max_duration_delta_s}s)"
-            )
+    data = _lrclib_pick_best(
+        unique, duration_s=duration_s, album=album, max_duration_delta_s=max_duration_delta_s
+    )
+    if data is None:
+        raise RuntimeError(
+            f"LRCLIB: no duration-matched synced hit for {artist} — {title} "
+            f"(track {duration_s}s, ±{max_duration_delta_s}s)"
+        )
 
     meta["id"] = data.get("id")
     meta["duration"] = data.get("duration")
     meta["hasWordSync"] = data.get("hasWordSync")
+    meta["picked_word_sync"] = _lrclib_hit_has_word_sync(data)
     lyricsfile = (data.get("lyricsfile") or "").strip()
     synced = (data.get("syncedLyrics") or "").strip()
+    header = ""
+    if data.get("id"):
+        header += f"[drome-lrclib-id:{data['id']}]\n"
+    if data.get("duration"):
+        header += f"[drome-lrclib-duration:{float(data['duration']):.3f}]\n"
     if lyricsfile:
         enhanced = lyricsfile_to_enhanced_lrc(lyricsfile)
         if enhanced:
             meta["source"] = "lyricsfile"
-            # Stamp provenance so sidecar invalidation works for align-track writes.
-            header = ""
-            if data.get("id"):
-                header += f"[drome-lrclib-id:{data['id']}]\n"
-            if data.get("duration"):
-                header += f"[drome-lrclib-duration:{float(data['duration']):.3f}]\n"
             return header + enhanced, meta
     if synced and "<" in synced:
         meta["source"] = "syncedLyrics"
         body = synced if synced.endswith("\n") else synced + "\n"
-        header = ""
-        if data.get("id"):
-            header += f"[drome-lrclib-id:{data['id']}]\n"
-        if data.get("duration"):
-            header += f"[drome-lrclib-duration:{float(data['duration']):.3f}]\n"
         return header + body, meta
     if synced:
         meta["source"] = "syncedLyrics_line_only"
-        raise RuntimeError("LRCLIB hit is line-only (no word sync); provide --lrc")
+        raise RuntimeError(
+            f"LRCLIB id={data.get('id')} is line-only (no word sync); provide --lrc"
+        )
     raise RuntimeError("LRCLIB hit has no synced lyrics")
 
 
@@ -2305,6 +2443,7 @@ def cmd_align_track(args: argparse.Namespace) -> int:
         write=True,
         force_write=bool(args.force_write),
         min_coverage=args.min_coverage,
+        truth=getattr(args, "truth", None),
         json=str(gen_json),
     )
     rc = cmd_generate_words(ns)
@@ -2414,6 +2553,10 @@ def main() -> int:
         action="store_true",
         help="Write even when the quality gate fails (eval / debug only)",
     )
+    g.add_argument(
+        "--truth",
+        help="Reference truth JSON ({words:[{start_ms}]}) — required for gate to allow write",
+    )
     g.add_argument("--json")
     g.set_defaults(func=cmd_generate_words)
 
@@ -2433,6 +2576,7 @@ def main() -> int:
     r.add_argument("--write", action="store_true")
     r.add_argument("--min-coverage", type=float, default=DEFAULT_MIN_COVERAGE)
     r.add_argument("--force-write", action="store_true")
+    r.add_argument("--truth", help="Reference truth JSON for beat-LRCLIB write gate")
     r.add_argument("--json")
     r.set_defaults(func=cmd_generate_words)
 

@@ -37,11 +37,14 @@ final class AppEnvironment: ObservableObject {
             activate(account)
         }
         #if os(iOS)
-        // Simulator screenshot hook: land on MainTabView with podcast mini chrome
-        // even when no real Navidrome account is saved on the device.
-        if session == nil,
-           ProcessInfo.processInfo.arguments.contains("-UITestPodcastMini")
-            || ProcessInfo.processInfo.arguments.contains("-UITestWalk") {
+        // XCUITest hooks: land signed-in with a deterministic account so a
+        // saved real login can't drop the walk on LoginView. Always win over
+        // whatever AccountStore restored above when these flags are present.
+        let args = ProcessInfo.processInfo.arguments
+        let uiTestSignedIn = args.contains("-UITestPodcastMini")
+            || args.contains("-UITestWalk")
+            || args.contains("-UITestShowOnboarding")
+        if uiTestSignedIn {
             let account = Account(
                 serverURL: URL(string: "http://127.0.0.1:9")!,
                 username: "uitest",

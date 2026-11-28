@@ -109,9 +109,11 @@ struct LRCLIBClient {
 
         func score(_ result: Result) -> Double {
             var s = 0.0
-            if let synced = Self.effectiveSyncedLyrics(result), !synced.isEmpty {
+            let synced = Self.effectiveSyncedLyrics(result)
+            let word = synced.map(Self.hasWordSync) ?? false
+            if let synced, !synced.isEmpty {
                 // Enhanced LRC / lyricsfile word stamps beat line-only karaoke.
-                s += Self.hasWordSync(synced) ? 140 : 100
+                s += word ? 140 : 100
             } else if result.plainLyrics?.isEmpty == false {
                 s += 10
             }
@@ -124,6 +126,8 @@ struct LRCLIBClient {
                 else if delta <= maxDurationDeltaSec { s += 20 }
                 else { s -= 200 }
                 s -= delta * 4
+                // Duration-OK word-sync beats duration-OK line-only (Adele 7137504 vs 15850).
+                if delta <= maxDurationDeltaSec, word { s += 50 }
             }
 
             if let album, !album.isEmpty,
@@ -136,9 +140,22 @@ struct LRCLIBClient {
         }
 
         let ranked = unique.sorted { score($0) > score($1) }
-        guard let best = ranked.first else { return nil }
+        guard var best = ranked.first else { return nil }
 
-        // Prefer a closer synced hit whenever the winner’s duration is soft.
+        // Prefer duration-matched word-sync over duration-matched line-only GET.
+        if let duration,
+           let synced = Self.effectiveSyncedLyrics(best),
+           !Self.hasWordSync(synced),
+           let wordOk = ranked.first(where: {
+               guard let s = Self.effectiveSyncedLyrics($0), Self.hasWordSync(s) else { return false }
+               return abs(($0.duration ?? 0) - Double(duration)) <= maxDurationDeltaSec
+           }) {
+            best = wordOk
+        }
+
+        // Prefer a closer synced hit whenever the winner’s duration is soft —
+        // never borrow word stamps from a different-duration edit when a
+        // duration-matched cut (even line-only) exists.
         if let duration,
            let remote = best.duration,
            abs(remote - Double(duration)) > maxDurationDeltaSec,
@@ -194,41 +211,15 @@ struct LRCLIBClient {
         return num.flatMap(Int.init)
     }
 
-    /// True when stamped source duration is within tolerance of the track, or
-    /// when no stamp exists and the last lyric stamp is not wildly short/long.
+    /// True when stamped source duration is within tolerance of the track.
+    /// Legacy unstamped synced lyrics are invalidated so a duration-aware
+    /// refetch can restamp them (the old 45s last-stamp heuristic kept wrong cuts).
     static func provenanceDurationMatchesTrack(_ raw: String, trackDurationSec: Int?) -> Bool {
         guard let track = trackDurationSec, track > 0 else { return true }
         if let src = parseProvenanceDurationSec(raw) {
             return abs(src - Double(track)) <= maxDurationDeltaSec
         }
-        // Legacy sidecar: last stamp ≪ track ⇒ likely a shorter edit.
-        if let last = lastLyricStampSec(raw), last > 0 {
-            if abs(last - Double(track)) > 45 { return false }
-        }
-        return true
-    }
-
-    private static func lastLyricStampSec(_ raw: String) -> Double? {
-        var last: Double = 0
-        let re = try! NSRegularExpression(pattern: #"\[(\d{1,2}):(\d{1,2})(?:[.:](\d{1,3}))?\]"#)
-        for line in raw.components(separatedBy: .newlines) {
-            let ns = line as NSString
-            let matches = re.matches(in: line, range: NSRange(location: 0, length: ns.length))
-            for m in matches {
-                let mm = Int(ns.substring(with: m.range(at: 1))) ?? 0
-                let ss = Double(ns.substring(with: m.range(at: 2))) ?? 0
-                var frac = 0.0
-                if m.range(at: 3).location != NSNotFound {
-                    let rawFrac = ns.substring(with: m.range(at: 3))
-                    if rawFrac.count == 1 { frac = Double(rawFrac)! / 10 }
-                    else if rawFrac.count == 2 { frac = Double(rawFrac)! / 100 }
-                    else { frac = (Double(rawFrac.prefix(3)) ?? 0) / 1000 }
-                }
-                let sec = Double(mm * 60) + ss + frac
-                if sec > last { last = sec }
-            }
-        }
-        return last > 0 ? last : nil
+        return false
     }
 
     private func identityMatches(requestedTitle: String, requestedArtist: String, result: Result) -> Bool {
